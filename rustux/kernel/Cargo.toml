@@ -1,0 +1,13 @@
+[package]
+name = "rustux-kernel"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rustux"
+path = "src/lib.rs"
+
+# No UEFI dependencies in firmware-agnostic kernel
+
+[workspace]
+members = ["."]
