@@ -4,13 +4,12 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-//! # Rustux - A Zircon-inspired Kernel in Rust
+//! # Rustux - A Capability-based Microkernel in Rust
 //!
-//! Rustux is a microkernel project inspired by Zircon (Fuchsia's kernel),
-//! implemented in Rust. It aims to provide:
+//! Rustux is a microkernel project implemented in Rust. It aims to provide:
 //!
 //! - **Multi-architecture support**: x86_64 (APIC), ARM64 (GIC), RISC-V (PLIC)
-//! - **Capability-based security**: Following Zircon's object model
+//! - **Capability-based security**: Object-based resource access control
 //! - **Clean architecture**: Separation of architecture-specific and generic code
 //! - **Memory safety**: Leveraging Rust's type system for kernel safety
 //!
