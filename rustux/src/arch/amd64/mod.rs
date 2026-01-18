@@ -40,6 +40,9 @@ pub mod syscall;
 // User space entry
 pub mod uspace_entry;
 
+// Kernel to userspace transition (mexec)
+pub mod mexec;
+
 // Exception and fault handlers
 pub mod faults;
 
