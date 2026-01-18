@@ -16,5 +16,5 @@ pub mod riscv64;
 
 // Re-export the interrupt controllers for each architecture
 pub use amd64::X86_64InterruptController;
-pub use arm64::Arm64InterruptController;
-pub use riscv64::Riscv64InterruptController;
+pub use arm64::arch::Arm64InterruptController;
+pub use riscv64::arch::RiscvInterruptController as Riscv64InterruptController;

@@ -8,29 +8,30 @@
 //!
 //! This module contains all RISC-V-specific implementations.
 //!
-//! TODO: Implement RISC-V interrupt controllers:
-//! - PLIC (Platform-Level Interrupt Controller) for external interrupts
-//! - CLINT (Core-Local Interrupt Controller) for timer and software interrupts
+//! # Modules
+//!
+//! - [`arch`] - Architecture definitions, CPU features, and SBI interface
+//! - [`interrupt`] - PLIC and CLINT interrupt controller support
+//! - [`mm`] - Memory management unit (MMU) and page tables
 
-// TODO: Add PLIC implementation
-// pub mod plic;
-// pub mod clint;
-// pub mod controller;
+pub mod arch;
+pub mod interrupt;
+pub mod mm;
 
-/// Placeholder for RISC-V interrupt controller
-///
-/// TODO: Implement PlicInterruptController using:
-/// - PLIC for external interrupt routing (priority, enable, pending)
-/// - CLINT for timer and software IPIs
-/// - hart-local interrupt context
-pub struct Riscv64InterruptController {
-    _enabled: bool,
-}
-
-impl Riscv64InterruptController {
-    pub fn new() -> Self {
-        Self {
-            _enabled: false,
-        }
-    }
-}
+// Re-exports
+pub use arch::{
+    HartInfo, RiscvFeatures, RiscvInterruptController,
+    SbiExtension, SbiFunction, SbiRet, SbiCall,
+    Clint, get_hart_info, set_hart_info, get_bootstrap_hart,
+    get_sbi_version, get_features,
+    fence, fence_i, fence_s,
+    RISCV_MAX_HARTS, RISCV_PAGE_SIZE, RISCV_PAGE_SHIFT,
+};
+pub use interrupt::{Plic, PlicHartContext, PlicIrq, PlicPriority};
+pub use mm::{
+    PageTable, PageTableEntry, PageTableFlags, PageTableLevel, PageTableMode,
+    AddressSpace, Asid, AsidAllocator,
+    sfence_vma, sfence_vma_asid, sfence_vma_addr,
+    ASID_INVALID, ASID_KERNEL,
+    SV39_VA_BITS, SV48_VA_BITS,
+};

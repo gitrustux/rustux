@@ -26,6 +26,7 @@
 //! │   ├── arm64/         # ARM GIC implementation (TODO)
 //! │   └── riscv64/       # RISC-V PLIC implementation (TODO)
 //! ├── interrupt/         # Generic interrupt handling
+//! ├── mm/                # Memory management (PMM, heap allocator)
 //! ├── drivers/           # Device drivers
 //! └── lib.rs            # This file
 //! ```
@@ -42,9 +43,12 @@
 //!
 //! - ✅ Cross-architecture interrupt controller trait
 //! - ✅ x86_64 APIC implementation (Local APIC + IOAPIC)
+//! - ✅ Physical Memory Manager (PMM) with bitmap allocator
+//! - ✅ Heap allocator with linked list implementation
+//! - ✅ Page table management for x86_64
 //! - ⚠️ ARM64 GIC implementation (pending)
 //! - ⚠️ RISC-V PLIC implementation (pending)
-//! - ⚠️ ACPI MADT parsing for dynamic APIC discovery (pending)
+//! - ⚠️ Virtual Memory Manager (VMM) (in progress)
 //!
 //! ## Using the Interrupt Controller
 //!
@@ -59,6 +63,9 @@
 
 #![no_std]
 #![feature(abi_x86_interrupt)]
+
+// Alloc crate for heap allocations
+extern crate alloc;
 
 // Core traits and types
 pub mod traits;
@@ -85,6 +92,24 @@ pub mod sched;
 
 // Kernel initialization
 pub mod init;
+
+// System call interface
+pub mod syscall;
+
+// Memory management
+pub mod mm;
+
+// Synchronization primitives
+pub mod sync;
+
+// Process management
+pub mod process;
+
+// Device drivers
+pub mod drivers;
+
+// Kernel objects (capability-based security)
+pub mod object;
 
 // Re-export commonly used types
 pub use traits::{
@@ -135,6 +160,80 @@ pub use sched::{
     SchedulingPolicy,
     ThreadState,
     ThreadPriority,
+};
+
+// Re-export memory management types
+pub use mm::{
+    // PMM types and functions
+    PageState,
+    ArenaInfo,
+    Page,
+    pmm_add_arena,
+    pmm_alloc_page,
+    pmm_alloc_contiguous,
+    pmm_free_page,
+    pmm_free_contiguous,
+    pmm_count_free_pages,
+    pmm_count_total_pages,
+    pmm_count_total_bytes,
+    pmm_init_early,
+    set_boot_allocator,
+    // Page utilities
+    PAGE_SIZE,
+    is_page_aligned,
+    align_page_down,
+    align_page_up,
+    bytes_to_pages,
+    pages_to_bytes,
+    // Heap allocator
+    heap_init,
+    heap_init_aligned,
+    heap_allocate,
+    heap_deallocate,
+    heap_usage,
+    heap_size,
+    heap_available,
+};
+
+// Re-export synchronization types
+pub use sync::{
+    SpinMutex, SpinMutexGuard, SpinLock, SpinLockGuard,
+    SyncEvent,
+    SyncEventFlags,
+    WaitQueue, WaitQueueEntry, WaiterId, WaitStatus,
+    WAIT_OK, WAIT_TIMED_OUT,
+};
+
+// Re-export process types
+pub use process::{
+    ProcessId, PID_INVALID, PID_KERNEL, PID_FIRST_USER,
+    ProcessState,
+    AddressSpace,
+    ProcessFlags,
+    ReturnCode,
+    Process, MAX_THREADS_PER_PROCESS,
+};
+
+// Re-export driver types
+pub use drivers::{
+    Uart16550, COM1_PORT, COM2_PORT, COM3_PORT, COM4_PORT, init_com1, com1,
+};
+
+// Re-export kernel object types
+pub use object::{
+    // Handle & rights
+    Handle, HandleId, HandleOwner, HandleTable, KernelObjectBase, Rights, ObjectType,
+    HandleEntry, MAX_HANDLES,
+    // Job
+    Job, JobId, JobPolicy, ResourceLimits, JobStats, JOB_ID_ROOT, JOB_ID_INVALID,
+    // Event
+    Event, EventId, EventFlags,
+    // Timer
+    Timer, TimerId, TimerState, SlackPolicy,
+    // Channel
+    Channel, ChannelId, ChannelState, Message, ReadResult, MAX_MSG_SIZE, MAX_MSG_HANDLES,
+    // VMO
+    Vmo, VmoId, VmoFlags, CachePolicy,
 };
 
 // Note: Panic handler is provided by the binary (main.rs) when building as a kernel.

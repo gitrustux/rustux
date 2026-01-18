@@ -66,10 +66,8 @@ pub const IDT_TASK_GATE: u8 = 0x85;
 ///
 /// This function initializes the IDT with proper exception handlers.
 pub fn idt_init() {
-    unsafe {
-        // Use the IDT setup from descriptor module
-        super::descriptor::idt_setup_readonly();
-    }
+    // Use the IDT setup from descriptor module
+    super::descriptor::idt_setup_readonly();
 }
 
 impl IdtEntry {

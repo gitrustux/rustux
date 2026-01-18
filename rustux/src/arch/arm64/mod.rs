@@ -8,27 +8,17 @@
 //!
 //! This module contains all ARM64-specific implementations.
 //!
-//! TODO: Implement ARM GIC (Generic Interrupt Controller) support
-//! for GICv2, GICv3, and GICv4.
+//! # Modules
+//!
+//! - [`arch`] - Architecture definitions and CPU features
+//! - [`interrupt`] - GIC (Generic Interrupt Controller) support
+//! - [`mm`] - Memory management unit (MMU) and page tables
 
-// TODO: Add GIC implementation
-// pub mod gic;
-// pub mod controller;
+pub mod arch;
+pub mod interrupt;
+pub mod mm;
 
-/// Placeholder for ARM64 interrupt controller
-///
-/// TODO: Implement GICInterruptController using:
-/// - GIC Distributor (GICD) for interrupt routing
-/// - GIC CPU interface for per-CPU interrupt handling
-/// - Support for GICv2, GICv3, GICv4 variants
-pub struct Arm64InterruptController {
-    _enabled: bool,
-}
-
-impl Arm64InterruptController {
-    pub fn new() -> Self {
-        Self {
-            _enabled: false,
-        }
-    }
-}
+// Re-exports
+pub use arch::{Arm64ArchInfo, Arm64Features, Arm64SpInfo, Arm64InterruptController, ARM64_MAX_CPUS, ARM64_PAGE_SIZE};
+pub use interrupt::{GicV2, GicV3, GicVersion, GicInfo};
+pub use mm::{PAddr};

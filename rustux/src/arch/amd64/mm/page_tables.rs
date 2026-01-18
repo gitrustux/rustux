@@ -149,6 +149,8 @@ pub enum RxStatus {
     ERR_IO = 7,
     /// Internal error
     ERR_INTERNAL = 8,
+    /// Not supported
+    ERR_NOT_SUPPORTED = 9,
 }
 
 /// Result type using RxStatus

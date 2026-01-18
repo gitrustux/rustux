@@ -148,7 +148,7 @@ pub unsafe fn arch_enter_uspace(_entry_point: usize, _sp: usize, _arg1: usize, _
 pub fn x86_get_cr0() -> u64 {
     let cr0_value: u64;
     unsafe {
-        core::arch::asm!("mov %cr0, {}", out(reg) cr0_value);
+        core::arch::asm!("mov {}, cr0", out(reg) cr0_value);
     }
     cr0_value
 }
@@ -159,14 +159,14 @@ pub fn x86_get_cr0() -> u64 {
 ///
 /// This function modifies a critical system register.
 pub unsafe fn x86_write_cr0(cr0_value: u64) {
-    core::arch::asm!("mov {}, %cr0", in(reg) cr0_value, options(nostack, nomem));
+    core::arch::asm!("mov cr0, {}", in(reg) cr0_value, options(nostack, nomem));
 }
 
 /// Read CR3 register (page table base)
 pub fn x86_read_cr3() -> u64 {
     let cr3_value: u64;
     unsafe {
-        core::arch::asm!("mov %cr3, {}", out(reg) cr3_value);
+        core::arch::asm!("mov {}, cr3", out(reg) cr3_value);
     }
     cr3_value
 }
@@ -177,7 +177,7 @@ pub fn x86_read_cr3() -> u64 {
 ///
 /// This function modifies a critical system register.
 pub unsafe fn x86_write_cr3(cr3_value: u64) {
-    core::arch::asm!("mov {}, %cr3", in(reg) cr3_value, options(nostack, nomem));
+    core::arch::asm!("mov cr3, {}", in(reg) cr3_value, options(nostack, nomem));
 }
 
 // ============================================================================

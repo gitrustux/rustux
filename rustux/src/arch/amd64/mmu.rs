@@ -8,8 +8,6 @@
 //!
 //! This module provides page table management for x86-64.
 
-use super::mm::constants::*;
-
 /// Physical address type
 pub type PAddr = u64;
 

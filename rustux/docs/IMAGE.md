@@ -416,7 +416,7 @@ sudo /mnt/rustica/bin/rustux-install --device /dev/sdX --yes
 
 The Rustux kernel supports three architectures, but currently only AMD64 bootable images are available. ARM64 and RISC-V images require a native UEFI bootloader that's currently under development.
 
-For the boot architecture roadmap, see: [kernel/TODO.md](https://github.com/gitrustux/kernel/blob/main/TODO.md)
+For the boot architecture roadmap, see: [rustux/](https://github.com/gitrustux/rustux)
 
 ## Support
 

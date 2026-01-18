@@ -8,21 +8,27 @@ This document describes the complete testing setup for the Rustux UEFI kernel, i
 
 ```
 /var/www/rustux.com/
-├── prod/kernel/kernel-efi/     # Main UEFI kernel source
+├── prod/rustux/               # Main kernel source (refactored)
 │   ├── src/
-│   │   ├── main.rs            # Kernel entry point, ExitBootServices handling
-│   │   ├── runtime.rs         # Runtime initialization structures
-│   │   ├── console.rs         # Console abstraction layer
-│   │   ├── native_console.rs  # Native console (serial/framebuffer)
-│   │   ├── filesystem.rs      # Embedded filesystem
-│   │   └── theme.rs           # Color themes
+│   │   ├── main.rs            # Kernel entry point
+│   │   ├── init.rs            # Kernel initialization
+│   │   ├── lib.rs             # Main library with panic handler
+│   │   ├── traits.rs          # Cross-architecture interrupt traits
+│   │   ├── arch/              # Architecture-specific code
+│   │   │   ├── amd64/         # x86_64 APIC, IDT, GDT, etc.
+│   │   │   ├── arm64/         # ARM64 GIC (stub)
+│   │   │   └── riscv64/       # RISC-V PLIC (stub)
+│   │   ├── acpi/              # ACPI table parsing
+│   │   ├── sched/             # Scheduler and thread management
+│   │   ├── interrupt/         # Generic interrupt handling
+│   │   └── testing/           # Test harness and QEMU configuration
 │   ├── Cargo.toml             # Rust project config
-│   └── target/x86_64-unknown-uefi/release/
-│       └── rustux-kernel-efi.efi  # Compiled kernel binary
-├── prod/kernel/uefi-loader/   # UEFI bootloader (separate project)
+│   ├── build.sh               # Build script
+│   └── test-qemu.sh           # QEMU test script
 ├── html/rustica/
 │   └── rustica-live-amd64-0.1.0.img  # Bootable disk image (GPT + FAT32 ESP)
-└── prod/tests.md              # This file
+└── prod/docs/
+    └── TESTS.md               # This file
 ```
 
 ## Build Procedure
@@ -30,95 +36,96 @@ This document describes the complete testing setup for the Rustux UEFI kernel, i
 ### 1. Build the Kernel
 
 ```bash
-cd /var/www/rustux.com/prod/kernel/kernel-efi
-cargo build --release --target x86_64-unknown-uefi
+cd /var/www/rustux.com/prod/rustux
+./build.sh
 ```
 
-**Important**: Must use `--target x86_64-unknown-uefi` for UEFI target.
-Output: `target/x86_64-unknown-uefi/release/rustux-kernel-efi.efi`
+Or manually:
+```bash
+cd /var/www/rustux.com/prod/rustux
+cargo build --release
+```
 
-### 2. Build the Bootloader (if needed)
+**Output**: Built kernel binary in `target/x86_64-unknown-uefi/release/`
+
+### 2. Create Bootable Disk Image
+
+The build script automatically creates a bootable UEFI disk image:
 
 ```bash
-cd /var/www/rustux.com/prod/kernel/uefi-loader
-cargo build --release --target x86_64-unknown-uefi
+./build.sh
 ```
 
-Output: `target/x86_64-unknown-uefi/release/rustux-uefi-loader.efi`
+This creates `rustux.img` - a 512MB GPT disk with FAT32 EFI System Partition containing the kernel.
 
-### 3. Create/Update Disk Image
+### 3. Create/Update Disk Image (Manual)
 
-The disk image is a 512MB GPT disk with FAT32 EFI System Partition:
+If you need to manually update an existing disk image:
 
 ```bash
 # Setup loop device
 LOOPDEV=$(losetup -f)
-losetup -P $LOOPDEV /var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img
+losetup -P $LOOPDEV /var/www/rustux.com/prod/rustux/rustux.img
 partprobe $LOOPDEV
 
 # Mount EFI System Partition (partition 1)
-mkdir -p /mnt/rustica-test
-mount ${LOOPDEV}p1 /mnt/rustica-test
+mkdir -p /mnt/rustux-test
+mount ${LOOPDEV}p1 /mnt/rustux-test
 
-# Copy kernel
-cp target/x86_64-unknown-uefi/release/rustux-kernel-efi.efi /mnt/rustica-test/EFI/Rustux/kernel.efi
+# Copy kernel (if needed)
+cp target/x86_64-unknown-uefi/release/rustux.efi /mnt/rustux-test/EFI/BOOT/
 
 # Unmount
-umount /mnt/rustica-test
+umount /mnt/rustux-test
 losetup -d $LOOPDEV
 ```
 
 **Required paths on disk image**:
-- `/EFI/BOOT/BOOTX64.EFI` - UEFI bootloader (loads kernel)
-- `/EFI/Rustux/kernel.efi` - Rustux kernel
+- `/EFI/BOOT/BOOTX64.EFI` - UEFI kernel/application
 
 ## QEMU Testing
 
 ### Basic Test (Interactive)
 
 ```bash
+cd /var/www/rustux.com/prod/rustux
+./test-qemu.sh
+```
+
+Or manually:
+
+```bash
 qemu-system-x86_64 \
-  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-  -drive format=raw,file=/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img \
-  -nographic \
-  -serial mon:stdio
+  -bios /usr/share/ovmf/OVMF.fd \
+  -drive file=rustux.img,format=raw \
+  -m 512M \
+  -machine q35
 ```
 
 **Key options**:
-- `-drive if=pflash,...` - UEFI firmware (OVMF)
-- `-nographic` - No GUI, serial/console only
-- `-serial mon:stdio` - Redirect serial to stdin/stdout
+- `-bios /usr/share/ovmf/OVMF.fd` - UEFI firmware (OVMF)
+- `-drive file=rustux.img,format=raw` - Bootable disk image
+- `-m 512M` - Memory size
+- `-machine q35` - Q35 chipset
 
-### Test with expect (Automated)
-
-```tcl
-#!/usr/bin/expect
-set timeout 30
-spawn qemu-system-x86_64 \
-  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-  -drive format=raw,file=/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img \
-  -nographic \
-  -serial mon:stdio
-
-expect "rustica>"
-send "hello\r"
-
-expect {
-    "TRACE-D" { puts "\n=== ExitBootServices SUCCESS ===" }
-    "FAILED" { puts "\n=== ExitBootServices FAILED ===" }
-    timeout { puts "\n=== TIMEOUT ===" }
-}
-```
-
-### Test with Timeout (Detect Hangs)
+### Test with Debug Output
 
 ```bash
-# If QEMU keeps running past timeout, ExitBootServices succeeded
-timeout 10 qemu-system-x86_64 \
-  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-  -drive format=raw,file=/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img \
-  -nographic \
-  -serial mon:stdio
+cd /var/www/rustux.com/prod/rustux
+qemu-system-x86_64 \
+  -bios /usr/share/ovmf/OVMF.fd \
+  -drive file=rustux.img,format=raw \
+  -debugcon file:/tmp/rustux-qemu-debug.log \
+  -serial stdio \
+  -m 512M \
+  -machine q35 \
+  -no-reboot \
+  -no-shutdown
+```
+
+Check debug log after test:
+```bash
+cat /tmp/rustux-qemu-debug.log
 ```
 
 ## Boot Sequence
@@ -128,128 +135,58 @@ timeout 10 qemu-system-x86_64 \
 - Finds EFI System Partition
 - Loads `/EFI/BOOT/BOOTX64.EFI`
 
-### 2. Bootloader (rustux-uefi-loader) Runs
-- Phase 1: UEFI Environment Initialization
-- Phase 2: Platform Discovery (ACPI)
-- Phase 3: Memory Map Acquisition
-- Phase 4: Kernel Loading
-  - Loads `/EFI/Rustux/kernel.efi`
-  - Validates PE/COFF header
-  - Calls `LoadImage` and `StartImage`
+### 2. Kernel Entry
+- UEFI firmware loads the kernel
+- Kernel initialization begins
+- IDT and GDT setup
+- ACPI RSDP discovery
+- Interrupt controller initialization
+- Timer and keyboard handlers installed
 
-### 3. Kernel Entry (main.rs)
-- TRACE-0: KERNEL ENTRY
-- TRACE-1: CONTINUING
-- Console initialization
-- CLI mode starts
-- Shows `rustica> ` prompt
+### 3. Runtime Mode
+- Kernel interrupts are active
+- Timer ticks produce [TICK] messages
+- Keyboard input produces [KEY:XX] scancode messages
 
-### 4. ExitBootServices Transition (when `hello` command typed)
-
-**Before ExitBootServices**:
-- TRACE-A: About to disable interrupts
-- TRACE-B: Interrupts disabled (CLI instruction)
-- TRACE-C: About to call ExitBootServices
-- TRACE-C1: Getting memory map size (first GetMemoryMap call)
-- TRACE-C2: Allocating memory map buffer
-- TRACE-C3: Getting actual memory map (second GetMemoryMap call)
-
-**FROZEN ZONE** (CRITICAL):
-- NO allocations
-- NO console output
-- NO protocol calls
-- Only ExitBootServices call allowed
-
-**After ExitBootServices**:
-- TRACE-D: ExitBootServices RETURNED (may not appear - UEFI console dead)
-- Kernel in runtime mode
-- Must use custom allocator and native console
-
-## Known Issues
-
-### 1. Serial Port I/O Hang
-**Symptom**: Writing to COM1 (0x3F8) causes QEMU to hang
-**Workaround**: Avoid serial tracing for now
-**Status**: Needs investigation
-
-### 2. UEFI Console After ExitBootServices
-**Symptom**: Console output doesn't appear after ExitBootServices
-**Reason**: UEFI console protocols depend on boot services
-**Solution**: Use native console driver (serial or framebuffer)
-
-### 3. Memory Map Changed Error
-**Symptom**: ExitBootServices fails with "memory map changed"
-**Root Cause**: Any allocation/print between GetMemoryMap and ExitBootServices
-**Solution**: Strict frozen zone implementation
-
-## Current Kernel State (2025-01-13)
+## Current Kernel State (2026-01-18)
 
 ### Working ✅
 - UEFI boot and kernel loading
-- UEFI console output (before ExitBootServices)
-- **ExitBootServices with proper frozen zone** (FIXED!)
-- **Transition to runtime mode** (confirmed via QEMU timeout test)
-- CPU alive in runtime mode (probe loop confirms execution continues)
+- IDT/GDT setup
+- Interrupt controller initialization (APIC via ACPI)
+- Timer interrupt handler (produces [TICK] messages)
+- Keyboard interrupt handler (produces [KEY:XX] scancodes)
+- QEMU test infrastructure with debug logging
 
-### Fixed Issues
-- **Memory map changed error**: Fixed by implementing strict frozen zone between GetMemoryMap and ExitBootServices
-- **GetMemoryMap hang**: Was caused by debug output after GetMemoryMap changing memory map
+### Test Results
 
-### In Progress
-- Post-ExitBootServices initialization
-- Custom memory allocator (UEFI allocator doesn't work after ExitBootServices)
-- Native console driver (UEFI console dead, serial has issues)
+Expected debug output:
+```
+[OK] ACPI RSDP found: 0x...
+[PHASE] Exiting boot services...
+[1/5] Setting up GDT...
+✓ GDT configured
+[2/5] Setting up IDT...
+✓ IDT configured
+[3/5] Installing timer handler...
+✓ Timer handler at vector 32
+[3.5/5] Installing keyboard handler...
+✓ Keyboard handler at vector 33
+[4/5] Initializing APIC...
+✓ APIC initialized
+[4.5/5] Configuring keyboard IRQ...
+✓ IRQ1 → Vector 33
+[5/5] Configuring timer...
+✓ Timer configured
+[TICK]
+[TICK]
+```
 
-### TODO
-- Fix serial port I/O hangs (COM1 @ 0x3F8 causes QEMU hang)
-- Implement proper runtime memory management
-- External program execution
-- Exception handlers and interrupt controller
-- Scheduler
-
-## Trace Points
-
-Used for debugging ExitBootServices:
-
-| Trace | Location | Purpose |
-|-------|----------|---------|
-| TRACE-0 | Kernel entry | Confirm kernel loaded |
-| TRACE-1 | After entry | Continue execution |
-| TRACE-A | Before CLI | About to disable interrupts |
-| TRACE-B | After CLI | Interrupts disabled |
-| TRACE-C | Before ExitBootServices | About to start process |
-| TRACE-C1 | First GetMemoryMap | Get buffer size |
-| TRACE-C2 | Allocate buffer | Allocate memory map buffer |
-| TRACE-C3 | Second GetMemoryMap | Get actual memory map |
-| TRACE-D | After ExitBootServices | Confirm return (may not appear) |
-
-## Debugging ExitBootServices
-
-### If hung at TRACE-C3
-
-**Problem**: GetMemoryMap second call hanging or failing
-
-**Check**:
-1. Is buffer allocated correctly?
-2. Is buffer size sufficient?
-3. Is memory map changing between calls?
-
-### If hung between C3 and D
-
-**Problem**: ExitBootServices hanging inside call
-
-**Check**:
-1. Frozen zone violation (console output between GetMemoryMap and ExitBootServices)
-2. Memory map key invalid
-3. Interrupts firing during call
-
-### If no output after D
-
-**Problem**: Expected - UEFI console is dead
-
-**Check**:
-1. QEMU still running? (Yes = ExitBootServices succeeded)
-2. CPU in probe loop? (Yes = kernel alive)
+Press keys in QEMU to see:
+```
+[KEY:1E]  ← Press 'A'
+[KEY:9E]  ← Release 'A'
+```
 
 ## Quick Test Commands
 
@@ -258,29 +195,21 @@ Used for debugging ExitBootServices:
 pkill -9 qemu
 
 # Build
-cd /var/www/rustux.com/prod/kernel/kernel-efi
-cargo build --release --target x86_64-unknown-uefi
+cd /var/www/rustux.com/prod/rustux
+./build.sh
 
-# Update image
-LOOPDEV=$(losetup -f)
-losetup -P $LOOPDEV /var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img
-partprobe $LOOPDEV
-mount ${LOOPDEV}p1 /mnt/rustica-test
-cp target/x86_64-unknown-uefi/release/rustux-kernel-efi.efi /mnt/rustica-test/EFI/Rustux/kernel.efi
-umount /mnt/rustica-test
-losetup -d $LOOPDEV
+# Test with QEMU
+./test-qemu.sh
 
-# Test
-timeout 10 qemu-system-x86_64 \
-  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-  -drive format=raw,file=/var/www/rustux.com/html/rustica/rustica-live-amd64-0.1.0.img \
-  -nographic -serial mon:stdio
+# Check debug log
+cat /tmp/rustux-qemu-debug.log
 ```
 
 ## References
 
-- UEFI Specification: ExitBootServices() requirements
+- UEFI Specification
 - OVMF (EDK2) for x86_64 UEFI firmware
-- rust-uefi crate documentation
+- ACPI Specification (MADT table for interrupt controller discovery)
 - GPT partition format
 - FAT32 file system for ESP
+- **Repository**: https://github.com/gitrustux/rustux
