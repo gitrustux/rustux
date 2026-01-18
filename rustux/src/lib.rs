@@ -235,5 +235,9 @@ pub use object::{
     Vmo, VmoId, VmoFlags, CachePolicy,
 };
 
+// Integration tests (only compiled in test mode)
+#[cfg(test)]
+mod tests;
+
 // Note: Panic handler is provided by the binary (main.rs) when building as a kernel.
 // When using this library as a dependency, users must provide their own panic handler.
