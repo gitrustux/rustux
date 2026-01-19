@@ -34,6 +34,8 @@ riscv64 = []
 kernel_test = []
 # Enable UEFI kernel (for the binary target)
 uefi_kernel = ["uefi"]
+# Enable userspace test (embeds userspace binary and tests mexec)
+userspace_test = []
 
 [profile.release]
 panic = "abort"

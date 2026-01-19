@@ -187,6 +187,14 @@ fn init_late() {
     // TODO: Initialize syscall layer
     // TODO: User/kernel boundary safety
 
+    // Test userspace execution (Phase 4A)
+    #[cfg(feature = "userspace_test")]
+    {
+        unsafe {
+            crate::exec::userspace_test::execute_userspace_test(true);
+        }
+    }
+
     unsafe {
         INIT_STATE = InitState::Complete;
     }
