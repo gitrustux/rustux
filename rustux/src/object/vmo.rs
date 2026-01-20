@@ -440,8 +440,8 @@ impl Vmo {
             let to_copy = core::cmp::min(remaining, space_in_page);
 
             // Get virtual address of the page using proper address conversion
-            // (don't assume identity mapping)
-            let vaddr = crate::mm::pmm::paddr_to_vaddr(page_entry.paddr) + page_offset;
+            // CRITICAL: Use paddr_to_vaddr_user_zone for user zone memory
+            let vaddr = crate::mm::pmm::paddr_to_vaddr_user_zone(page_entry.paddr) + page_offset;
 
             // Write data to the page
             unsafe {
@@ -503,8 +503,8 @@ impl Vmo {
             let to_copy = core::cmp::min(remaining, space_in_page);
 
             // Get virtual address of the page using proper address conversion
-            // (don't assume identity mapping)
-            let vaddr = crate::mm::pmm::paddr_to_vaddr(page_entry.paddr) + page_offset;
+            // CRITICAL: Use paddr_to_vaddr_user_zone for user zone memory
+            let vaddr = crate::mm::pmm::paddr_to_vaddr_user_zone(page_entry.paddr) + page_offset;
 
             // Read data from the page
             unsafe {
@@ -712,12 +712,15 @@ impl Vmo {
                         }
 
                         // Step 1: Copy from source physical page to buffer
-                        let src_vaddr = pmm::paddr_to_vaddr(page_entry.paddr);
+                        // CRITICAL: Use paddr_to_vaddr_user_zone for user zone memory
+                        // to avoid assuming identity mapping is available
+                        let src_vaddr = pmm::paddr_to_vaddr_user_zone(page_entry.paddr);
                         let src_ptr = src_vaddr as *const u8;
                         core::ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), page_size);
 
                         // Step 2: Copy from buffer to destination physical page
-                        let dst_vaddr = pmm::paddr_to_vaddr(new_paddr);
+                        // CRITICAL: Use paddr_to_vaddr_user_zone for user zone memory
+                        let dst_vaddr = pmm::paddr_to_vaddr_user_zone(new_paddr);
                         let dst_ptr = dst_vaddr as *mut u8;
                         core::ptr::copy_nonoverlapping(buffer.as_ptr(), dst_ptr, page_size);
 
