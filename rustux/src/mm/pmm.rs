@@ -850,9 +850,13 @@ pub fn paddr_to_vaddr(paddr: PAddr) -> VAddr {
 /// This function should only be used for user zone memory (VMO backing pages,
 /// clone destinations, etc.). For kernel zone memory, use paddr_to_vaddr() instead.
 pub fn paddr_to_vaddr_user_zone(paddr: PAddr) -> VAddr {
-    // ALWAYS use direct mapping offset for user zone memory
-    // This prevents corruption of kernel heap when copying VMO data
-    (KERNEL_PHYS_OFFSET + paddr) as VAddr
+    // For low memory (< 2GB), use identity mapping (UEFI has this mapped)
+    // For high memory, use direct mapping offset
+    if paddr < IDENTITY_MAP_LIMIT {
+        paddr as VAddr  // Identity mapping for low memory
+    } else {
+        (KERNEL_PHYS_OFFSET + paddr) as VAddr  // Direct mapping for high memory
+    }
 }
 
 /// Allocate a single page (convenience wrapper)

@@ -178,6 +178,16 @@ impl LinkedListAllocator {
             return core::ptr::null_mut();
         }
 
+        // Debug output for first allocation
+        static mut ALLOC_COUNT: u32 = 0;
+        ALLOC_COUNT += 1;
+        if ALLOC_COUNT <= 20 {
+            let msg = b"[HEAP] allocate called\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+
         let block_size = BlockHeader::total_size(size);
 
         // Ensure minimum alignment
@@ -187,11 +197,78 @@ impl LinkedListAllocator {
         let mut current = self.free_list;
         let mut prev: *mut BlockHeader = core::ptr::null_mut();
 
+        // Debug: entering while loop
+        static mut LOOP_COUNT: u32 = 0;
+        let my_loop = LOOP_COUNT;
+        LOOP_COUNT += 1;
+
+        if my_loop < 20 {
+            let msg = b"[HEAP] entering while loop\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+
+        // Checkpoint: track iterations
+        let mut iteration_count = 0u32;
+
         while !current.is_null() {
+            iteration_count += 1;
+
+            // Print checkpoint every 100 iterations
+            if iteration_count % 100 == 0 && my_loop < 20 {
+                // Simple checkpoint: print '.'
+                let msg = b".";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+            }
+
             let block = &*current;
+
+            if my_loop < 20 {
+                let msg = b"[HEAP] loop iteration\n";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+                // Print block size for debugging
+                let msg = b"[HEAP] block size=";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+                let mut n = block.size;
+                let mut buf = [0u8; 16];
+                let mut i = 0;
+                loop {
+                    buf[i] = b'0' + (n % 10) as u8;
+                    n /= 10;
+                    i += 1;
+                    if n == 0 { break; }
+                }
+                while i > 0 {
+                    i -= 1;
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                }
+                let msg = b" free=";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+                let digit = if block.free { b'1' } else { b'0' };
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
+                let msg = b"\n";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+            }
 
             if !block.is_valid() {
                 // Corrupted block, skip
+                if my_loop < 20 {
+                    let msg = b"[HEAP] block invalid, skipping\n";
+                    for &byte in msg {
+                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                    }
+                }
                 prev = current;
                 current = block.next;
                 continue;
@@ -199,6 +276,12 @@ impl LinkedListAllocator {
 
             if !block.free {
                 // Block is not free, shouldn't happen in free list
+                if my_loop < 20 {
+                    let msg = b"[HEAP] block not free, skipping\n";
+                    for &byte in msg {
+                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                    }
+                }
                 prev = current;
                 current = block.next;
                 continue;
@@ -206,6 +289,12 @@ impl LinkedListAllocator {
 
             // Check if this block is large enough
             if block.size >= block_size {
+                if my_loop < 20 {
+                    let msg = b"[HEAP] block large enough, using it\n";
+                    for &byte in msg {
+                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                    }
+                }
                 // Calculate where the payload would start
                 let payload_start = block.payload() as usize;
                 let aligned_start = (payload_start + actual_align - 1) & !(actual_align - 1);
@@ -248,7 +337,20 @@ impl LinkedListAllocator {
                     }
 
                     // Return pointer to aligned payload
+                    if my_loop < 20 {
+                        let msg = b"[HEAP] allocation succeeded\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                    }
                     return aligned_start as *mut u8;
+                }
+            }
+
+            if my_loop < 20 {
+                let msg = b"[HEAP] block too small, moving to next\n";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
                 }
             }
 
@@ -257,6 +359,12 @@ impl LinkedListAllocator {
         }
 
         // No suitable free block found
+        if my_loop < 20 {
+            let msg = b"[HEAP] no suitable block found, allocation failed\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
         core::ptr::null_mut()
     }
 
@@ -514,6 +622,37 @@ pub fn heap_size() -> usize {
 pub fn heap_available() -> usize {
     unsafe { ALLOCATOR.available() }
 }
+
+// ============================================================================
+// GlobalAlloc Implementation
+// ============================================================================
+
+use alloc::alloc::{GlobalAlloc, Layout};
+
+// SAFETY: The allocator is only used in a single-threaded early kernel environment
+// The raw pointers inside are protected by the fact that there's no concurrent access
+unsafe impl Sync for LinkedListAllocator {}
+
+unsafe impl GlobalAlloc for LinkedListAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Use a mutable reference to self for the allocation
+        // Note: This is a workaround - GlobalAlloc takes &self but we need &mut self
+        // In a single-threaded early kernel environment, this is safe
+        let allocator = &ALLOCATOR as *const LinkedListAllocator as *mut LinkedListAllocator;
+        (*allocator).allocate(layout.size(), layout.align())
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let allocator = &ALLOCATOR as *const LinkedListAllocator as *mut LinkedListAllocator;
+        (*allocator).deallocate(ptr, layout.size(), layout.align());
+    }
+}
+
+/// Global heap allocator instance
+///
+/// This is exported as the global allocator for the Rust standard library.
+#[global_allocator]
+static HEAP_ALLOCATOR: LinkedListAllocator = LinkedListAllocator::new();
 
 #[cfg(test)]
 mod tests {

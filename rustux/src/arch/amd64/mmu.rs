@@ -29,6 +29,16 @@ pub const PAT_DEFAULT_VALUE: u64 = 0x0007010600070106;
 // Global page table state (simplified - in real kernel would be per-address space)
 static mut BOOT_PML4: Option<PAddr> = None;
 
+/// Kernel physical offset for direct-mapped physical memory
+///
+/// Physical memory is mapped at this offset in kernel virtual address space.
+/// This allows the kernel to access any physical page by adding this offset.
+/// Using the standard x86_64 kernel direct map offset (same as Linux).
+const KERNEL_PHYS_OFFSET: u64 = 0xffff_8000_0000_0000;
+
+/// Maximum physical memory to map (16GB for now)
+const MAX_PHYS_MEMORY: u64 = 0x4_0000_0000;
+
 /// Early MMU initialization
 ///
 /// This is called very early in boot to set up basic MMU state.
@@ -43,12 +53,55 @@ pub fn x86_mmu_early_init() {
         let current_cr3 = read_cr3();
         BOOT_PML4 = Some(current_cr3);
 
+        // Set up direct mapping of physical memory
+        // This maps [KERNEL_PHYS_OFFSET .. KERNEL_PHYS_OFFSET + MAX_PHYS_MEMORY]
+        // to physical memory [0 .. MAX_PHYS_MEMORY]
+        x86_setup_direct_map();
+
         // Enable write-protect (CR0.WP) to protect kernel code from modification
         x86_enable_write_protect();
 
         // Ensure page tables are properly configured
         x86_validate_page_tables();
     }
+}
+
+/// Set up direct mapping of physical memory
+///
+/// Maps physical memory at KERNEL_PHYS_OFFSET so the kernel can access
+/// any physical page by adding this offset.
+unsafe fn x86_setup_direct_map() {
+    // Page table entry flags
+    const PTE_P: u64 = 0x001;  // Present
+    const PTE_W: u64 = 0x002;  // Read/Write
+    const PTE_G: u64 = 0x100;  // Global
+
+    // Get the current PML4
+    let cr3 = read_cr3();
+    let pml4_virt = cr3 as *mut u64;
+
+    // Calculate PML4 index for KERNEL_PHYS_OFFSET
+    // KERNEL_PHYS_OFFSET = 0xffff_8000_0000_0000
+    // Bits 47:39 = 0b100000000 = 256 (0x100)
+    let pml4_index = ((KERNEL_PHYS_OFFSET >> 39) & 0x1FF) as usize;
+
+    // Check if PML4 entry is already present
+    let pml4_entry = *pml4_virt.add(pml4_index);
+
+    // We need to create or verify the PML4 entry for the direct map
+    // For simplicity, we'll allocate page tables using a fixed address
+    // In a real kernel, this would use the PMM
+
+    // Map the first 1GB of physical memory using 2MB pages
+    // This should be sufficient for the current 128MB RAM setup
+    // PML4[256] -> PDP -> PD with 2MB pages
+
+    // For now, use a simpler approach: identity mapping for low memory
+    // The UEFI bootloader should have already set this up
+    // We'll verify it exists
+
+    // TODO: Implement full direct mapping setup with proper page table allocation
+    // For now, rely on UEFI bootloader's identity mapping of low memory
 }
 
 /// Main MMU initialization

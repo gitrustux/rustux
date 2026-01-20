@@ -10,7 +10,8 @@
 //! ELF binaries in userspace.
 
 pub mod elf;
-pub mod userspace_test;
+pub mod process_loader;
+pub mod userspace_exec_test;
 
 // Re-export ELF types
 pub use elf::{
@@ -26,8 +27,8 @@ pub use elf::{
     is_elf_file,
 };
 
-// Re-export userspace test types
-pub use userspace_test::{
-    execute_userspace_test,
-    test_mexec_minimal,
-};
+// Re-export process loader types
+pub use process_loader::{ProcessImage, load_elf_process};
+
+// Re-export userspace test
+pub use userspace_exec_test::test_userspace_execution;

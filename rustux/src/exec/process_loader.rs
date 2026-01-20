@@ -60,7 +60,7 @@ pub fn load_elf_process(elf_data: &[u8]) -> Result<ProcessImage, &'static str> {
             segment.vaddr,
             segment.size,
             segment.flags,
-        ).map_err(|_| "Failed to map segment")?;
+        )?;
     }
 
     // Create and map the stack
@@ -68,7 +68,8 @@ pub fn load_elf_process(elf_data: &[u8]) -> Result<ProcessImage, &'static str> {
         .map_err(|_| "Failed to create stack VMO")?;
 
     // Map the stack at the high address
-    let stack_bottom = loaded_elf.stack_addr - loaded_elf.stack_size;
+    // Ensure stack_bottom is page-aligned (round down to nearest 4KB)
+    let stack_bottom = (loaded_elf.stack_addr - loaded_elf.stack_size) & !0xFFF;
     address_space.map_vmo(
         &stack_vmo,
         stack_bottom,

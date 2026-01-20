@@ -107,6 +107,9 @@ pub mod process;
 // Device drivers
 pub mod drivers;
 
+// Execution and ELF loading
+pub mod exec;
+
 // Kernel objects (capability-based security)
 pub mod object;
 
@@ -169,6 +172,8 @@ pub use mm::{
     Page,
     pmm_add_arena,
     pmm_alloc_page,
+    pmm_alloc_kernel_page,
+    pmm_alloc_user_page,
     pmm_alloc_contiguous,
     pmm_free_page,
     pmm_free_contiguous,
@@ -177,6 +182,11 @@ pub use mm::{
     pmm_count_total_bytes,
     pmm_init_early,
     set_boot_allocator,
+    // Zone constants
+    KERNEL_ZONE_START,
+    KERNEL_ZONE_END,
+    USER_ZONE_START,
+    USER_ZONE_END,
     // Page utilities
     PAGE_SIZE,
     is_page_aligned,

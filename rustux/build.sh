@@ -67,8 +67,8 @@ echo ""
 
 echo "[Step 2] Building kernel..."
 
-# Build with UEFI features
-cargo build --release --bin rustux --features uefi_kernel --target x86_64-unknown-uefi
+# Build with UEFI features and userspace test
+cargo build --release --bin rustux --features "uefi_kernel,userspace_test" --target x86_64-unknown-uefi
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}✗ Build failed${NC}"

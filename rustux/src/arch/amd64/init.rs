@@ -203,5 +203,67 @@ pub fn halt_and_loop() -> ! {
     }
 }
 
+// ============================================================================
+// Kernel Stack Management
+// ============================================================================
+
+/// Kernel stack size (32 KB to prevent stack overflow during deep call chains)
+/// The UEFI-provided stack is typically only 4-8 KB, which is too small
+/// for ELF loading, VMO operations, and other deep call chains.
+const KERNEL_STACK_SIZE: usize = 32 * 1024; // 32 KB
+
+/// Allocated kernel stack (physical address)
+/// Allocated early in boot before PMM is available
+static mut KERNEL_STACK: Option<(u64, usize)> = None; // (physical_address, size)
+
+/// Initialize a larger kernel stack
+///
+/// # Safety
+///
+/// Must be called exactly once, early in boot, before any deep call chains.
+/// This switches from the small UEFI-provided stack to our larger kernel stack.
+pub unsafe fn init_kernel_stack() {
+    use crate::mm::pmm;
+
+    // Allocate 8 pages (32 KB) from kernel zone for the stack
+    // The UEFI-provided stack is typically only 4-8 KB
+    const STACK_PAGES: usize = 8; // 32 KB
+
+    // Allocate pages one at a time (since pmm_alloc_kernel_page only allocates 1 page)
+    let mut stack_pages: [u64; 8] = [0; 8];
+    let mut allocated_count = 0;
+
+    for i in 0..STACK_PAGES {
+        match pmm::pmm_alloc_kernel_page() {
+            Ok(paddr) => {
+                stack_pages[i] = paddr;
+                allocated_count += 1;
+            }
+            Err(_) => break,
+        }
+    }
+
+    if allocated_count == 0 {
+        panic!("Failed to allocate any pages for kernel stack!");
+    }
+
+    let stack_paddr = stack_pages[0];
+    let stack_vaddr = pmm::paddr_to_vaddr(stack_paddr) as usize;
+    let stack_size = allocated_count * 4096;
+
+    // Store the stack info for debugging
+    KERNEL_STACK = Some((stack_paddr, stack_size));
+
+    // Note: We're using the linker config to increase the UEFI stack size to 32KB
+    // via .cargo/config.toml with "-C link-arg=-stack:0x8000"
+    // This function is kept for documentation purposes and future use if we need
+    // to switch to a dynamically allocated stack.
+}
+
+/// Get the kernel stack information (for debugging)
+pub fn get_kernel_stack_info() -> Option<(u64, usize)> {
+    unsafe { KERNEL_STACK }
+}
+
 // Export the iframe for use by other modules
 pub use super::idt::X86Iframe;

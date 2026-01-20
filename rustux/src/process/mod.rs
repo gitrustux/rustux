@@ -24,6 +24,8 @@
 //! Creating -> Running -> Exiting -> Dead
 //! ```
 
+pub mod address_space;
+
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::sync::SpinMutex;
 
@@ -356,10 +358,8 @@ impl HandleTable {
 /// Maximum number of threads per process
 pub const MAX_THREADS_PER_PROCESS: usize = 1024;
 
-/// Placeholder for AddressSpace (will be replaced when VMM is migrated)
-pub struct AddressSpace {
-    _private: [u8; 0], // Zero-sized placeholder
-}
+// Re-export the actual AddressSpace implementation
+pub use address_space::AddressSpace;
 
 /// Process flags
 #[repr(u32)]

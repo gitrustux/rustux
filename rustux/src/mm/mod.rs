@@ -75,12 +75,23 @@ pub use pmm::{
     // Arena flags
     ARENA_FLAG_LOW_MEM,
     ARENA_FLAG_HIGH_MEM,
+    ARENA_FLAG_KERNEL,
+    ARENA_FLAG_USER,
     PMM_ALLOC_FLAG_ANY,
     PMM_ALLOC_FLAG_LOW_MEM,
+    PMM_ALLOC_FLAG_KERNEL,
+    PMM_ALLOC_FLAG_USER,
+    // Zone constants
+    KERNEL_ZONE_START,
+    KERNEL_ZONE_END,
+    USER_ZONE_START,
+    USER_ZONE_END,
     // PMM functions
     set_boot_allocator,
     pmm_add_arena,
     pmm_alloc_page,
+    pmm_alloc_kernel_page,
+    pmm_alloc_user_page,
     pmm_alloc_contiguous,
     pmm_free_page,
     pmm_free_contiguous,
@@ -93,6 +104,7 @@ pub use pmm::{
     alloc_page,
     free_page,
     paddr_to_vaddr,
+    paddr_to_vaddr_user_zone,
 };
 
 // Re-export commonly used types and functions from allocator

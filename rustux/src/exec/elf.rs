@@ -339,9 +339,9 @@ fn elf_flags_to_vmo_flags(p_flags: u32) -> VmoFlags {
 ///
 /// # Returns
 ///
-/// * `Ok(LoadedElf)` - Loaded ELF with segments mapped to VMOs
+/// * `Ok(Box<LoadedElf>)` - Loaded ELF with segments mapped to VMOs (boxed to protect from stack corruption)
 /// * `Err(&str)` - Error loading ELF
-pub fn load_elf(elf_data: &[u8]) -> Result<LoadedElf, &'static str> {
+pub fn load_elf(elf_data: &[u8]) -> Result<Box<LoadedElf>, &'static str> {
     // Parse ELF header
     let header = parse_elf_header(elf_data)?;
 
@@ -376,7 +376,7 @@ pub fn load_elf(elf_data: &[u8]) -> Result<LoadedElf, &'static str> {
         }
     }
 
-    // Load each segment from the array (not the Vec!)
+    // Load each segment from the array
     let mut segments = Vec::with_capacity(segment_count);
 
     for idx in 0..segment_count {
@@ -450,6 +450,7 @@ pub fn load_elf(elf_data: &[u8]) -> Result<LoadedElf, &'static str> {
             }
         }
 
+        // Store segment in Vec
         segments.push(LoadedSegment {
             vaddr: p_vaddr,
             size: mem_size,
@@ -462,12 +463,12 @@ pub fn load_elf(elf_data: &[u8]) -> Result<LoadedElf, &'static str> {
     let stack_addr = 0x7fff_ffff_f000u64;
     let stack_size = 8 * 1024 * 1024; // 8 MB stack
 
-    Ok(LoadedElf {
+    Ok(Box::new(LoadedElf {
         entry: header.e_entry,
         segments,
         stack_addr,
         stack_size,
-    })
+    }))
 }
 
 /// Check if data looks like an ELF file

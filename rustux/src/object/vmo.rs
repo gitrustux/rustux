@@ -405,283 +405,54 @@ impl Vmo {
     ///
     /// New VMO that shares pages with parent
     pub fn clone(&self) -> Result<Self, &'static str> {
-        // Debug: Entering clone
-        unsafe {
-            let msg = b"[VMO] clone() starting\n";
-            for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-            }
-        }
-
         let cloned = Self::create(self.size(), VmoFlags::empty)?;
-
-        // Debug: VMO created
-        unsafe {
-            let msg = b"[VMO] clone() created new VMO\n";
-            for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-            }
-        }
 
         // Copy all pages from parent to child
         {
             let parent_pages = self.pages.lock();
-
-            // Debug: Locked parent pages
-            unsafe {
-                let msg = b"[VMO] clone() locked parent pages\n";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-            }
-
             let mut child_pages = cloned.pages.lock();
 
-            // Debug: Locked child pages
-            unsafe {
-                let msg = b"[VMO] clone() locked child pages\n";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-            }
-
             for (offset, page_entry) in parent_pages.iter() {
-                // Debug: Before processing entry
-                unsafe {
-                    let msg = b"[VMO] clone: iter entry\n";
-                    for &byte in msg {
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                    }
-                }
-
-                // Debug: Check VMO#3 BEFORE clone (only for VMO#1)
-                if self.id == 1 {
-                    unsafe {
-                        let msg = b"[VMO] VMO#1: BEFORE CLONE OPS\n";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                    }
-                }
-
                 if page_entry.present {
-                    // Debug: About to allocate new page
-                    unsafe {
-                        let msg = b"[VMO] clone() allocating new page\n";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                    }
-
                     // Allocate a new physical page for the child from user zone
                     use crate::mm::pmm;
                     let new_paddr = pmm::pmm_alloc_user_page()
                         .map_err(|_| "Failed to allocate page for clone")?;
 
-                    // Debug: About to copy page data
-                    unsafe {
-                        let msg = b"[VMO] clone() copying page data\n";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                    }
+                    // Copy the page data using small chunks to avoid stack overflow
+                    // Use a 256-byte buffer instead of 4KB to fit within kernel stack
+                    let chunk_size = 256usize;
+                    let page_size = 4096usize;
+                    let mut offset_in_page = 0usize;
 
-                    // Copy the page data using a heap buffer as intermediate storage.
-                    // This avoids aliasing with kernel heap metadata and doesn't require
-                    // temporary page mappings or identity mapping assumptions.
-                    //
-                    // The process is:
-                    // 1. Allocate stack buffer [u8; PAGE_SIZE]
-                    // 2. Copy from source physical page -> buffer
-                    // 3. Copy from buffer -> destination physical page
-                    //
-                    // This guarantees:
-                    // - Only accessing mapped memory (heap is guaranteed mapped)
-                    // - No aliasing with kernel heap (buffer is separate from metadata)
-                    // - No dependence on identity mapping (uses paddr_to_vaddr())
-                    let page_size = 4096;
-                    let mut buffer: [u8; 4096] = [0; 4096];
+                    while offset_in_page < page_size {
+                        let mut buffer = [0u8; 256];
+                        let bytes_to_copy = core::cmp::min(chunk_size, page_size - offset_in_page);
 
-                    // Debug: Show we're using heap buffer
-                    unsafe {
-                        let msg = b"[VMO] Using heap buffer for copy\n";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                    }
-
-                    // Debug: Before copy
-                    if self.id == 1 {
                         unsafe {
-                            let msg = b"[VMO] Before VMO#1 copy\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                        }
-                    }
+                            // Copy from source to buffer
+                            let src_vaddr = pmm::paddr_to_vaddr_user_zone(page_entry.paddr + offset_in_page as u64);
+                            let src_ptr = src_vaddr as *const u8;
+                            core::ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), bytes_to_copy);
 
-                    // Debug: Print addresses
-                    unsafe {
-                        let msg = b"[VMO] clone: src_paddr=0x";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                        let mut n = page_entry.paddr;
-                        let mut buf = [0u8; 16];
-                        let mut i = 0;
-                        loop {
-                            let digit = (n & 0xF) as u8;
-                            buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                            n >>= 4;
-                            i += 1;
-                            if n == 0 { break; }
-                        }
-                        while i > 0 {
-                            i -= 1;
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                        }
-                        let msg = b" dst_paddr=0x";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                        let mut n = new_paddr;
-                        let mut buf = [0u8; 16];
-                        let mut i = 0;
-                        loop {
-                            let digit = (n & 0xF) as u8;
-                            buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                            n >>= 4;
-                            i += 1;
-                            if n == 0 { break; }
-                        }
-                        while i > 0 {
-                            i -= 1;
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                        }
-                        let msg = b" buffer=0x";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                        let mut n = buffer.as_ptr() as usize;
-                        let mut buf = [0u8; 16];
-                        let mut i = 0;
-                        loop {
-                            let digit = (n & 0xF) as u8;
-                            buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                            n >>= 4;
-                            i += 1;
-                            if n == 0 { break; }
-                        }
-                        while i > 0 {
-                            i -= 1;
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                        }
-                        let msg = b"\n";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                    }
-
-                    unsafe {
-                        // Debug: Before copy
-                        if self.id == 1 {
-                            let msg = b"[VMO] BEFORE COPY\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
+                            // Copy from buffer to destination
+                            let dst_vaddr = pmm::paddr_to_vaddr_user_zone(new_paddr + offset_in_page as u64);
+                            let dst_ptr = dst_vaddr as *mut u8;
+                            core::ptr::copy_nonoverlapping(buffer.as_ptr(), dst_ptr, bytes_to_copy);
                         }
 
-                        // Step 1: Copy from source physical page to buffer
-                        // CRITICAL: Use paddr_to_vaddr_user_zone for user zone memory
-                        // to avoid assuming identity mapping is available
-                        let src_vaddr = pmm::paddr_to_vaddr_user_zone(page_entry.paddr);
-                        let src_ptr = src_vaddr as *const u8;
-                        core::ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), page_size);
-
-                        // Step 2: Copy from buffer to destination physical page
-                        // CRITICAL: Use paddr_to_vaddr_user_zone for user zone memory
-                        let dst_vaddr = pmm::paddr_to_vaddr_user_zone(new_paddr);
-                        let dst_ptr = dst_vaddr as *mut u8;
-                        core::ptr::copy_nonoverlapping(buffer.as_ptr(), dst_ptr, page_size);
-
-                        // Debug: After copy
-                        if self.id == 1 {
-                            let msg = b"[VMO] AFTER COPY\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                        }
-                    }
-
-                    // Debug: IMMEDIATELY after copy, before anything else
-                    if self.id == 1 {
-                        unsafe {
-                            let msg = b"[VMO] COPY DONE\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                        }
-                    }
-
-                    // Debug: After copy, check if we corrupted something
-                    // Only check during second clone (VMO#2)
-                    if self.id == 2 {
-                        use crate::exec::process_loader;
-                        unsafe {
-                            let msg = b"[VMO] After copy: checking VMO#3\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                        }
-                        // This is a hack - we need access to loaded_elf but we don't have it here
-                        // Skip this check for now
-                    }
-
-                    // Debug: Page data copied
-                    unsafe {
-                        let msg = b"[VMO] clone() page data copied\n";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
+                        offset_in_page += bytes_to_copy;
                     }
 
                     // Add the page to the child
-                    // Debug: Before insert
-                    if self.id == 1 {
-                        unsafe {
-                            let msg = b"[VMO] Before child_pages.insert\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                        }
-                    }
-
                     child_pages.insert(*offset, PageMapEntry {
                         paddr: new_paddr,
                         present: true,
                         writable: true,
                     });
-
-                    // Debug: After insert
-                    if self.id == 1 {
-                        unsafe {
-                            let msg = b"[VMO] After child_pages.insert\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                        }
-                    }
                 }
             }
         } // Locks are released here
-
-        // Debug: Clone complete
-        unsafe {
-            let msg = b"[VMO] clone() complete\n";
-            for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-            }
-        }
 
         Ok(cloned)
     }

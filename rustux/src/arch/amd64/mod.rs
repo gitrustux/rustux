@@ -21,6 +21,9 @@ pub mod descriptor;
 pub mod mm;
 pub mod mmu;
 
+// Userspace transition
+pub mod uspace;
+
 // System initialization and testing
 pub mod init;
 

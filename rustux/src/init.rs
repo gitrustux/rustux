@@ -363,7 +363,7 @@ fn init_memory() {
             // Previous heap at 0x1000000 was in USER zone, causing corruption!
             // New heap at 0x00300000 is safely in KERNEL zone.
             const HEAP_PADDR: u64 = 0x0030_0000;  // 3MB physical address (in KERNEL zone)
-            const HEAP_SIZE: usize = 1024 * 1024; // 1MB heap
+            const HEAP_SIZE: usize = 16 * 1024 * 1024; // 16MB heap
 
             let heap_start_vaddr = pmm::paddr_to_vaddr(HEAP_PADDR);
 
@@ -372,7 +372,7 @@ fn init_memory() {
                 core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }
             print_hex(heap_start_vaddr as u64);
-            let msg = b", size: 0x100000 (1MB)\n[INIT] Initializing heap...\n";
+            let msg = b", size: 0x1000000 (16MB)\n[INIT] Initializing heap...\n";
             for &byte in msg {
                 core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }
@@ -381,11 +381,11 @@ fn init_memory() {
             crate::mm::heap_init_aligned(heap_start_vaddr as usize, HEAP_SIZE);
 
             // Reserve the heap pages in the PMM so they won't be allocated for other uses
-            // Heap size: 1MB = 256 pages
-            const HEAP_PAGES: usize = 256;
+            // Heap size: 16MB = 4096 pages
+            const HEAP_PAGES: usize = 4096;
             let _ = pmm::pmm_reserve_pages(HEAP_PADDR, HEAP_PAGES);
 
-            let msg = b"[INIT] Heap initialized successfully (1MB)\n";
+            let msg = b"[INIT] Heap initialized successfully (16MB)\n";
             for &byte in msg {
                 core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }

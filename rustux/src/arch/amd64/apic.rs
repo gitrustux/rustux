@@ -75,11 +75,50 @@ pub const LOCAL_APIC_DEFAULT_BASE: u64 = 0xFEE0_0000;
 /// Using the standard x86 default address for now.
 pub const IOAPIC_DEFAULT_BASE: u64 = 0xFEC0_0000;
 
+/// Disable the legacy 8259A PIC
+///
+/// When using APIC mode, the legacy 8259A PIC must be disabled
+/// by masking all IRQs. Otherwise, it will intercept interrupts
+/// before they reach the IOAPIC.
+///
+/// The 8259A has two chips:
+/// - Master PIC: Command port 0x20, Data port 0x21
+/// - Slave PIC: Command port 0xA0, Data port 0xA1
+///
+/// To disable, we mask all IRQs by writing 0xFF to both data ports.
+pub fn pic_disable() {
+    const PIC1_CMD: u16 = 0x20;
+    const PIC1_DATA: u16 = 0x21;
+    const PIC2_CMD: u16 = 0xA0;
+    const PIC2_DATA: u16 = 0xA1;
+
+    unsafe {
+        let msg = b"[PIC] Disabling 8259A PIC...\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+
+        // Mask all IRQs on both PICs (write 0xFF to data ports)
+        core::arch::asm!("out dx, al", in("dx") PIC1_DATA, in("al") 0xFFu8, options(nostack));
+        core::arch::asm!("out dx, al", in("dx") PIC2_DATA, in("al") 0xFFu8, options(nostack));
+
+        let msg = b"[PIC] All IRQs masked\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+    }
+}
+
 /// Initialize the Local APIC
 ///
 /// UEFI firmware typically initializes the Local APIC during boot.
 /// This function ensures the LAPIC is enabled (bit 8 of SVR).
 pub fn apic_local_init() {
+    // First, disable the legacy 8259A PIC
+    // This must be done before using IOAPIC, otherwise the PIC
+    // will intercept interrupts before they reach the IOAPIC
+    pic_disable();
+
     unsafe {
         let apic_base = LOCAL_APIC_DEFAULT_BASE;
         let svr_offset = 0x70; // Spurious Interrupt Vector Register
@@ -109,6 +148,91 @@ pub fn apic_issue_eoi() {
     apic_send_eoi(0); // EOI number doesn't matter for LAPIC
 }
 
+/// Probe the I/O APIC to verify it's accessible
+///
+/// Reads the IOAPIC ID and version registers to verify the IOAPIC
+/// is responding at the expected base address.
+fn ioapic_probe() {
+    const IOAPIC_BASE: u64 = 0xFEC0_0000;
+    const IOAPIC_IOREGSEL: u64 = 0x00;
+    const IOAPIC_IOWIN: u64 = 0x10;
+    const IOAPIC_ID_OFFSET: u32 = 0x00;
+    const IOAPIC_VER_OFFSET: u32 = 0x01;
+
+    unsafe {
+        let ioapic_sel = (IOAPIC_BASE + IOAPIC_IOREGSEL) as *mut u32;
+        let ioapic_win = (IOAPIC_BASE + IOAPIC_IOWIN) as *mut u32;
+
+        // Read IOAPIC ID
+        ioapic_sel.write_volatile(IOAPIC_ID_OFFSET);
+        let id = ioapic_win.read_volatile();
+
+        // Read IOAPIC Version
+        ioapic_sel.write_volatile(IOAPIC_VER_OFFSET);
+        let ver = ioapic_win.read_volatile();
+
+        // Print IOAPIC info
+        let msg = b"[IOAPIC] ID=";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = (id >> 24) & 0x0F;  // IOAPIC ID is in bits 24-27
+        let mut buf = [0u8; 8];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg = b" VER=";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = ver & 0xFF;  // Version is in low 8 bits
+        let mut buf = [0u8; 8];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg = b" MAX_REDIR=";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = ((ver >> 16) & 0xFF) + 1;  // Max redirection entry
+        let mut buf = [0u8; 8];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg = b"\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+    }
+}
+
 /// Initialize I/O APIC for a specific IRQ
 ///
 /// # Arguments
@@ -121,6 +245,8 @@ pub fn apic_issue_eoi() {
 /// apic_io_init(1, 33);
 /// ```
 pub fn apic_io_init(irq: u8, vector: u8) {
+    // First, probe the IOAPIC to verify it's accessible
+    ioapic_probe();
     const IOAPIC_BASE: u64 = 0xFEC0_0000;
     const IOAPIC_IOREGSEL: u64 = 0x00;
     const IOAPIC_IOWIN: u64 = 0x10;
@@ -129,6 +255,47 @@ pub fn apic_io_init(irq: u8, vector: u8) {
     let irq_redir_offset: u32 = 0x12 + ((irq as u32 - 1) * 2);
 
     unsafe {
+        // Debug: Print what we're about to write
+        let msg = b"[IOAPIC] irq=";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = irq;
+        let mut buf = [0u8; 8];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg = b" vector=";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = vector;
+        let mut buf = [0u8; 8];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+        let msg = b"\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+
         let ioapic_sel = (IOAPIC_BASE + IOAPIC_IOREGSEL) as *mut u32;
         let ioapic_win = (IOAPIC_BASE + IOAPIC_IOWIN) as *mut u32;
 
@@ -143,5 +310,59 @@ pub fn apic_io_init(irq: u8, vector: u8) {
         // Write high dword of redirection entry
         ioapic_sel.write_volatile(irq_redir_offset + 1);
         ioapic_win.write_volatile(high_dword);
+
+        // Read back and verify
+        ioapic_sel.write_volatile(irq_redir_offset);
+        let read_low = ioapic_win.read_volatile();
+        ioapic_sel.write_volatile(irq_redir_offset + 1);
+        let read_high = ioapic_win.read_volatile();
+
+        let msg = b"[IOAPIC] readback: low=0x";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = read_low;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            let digit = (n & 0xF) as u8;
+            buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+            n >>= 4;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg = b" high=0x";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = read_high;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            let digit = (n & 0xF) as u8;
+            buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+            n >>= 4;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg = b"\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+
+        let msg = b"[IOAPIC] configured\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
     }
 }

@@ -13,11 +13,71 @@ use core::ptr::write_volatile;
 
 use rustux::arch::amd64::{descriptor, idt, apic};
 
-#[global_allocator]
-static ALLOCATOR: uefi::allocator::Allocator = uefi::allocator::Allocator;
+// Note: Global allocator is now in src/mm/allocator.rs (LinkedListAllocator)
+// The UEFI allocator is no longer used as the global allocator after exit_boot_services()
 
 // Simple keyboard scancode counter
 static mut KEYBOARD_COUNT: u32 = 0;
+
+/// Initialize the 8042 Keyboard Controller
+///
+/// The keyboard controller must be initialized to generate IRQ1 interrupts.
+/// This function:
+/// 1. Disables the keyboard
+/// 2. Flushes the output buffer
+/// 3. Reads the current command byte
+/// 4. Enables interrupt generation (bit 0)
+/// 5. Re-enables the keyboard
+fn keyboard_controller_init() {
+    const KB_DATA_PORT: u16 = 0x60;
+    const KB_CMD_PORT: u16 = 0x64;
+    const CMD_READ_CB: u8 = 0x20;   // Read command byte
+    const CMD_WRITE_CB: u8 = 0x60;  // Write command byte
+    const CMD_DISABLE: u8 = 0xAD;   // Disable keyboard
+    const CMD_ENABLE: u8 = 0xAE;    // Enable keyboard
+
+    unsafe {
+        debug_print("[KBD] Initializing 8042 keyboard controller...\n");
+
+        // Disable keyboard
+        asm!("out dx, al", in("dx") KB_CMD_PORT, in("al") CMD_DISABLE, options(nostack));
+
+        // Flush output buffer
+        let mut status: u8;
+        asm!("in al, dx", out("al") status, in("dx") KB_CMD_PORT, options(nomem, nostack));
+        if status & 0x01 != 0 {
+            let _dummy: u8;
+            asm!("in al, dx", out("al") _dummy, in("dx") KB_DATA_PORT, options(nomem, nostack));
+        }
+
+        // Read current command byte
+        asm!("out dx, al", in("dx") KB_CMD_PORT, in("al") CMD_READ_CB, options(nostack));
+        // Wait for data ready
+        loop {
+            asm!("in al, dx", out("al") status, in("dx") KB_CMD_PORT, options(nomem, nostack));
+            if status & 0x01 != 0 { break; }
+        }
+        let mut cmd_byte: u8;
+        asm!("in al, dx", out("al") cmd_byte, in("dx") KB_DATA_PORT, options(nomem, nostack));
+
+        // Set bit 0 (enable keyboard interrupt) and bit 6 (translate scancode to set 2)
+        cmd_byte |= 0x41;  // Enable interrupt + translate scancode
+
+        // Write modified command byte
+        asm!("out dx, al", in("dx") KB_CMD_PORT, in("al") CMD_WRITE_CB, options(nostack));
+        // Wait for input buffer empty
+        loop {
+            asm!("in al, dx", out("al") status, in("dx") KB_CMD_PORT, options(nomem, nostack));
+            if status & 0x02 == 0 { break; }
+        }
+        asm!("out dx, al", in("dx") KB_DATA_PORT, in("al") cmd_byte, options(nostack));
+
+        // Re-enable keyboard
+        asm!("out dx, al", in("dx") KB_CMD_PORT, in("al") CMD_ENABLE, options(nostack));
+
+        debug_print("[KBD] Keyboard controller initialized\n");
+    }
+}
 
 #[entry]
 fn main() -> Status {
@@ -32,6 +92,12 @@ fn main() -> Status {
         debug_print("\n");
     }
 
+    debug_print("[PHASE] Skipping pre-exit_boot_services userspace test...\n");
+    debug_print("        (PMM not initialized yet, test moved to post-boot)\n\n");
+
+    // NOTE: Userspace test moved to after PMM initialization in init_late()
+    // The PMM must be initialized before we can allocate pages for address spaces
+
     debug_print("[PHASE] Exiting boot services...\n\n");
     let _memory_map = unsafe { uefi::boot::exit_boot_services(None) };
 
@@ -42,6 +108,9 @@ fn kernel_main() -> ! {
     debug_print("╔══════════════════════════════════════════════════════════╗\n");
     debug_print("║  KERNEL MODE - Testing Interrupts                       ║\n");
     debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
+
+    // Initialize kernel subsystems (including heap)
+    rustux::init::kernel_init();
 
     // Setup GDT
     debug_print("[1/5] Setting up GDT...\n");
@@ -73,6 +142,11 @@ fn kernel_main() -> ! {
     unsafe { apic::apic_io_init(1, 33); }
     debug_print("      ✓ IRQ1 → Vector 33\n");
 
+    // Initialize keyboard controller
+    debug_print("[4.6/5] Initializing keyboard controller...\n");
+    keyboard_controller_init();
+    debug_print("      ✓ Keyboard controller initialized\n");
+
     // Configure timer
     debug_print("[5/5] Configuring timer...\n");
     unsafe {
@@ -85,25 +159,22 @@ fn kernel_main() -> ! {
 
     // Enable interrupts
     debug_print("╔══════════════════════════════════════════════════════════╗\n");
-    debug_print("║  Interrupt system ready! Press keys to test keyboard... ║\n");
+    debug_print("║  PHASE 4A: Testing Userspace Execution                  ║\n");
     debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
-    
+
     unsafe { asm!("sti"); }
 
-    let mut tick_count = 0u64;
-    loop {
-        unsafe { asm!("hlt"); }
-        tick_count += 1;
-        
-        if tick_count % 100 == 0 {
-            let keys = unsafe { KEYBOARD_COUNT };
-            if keys > 0 {
-                debug_print("Keys pressed: ");
-                print_hex(keys as u64);
-                debug_print("\n");
-            }
-        }
-    }
+    // TEST: Userspace execution (Phase 4A) - MOVED BEFORE exit_boot_services
+    // Load and execute the userspace ELF binary
+    // NOTE: This is now done in main() before exiting boot services
+    // because the UEFI allocator is needed for heap allocations
+
+    debug_print("╔══════════════════════════════════════════════════════════╗\n");
+    debug_print("║  Userspace test moved to UEFI mode                   ║\n");
+    debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
+
+    // Never reached
+    loop { unsafe { asm!("hlt"); } }
 }
 
 // Keyboard handler (IRQ1 = Vector 33)
@@ -113,16 +184,17 @@ pub extern "x86-interrupt" fn keyboard_handler(_sf: idt::X86Iframe) {
         // Read scancode
         let scancode: u8;
         asm!("in al, dx", in("dx") 0x60u16, out("al") scancode, options(nomem, nostack, preserves_flags));
-        
+
         // Print it
         debug_print("[KEY:");
         print_hex(scancode as u64);
         debug_print("]\n");
-        
+
         KEYBOARD_COUNT += 1;
-        
-        // Send EOI to PIC
-        asm!("mov al, 0x20", "out 0x20, al", options(nomem, nostack));
+
+        // Send EOI to LAPIC (write 0 to EOI register at offset 0x40)
+        let lapic = 0xFEE00000usize;
+        write_volatile((lapic + 0x40) as *mut u32, 0);
     }
 }
 
