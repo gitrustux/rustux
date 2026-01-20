@@ -422,6 +422,13 @@ fn init_late() {
     // TODO: Initialize syscall layer
     // TODO: User/kernel boundary safety
 
+    // CRITICAL: Switch to proper kernel stack before any deep operations
+    // This must happen before ELF loading, VMO operations, etc.
+    // TEMPORARILY DISABLED FOR TESTING
+    //unsafe {
+    //    crate::arch::amd64::init::init_kernel_stack();
+    //}
+
     // DEBUG: Prove we reached init_late
     unsafe {
         let msg = b"[INIT] Reached init_late()\n";

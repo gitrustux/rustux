@@ -207,10 +207,10 @@ pub fn halt_and_loop() -> ! {
 // Kernel Stack Management
 // ============================================================================
 
-/// Kernel stack size (32 KB to prevent stack overflow during deep call chains)
+/// Kernel stack size (128 KB to prevent stack overflow during deep call chains)
 /// The UEFI-provided stack is typically only 4-8 KB, which is too small
 /// for ELF loading, VMO operations, and other deep call chains.
-const KERNEL_STACK_SIZE: usize = 32 * 1024; // 32 KB
+const KERNEL_STACK_SIZE: usize = 128 * 1024; // 128 KB
 
 /// Allocated kernel stack (physical address)
 /// Allocated early in boot before PMM is available
@@ -225,12 +225,12 @@ static mut KERNEL_STACK: Option<(u64, usize)> = None; // (physical_address, size
 pub unsafe fn init_kernel_stack() {
     use crate::mm::pmm;
 
-    // Allocate 8 pages (32 KB) from kernel zone for the stack
+    // Allocate 32 pages (128 KB) from kernel zone for the stack
     // The UEFI-provided stack is typically only 4-8 KB
-    const STACK_PAGES: usize = 8; // 32 KB
+    const STACK_PAGES: usize = 32; // 128 KB
 
     // Allocate pages one at a time (since pmm_alloc_kernel_page only allocates 1 page)
-    let mut stack_pages: [u64; 8] = [0; 8];
+    let mut stack_pages: [u64; 32] = [0; 32];
     let mut allocated_count = 0;
 
     for i in 0..STACK_PAGES {
@@ -254,10 +254,79 @@ pub unsafe fn init_kernel_stack() {
     // Store the stack info for debugging
     KERNEL_STACK = Some((stack_paddr, stack_size));
 
-    // Note: We're using the linker config to increase the UEFI stack size to 32KB
-    // via .cargo/config.toml with "-C link-arg=-stack:0x8000"
-    // This function is kept for documentation purposes and future use if we need
-    // to switch to a dynamically allocated stack.
+    // CRITICAL: Switch to the new kernel stack
+    // This must be done before any deep call chains (ELF loading, VMO ops, etc.)
+    switch_to_kernel_stack(stack_vaddr, stack_size);
+}
+
+/// Switch to the newly allocated kernel stack
+///
+/// # Safety
+///
+/// Must be called exactly once, after kernel stack pages are allocated.
+/// This function performs an unsafe stack switch and must be called early in boot.
+unsafe fn switch_to_kernel_stack(stack_vaddr: usize, stack_size: usize) {
+    // Calculate new stack top (stacks grow down, so top is highest address)
+    let new_stack_top = stack_vaddr + stack_size;
+
+    // Debug: Log stack switch
+    {
+        let msg = b"[STACK] Switching to kernel stack: vaddr=0x";
+        for &b in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+        }
+        let mut n = stack_vaddr;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            let digit = (n & 0xF) as u8;
+            buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+            n >>= 4;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+        let msg = b" size=0x";
+        for &b in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+        }
+        let mut n = stack_size;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            let digit = (n & 0xF) as u8;
+            buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+            n >>= 4;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+        let msg = b"\n";
+        for &b in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+        }
+    }
+
+    // Disable interrupts before stack switch
+    x86_cli();
+
+    // Switch to new stack
+    // Note: After this point, we're on the new stack
+    core::arch::asm!(
+        "mov rsp, {0}",
+        "xor rbp, rbp",  // Clear frame pointer (optional but clean)
+        in(reg) new_stack_top,
+        options(nostack)
+    );
+
+    // Stack switch complete - we're now running on the new kernel stack
+    // Interrupts will be re-enabled later by normal kernel initialization
 }
 
 /// Get the kernel stack information (for debugging)
