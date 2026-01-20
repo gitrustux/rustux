@@ -14,6 +14,7 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+use alloc::boxed::Box;
 
 use crate::object::{Vmo, VmoFlags};
 
@@ -102,7 +103,7 @@ pub struct ProgramHeader {
 pub struct LoadedSegment {
     pub vaddr: u64,           // Virtual address
     pub size: u64,             // Size in memory
-    pub vmo: Vmo,              // VMO containing the segment data
+    pub vmo: Box<Vmo>,         // VMO containing the segment data (boxed for stable address)
     pub flags: u32,            // PF_R | PF_W | PF_X
 }
 
@@ -213,54 +214,256 @@ pub fn parse_program_headers(
     phentsize: u16,
     phnum: u16,
 ) -> Vec<ProgramHeader> {
+    unsafe {
+        let msg = b"[ELF] parse_program_headers: starting\n";
+        for &byte in msg {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") 0xE9u16,
+                in("al") byte,
+                options(nomem, nostack)
+            );
+        }
+    }
+
     let mut headers = Vec::new();
 
+    unsafe {
+        let msg = b"[ELF] parse_program_headers: Vec created\n";
+        for &byte in msg {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") 0xE9u16,
+                in("al") byte,
+                options(nomem, nostack)
+            );
+        }
+    }
+
     for i in 0..phnum {
+        unsafe {
+            let msg = b"[ELF] loop iteration\n";
+            for &byte in msg {
+                core::arch::asm!(
+                    "out dx, al",
+                    in("dx") 0xE9u16,
+                    in("al") byte,
+                    options(nomem, nostack)
+                );
+            }
+        }
+
         let offset = phoff as usize + (i as usize * phentsize as usize);
+
+        unsafe {
+            let msg = b"[ELF] offset calculated\n";
+            for &byte in msg {
+                core::arch::asm!(
+                    "out dx, al",
+                    in("dx") 0xE9u16,
+                    in("al") byte,
+                    options(nomem, nostack)
+                );
+            }
+        }
 
         if offset + phentsize as usize > data.len() {
             break; // Don't read past end of file
         }
 
+        unsafe {
+            let msg = b"[ELF] bounds check passed\n";
+            for &byte in msg {
+                core::arch::asm!(
+                    "out dx, al",
+                    in("dx") 0xE9u16,
+                    in("al") byte,
+                    options(nomem, nostack)
+                );
+            }
+        }
+
         let ph_data = &data[offset..offset + phentsize as usize];
+
+        unsafe {
+            let msg = b"[ELF] ph_data created\n";
+            for &byte in msg {
+                core::arch::asm!(
+                    "out dx, al",
+                    in("dx") 0xE9u16,
+                    in("al") byte,
+                    options(nomem, nostack)
+                );
+            }
+        }
+
+        // Debug: For segment 1 (index 1), print ph_data[32..40] which should be p_filesz
+        if i == 1 {
+            unsafe {
+                let msg = b"[ELF] ph_data[32..40]: ";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+                // Print bytes 32-39 as hex
+                for j in 32..40 {
+                    let byte = ph_data[j];
+                    // Print high nibble
+                    let high = (byte >> 4) & 0xF;
+                    let hex_char = if high < 10 { b'0' + high } else { b'A' + high - 10 };
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") hex_char, options(nomem, nostack));
+                    // Print low nibble
+                    let low = byte & 0xF;
+                    let hex_char = if low < 10 { b'0' + low } else { b'A' + low - 10 };
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") hex_char, options(nomem, nostack));
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b' ', options(nomem, nostack));
+                }
+                let msg = b"\n";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+            }
+        }
+
+        // Try to read first byte
+        let first_byte = ph_data[0];
+        unsafe {
+            let msg = b"[ELF] first byte read\n";
+            for &byte in msg {
+                core::arch::asm!(
+                    "out dx, al",
+                    in("dx") 0xE9u16,
+                    in("al") byte,
+                    options(nomem, nostack)
+                );
+            }
+        }
 
         let p_type = u32::from_le_bytes([
             ph_data[0], ph_data[1], ph_data[2], ph_data[3],
         ]);
 
+        unsafe {
+            let msg = b"[ELF] p_type parsed\n";
+            for &byte in msg {
+                core::arch::asm!(
+                    "out dx, al",
+                    in("dx") 0xE9u16,
+                    in("al") byte,
+                    options(nomem, nostack)
+                );
+            }
+        }
+
         let p_flags = u32::from_le_bytes([
             ph_data[4], ph_data[5], ph_data[6], ph_data[7],
         ]);
+
+        unsafe {
+            let msg = b"[ELF] p_flags parsed\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
 
         let p_offset = u64::from_le_bytes([
             ph_data[8], ph_data[9], ph_data[10], ph_data[11],
             ph_data[12], ph_data[13], ph_data[14], ph_data[15],
         ]);
 
+        unsafe {
+            let msg = b"[ELF] p_offset parsed\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+
         let p_vaddr = u64::from_le_bytes([
             ph_data[16], ph_data[17], ph_data[18], ph_data[19],
             ph_data[20], ph_data[21], ph_data[22], ph_data[23],
         ]);
+
+        unsafe {
+            let msg = b"[ELF] p_vaddr parsed\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
 
         let p_paddr = u64::from_le_bytes([
             ph_data[24], ph_data[25], ph_data[26], ph_data[27],
             ph_data[28], ph_data[29], ph_data[30], ph_data[31],
         ]);
 
+        unsafe {
+            let msg = b"[ELF] p_paddr parsed\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+
         let p_filesz = u64::from_le_bytes([
             ph_data[32], ph_data[33], ph_data[34], ph_data[35],
             ph_data[36], ph_data[37], ph_data[38], ph_data[39],
         ]);
+
+        // Debug: print parsed p_filesz value
+        if i == 1 {
+            unsafe {
+                let msg = b"[ELF] p_filesz parsed value: ";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+                // Print decimal value
+                let mut n = p_filesz;
+                let mut buf = [0u8; 16];
+                let mut i = 0;
+                loop {
+                    buf[i] = b'0' + (n % 10) as u8;
+                    n /= 10;
+                    i += 1;
+                    if n == 0 { break; }
+                }
+                while i > 0 {
+                    i -= 1;
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                }
+                let msg = b"\n";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+            }
+        }
+
+        unsafe {
+            let msg = b"[ELF] p_filesz parsed\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
 
         let p_memsz = u64::from_le_bytes([
             ph_data[40], ph_data[41], ph_data[42], ph_data[43],
             ph_data[44], ph_data[45], ph_data[46], ph_data[47],
         ]);
 
+        unsafe {
+            let msg = b"[ELF] p_memsz parsed\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+
         let p_align = u64::from_le_bytes([
             ph_data[48], ph_data[49], ph_data[50], ph_data[51],
             ph_data[52], ph_data[53], ph_data[54], ph_data[55],
         ]);
+
+        unsafe {
+            let msg = b"[ELF] p_align parsed, pushing to Vec\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
 
         headers.push(ProgramHeader {
             p_type,
@@ -272,6 +475,53 @@ pub fn parse_program_headers(
             p_memsz,
             p_align,
         });
+
+        // Debug: verify the struct was stored correctly
+        if i == 1 {
+            unsafe {
+                let msg = b"[ELF] struct stored, p_filesz=";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+                let stored = &headers[1];
+                let mut n = stored.p_filesz;
+                let mut buf = [0u8; 16];
+                let mut idx = 0;
+                loop {
+                    buf[idx] = b'0' + (n % 10) as u8;
+                    n /= 10;
+                    idx += 1;
+                    if n == 0 { break; }
+                }
+                while idx > 0 {
+                    idx -= 1;
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[idx], options(nomem, nostack));
+                }
+                let msg = b"\n";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+            }
+        }
+
+        unsafe {
+            let msg = b"[ELF] push completed\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+    }
+
+    unsafe {
+        let msg = b"[ELF] Parsed all program headers\n";
+        for &byte in msg {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") 0xE9u16,
+                in("al") byte,
+                options(nomem, nostack)
+            );
+        }
     }
 
     headers
@@ -340,10 +590,34 @@ fn elf_flags_to_vmo_flags(p_flags: u32) -> VmoFlags {
 /// * `Ok(LoadedElf)` - Loaded ELF with segments mapped to VMOs
 /// * `Err(&str)` - Error loading ELF
 pub fn load_elf(elf_data: &[u8]) -> Result<LoadedElf, &'static str> {
+    unsafe {
+        let msg = b"[ELF] load_elf starting\n";
+        for &byte in msg {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") 0xE9u16,
+                in("al") byte,
+                options(nomem, nostack)
+            );
+        }
+    }
+
     // Parse ELF header
+    unsafe {
+        let msg = b"[ELF] Parsing ELF header...\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+    }
     let header = parse_elf_header(elf_data)?;
 
     // Validate ELF header
+    unsafe {
+        let msg = b"[ELF] Validating ELF header...\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+    }
     validate_elf_header(&header)?;
 
     // Parse program headers
@@ -351,13 +625,79 @@ pub fn load_elf(elf_data: &[u8]) -> Result<LoadedElf, &'static str> {
     let phoff = header.e_phoff;
     let phnum = header.e_phnum;
 
+    unsafe {
+        let msg = b"[ELF] Parsing program headers...\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+    }
     let prog_headers = parse_program_headers(elf_data, phoff, phentsize, phnum);
 
-    // Filter for LOAD segments
-    let load_segments: Vec<_> = prog_headers
+    // Filter for LOAD segments and clone them to avoid reference issues
+    // We need to own the data because heap allocations during VMO creation
+    // can corrupt the references in the Vec.
+    let load_segments: Vec<ProgramHeader> = prog_headers
         .iter()
         .filter(|ph| ph.p_type == PT_LOAD)
+        .cloned()
         .collect();
+
+    unsafe {
+        let msg = b"[ELF] LOAD segments: ";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = load_segments.len();
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+        let msg = b"\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+    }
+
+    // Debug: print each LOAD segment's p_filesz
+    for (idx, ph) in load_segments.iter().enumerate() {
+        unsafe {
+            let msg = b"[ELF] LOAD seg ";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            let digit = if idx < 10 { b'0' + idx as u8 } else { b'X' };
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
+            let msg = b" filesz=";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            let mut n = ph.p_filesz;
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            loop {
+                buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+                i += 1;
+                if n == 0 { break; }
+            }
+            while i > 0 {
+                i -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            }
+            let msg = b"\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+    }
 
     if load_segments.is_empty() {
         return Err("No LOAD segments found in ELF");
@@ -366,16 +706,120 @@ pub fn load_elf(elf_data: &[u8]) -> Result<LoadedElf, &'static str> {
     // Load each segment
     let mut segments = Vec::new();
 
-    for ph in load_segments {
+    for (idx, ph) in load_segments.iter().enumerate() {
+        unsafe {
+            let msg = b"[ELF] Loading segment ";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            let digit = if idx < 10 { b'0' + idx as u8 } else { b'X' };
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'\n', options(nomem, nostack));
+        }
+
+        // Debug: print p_filesz value directly
+        unsafe {
+            let msg = b"[ELF] p_filesz=";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            let mut n = ph.p_filesz;
+            let mut buf = [0u8; 16];
+            let mut pos = 0;
+            loop {
+                buf[pos] = b'0' + (n % 10) as u8;
+                n /= 10;
+                pos += 1;
+                if n == 0 { break; }
+            }
+            while pos > 0 {
+                pos -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[pos], options(nomem, nostack));
+            }
+            let msg = b"\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+
         // Get segment data from file
         let file_start = ph.p_offset as usize;
         let file_end = (ph.p_offset + ph.p_filesz) as usize;
 
-        if file_end > elf_data.len() {
+        unsafe {
+            let msg = b"[ELF] seg: start=";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            // Print file_start in decimal
+            let mut n = file_start;
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            loop {
+                buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+                i += 1;
+                if n == 0 { break; }
+            }
+            while i > 0 {
+                i -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            }
+
+            let msg = b" end=";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            // Print file_end in decimal
+            let mut n = file_end;
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            loop {
+                buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+                i += 1;
+                if n == 0 { break; }
+            }
+            while i > 0 {
+                i -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            }
+
+            let msg = b" elf_len=";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            // Print elf_data.len() in decimal
+            let mut n = elf_data.len();
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            loop {
+                buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+                i += 1;
+                if n == 0 { break; }
+            }
+            while i > 0 {
+                i -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            }
+
+            let msg = b"\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+
+        // Check bounds before accessing slice
+        if ph.p_filesz > 0 && file_end > elf_data.len() {
             return Err("Segment extends beyond file size");
         }
 
-        let _segment_data = &elf_data[file_start..file_end];
+        let segment_data = if ph.p_filesz > 0 {
+            &elf_data[file_start..file_end]
+        } else {
+            &[]
+        };
 
         // Create VMO for this segment
         let mem_size = ph.p_memsz.max(ph.p_filesz); // Handle BSS (filesz < memsz)
@@ -390,10 +834,34 @@ pub fn load_elf(elf_data: &[u8]) -> Result<LoadedElf, &'static str> {
         let vmo = Vmo::create(aligned_size as usize, vmo_flags)
             .map_err(|_| "Failed to create VMO")?;
 
+        // Write segment data to VMO (this allocates physical pages)
+        if ph.p_filesz > 0 {
+            vmo.write(0, segment_data)
+                .map_err(|_| "Failed to write segment data to VMO")?;
+        }
+
+        // Zero the BSS portion (if any)
+        if ph.p_memsz > ph.p_filesz {
+            let bss_offset = ph.p_filesz as usize;
+            let bss_size = (ph.p_memsz - ph.p_filesz) as usize;
+
+            // Create a zeroed slice for BSS
+            let mut bss_data = [0u8; 4096]; // One page of zeros
+            let mut bytes_written = 0;
+
+            while bytes_written < bss_size {
+                let to_write = core::cmp::min(bss_size - bytes_written, 4096);
+                let chunk = &bss_data[..to_write];
+                vmo.write(bss_offset + bytes_written, chunk)
+                    .map_err(|_| "Failed to zero BSS")?;
+                bytes_written += to_write;
+            }
+        }
+
         segments.push(LoadedSegment {
             vaddr: ph.p_vaddr,
             size: mem_size,
-            vmo,
+            vmo: Box::new(vmo),
             flags: ph.p_flags,
         });
     }
