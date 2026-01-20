@@ -33,6 +33,8 @@
 
 use crate::arch::amd64::mm::page_tables::PAGE_SIZE;
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 // Track the last allocated address to prevent immediate reuse
 // This prevents the allocator from returning an address that's still being used
 static mut LAST_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
@@ -465,9 +467,9 @@ impl LinkedListAllocator {
                         }
                     }
 
-                    // Split the block if there's enough remaining space
-                    if remaining >= MIN_BLOCK_SIZE * 4 {
-                        // Require more space before splitting to reduce fragmentation
+                    // Split the block if there's enough remaining space for a BlockHeader
+                    // Lower threshold to ensure free_list never becomes empty
+                    if remaining >= MIN_BLOCK_SIZE {
                         let header_size = core::mem::size_of::<BlockHeader>();
                         let raw_new_block = current as usize + offset + size;
 
