@@ -46,136 +46,21 @@ pub struct ProcessImage {
 /// * `Ok(ProcessImage)` - Loaded process ready to execute
 /// * `Err(&str)` - Loading failed
 pub fn load_elf_process(elf_data: &[u8]) -> Result<ProcessImage, &'static str> {
-    // Debug print at the very start
-    unsafe {
-        let msg = b"[P-LOADER] load_elf_process called\n";
-        for &byte in msg {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") 0xE9u16,
-                in("al") byte,
-                options(nomem, nostack)
-            );
-        }
-    }
-
     // Load ELF segments into VMOs
     let loaded_elf = load_elf(elf_data)?;
-
-    unsafe {
-        let msg = b"[P-LOADER] ELF loaded, segments: ";
-        for &byte in msg {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") 0xE9u16,
-                in("al") byte,
-                options(nomem, nostack)
-            );
-        }
-        // Print segment count
-        let count = loaded_elf.segments.len();
-        let digit = if count < 10 { b'0' + count as u8 } else { b'9' };
-        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
-        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'\n', options(nomem, nostack));
-    }
 
     // Create new address space
     let address_space = AddressSpace::new()
         .map_err(|_| "Failed to create address space")?;
 
-    unsafe {
-        let msg = b"[P-LOADER] Address space created\n";
-        for &byte in msg {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") 0xE9u16,
-                in("al") byte,
-                options(nomem, nostack)
-            );
-        }
-    }
-
     // Map each segment into the address space
-    // Use iter() to borrow VMOs (avoiding move issues with SpinMutex)
-    for (i, segment) in loaded_elf.segments.iter().enumerate() {
-        unsafe {
-            let msg = b"[P-LOADER] Mapping segment ";
-            for &byte in msg {
-                core::arch::asm!(
-                    "out dx, al",
-                    in("dx") 0xE9u16,
-                    in("al") byte,
-                    options(nomem, nostack)
-                );
-            }
-            let digit = if i < 10 { b'0' + i as u8 } else { b'X' };
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'\n', options(nomem, nostack));
-        }
-
-        // Map the segment's VMO at the correct virtual address
-        // Use a reference to the VMO (avoiding move issues with SpinMutex)
+    for segment in loaded_elf.segments.iter() {
         address_space.map_vmo(
             &segment.vmo,
             segment.vaddr,
             segment.size,
             segment.flags,
         ).map_err(|_| "Failed to map segment")?;
-
-        // DEBUG: Check VMO#3 after each segment mapping
-        if loaded_elf.segments.len() > 2 {
-            let vmo3_pages = loaded_elf.segments[2].vmo.pages.lock();
-            let vmo3_entry = vmo3_pages.get(&0);
-            match vmo3_entry {
-                Some(e) => {
-                    unsafe {
-                        let msg = b"[P-LOADER] After seg";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                        let digit = if i < 10 { b'0' + i as u8 } else { b'X' };
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
-                        let msg = b": VMO#3 present=";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                        let digit = if e.present { b'1' } else { b'0' };
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
-                        let msg = b"\n";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                    }
-                }
-                None => {
-                    unsafe {
-                        let msg = b"[P-LOADER] After seg";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                        let digit = if i < 10 { b'0' + i as u8 } else { b'X' };
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
-                        let msg = b": VMO#3 MISSING!\n";
-                        for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                        }
-                    }
-                }
-            }
-            drop(vmo3_pages);
-        }
-    }
-
-    unsafe {
-        let msg = b"[P-LOADER] All segments mapped\n";
-        for &byte in msg {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") 0xE9u16,
-                in("al") byte,
-                options(nomem, nostack)
-            );
-        }
     }
 
     // Create and map the stack

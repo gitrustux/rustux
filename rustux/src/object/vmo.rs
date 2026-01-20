@@ -252,187 +252,67 @@ impl Vmo {
         let to_write = &data[..end - offset];
 
         let page_size = 4096;
-        let mut pages = self.pages.lock();
-        let mut bytes_written = 0;
 
-        // Write data page by page
+        // Pre-allocate all pages needed for this write operation
+        // This avoids holding the SpinMutex during allocation
+        let mut pages_to_allocate = alloc::vec::Vec::new();
         let mut data_offset = 0;
+
+        // First pass: identify which pages need allocation
+        {
+            let pages = self.pages.lock();
+            while data_offset < to_write.len() {
+                let write_offset = offset + data_offset;
+                let page_index = write_offset / page_size;
+                let key = page_index * page_size;
+
+                if !pages.contains_key(&key) {
+                    pages_to_allocate.push(key);
+                }
+
+                // Move to next page
+                let page_offset = write_offset % page_size;
+                let space_in_page = page_size - page_offset;
+                let remaining = to_write.len() - data_offset;
+                data_offset += core::cmp::min(remaining, space_in_page);
+            }
+        }
+
+        // Second pass: allocate all pages (without holding lock)
+        use crate::mm::pmm;
+        for key in &pages_to_allocate {
+            let paddr = pmm::pmm_alloc_user_page()
+                .map_err(|_| "Failed to allocate user page")?;
+
+            // Insert the page into the map (holding lock briefly)
+            let mut pages = self.pages.lock();
+            pages.entry(*key).or_insert(PageMapEntry {
+                paddr,
+                present: true,
+                writable: true,
+            });
+        }
+
+        // Third pass: write data to pages
+        let mut bytes_written = 0;
+        data_offset = 0;
+
         while data_offset < to_write.len() {
             let write_offset = offset + data_offset;
             let page_index = write_offset / page_size;
             let page_offset = write_offset % page_size;
-
-            // Get or allocate page
             let key = page_index * page_size;
 
-            // Debug: Print VMO ID and key
-            unsafe {
-                let msg = b"[VMO-WRITE] VMO#";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-                let mut n = self.id;
-                let mut buf = [0u8; 16];
-                let mut i = 0;
-                loop {
-                    buf[i] = b'0' + (n % 10) as u8;
-                    n /= 10;
-                    i += 1;
-                    if n == 0 { break; }
-                }
-                while i > 0 {
-                    i -= 1;
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                }
-                let msg = b" key=";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-                let mut n = key;
-                let mut buf = [0u8; 16];
-                let mut i = 0;
-                loop {
-                    buf[i] = b'0' + (n % 10) as u8;
-                    n /= 10;
-                    i += 1;
-                    if n == 0 { break; }
-                }
-                while i > 0 {
-                    i -= 1;
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                }
-                let msg = b"\n";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-            }
+            // Get page entry (holding lock briefly)
+            let (page_paddr, page_present) = {
+                let pages = self.pages.lock();
+                let entry = pages.get(&key).unwrap();
+                (entry.paddr, entry.present)
+            };
 
-            let page_entry = pages.entry(key).or_insert_with(|| {
-                use crate::mm::pmm;
-
-                // Debug: Before allocation
-                unsafe {
-                    let msg = b"[VMO-WRITE] Allocating page\n";
-                    for &byte in msg {
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                    }
-                }
-
-                // Allocate a physical page from user zone
-                match pmm::pmm_alloc_user_page() {
-                    Ok(paddr) => {
-                        // Debug: Success
-                        unsafe {
-                            let msg = b"[VMO-WRITE] Page allocated OK\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                        }
-                        PageMapEntry {
-                            paddr,
-                            present: true,
-                            writable: true,
-                        }
-                    },
-                    Err(e) => {
-                        // Debug: Failed
-                        unsafe {
-                            let msg = b"[VMO-WRITE] Page allocation FAILED\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                        }
-                        // Failed to allocate - return a dummy entry
-                        // (write will fail when we try to access it)
-                        PageMapEntry {
-                            paddr: 0,
-                            present: false,
-                            writable: false,
-                        }
-                    }
-                }
-            });
-
-            if !page_entry.present {
+            if !page_present {
                 return Err("page not present (allocation failed)");
             }
-
-            // Debug: After insert, verify BTreeMap state (drop borrow first)
-            drop(page_entry);
-            {
-                let len = pages.len();
-                unsafe {
-                    let msg = b"[VMO-WRITE] BTreeMap len=";
-                    for &byte in msg {
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                    }
-                    let mut n = len;
-                    let mut buf = [0u8; 16];
-                    let mut i = 0;
-                    loop {
-                        buf[i] = b'0' + (n % 10) as u8;
-                        n /= 10;
-                        i += 1;
-                        if n == 0 { break; }
-                    }
-                    while i > 0 {
-                        i -= 1;
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                    }
-                    let msg = b"\n";
-                    for &byte in msg {
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                    }
-                }
-
-                // Verify the entry is actually there
-                let verify = pages.get(&key);
-                match verify {
-                    Some(e) => {
-                        unsafe {
-                            let msg = b"[VMO-WRITE] Verify: entry exists, present=";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                            let digit = if e.present { b'1' } else { b'0' };
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
-                            let msg = b" paddr=0x";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                            let mut n = e.paddr;
-                            let mut buf = [0u8; 16];
-                            let mut i = 0;
-                            loop {
-                                let digit = (n & 0xF) as u8;
-                                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                                n >>= 4;
-                                i += 1;
-                                if n == 0 { break; }
-                            }
-                            while i > 0 {
-                                i -= 1;
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                            }
-                            let msg = b"\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                        }
-                    }
-                    None => {
-                        unsafe {
-                            let msg = b"[VMO-WRITE] Verify: entry MISSING!\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Re-borrow for the rest of the function
-            let page_entry = pages.get(&key).unwrap();
 
             // Calculate how much to write to this page
             let remaining = to_write.len() - data_offset;
@@ -441,7 +321,7 @@ impl Vmo {
 
             // Get virtual address of the page using proper address conversion
             // CRITICAL: Use paddr_to_vaddr_user_zone for user zone memory
-            let vaddr = crate::mm::pmm::paddr_to_vaddr_user_zone(page_entry.paddr) + page_offset;
+            let vaddr = crate::mm::pmm::paddr_to_vaddr_user_zone(page_paddr) + page_offset;
 
             // Write data to the page
             unsafe {

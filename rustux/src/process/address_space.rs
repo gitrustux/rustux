@@ -146,130 +146,14 @@ impl AddressSpace {
     ) -> Result<(), &'static str> {
         // Validate alignment
         if vaddr & 0xFFF != 0 {
-            unsafe {
-                let msg = b"[MAP] Error: not aligned\n";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-            }
             return Err("Virtual address not page-aligned");
         }
 
         let num_pages = (size as usize + PAGE_SIZE - 1) / PAGE_SIZE;
 
-        // Debug: Print VMO ID
-        unsafe {
-            let msg = b"[MAP] VMO#";
-            for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-            }
-            let mut n = vmo.id;
-            let mut buf = [0u8; 16];
-            let mut i = 0;
-            loop {
-                buf[i] = b'0' + (n % 10) as u8;
-                n /= 10;
-                i += 1;
-                if n == 0 { break; }
-            }
-            while i > 0 {
-                i -= 1;
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-            }
-            let msg = b" num_pages=";
-            for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-            }
-            let mut n = num_pages;
-            let mut buf = [0u8; 16];
-            let mut i = 0;
-            loop {
-                buf[i] = b'0' + (n % 10) as u8;
-                n /= 10;
-                i += 1;
-                if n == 0 { break; }
-            }
-            while i > 0 {
-                i -= 1;
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-            }
-            let msg = b"\n";
-            for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-            }
-        }
-
         // Use fixed-size array instead of Vec to avoid heap allocation
         let mut page_mappings = [(0u64, 0u64); 256]; // Max 256 pages per mapping
         let mut mapping_count = 0usize;
-
-        // TEST: Check if VMO's BTreeMap is accessible BEFORE entering critical section
-        {
-            let vmo_pages = vmo.pages.lock();
-            let page_count = vmo_pages.len();
-
-            // Debug: Check if entry at key 0 is present
-            let key_0_entry = vmo_pages.get(&0);
-            let key_0_some = key_0_entry.is_some();
-            let key_0_present = key_0_entry.map(|e| e.present).unwrap_or(false);
-
-            unsafe {
-                let msg = b"[MAP] VMO#";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-                let mut n = vmo.id;
-                let mut buf = [0u8; 16];
-                let mut i = 0;
-                loop {
-                    buf[i] = b'0' + (n % 10) as u8;
-                    n /= 10;
-                    i += 1;
-                    if n == 0 { break; }
-                }
-                while i > 0 {
-                    i -= 1;
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                }
-                let msg = b" len=";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-                let mut n = page_count;
-                let mut buf = [0u8; 16];
-                let mut i = 0;
-                loop {
-                    buf[i] = b'0' + (n % 10) as u8;
-                    n /= 10;
-                    i += 1;
-                    if n == 0 { break; }
-                }
-                while i > 0 {
-                    i -= 1;
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                }
-                let msg = b" key0=";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-                let digit = if key_0_some { b'1' } else { b'0' };
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
-                let msg = b" present=";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-                let digit = if key_0_present { b'1' } else { b'0' };
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
-                let msg = b"\n";
-                for &byte in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                }
-            }
-
-            drop(vmo_pages);
-        }
-
-        // Debug: Before disabling interrupts
         unsafe {
             let msg = b"[MAP] Disabling interrupts...\n";
             for &byte in msg {
