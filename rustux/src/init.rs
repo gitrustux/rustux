@@ -206,6 +206,43 @@ pub fn kernel_init() {
     }
 }
 
+/// Initialize PMM (for early boot before stack switch)
+///
+/// This initializes just the Physical Memory Manager, which is needed
+/// to allocate kernel stack pages. Must be called before kernel_init_rest().
+///
+/// # Safety
+///
+/// Must be called exactly once during kernel boot, before kernel_init_rest().
+pub fn pmm_init() {
+    unsafe {
+        if INIT_STATE != InitState::NotStarted {
+            panic!("pmm_init called multiple times or after init started");
+        }
+        INIT_STATE = InitState::Early;
+    }
+    init_early();
+}
+
+/// Complete kernel initialization (after stack switch)
+///
+/// This completes kernel initialization after the kernel stack has been switched.
+/// It initializes arch, memory, threads, and runs late init (including userspace test).
+///
+/// # Safety
+///
+/// Must be called after pmm_init() and stack switch.
+pub fn kernel_init_rest() {
+    init_arch();
+    init_memory();
+    init_threads();
+    init_late();
+
+    unsafe {
+        INIT_STATE = InitState::Complete;
+    }
+}
+
 /// Get the current initialization state
 pub fn init_state() -> InitState {
     unsafe { INIT_STATE }

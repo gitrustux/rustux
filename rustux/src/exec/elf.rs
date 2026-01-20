@@ -390,6 +390,36 @@ pub fn load_elf(elf_data: &[u8]) -> Result<Box<LoadedElf>, &'static str> {
         let p_vaddr = ph.p_vaddr;
         let p_flags = ph.p_flags;
 
+        // Debug: Log the vaddr from ELF
+        unsafe {
+            let msg = b"[ELF] Segment vaddr from ELF: 0x";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            let mut n = p_vaddr;
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            if n == 0 {
+                buf[i] = b'0';
+                i += 1;
+            } else {
+                while n > 0 {
+                    let digit = (n & 0xF) as u8;
+                    buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                    n >>= 4;
+                    i += 1;
+                }
+            }
+            while i > 0 {
+                i -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            }
+            let msg = b"\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+
         // Get segment data from file (using copied values)
         let file_start = p_offset as usize;
         let file_end = (p_offset + p_filesz) as usize;
@@ -451,24 +481,172 @@ pub fn load_elf(elf_data: &[u8]) -> Result<Box<LoadedElf>, &'static str> {
         }
 
         // Store segment in Vec
+        unsafe {
+            let msg = b"[ELF] Storing segment with vaddr: 0x";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            let mut n = p_vaddr;
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            if n == 0 {
+                buf[i] = b'0';
+                i += 1;
+            } else {
+                while n > 0 {
+                    let digit = (n & 0xF) as u8;
+                    buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                    n >>= 4;
+                    i += 1;
+                }
+            }
+            while i > 0 {
+                i -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            }
+            let msg = b"\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
+
         segments.push(LoadedSegment {
             vaddr: p_vaddr,
             size: mem_size,
             vmo: boxed_vmo,
             flags: p_flags,
         });
+
+        unsafe {
+            let msg = b"[ELF] Segment stored, verifying vaddr: 0x";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            let mut n = segments.last().unwrap().vaddr;
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            if n == 0 {
+                buf[i] = b'0';
+                i += 1;
+            } else {
+                while n > 0 {
+                    let digit = (n & 0xF) as u8;
+                    buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                    n >>= 4;
+                    i += 1;
+                }
+            }
+            while i > 0 {
+                i -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            }
+            let msg = b"\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
     }
 
     // Set up user stack
     let stack_addr = 0x7fff_ffff_f000u64;
     let stack_size = 8 * 1024 * 1024; // 8 MB stack
 
-    Ok(Box::new(LoadedElf {
+    unsafe {
+        let msg = b"[ELF] About to Box LoadedElf\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+    }
+
+    // Check vaddr BEFORE Box::new
+    unsafe {
+        let msg = b"[ELF] Before Box::new, segments ptr: 0x";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = segments.as_ptr() as usize;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+            n >>= 4;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+        let msg = b"\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+
+        let msg = b"[ELF] Before Box::new, checking segments[2].vaddr: 0x";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = segments[2].vaddr;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        if n == 0 {
+            buf[i] = b'0';
+            i += 1;
+        } else {
+            while n > 0 {
+                let digit = (n & 0xF) as u8;
+                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                n >>= 4;
+                i += 1;
+            }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+        let msg = b"\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+    }
+
+    let boxed = Box::new(LoadedElf {
         entry: header.e_entry,
         segments,
         stack_addr,
         stack_size,
-    }))
+    });
+
+    unsafe {
+        let msg = b"[ELF] Box created, verifying first segment vaddr: 0x";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = boxed.segments[0].vaddr;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        if n == 0 {
+            buf[i] = b'0';
+            i += 1;
+        } else {
+            while n > 0 {
+                let digit = (n & 0xF) as u8;
+                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                n >>= 4;
+                i += 1;
+            }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+        let msg = b"\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+    }
+
+    Ok(boxed)
 }
 
 /// Check if data looks like an ELF file

@@ -207,30 +207,31 @@ pub fn halt_and_loop() -> ! {
 // Kernel Stack Management
 // ============================================================================
 
-/// Kernel stack size (128 KB to prevent stack overflow during deep call chains)
+/// Kernel stack size (256 KB to prevent stack overflow during deep call chains)
 /// The UEFI-provided stack is typically only 4-8 KB, which is too small
 /// for ELF loading, VMO operations, and other deep call chains.
-const KERNEL_STACK_SIZE: usize = 128 * 1024; // 128 KB
+const KERNEL_STACK_SIZE: usize = 256 * 1024; // 256 KB
 
 /// Allocated kernel stack (physical address)
 /// Allocated early in boot before PMM is available
 static mut KERNEL_STACK: Option<(u64, usize)> = None; // (physical_address, size)
 
-/// Initialize a larger kernel stack
+/// Initialize a larger kernel stack and jump to continuation
 ///
 /// # Safety
 ///
 /// Must be called exactly once, early in boot, before any deep call chains.
 /// This switches from the small UEFI-provided stack to our larger kernel stack.
-pub unsafe fn init_kernel_stack() {
+/// Does NOT return - jumps directly to the continuation address.
+pub unsafe fn init_kernel_stack(continuation: usize) -> ! {
     use crate::mm::pmm;
 
-    // Allocate 32 pages (128 KB) from kernel zone for the stack
+    // Allocate 64 pages (256 KB) from kernel zone for the stack
     // The UEFI-provided stack is typically only 4-8 KB
-    const STACK_PAGES: usize = 32; // 128 KB
+    const STACK_PAGES: usize = 64; // 256 KB
 
     // Allocate pages one at a time (since pmm_alloc_kernel_page only allocates 1 page)
-    let mut stack_pages: [u64; 32] = [0; 32];
+    let mut stack_pages: [u64; 64] = [0; 64];
     let mut allocated_count = 0;
 
     for i in 0..STACK_PAGES {
@@ -256,16 +257,18 @@ pub unsafe fn init_kernel_stack() {
 
     // CRITICAL: Switch to the new kernel stack
     // This must be done before any deep call chains (ELF loading, VMO ops, etc.)
-    switch_to_kernel_stack(stack_vaddr, stack_size);
+    // This function does NOT return - it jumps to the continuation address
+    switch_to_kernel_stack(stack_vaddr, stack_size, continuation);
 }
 
-/// Switch to the newly allocated kernel stack
+/// Switch to the newly allocated kernel stack and jump to continuation
 ///
 /// # Safety
 ///
 /// Must be called exactly once, after kernel stack pages are allocated.
-/// This function performs an unsafe stack switch and must be called early in boot.
-unsafe fn switch_to_kernel_stack(stack_vaddr: usize, stack_size: usize) {
+/// This function performs an unsafe stack switch and jumps to continuation.
+/// Does NOT return.
+unsafe fn switch_to_kernel_stack(stack_vaddr: usize, stack_size: usize, continuation: usize) -> ! {
     // Calculate new stack top (stacks grow down, so top is highest address)
     let new_stack_top = stack_vaddr + stack_size;
 
@@ -316,17 +319,15 @@ unsafe fn switch_to_kernel_stack(stack_vaddr: usize, stack_size: usize) {
     // Disable interrupts before stack switch
     x86_cli();
 
-    // Switch to new stack
-    // Note: After this point, we're on the new stack
+    // Switch to new stack and jump to continuation (NEVER returns)
     core::arch::asm!(
-        "mov rsp, {0}",
-        "xor rbp, rbp",  // Clear frame pointer (optional but clean)
+        "mov rsp, {0}",     // Switch to new stack
+        "xor rbp, rbp",     // Clear frame pointer
+        "jmp {1}",          // Jump to continuation (not ret!)
         in(reg) new_stack_top,
-        options(nostack)
+        in(reg) continuation,
+        options(noreturn, nostack)
     );
-
-    // Stack switch complete - we're now running on the new kernel stack
-    // Interrupts will be re-enabled later by normal kernel initialization
 }
 
 /// Get the kernel stack information (for debugging)

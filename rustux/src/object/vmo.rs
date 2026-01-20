@@ -414,10 +414,24 @@ impl Vmo {
 
             for (offset, page_entry) in parent_pages.iter() {
                 if page_entry.present {
+                    unsafe {
+                        let msg = b"[VMO] Before PMM alloc for clone\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                    }
+
                     // Allocate a new physical page for the child from user zone
                     use crate::mm::pmm;
                     let new_paddr = pmm::pmm_alloc_user_page()
                         .map_err(|_| "Failed to allocate page for clone")?;
+
+                    unsafe {
+                        let msg = b"[VMO] After PMM alloc - checking heap integrity\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                    }
 
                     // Copy the page data using small chunks to avoid stack overflow
                     // Use a 256-byte buffer instead of 4KB to fit within kernel stack

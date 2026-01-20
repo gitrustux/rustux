@@ -55,6 +55,34 @@ pub fn load_elf_process(elf_data: &[u8]) -> Result<ProcessImage, &'static str> {
 
     // Map each segment into the address space
     for segment in loaded_elf.segments.iter() {
+        unsafe {
+            let msg = b"[MAP] About to map segment at vaddr: 0x";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            let mut n = segment.vaddr;
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            if n == 0 {
+                buf[i] = b'0';
+                i += 1;
+            } else {
+                while n > 0 {
+                    let digit = (n & 0xF) as u8;
+                    buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                    n >>= 4;
+                    i += 1;
+                }
+            }
+            while i > 0 {
+                i -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            }
+            let msg = b"\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+        }
         address_space.map_vmo(
             &segment.vmo,
             segment.vaddr,

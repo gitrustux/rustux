@@ -33,6 +33,10 @@
 
 use crate::arch::amd64::mm::page_tables::PAGE_SIZE;
 
+// Track the last allocated address to prevent immediate reuse
+// This prevents the allocator from returning an address that's still being used
+static mut LAST_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+
 // Align helper function (local to this module)
 fn align_page_up(addr: usize) -> usize {
     const PAGE_MASK: usize = PAGE_SIZE - 1;
@@ -310,39 +314,253 @@ impl LinkedListAllocator {
                     // Mark block as allocated
                     (*current).free = false;
 
+                    // CRITICAL: Clear the next/prev pointers to prevent stale pointers
+                    // from corrupting the heap when this block is reallocated
+                    (*current).next = core::ptr::null_mut();
+                    (*current).prev = core::ptr::null_mut();
+
+                    // Debug: Print before updating free_list
+                    if my_loop < 20 {
+                        let msg = b"[HEAP] CRITICAL: About to update free_list\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                        // Print current block address
+                        let msg = b"[HEAP] current=";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                        let mut n = current as usize;
+                        let mut buf = [0u8; 16];
+                        let mut i = 0;
+                        loop {
+                            buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+                            n >>= 4;
+                            i += 1;
+                            if n == 0 { break; }
+                        }
+                        while i > 0 {
+                            i -= 1;
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                        }
+                        let msg = b"\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                    }
+
+                    // Debug: Print current.next before dereferencing
+                    if my_loop < 20 {
+                        let msg = b"[HEAP] current.next=";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                        let mut n = (*current).next as usize;
+                        let mut buf = [0u8; 16];
+                        let mut i = 0;
+                        loop {
+                            buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+                            n >>= 4;
+                            i += 1;
+                            if n == 0 { break; }
+                        }
+                        while i > 0 {
+                            i -= 1;
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                        }
+                        let msg = b"\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                    }
+
                     // Remove from free list
+                    // DEBUG: Track what we're about to write
+                    if my_loop < 20 && !prev.is_null() {
+                        let msg = b"[HEAP] Will write to prev.next at 0x";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                        let mut n = &(*prev).next as *const _ as usize;
+                        let mut buf = [0u8; 16];
+                        let mut i = 0;
+                        loop {
+                            buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+                            n >>= 4;
+                            i += 1;
+                            if n == 0 { break; }
+                        }
+                        while i > 0 {
+                            i -= 1;
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                        }
+                        let msg = b"\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                    }
+
                     if !prev.is_null() {
+                        if my_loop < 20 {
+                            let msg = b"[HEAP] Writing to prev.next at 0x";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                            let mut n = &(*prev).next as *const _ as usize;
+                            let mut buf = [0u8; 16];
+                            let mut i = 0;
+                            loop {
+                                buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+                                n >>= 4;
+                                i += 1;
+                                if n == 0 { break; }
+                            }
+                            while i > 0 {
+                                i -= 1;
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                            }
+                            let msg = b"\n";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                        }
                         (*prev).next = (*current).next;
                     } else {
                         self.free_list = (*current).next;
                     }
                     if !(*current).next.is_null() {
+                        if my_loop < 20 {
+                            let msg = b"[HEAP] Writing to current.next.prev at 0x";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                            let mut n = &(*(*current).next).prev as *const _ as usize;
+                            let mut buf = [0u8; 16];
+                            let mut i = 0;
+                            loop {
+                                buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+                                n >>= 4;
+                                i += 1;
+                                if n == 0 { break; }
+                            }
+                            while i > 0 {
+                                i -= 1;
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                            }
+                            let msg = b"\n";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                        }
                         (*(*current).next).prev = (*current).prev;
                     }
                     (*current).prev = core::ptr::null_mut();
                     (*current).next = core::ptr::null_mut();
 
-                    // Split the block if there's enough remaining space
-                    if remaining >= MIN_BLOCK_SIZE {
-                        let new_block = (current as usize + offset + size) as *mut BlockHeader;
-                        (*new_block) = BlockHeader::new(remaining, true);
-                        (*new_block).prev = core::ptr::null_mut();
-
-                        // Add new block to free list
-                        (*new_block).next = self.free_list;
-                        if !self.free_list.is_null() {
-                            (*self.free_list).prev = new_block;
-                        }
-                        self.free_list = new_block;
-                    }
-
-                    // Return pointer to aligned payload
+                    // Debug: Print after updating free_list
                     if my_loop < 20 {
-                        let msg = b"[HEAP] allocation succeeded\n";
+                        let msg = b"[HEAP] CRITICAL: free_list updated\n";
                         for &byte in msg {
                             core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
                         }
                     }
+
+                    // Split the block if there's enough remaining space
+                    if remaining >= MIN_BLOCK_SIZE * 4 {
+                        // Require more space before splitting to reduce fragmentation
+                        let header_size = core::mem::size_of::<BlockHeader>();
+                        let raw_new_block = current as usize + offset + size;
+
+                        // Round UP to nearest header_size (40 bytes) boundary
+                        let aligned_new_block = (raw_new_block + header_size - 1) & !(header_size - 1);
+
+                        // Calculate how much space we actually have after alignment
+                        let aligned_remaining = block.size - offset - size;
+
+                        // Only split if we have enough space after alignment
+                        if aligned_remaining >= MIN_BLOCK_SIZE {
+                            let new_block = aligned_new_block as *mut BlockHeader;
+                            (*new_block) = BlockHeader::new(aligned_remaining, true);
+                            (*new_block).prev = core::ptr::null_mut();
+
+                            // Add new block to free list
+                            (*new_block).next = self.free_list;
+                            if !self.free_list.is_null() {
+                                (*self.free_list).prev = new_block;
+                            }
+                            self.free_list = new_block;
+                        }
+                    }
+
+                    // CRITICAL FIX: Check if this allocation would overlap with the last allocated address
+                    // This prevents the allocator from reusing memory that's still in use
+                    let last_alloc = LAST_ALLOCATED.load(Ordering::Relaxed);
+                    let alloc_size = block.size; // Approximate size including header
+                    if last_alloc != 0 && aligned_start >= last_alloc && aligned_start < last_alloc + alloc_size {
+                        // This allocation overlaps with the previous one - skip this block
+                        if my_loop < 20 {
+                            let msg = b"[HEAP] Skipping block to prevent reuse of 0x";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                            let mut n = aligned_start;
+                            let mut buf = [0u8; 16];
+                            let mut i = 0;
+                            loop {
+                                buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+                                n >>= 4;
+                                i += 1;
+                                if n == 0 { break; }
+                            }
+                            while i > 0 {
+                                i -= 1;
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                            }
+                            let msg = b"\n";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                        }
+
+                        // Mark block as allocated but DON'T use it
+                        (*current).free = false;
+                        (*current).next = core::ptr::null_mut();
+                        (*current).prev = core::ptr::null_mut();
+
+                        // Continue searching for a different block
+                        prev = current;
+                        current = block.next;
+                        continue;
+                    }
+
+                    // Return pointer to aligned payload
+                    if my_loop < 20 {
+                        let msg = b"[HEAP] allocation succeeded, returning: 0x";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                        let mut n = aligned_start;
+                        let mut buf = [0u8; 16];
+                        let mut i = 0;
+                        loop {
+                            buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+                            n >>= 4;
+                            i += 1;
+                            if n == 0 { break; }
+                        }
+                        while i > 0 {
+                            i -= 1;
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                        }
+                        let msg = b"\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                    }
+
+                    // Remember this allocation to prevent reuse
+                    LAST_ALLOCATED.store(aligned_start, Ordering::Relaxed);
+
                     return aligned_start as *mut u8;
                 }
             }

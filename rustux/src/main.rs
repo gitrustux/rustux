@@ -109,8 +109,26 @@ fn kernel_main() -> ! {
     debug_print("║  KERNEL MODE - Testing Interrupts                       ║\n");
     debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
 
-    // Initialize kernel subsystems (including heap)
-    rustux::init::kernel_init();
+    // CRITICAL: Initialize PMM first (needed for stack allocation)
+    rustux::init::pmm_init();
+
+    // CRITICAL: Switch to proper kernel stack BEFORE any deep operations
+    // The firmware stack is too small and causes corruption during ELF loading.
+    // This function does NOT return - it jumps to kernel_main_on_new_stack()
+    unsafe {
+        rustux::arch::amd64::init::init_kernel_stack(kernel_main_on_new_stack as usize);
+    }
+}
+
+/// Continuation of kernel_main() - runs on the new kernel stack
+/// This function is jumped to directly by init_kernel_stack(), it is never called normally.
+fn kernel_main_on_new_stack() -> ! {
+    debug_print("[STACK] Now running on new kernel stack!\n");
+
+    // Complete the rest of kernel initialization on the new stack
+    debug_print("[INIT] Calling kernel_init_rest()...\n");
+    rustux::init::kernel_init_rest();
+    debug_print("[INIT] kernel_init_rest() returned!\n");
 
     // Setup GDT
     debug_print("[1/5] Setting up GDT...\n");
