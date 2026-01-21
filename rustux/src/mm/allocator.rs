@@ -33,12 +33,6 @@
 
 use crate::arch::amd64::mm::page_tables::PAGE_SIZE;
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-// Track the last allocated address to prevent immediate reuse
-// This prevents the allocator from returning an address that's still being used
-static mut LAST_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
-
 // Align helper function (local to this module)
 fn align_page_up(addr: usize) -> usize {
     const PAGE_MASK: usize = PAGE_SIZE - 1;
@@ -310,8 +304,64 @@ impl LinkedListAllocator {
 
                 // Check if we have enough space after alignment
                 if block.size >= offset + size {
+                    // MARKER: Confirm we reached this point
+                    if my_loop < 20 {
+                        let msg = b"[HEAP] MARKER: Reached remaining calc\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                    }
+
                     // Calculate remaining space after allocation
                     let remaining = block.size - offset - size;
+
+                    // Debug: print remaining value
+                    if my_loop < 20 {
+                        let msg = b"[HEAP] remaining=";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                        let mut n = remaining;
+                        let mut buf = [0u8; 16];
+                        let mut i = 0;
+                        loop {
+                            buf[i] = b'0' + (n % 10) as u8;
+                            n /= 10;
+                            i += 1;
+                            if n == 0 { break; }
+                        }
+                        while i > 0 {
+                            i -= 1;
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                        }
+                        let msg = b" MIN_BLOCK_SIZE=";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                        let mut n = MIN_BLOCK_SIZE;
+                        let mut buf = [0u8; 16];
+                        let mut i = 0;
+                        loop {
+                            buf[i] = b'0' + (n % 10) as u8;
+                            n /= 10;
+                            i += 1;
+                            if n == 0 { break; }
+                        }
+                        while i > 0 {
+                            i -= 1;
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                        }
+                        let msg = b" will_split=";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                        let digit = if remaining >= MIN_BLOCK_SIZE { b'1' } else { b'0' };
+                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
+                        let msg = b"\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                    }
 
                     // Mark block as allocated
                     (*current).free = false;
@@ -471,18 +521,94 @@ impl LinkedListAllocator {
                     // Lower threshold to ensure free_list never becomes empty
                     if remaining >= MIN_BLOCK_SIZE {
                         let header_size = core::mem::size_of::<BlockHeader>();
-                        let raw_new_block = current as usize + offset + size;
 
-                        // Round UP to nearest header_size (40 bytes) boundary
-                        let aligned_new_block = (raw_new_block + header_size - 1) & !(header_size - 1);
+                        // Calculate where the new free block should start (after the allocated portion)
+                        // The allocated portion is: header (40 bytes) + offset (alignment padding) + size (requested)
+                        let alloc_end = current as usize + offset + size;
 
-                        // Calculate how much space we actually have after alignment
-                        let aligned_remaining = block.size - offset - size;
+                        // Round UP to nearest header_size (40 bytes) boundary for the new block
+                        let aligned_new_block = (alloc_end + header_size - 1) & !(header_size - 1);
+
+                        // Calculate the size of the new free block (from aligned_new_block to end of original block)
+                        let new_block_size = (current as usize + block.size) - aligned_new_block;
+
+                        // CRITICAL FIX: Update the original block's size to only include the allocated portion
+                        // This prevents the original block from being found again in future allocations
+                        (*current).size = offset + size;
+
+                        // Debug: check if splitting will happen
+                        if my_loop < 20 {
+                            let msg = b"[HEAP] SPLIT: remaining=";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                            let mut n = remaining;
+                            let mut buf = [0u8; 16];
+                            let mut i = 0;
+                            loop {
+                                buf[i] = b'0' + (n % 10) as u8;
+                                n /= 10;
+                                i += 1;
+                                if n == 0 { break; }
+                            }
+                            while i > 0 {
+                                i -= 1;
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                            }
+                            let msg = b" new_block_size=";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                            let mut n = new_block_size;
+                            let mut buf = [0u8; 16];
+                            let mut i = 0;
+                            loop {
+                                buf[i] = b'0' + (n % 10) as u8;
+                                n /= 10;
+                                i += 1;
+                                if n == 0 { break; }
+                            }
+                            while i > 0 {
+                                i -= 1;
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                            }
+                            let msg = b" MIN_BLOCK_SIZE=";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                            let mut n = MIN_BLOCK_SIZE;
+                            let mut buf = [0u8; 16];
+                            let mut i = 0;
+                            loop {
+                                buf[i] = b'0' + (n % 10) as u8;
+                                n /= 10;
+                                i += 1;
+                                if n == 0 { break; }
+                            }
+                            while i > 0 {
+                                i -= 1;
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                            }
+                            let msg = b" will_split=";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                            let digit = if new_block_size >= MIN_BLOCK_SIZE { b'1' } else { b'0' };
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") digit, options(nomem, nostack));
+                            let msg = b"\n";
+                            for &byte in msg {
+                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            }
+                        }
 
                         // Only split if we have enough space after alignment
-                        if aligned_remaining >= MIN_BLOCK_SIZE {
+                        if new_block_size >= MIN_BLOCK_SIZE {
+                            // CRITICAL FIX: Update the original block's size to only include the allocated portion
+                            // This prevents the original block from being found again in future allocations
+                            (*current).size = offset + size;
+
                             let new_block = aligned_new_block as *mut BlockHeader;
-                            (*new_block) = BlockHeader::new(aligned_remaining, true);
+                            (*new_block) = BlockHeader::new(new_block_size, true);
                             (*new_block).prev = core::ptr::null_mut();
 
                             // Add new block to free list
@@ -491,48 +617,31 @@ impl LinkedListAllocator {
                                 (*self.free_list).prev = new_block;
                             }
                             self.free_list = new_block;
-                        }
-                    }
 
-                    // CRITICAL FIX: Check if this allocation would overlap with the last allocated address
-                    // This prevents the allocator from reusing memory that's still in use
-                    let last_alloc = LAST_ALLOCATED.load(Ordering::Relaxed);
-                    let alloc_size = block.size; // Approximate size including header
-                    if last_alloc != 0 && aligned_start >= last_alloc && aligned_start < last_alloc + alloc_size {
-                        // This allocation overlaps with the previous one - skip this block
-                        if my_loop < 20 {
-                            let msg = b"[HEAP] Skipping block to prevent reuse of 0x";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                            }
-                            let mut n = aligned_start;
-                            let mut buf = [0u8; 16];
-                            let mut i = 0;
-                            loop {
-                                buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
-                                n >>= 4;
-                                i += 1;
-                                if n == 0 { break; }
-                            }
-                            while i > 0 {
-                                i -= 1;
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                            }
-                            let msg = b"\n";
-                            for &byte in msg {
-                                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            if my_loop < 20 {
+                                let msg = b"[HEAP] SPLIT: Created new block at 0x";
+                                for &byte in msg {
+                                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                                }
+                                let mut n = aligned_new_block;
+                                let mut buf = [0u8; 16];
+                                let mut i = 0;
+                                loop {
+                                    buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+                                    n >>= 4;
+                                    i += 1;
+                                    if n == 0 { break; }
+                                }
+                                while i > 0 {
+                                    i -= 1;
+                                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                                }
+                                let msg = b"\n";
+                                for &byte in msg {
+                                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                                }
                             }
                         }
-
-                        // Mark block as allocated but DON'T use it
-                        (*current).free = false;
-                        (*current).next = core::ptr::null_mut();
-                        (*current).prev = core::ptr::null_mut();
-
-                        // Continue searching for a different block
-                        prev = current;
-                        current = block.next;
-                        continue;
                     }
 
                     // Return pointer to aligned payload
@@ -559,9 +668,6 @@ impl LinkedListAllocator {
                             core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
                         }
                     }
-
-                    // Remember this allocation to prevent reuse
-                    LAST_ALLOCATED.store(aligned_start, Ordering::Relaxed);
 
                     return aligned_start as *mut u8;
                 }
