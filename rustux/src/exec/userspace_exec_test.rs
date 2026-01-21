@@ -42,6 +42,10 @@ const ELF_SIZE: usize = USERSPACE_ELF.len();
 pub unsafe fn test_userspace_execution() -> ! {
     use crate::exec::process_loader;
     use crate::arch::amd64::uspace;
+    use crate::mm::allocator;
+
+    // Print heap status BEFORE ELF loading
+    allocator::heap_print_summary();
 
     // Print ELF size for debugging (simple decimal)
     {
@@ -94,8 +98,15 @@ pub unsafe fn test_userspace_execution() -> ! {
 
     // Load ELF into process address space
     let process_image = match process_loader::load_elf_process(USERSPACE_ELF) {
-        Ok(img) => img,
+        Ok(img) => {
+            // Print heap status AFTER ELF loading (SUCCESS)
+            allocator::heap_print_summary();
+            img
+        },
         Err(e) => {
+            // Print heap status AFTER ELF loading (FAILURE)
+            allocator::heap_print_summary();
+
             let err_msg = b"[KERNEL] Failed to load ELF: ";
             for &byte in err_msg {
                 core::arch::asm!(

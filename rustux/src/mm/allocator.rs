@@ -42,8 +42,9 @@ fn align_page_up(addr: usize) -> usize {
 /// Default heap size (16 MB)
 pub const DEFAULT_HEAP_SIZE: usize = 16 * 1024 * 1024;
 
-/// Minimum block size (size of BlockHeader)
-const MIN_BLOCK_SIZE: usize = core::mem::size_of::<BlockHeader>();
+/// Minimum block size - increased to reduce fragmentation
+/// Blocks smaller than this won't be split off during allocation
+const MIN_BLOCK_SIZE: usize = 1024;
 
 /// Align block size to pointer alignment
 const BLOCK_ALIGN: usize = core::mem::align_of::<BlockHeader>();
@@ -150,6 +151,48 @@ impl LinkedListAllocator {
         self.heap_size = heap_size;
         self.initialized = true;
 
+        // Print heap init telemetry once
+        let msg = b"[HEAP] init base=0x";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = heap_start;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+            n >>= 4;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg = b" size=";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let size_mb = heap_size / (1024 * 1024);
+        let mut n = size_mb;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+        let msg = b"MB\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+
         // Initialize the heap as a single free block
         let block = heap_start as *mut BlockHeader;
         (*block) = BlockHeader::new(heap_size, true);
@@ -178,11 +221,47 @@ impl LinkedListAllocator {
             return core::ptr::null_mut();
         }
 
-        // Debug output for first allocation
+        // Log allocation request for first 30 allocations
         static mut ALLOC_COUNT: u32 = 0;
         ALLOC_COUNT += 1;
-        if ALLOC_COUNT <= 20 {
-            let msg = b"[HEAP] allocate called\n";
+        if ALLOC_COUNT <= 30 {
+            let msg = b"[HEAP] alloc request size=";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            let mut n = size;
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            loop {
+                buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+                i += 1;
+                if n == 0 { break; }
+            }
+            while i > 0 {
+                i -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            }
+
+            let msg = b" align=";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            let mut n = align;
+            let mut buf = [0u8; 16];
+            let mut i = 0;
+            loop {
+                buf[i] = b'0' + (n % 10) as u8;
+                n /= 10;
+                i += 1;
+                if n == 0 { break; }
+            }
+            while i > 0 {
+                i -= 1;
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            }
+
+            let msg = b"\n";
             for &byte in msg {
                 core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }
@@ -840,6 +919,140 @@ impl LinkedListAllocator {
 
         free_bytes
     }
+
+    /// Count the number of free blocks
+    pub fn free_block_count(&self) -> usize {
+        if !self.initialized {
+            return 0;
+        }
+
+        let mut count = 0usize;
+        unsafe {
+            let mut current = self.free_list;
+
+            while !current.is_null() {
+                let block = &*current;
+                if block.is_valid() && block.free {
+                    count += 1;
+                }
+                current = block.next;
+            }
+        }
+
+        count
+    }
+
+    /// Print heap summary
+    pub unsafe fn print_summary(&self) {
+        if !self.initialized {
+            return;
+        }
+
+        let used = self.usage();
+        let avail = self.available();
+        let free_blocks = self.free_block_count();
+
+        // Print in format: [HEAP] base=0x300000 size=16MB used=X avail=Y free_blocks=Z
+        let msg_start = b"[HEAP] base=0x";
+        for &byte in msg_start {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = self.heap_start;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            buf[i] = if (n & 0xF) < 10 { b'0' + (n & 0xF) as u8 } else { b'a' + (n & 0xF) as u8 - 10 };
+            n >>= 4;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg_size = b" size=";
+        for &byte in msg_size {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let size_mb = self.heap_size / (1024 * 1024);
+        let mut n = size_mb;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+        let msg_mb = b"MB";
+        for &byte in msg_mb {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+
+        let msg_used = b" used=";
+        for &byte in msg_used {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = used;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg_avail = b" avail=";
+        for &byte in msg_avail {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = avail;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg_blocks = b" free_blocks=";
+        for &byte in msg_blocks {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        let mut n = free_blocks;
+        let mut buf = [0u8; 16];
+        let mut i = 0;
+        loop {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+            if n == 0 { break; }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+
+        let msg_newline = b"\n";
+        for &byte in msg_newline {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+    }
 }
 
 /// Global allocator instance
@@ -947,6 +1160,11 @@ pub fn heap_size() -> usize {
 /// Number of bytes currently available for allocation
 pub fn heap_available() -> usize {
     unsafe { ALLOCATOR.available() }
+}
+
+/// Print heap summary for debugging
+pub fn heap_print_summary() {
+    unsafe { ALLOCATOR.print_summary() }
 }
 
 // ============================================================================
