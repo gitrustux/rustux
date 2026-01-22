@@ -92,9 +92,49 @@ pub unsafe extern "C" fn x86_64_syscall_entry(
     r9: usize,
     rax: u32,
 ) -> SyscallRet {
+    // Debug: Indicate syscall entry
+    {
+        let msg = b"[SYSCALL] Entry, num=0x";
+        for &b in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+        }
+        let mut n = rax;
+        let mut buf = [0u8; 8];
+        let mut i = 0;
+        if n == 0 {
+            buf[i] = b'0';
+            i += 1;
+        } else {
+            while n > 0 {
+                let digit = (n & 0xF) as u8;
+                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                n >>= 4;
+                i += 1;
+            }
+        }
+        while i > 0 {
+            i -= 1;
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+        }
+        let msg = b"\n";
+        for &b in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+        }
+    }
+
     // Create syscall arguments structure
     let args = SyscallArgs::new(rax, [rdi, rsi, rdx, r10, r8, r9]);
 
     // Call the main syscall dispatcher
-    sys::syscall_dispatch(args)
+    let result = sys::syscall_dispatch(args);
+
+    // Debug: Indicate syscall exit
+    {
+        let msg = b"[SYSCALL] Return\n";
+        for &b in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+        }
+    }
+
+    result
 }

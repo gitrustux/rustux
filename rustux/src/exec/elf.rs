@@ -549,7 +549,7 @@ pub fn load_elf(elf_data: &[u8]) -> Result<Box<LoadedElf>, &'static str> {
 
     // Set up user stack
     let stack_addr = 0x7fff_ffff_f000u64;
-    let stack_size = 8 * 1024 * 1024; // 8 MB stack
+    let stack_size = 1 * 1024 * 1024; // TEMPORARY: 1 MB stack for testing (was 8 MB)
 
     unsafe {
         let msg = b"[ELF] About to Box LoadedElf\n";

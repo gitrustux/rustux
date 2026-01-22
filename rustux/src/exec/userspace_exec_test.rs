@@ -153,6 +153,13 @@ pub unsafe fn test_userspace_execution() -> ! {
     // Get CR3 value from the address space
     let cr3 = process_image.address_space.page_table.phys;
 
+    // CRITICAL: Set up TSS RSP0 before jumping to userspace
+    // This is the kernel stack that will be used if any exception occurs from userspace
+    // Use current RSP as the kernel stack pointer
+    let kernel_rsp: u64;
+    core::arch::asm!("mov {}, rsp", out(reg) kernel_rsp, options(nomem, nostack));
+    crate::arch::amd64::mmu::x86_set_tss_sp(kernel_rsp);
+
     // Execute the process
     uspace::execute_process(process_image.entry, process_image.stack_top, cr3);
 }

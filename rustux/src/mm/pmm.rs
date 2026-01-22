@@ -546,6 +546,32 @@ pub fn pmm_alloc_page(flags: u32) -> RxResult<PAddr> {
                         core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
                     }
                 }
+            } else if flags == PMM_ALLOC_FLAG_KERNEL {
+                unsafe {
+                    let msg = b"[PMM] Allocated from KERNEL zone at 0x";
+                    for &byte in msg {
+                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                    }
+                    // Print address in hex
+                    let mut n = paddr;
+                    let mut buf = [0u8; 16];
+                    let mut i = 0;
+                    loop {
+                        let digit = (n & 0xF) as u8;
+                        buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                        n >>= 4;
+                        i += 1;
+                        if n == 0 { break; }
+                    }
+                    while i > 0 {
+                        i -= 1;
+                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                    }
+                    let msg = b"\n";
+                    for &byte in msg {
+                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                    }
+                }
             }
             return Ok(paddr);
         }

@@ -33,6 +33,46 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::arch::amd64::mmu::PAddr;
 
 const QEMU_DEBUGCON_PORT: u16 = 0xE9;
+const SERIAL_PORT: u16 = 0x3F8;
+
+fn serial_init() {
+    unsafe {
+        // Configure serial port: 115200 baud, 8 data bits, no parity, 1 stop bit
+        // Line Control Register (LCR) at offset 3
+        const LCR: u16 = 3;
+        // Divisor Latch Low Byte (DLL) at offset 0
+        const DLL: u16 = 0;
+        // Divisor Latch High Byte (DLH) at offset 1
+        const DLH: u16 = 1;
+        // FIFO Control Register (FCR) at offset 2
+        const FCR: u16 = 2;
+        // Line Status Register (LSR) at offset 5
+        const LSR: u16 = 5;
+
+        // Set DLAB bit to access divisor
+        core::arch::asm!("out dx, al", in("dx") (SERIAL_PORT + LCR), in("al") 0x80u8, options(nostack, nomem));
+        // Set divisor to 1 (max speed for QEMU)
+        core::arch::asm!("out dx, al", in("dx") (SERIAL_PORT + DLL), in("al") 0x01u8, options(nostack, nomem));
+        core::arch::asm!("out dx, al", in("dx") (SERIAL_PORT + DLH), in("al") 0x00u8, options(nostack, nomem));
+        // Clear DLAB and set 8N1 mode
+        core::arch::asm!("out dx, al", in("dx") (SERIAL_PORT + LCR), in("al") 0x03u8, options(nostack, nomem));
+        // Enable FIFO
+        core::arch::asm!("out dx, al", in("dx") (SERIAL_PORT + FCR), in("al") 0x01u8, options(nostack, nomem));
+    }
+}
+
+fn serial_write_byte(b: u8) {
+    unsafe {
+        const LSR: u16 = 5;
+        // Wait for transmitter ready
+        let mut status: u8;
+        loop {
+            core::arch::asm!("in al, dx", out("al") status, in("dx") (SERIAL_PORT + LSR), options(nomem, nostack));
+            if status & 0x20 != 0 { break; }
+        }
+        core::arch::asm!("out dx, al", in("dx") SERIAL_PORT, in("al") b, options(nostack, nomem));
+    }
+}
 
 fn qemu_debugcon_write_byte(b: u8) {
     unsafe {
@@ -43,6 +83,7 @@ fn qemu_debugcon_write_byte(b: u8) {
 fn debug_print(s: &str) {
     for byte in s.bytes() {
         qemu_debugcon_write_byte(byte);
+        serial_write_byte(byte);
     }
 }
 
@@ -187,6 +228,9 @@ static mut INIT_STATE: InitState = InitState::NotStarted;
 ///
 /// Must be called exactly once during kernel boot.
 pub fn kernel_init() {
+    // Initialize serial port early for debug output
+    serial_init();
+
     unsafe {
         if INIT_STATE != InitState::NotStarted {
             panic!("kernel_init called multiple times");
@@ -294,9 +338,9 @@ fn init_early() {
         //   - Clone destinations
         //
         const KERNEL_ZONE_BASE: u64 = 0x0020_0000;   // 2MB (after kernel image)
-        const KERNEL_ZONE_SIZE: usize = 14 * 1024 * 1024;  // 14MB
-        const USER_ZONE_BASE: u64 = 0x0100_0000;    // 16MB
-        const USER_ZONE_SIZE: usize = 112 * 1024 * 1024;  // 112MB
+        const KERNEL_ZONE_SIZE: usize = 64 * 1024 * 1024;  // 64MB (was 14MB - fix zone exhaustion)
+        const USER_ZONE_BASE: u64 = 0x0400_0000;    // 64MB (was 16MB - moved to accommodate larger kernel zone)
+        const USER_ZONE_SIZE: usize = 64 * 1024 * 1024;  // 64MB (was 112MB)
 
         // Add kernel zone arena
         let kernel_info = pmm::ArenaInfo::new(

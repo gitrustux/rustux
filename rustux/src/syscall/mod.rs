@@ -291,6 +291,9 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
     // We'll implement them incrementally as needed
 
     match num {
+        // I/O & Console (0x50-0x5F) - Simple debug I/O for early userspace
+        0x50 => sys_debug_write(args),
+
         // Process & Thread (0x01-0x0F)
         0x01 => sys_process_create(args),
         0x02 => sys_process_start(args),
@@ -358,13 +361,97 @@ syscall_stub!(sys_process_start);
 syscall_stub!(sys_thread_create);
 syscall_stub!(sys_thread_start);
 syscall_stub!(sys_thread_exit);
-syscall_stub!(sys_process_exit);
+// sys_process_exit and sys_handle_close are implemented below
 
 fn sys_handle_close(args: SyscallArgs) -> SyscallRet {
     let handle = args.arg_u32(0);
     // TODO: Implement handle close
     let _ = handle;
     ok_to_ret(0)
+}
+
+/// ============================================================================
+/// I/O & Console Syscalls (0x50-0x5F)
+/// ============================================================================
+
+/// Debug write syscall - write a string to the debug console
+///
+/// # Arguments
+///
+/// * `args[0]` - Pointer to string in userspace
+/// * `args[1]` - Length of string
+///
+/// # Returns
+///
+/// Number of bytes written, or negative error code
+fn sys_debug_write(args: SyscallArgs) -> SyscallRet {
+    use core::arch::asm;
+    use crate::arch::amd64::mmu;
+
+    let ptr = args.arg_u64(0) as *const u8;
+    let len = args.arg_u64(1);
+
+    // Safety: We need to validate the userspace pointer
+    // For now, we'll do a simple check and try to read
+    unsafe {
+        // Check if pointer is in userspace range
+        if ptr as u64 >= 0xFFFF_8000_0000_0000 {
+            // Pointer is in kernel space - reject
+            return err_to_ret(RxStatus::ERR_INVALID_ARGS);
+        }
+
+        // Write each byte to debug console (port 0xE9)
+        let mut written = 0usize;
+        for i in 0..len {
+            // Check if we can read from the pointer
+            // For now, assume it's valid (TODO: add proper validation)
+            let byte = *ptr.add(i as usize);
+            asm!(
+                "out dx, al",
+                in("dx") 0xE9u16,
+                in("al") byte,
+                options(nomem, nostack)
+            );
+            written += 1;
+        }
+
+        ok_to_ret(written)
+    }
+}
+
+/// ============================================================================
+/// Process & Thread Syscalls
+/// ============================================================================
+
+fn sys_process_exit(args: SyscallArgs) -> SyscallRet {
+    let exit_code = args.arg_i64(0);
+
+    // For now, just halt with the exit code
+    // TODO: Implement proper process cleanup
+    unsafe {
+        let msg = b"\n[PROCESS] Process exited with code: ";
+        for &b in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+        }
+
+        // Print the exit code (simplified - just show if it's 0 or not)
+        if exit_code == 0 {
+            let msg = b"0\n";
+            for &b in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+            }
+        } else {
+            let msg = b"non-zero\n";
+            for &b in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+            }
+        }
+
+        // Halt the system for now
+        loop {
+            core::arch::asm!("hlt");
+        }
+    }
 }
 
 // Memory / VMO syscalls
@@ -421,6 +508,9 @@ pub fn init() {
 
 /// System call numbers (Stable v1)
 pub mod number {
+    /// I/O & Console (0x50-0x5F)
+    pub const DEBUG_WRITE: u32 = 0x50;
+
     /// Process & Thread (0x01-0x0F)
     pub const PROCESS_CREATE: u32 = 0x01;
     pub const PROCESS_START: u32 = 0x02;

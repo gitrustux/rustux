@@ -81,6 +81,17 @@ fn keyboard_controller_init() {
 
 #[entry]
 fn main() -> Status {
+    // MINIMAL DEBUG TEST: Write '!' to port 0xE9 immediately upon entry
+    // If this doesn't appear, the kernel is not executing at all
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0xE9u16,
+            in("al") b'!',
+            options(nostack, preserves_flags)
+        );
+    }
+
     debug_print("╔══════════════════════════════════════════════════════════╗\n");
     debug_print("║           RUSTUX KERNEL - KEYBOARD INTERRUPT TEST       ║\n");
     debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
