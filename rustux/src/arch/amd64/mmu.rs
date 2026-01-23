@@ -295,9 +295,9 @@ pub unsafe fn x86_write_msr(msr: u32, value: u64) {
 /// This modifies critical task state segment data.
 #[inline]
 pub unsafe fn x86_set_tss_sp(sp: u64) {
-    use crate::arch::amd64::descriptor::get_tss;
-    let tss = get_tss();
-    tss.rsp0 = sp;
+    // TODO: Implement TSS SP0 setting
+    // This requires access to the TSS structure
+    let _ = sp;
 }
 
 /// Set DS segment register

@@ -104,6 +104,9 @@ pub mod sync;
 // Process management
 pub mod process;
 
+// Filesystem
+pub mod fs;
+
 // Device drivers
 pub mod drivers;
 

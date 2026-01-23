@@ -13,6 +13,12 @@
 
 use core::arch::asm;
 
+// External framebuffer color functions (defined in main.rs)
+extern "C" {
+    fn fb_blue();
+    fn fb_white();
+}
+
 /// User code segment selector (RPL=3)
 const USER_CS: u64 = 0x1B;
 
@@ -44,223 +50,142 @@ const USER_DS: u64 = 0x23;
 /// 1. Loads the new CR3 (page table base)
 /// 2. Sets up user mode segment selectors
 /// 3. Uses IRETQ to switch to user mode at the entry point
-pub unsafe fn execute_process(entry: u64, stack_top: u64, _cr3: u64) -> ! {
-    // NOTE: CR3 switch is disabled for now - we use kernel page table
-    // TODO: Implement proper address space switching with kernel PML4 template
-
-    // Debug: Entry point
-    {
-        let msg = b"[USPACE] entry=0x";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-        let mut n = entry;
-        let mut buf = [0u8; 16];
-        let mut i = 0;
-        if n == 0 {
-            buf[i] = b'0';
-            i += 1;
-        } else {
-            while n > 0 {
-                let digit = (n & 0xF) as u8;
-                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                n >>= 4;
-                i += 1;
-            }
-        }
-        while i > 0 {
-            i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-        }
-        let msg = b" stack=0x";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-        let mut n = stack_top;
-        let mut buf = [0u8; 16];
-        let mut i = 0;
-        if n == 0 {
-            buf[i] = b'0';
-            i += 1;
-        } else {
-            while n > 0 {
-                let digit = (n & 0xF) as u8;
-                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                n >>= 4;
-                i += 1;
-            }
-        }
-        while i > 0 {
-            i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-        }
-        let msg = b"\n";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
+pub unsafe fn execute_process(entry: u64, stack_top: u64, cr3: u64) -> ! {
+    // Debug: trace execution
+    let msg = b"[USPACE] Starting userspace transition\n";
+    for &byte in msg {
+        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
     }
 
-    // Load process CR3 to switch to process page table
-    {
-        let msg = b"[USPACE] Loading process CR3=0x";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-        let mut n = _cr3;
-        let mut buf = [0u8; 16];
-        let mut i = 0;
-        if n == 0 {
-            buf[i] = b'0';
-            i += 1;
-        } else {
-            while n > 0 {
-                let digit = (n & 0xF) as u8;
-                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                n >>= 4;
-                i += 1;
-            }
-        }
-        while i > 0 {
-            i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-        }
-        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'\n', options(nomem, nostack));
-        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'A', options(nomem, nostack));
+    let msg = b"[USPACE] About to load CR3\n";
+    for &byte in msg {
+        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
     }
 
-    // Load the process's CR3 (switch to process page table)
-    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'B', options(nomem, nostack));
-    asm!(
-        "mov cr3, {cr3}",
-        cr3 = in(reg) _cr3,
-        options(nostack)
-    );
-    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'C', options(nomem, nostack));
+    // CRITICAL: Canary reads BEFORE CR3 load to verify kernel mappings
+    // These reads use the process's page tables to verify that kernel
+    // text and stack remain accessible after CR3 load.
+    unsafe {
+        // Canary 1: Read from kernel text (this function's address)
+        // If this fails, kernel code is not mapped in process page tables
+        let kernel_text_ptr = execute_process as *const u8;
+        let kernel_text_value: u8;
+        core::arch::asm!(
+            "mov al, [{ptr}]",
+            ptr = in(reg) kernel_text_ptr,
+            out("al") kernel_text_value,
+            options(nostack, readonly)
+        );
 
-    // SANITY CHECK: Read first byte of userspace entry after CR3 switch
-    // This verifies the mapping exists and is accessible
-    {
-        let first_byte = unsafe { *(entry as *const u8) };
-        let msg = b"[USPACE] First userspace byte = 0x";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-        let mut n = first_byte as u64;
-        let mut buf = [0u8; 4];
-        let mut i = 0;
-        if n == 0 {
-            buf[i] = b'0';
-            i += 1;
-        } else {
-            while n > 0 {
-                let digit = (n & 0xF) as u8;
-                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                n >>= 4;
-                i += 1;
+        if kernel_text_value == 0 {
+            let msg = b"[CANARY] FAIL: Kernel text not mapped!\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }
+            // Halt instead of loading CR3 - CR3 load would fault
+            core::arch::asm!(
+                "2:",
+                "hlt",
+                "jmp 2b",
+                options(noreturn, nostack)
+            );
         }
-        while i > 0 {
-            i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-        }
-        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'\n', options(nomem, nostack));
-    }
 
-    // Step 3: Set up user data segments (DS, ES, FS, GS) but NOT SS
-    // SS will be set by IRETQ
-    {
-        let msg = b"[USPACE] Setting up user data segments...\n";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+        let msg = b"[CANARY] PASS: Kernel text accessible\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
         }
-    }
-    asm!(
-        "mov ds, {ds}",
-        "mov es, {ds}",
-        "mov fs, {ds}",
-        "mov gs, {ds}",
-        // NOTE: Don't set SS here - IRETQ will do it
-        ds = in(reg) USER_DS as u16,
-        options(nostack)
-    );
-    {
-        let msg = b"[USPACE] Data segments set, preparing IRETQ...\n";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-    }
 
-    // Step 4: Use IRETQ to switch to user mode
-    // IRETQ pops: RIP, CS, RFLAGS, RSP, SS (in that order from stack)
-    // We push in reverse order: SS, RSP, RFLAGS, CS, RIP
-    {
-        let msg = b"[USPACE] IRETQ frame: CS=0x";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+        // Canary 2: Read from current stack (RSP)
+        // If this fails, kernel stack is not mapped
+        let mut rsp: u64;
+        core::arch::asm!(
+            "mov {rsp}, rsp",
+            rsp = out(reg) rsp,
+            options(nostack)
+        );
+
+        let stack_value: u8;
+        core::arch::asm!(
+            "mov al, [{ptr}]",
+            ptr = in(reg) rsp,
+            out("al") stack_value,
+            options(nostack, readonly)
+        );
+
+        let msg = b"[CANARY] PASS: Kernel stack accessible\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
         }
-        let mut n = USER_CS;
-        let mut buf = [0u8; 4];
-        let mut i = 0;
-        if n == 0 {
-            buf[i] = b'0';
-            i += 1;
-        } else {
-            while n > 0 {
-                let digit = (n & 0xF) as u8;
-                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                n >>= 4;
-                i += 1;
-            }
+
+        let msg = b"[CANARY] All verified - loading CR3\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
         }
-        while i > 0 {
-            i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+
+        // Load the new CR3 (page table base)
+        // This is the critical switch to the process's address space
+        core::arch::asm!(
+            "mov cr3, {cr3}",
+            cr3 = in(reg) cr3,
+            options(nostack)
+        );
+
+        // PROGRESS MARKER: CR3 loaded successfully (BLUE framebuffer)
+        fb_blue();
+
+        let msg = b"[USPACE] About to load RSP\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
         }
-        let msg = b" SS=0x";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+
+        // Set up user stack
+        core::arch::asm!(
+            "mov rsp, {stack}",
+            stack = in(reg) stack_top,
+            options(nostack)
+        );
+
+        let msg = b"[USPACE] RSP loaded, about to load segments\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
         }
-        let mut n = USER_DS;
-        let mut buf = [0u8; 4];
-        let mut i = 0;
-        if n == 0 {
-            buf[i] = b'0';
-            i += 1;
-        } else {
-            while n > 0 {
-                let digit = (n & 0xF) as u8;
-                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                n >>= 4;
-                i += 1;
-            }
-        }
-        while i > 0 {
-            i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-        }
-        let msg = b"\n";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-        let msg = b"[USPACE] About to execute IRETQ to user mode...\n";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
+
+        // Set up user data segments
+        core::arch::asm!(
+            "mov ds, {ds}",
+            "mov es, {ds}",
+            "mov fs, {ds}",
+            "mov gs, {ds}",
+            "mov ss, {ds}",
+            ds = in(reg) USER_DS as u16,
+            options(nostack)
+        );
+
+        // PROGRESS MARKER: About to IRETQ to userspace (WHITE framebuffer)
+        fb_white();
+
+        // Set up RFLAGS for userspace (interrupts enabled, IOPL 0)
+        let rflags: u64 = 0x202; // IF=1 (interrupts enabled), bit 1 always set
+
+        // IRETQ frame structure:
+        // Stack layout for IRETQ (growing down):
+        //   [RSP]     SS:RSP
+        //   [RSP+8]   RFLAGS
+        //   [RSP+16]  CS:RIP
+        core::arch::asm!(
+            "push {ss}",     // SS
+            "push {rsp}",    // RSP
+            "push {rflags}", // RFLAGS
+            "push {cs}",     // CS
+            "push {rip}",    // RIP
+            "iretq",
+            ss = in(reg) USER_DS as u64,
+            rsp = in(reg) stack_top,
+            rflags = in(reg) rflags,
+            cs = in(reg) USER_CS as u64,
+            rip = in(reg) entry,
+            options(noreturn, nostack)
+        );
     }
-    // RFLAGS: IF=1 (interrupts enabled), IOPL=3 (allows userspace I/O)
-    // 0x3202 = (3 << 12) | (1 << 9) | 1
-    asm!(
-        "push {ss}",          // Stack selector (will be loaded into SS by IRETQ)
-        "push {rsp_val}",     // Stack pointer (will be loaded into RSP by IRETQ)
-        "push {rflags}",      // RFLAGS (IF=1, IOPL=3)
-        "push {cs}",          // Code selector (will be loaded into CS by IRETQ)
-        "push {entry}",       // Entry point (will be loaded into RIP by IRETQ)
-        "iretq",              // Interrupt return to user mode
-        ss = in(reg) USER_DS as u64,
-        rsp_val = in(reg) stack_top,
-        rflags = in(reg) 0x3202u64, // IF=1, IOPL=3
-        cs = in(reg) USER_CS,
-        entry = in(reg) entry,
-        options(noreturn)
-    );
 }

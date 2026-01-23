@@ -45,7 +45,30 @@ use crate::arch::amd64::mm::{
     RxResult,
     page_tables::PAGE_SIZE
 };
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+/// Global PMM allocation call counter
+static ALLOC_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Helper: Print decimal number to debug console
+unsafe fn print_decimal(mut n: usize) {
+    if n == 0 {
+        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'0', options(nomem, nostack));
+        return;
+    }
+    let mut buf = [0u8; 20];
+    let mut i = 0;
+    while n > 0 {
+        let digit = (n % 10) as u8;
+        buf[i] = b'0' + digit;
+        n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+    }
+}
 
 /// Page size shift for quick division/multiplication
 pub const PAGE_SIZE_SHIFT: u8 = 12;
@@ -479,26 +502,32 @@ pub unsafe fn set_boot_allocator(alloc: BootAllocFn) {
 ///
 /// Physical address of the allocated page, or an error
 pub fn pmm_alloc_page(flags: u32) -> RxResult<PAddr> {
+    // Increment and get call number
+    let call_num = ALLOC_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+
     let arenas = unsafe { &mut ARENAS[..NUM_ARENAS] };
 
-    // Debug: Log which allocator is being called
-    if flags == PMM_ALLOC_FLAG_KERNEL {
-        unsafe {
-            let msg = b"[PMM] alloc_kernel_page called\n";
+    // Debug: Log which allocator is being called WITH CALL NUMBER
+    unsafe {
+        let msg = b"[PMM] Call #";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        print_decimal(call_num);
+
+        // Print allocation type separately
+        if flags == PMM_ALLOC_FLAG_KERNEL {
+            let msg = b" alloc_kernel_page\n";
             for &byte in msg {
                 core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }
-        }
-    } else if flags == PMM_ALLOC_FLAG_USER {
-        unsafe {
-            let msg = b"[PMM] alloc_user_page called\n";
+        } else if flags == PMM_ALLOC_FLAG_USER {
+            let msg = b" alloc_user_page\n";
             for &byte in msg {
                 core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }
-        }
-    } else {
-        unsafe {
-            let msg = b"[PMM] alloc_page called (GENERIC)\n";
+        } else {
+            let msg = b" alloc_page(GENERIC)\n";
             for &byte in msg {
                 core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }
@@ -519,62 +548,58 @@ pub fn pmm_alloc_page(flags: u32) -> RxResult<PAddr> {
         }
 
         if let Some(paddr) = arena.alloc_page() {
-            // Debug: Log which zone the allocation came from
-            if flags == PMM_ALLOC_FLAG_USER {
-                unsafe {
-                    let msg = b"[PMM] Allocated from USER zone at 0x";
-                    for &byte in msg {
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                    }
-                    // Print address in hex
-                    let mut n = paddr;
-                    let mut buf = [0u8; 16];
-                    let mut i = 0;
-                    loop {
-                        let digit = (n & 0xF) as u8;
-                        buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                        n >>= 4;
-                        i += 1;
-                        if n == 0 { break; }
-                    }
-                    while i > 0 {
-                        i -= 1;
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                    }
-                    let msg = b"\n";
-                    for &byte in msg {
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                    }
+            // Debug: Log SUCCESS with call number
+            unsafe {
+                let msg = b"[PMM] Call #";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
                 }
-            } else if flags == PMM_ALLOC_FLAG_KERNEL {
-                unsafe {
-                    let msg = b"[PMM] Allocated from KERNEL zone at 0x";
-                    for &byte in msg {
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                    }
-                    // Print address in hex
-                    let mut n = paddr;
-                    let mut buf = [0u8; 16];
-                    let mut i = 0;
-                    loop {
-                        let digit = (n & 0xF) as u8;
-                        buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                        n >>= 4;
-                        i += 1;
-                        if n == 0 { break; }
-                    }
-                    while i > 0 {
-                        i -= 1;
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-                    }
-                    let msg = b"\n";
-                    for &byte in msg {
-                        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-                    }
+                print_decimal(call_num);
+                let msg = b" SUCCESS -> 0x";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                }
+                // Print address in hex
+                let mut n = paddr;
+                let mut buf = [0u8; 16];
+                let mut i = 0;
+                loop {
+                    let digit = (n & 0xF) as u8;
+                    buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
+                    n >>= 4;
+                    i += 1;
+                    if n == 0 { break; }
+                }
+                while i > 0 {
+                    i -= 1;
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+                }
+                let msg = b"\n";
+                for &byte in msg {
+                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
                 }
             }
             return Ok(paddr);
         }
+    }
+
+    // Debug: Log exhaustion
+    unsafe {
+        let msg = b"[PMM] Call #";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        print_decimal(call_num);
+        let msg = b" FAILED - PMM EXHAUSTED\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        // Halt with distinctive pattern
+        let msg = b"[PMM] EXHAUSTED - HALTING\n";
+        for &byte in msg {
+            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        }
+        loop {}
     }
 
     Err(RxStatus::ERR_NO_MEMORY)

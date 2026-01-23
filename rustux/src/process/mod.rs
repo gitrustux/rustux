@@ -25,6 +25,8 @@
 //! ```
 
 pub mod address_space;
+pub mod table;
+pub mod switch;
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::sync::SpinMutex;

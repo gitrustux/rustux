@@ -21,6 +21,7 @@
 pub mod thread;
 pub mod scheduler;
 pub mod state;
+pub mod round_robin;
 
 pub use thread::{Thread, ThreadId, EntryPoint};
 pub use scheduler::{Scheduler, SchedulingPolicy};
