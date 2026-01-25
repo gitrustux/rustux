@@ -1,0 +1,46 @@
+[package]
+name = "rustux"
+version = "0.1.0"
+edition = "2021"
+
+# CRITICAL: Keep the library for interrupt components
+[lib]
+name = "rustux"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+# CRITICAL: Add binary target for UEFI boot
+[[bin]]
+name = "rustux"
+path = "src/main.rs"
+required-features = ["uefi_kernel"]
+
+[dependencies]
+# Core dependencies (always enabled)
+x86_64 = "0.14"
+spin = "0.9"
+bitflags = "2.4"
+
+# UEFI support (only for binary target, optional)
+uefi = { version = "0.36", features = ["alloc"], optional = true }
+
+[features]
+default = []
+# Architecture-specific features (for conditional compilation)
+amd64 = []
+arm64 = []
+riscv64 = []
+# Enable kernel test mode (includes test_entry and interrupt tests)
+kernel_test = []
+# Enable UEFI kernel (for the binary target)
+uefi_kernel = ["uefi"]
+# Enable userspace test (embeds userspace binary and tests mexec)
+userspace_test = []
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "z"
+
+[profile.dev]
+panic = "abort"

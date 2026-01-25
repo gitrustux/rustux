@@ -1,0 +1,17 @@
+[build]
+target = "x86_64-unknown-uefi"
+
+[target.x86_64-unknown-uefi]
+rustflags = [
+    # Increase stack size to 128 KB (default is only 4-8 KB in UEFI)
+    # This is critical for preventing stack overflow during deep call chains
+    # like ELF loading, VMO operations, and heap allocations.
+    # Root cause of VMO corruption was identified as stack overflow.
+    "-C", "link-arg=-stack:0x20000",  # 128 KB (vaddr=0x3 corruption = flags, need more stack)
+
+    # Set the heap reserve size (UEFI-specific)
+    "-C", "link-arg=-heapreserve:0x10000",
+
+    # Set commit size
+    "-C", "link-arg=-heapcommit:0x1000",
+]

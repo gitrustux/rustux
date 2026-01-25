@@ -1,0 +1,17 @@
+[package]
+name = "rustux-userspace-test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+strip = false
+opt-level = "z"
+lto = true
+codegen-units = 1

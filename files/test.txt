@@ -1,0 +1,8 @@
+Hello from the embedded ramdisk!
+
+This is a test file embedded in the kernel at build time.
+Userspace programs can open and read this file using sys_open and sys_read.
+
+The quick brown fox jumps over the lazy dog.
+
+End of test file.
