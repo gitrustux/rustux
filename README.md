@@ -26,6 +26,7 @@ UEFI Firmware → BOOTX64.EFI (rustux.efi) → Kernel → Init (PID 1) → Shell
 
 ### Known Issues
 
+- **Userspace does not run yet.** The kernel boots through all subsystems in QEMU and enters ring 3, but user programs are linked at `0x400000`, which every process still maps through the firmware's identity mapping (copied into the lower half of each address space). `init` therefore faults on its first instruction. Fix: move the kernel out of the lower half.
 - **No USB keyboard support.** Only PS/2 is implemented, so most modern hardware has no keyboard input. USB HID (xHCI) is the next driver; see [`docs/polling.txt`](docs/polling.txt).
 - **Local APIC register map** in `src/arch/amd64/apic.rs` does not match the Intel layout (EOI is correct). See [`docs/README.md`](docs/README.md#known-issues).
 

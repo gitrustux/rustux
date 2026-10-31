@@ -50,7 +50,7 @@ pub fn arch_sync_cache_range(_start: usize, _len: usize) {
     // See Intel Volume 3, 8.1.3 "Handling Self- and Cross-Modifying Code"
     #[cfg(target_arch = "x86_64")]
     {
-        let result = core::arch::x86_64::__cpuid(0);
+        #[allow(unused_unsafe)] let result = unsafe { core::arch::x86_64::__cpuid(0) };
         let _ = result.edx; // Prevent unused warning
     }
 

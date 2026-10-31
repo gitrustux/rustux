@@ -13,12 +13,6 @@
 
 use core::arch::asm;
 
-// External framebuffer color functions (defined in main.rs)
-extern "C" {
-    fn fb_blue();
-    fn fb_white();
-}
-
 /// User code segment selector (RPL=3)
 const USER_CS: u64 = 0x1B;
 
@@ -123,69 +117,42 @@ pub unsafe fn execute_process(entry: u64, stack_top: u64, cr3: u64) -> ! {
             core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
         }
 
-        // Load the new CR3 (page table base)
-        // This is the critical switch to the process's address space
-        core::arch::asm!(
-            "mov cr3, {cr3}",
-            cr3 = in(reg) cr3,
-            options(nostack)
-        );
+        // Interrupts and `int 0x80` from ring 3 switch to TSS.RSP0. Use the
+        // current kernel stack (this frame never returns), leaving 512 bytes
+        // below the current position for the rest of this function.
+        let kernel_rsp: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) kernel_rsp, options(nomem, nostack));
+        super::descriptor::set_tss_rsp0((kernel_rsp - 512) & !0xF);
 
-        // PROGRESS MARKER: CR3 loaded successfully (BLUE framebuffer)
-        fb_blue();
-
-        let msg = b"[USPACE] About to load RSP\n";
+        let msg = b"[USPACE] Loading CR3 and entering ring 3\n";
         for &byte in msg {
             core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
         }
-
-        // Set up user stack
-        core::arch::asm!(
-            "mov rsp, {stack}",
-            stack = in(reg) stack_top,
-            options(nostack)
-        );
-
-        let msg = b"[USPACE] RSP loaded, about to load segments\n";
-        for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
-        }
-
-        // Set up user data segments
-        core::arch::asm!(
-            "mov ds, {ds}",
-            "mov es, {ds}",
-            "mov fs, {ds}",
-            "mov gs, {ds}",
-            "mov ss, {ds}",
-            ds = in(reg) USER_DS as u16,
-            options(nostack)
-        );
-
-        // PROGRESS MARKER: About to IRETQ to userspace (WHITE framebuffer)
-        fb_white();
 
         // Set up RFLAGS for userspace (interrupts enabled, IOPL 0)
         let rflags: u64 = 0x202; // IF=1 (interrupts enabled), bit 1 always set
 
-        // IRETQ frame structure:
-        // Stack layout for IRETQ (growing down):
-        //   [RSP]     SS:RSP
-        //   [RSP+8]   RFLAGS
-        //   [RSP+16]  CS:RIP
+        // One asm block from here on: no Rust code may run between switching
+        // address spaces and IRETQ. SS and RSP are loaded by IRETQ itself
+        // (loading SS with an RPL 3 selector in ring 0 raises #GP).
         core::arch::asm!(
+            "mov cr3, {cr3}",
+            "mov ds, {ds:x}",
+            "mov es, {ds:x}",
             "push {ss}",     // SS
             "push {rsp}",    // RSP
             "push {rflags}", // RFLAGS
             "push {cs}",     // CS
             "push {rip}",    // RIP
             "iretq",
-            ss = in(reg) USER_DS as u64,
+            cr3 = in(reg) cr3,
+            ds = in(reg) USER_DS,
+            ss = in(reg) USER_DS,
             rsp = in(reg) stack_top,
             rflags = in(reg) rflags,
-            cs = in(reg) USER_CS as u64,
+            cs = in(reg) USER_CS,
             rip = in(reg) entry,
-            options(noreturn, nostack)
+            options(noreturn)
         );
     }
 }

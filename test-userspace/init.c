@@ -30,6 +30,17 @@ static inline long syscall1(long number, long arg1) {
     return ret;
 }
 
+static inline long syscall3(long number, long arg1, long arg2, long arg3) {
+    long ret;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a" (ret)
+        : "a" (number), "b" (arg1), "c" (arg2), "d" (arg3)
+        : "memory"
+    );
+    return ret;
+}
+
 static inline long sys_spawn(const char *path) {
     return syscall1(SYS_SPAWN, (long)path);
 }
@@ -46,8 +57,7 @@ static inline void print(const char *str) {
         len++;
         p++;
     }
-    syscall1(SYS_WRITE, (long)str);
-    syscall1(SYS_WRITE, len);
+    syscall3(SYS_WRITE, STDOUT, (long)str, len);
 }
 
 void _start(void) {

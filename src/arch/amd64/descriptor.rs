@@ -81,6 +81,17 @@ static mut GDT: [GdtEntry; GDT_ENTRIES] = [GdtEntry::null(); GDT_ENTRIES];
 static mut GDT_POINTER: GdtPointer = GdtPointer { limit: 0, base: 0 };
 static mut TSS: TaskStateSegment = TaskStateSegment::null();
 
+/// Set the ring-0 stack the CPU switches to on an interrupt, exception or
+/// `int 0x80` taken while running in ring 3 (TSS.RSP0).
+///
+/// # Safety
+/// `rsp0` must be the top of a mapped kernel stack in every address space
+/// that can run in ring 3.
+pub unsafe fn set_tss_rsp0(rsp0: u64) {
+    // TSS is packed; write through a raw pointer to avoid an unaligned reference
+    core::ptr::addr_of_mut!(TSS.rsp0).write_unaligned(rsp0);
+}
+
 impl GdtEntry {
     pub const fn null() -> Self {
         Self {

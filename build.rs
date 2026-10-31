@@ -107,17 +107,19 @@ fn main() {
         ("files/test.txt", "test.txt"),
     ];
 
-    // Check for ELF binaries in target directory
-    let potential_elf_files = vec![
-        ("target/hello.elf", "bin/hello"),
-        ("target/counter.elf", "bin/counter"),
-        ("target/init.elf", "bin/init"),
-        ("target/shell.elf", "bin/shell"),
+    // ELF binaries to embed. A freshly compiled copy in target/ wins; otherwise
+    // fall back to the prebuilt binaries tracked in test-userspace/, so a clean
+    // checkout still produces a kernel with init and the shell.
+    let potential_elf_files: Vec<(&[&'static str], &'static str)> = vec![
+        (&["target/hello.elf", "test-userspace/hello.elf"], "bin/hello"),
+        (&["target/counter.elf"], "bin/counter"),
+        (&["target/init.elf", "test-userspace/init.elf"], "bin/init"),
+        (&["target/shell.elf", "test-userspace/shell/shell.elf"], "bin/shell"),
     ];
 
-    // Add ELF files if they exist
-    for (src_path, name) in potential_elf_files {
-        if PathBuf::from(src_path).exists() {
+    // Add the first existing candidate for each ELF
+    for (candidates, name) in potential_elf_files {
+        if let Some(src_path) = candidates.iter().find(|p| PathBuf::from(p).exists()) {
             files_to_embed.push((src_path, name));
             println!("cargo:warning=Embedding ELF: {} -> {}", src_path, name);
         }
@@ -165,8 +167,9 @@ fn main() {
             _pad: 0,
         });
 
-        // Update data offset (after name + null terminator)
-        data_offset = data_offset + name_len + 1;
+        // Next entry starts after this name, its null terminator and its contents
+        // (matches the write order below: name, NUL, data)
+        data_offset = data_offset + name_len + 1 + contents.len() as u32;
     }
 
     // Second pass: write the ramdisk

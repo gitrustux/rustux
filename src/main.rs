@@ -46,18 +46,22 @@ fn main() -> Status {
         let _ = stdout.output_string(msg);
     });
 
+    // Record the GOP framebuffer while boot services are still available;
+    // everything after ExitBootServices draws from the saved values.
+    capture_framebuffer();
+
     // PROGRESS MARKER: Entry point reached (RED framebuffer)
     fb_red();
 
     let _acpi_rsdp = find_acpi_rsdp();
     let _memory_map = unsafe { uefi::boot::exit_boot_services(None) };
 
-    // PROGRESS MARKER: ExitBootServices succeeded
-    // This confirms kernel is fully in control of hardware
-    system::with_stdout(|stdout| {
-        let msg = cstr16!("EBS OK");
-        let _ = stdout.output_string(msg);
-    });
+    // PROGRESS MARKER: ExitBootServices succeeded.
+    // UEFI console output is no longer available (uefi::system::with_stdout
+    // panics after ExitBootServices), so report on the debug port instead.
+    for &b in b"EBS OK\n" {
+        qemu_debugcon_write_byte(b);
+    }
 
     // PROGRESS MARKER: ExitBootServices succeeded (GREEN framebuffer)
     fb_green();
@@ -139,9 +143,10 @@ fn kernel_main_on_new_stack() -> ! {
     unsafe { idt::idt_set_gate(33, keyboard_handler as u64, 0x08, 0x8E); }
     debug_print("      ✓ Keyboard handler at vector 33\n");
 
-    // Install syscall handler (int 0x80)
+    // Install syscall handler (int 0x80). Type 0xEE = present, DPL 3,
+    // 64-bit interrupt gate: DPL 3 lets ring-3 code execute `int 0x80`.
     debug_print("[3.6/5] Installing syscall handler...\n");
-    unsafe { idt::idt_set_gate(0x80, syscall_handler as u64, 0x08, 0x8E); }
+    unsafe { idt::idt_set_gate(0x80, rustux_int80_entry as u64, 0x08, 0xEE); }
     debug_print("      ✓ Syscall handler at vector 0x80\n");
 
     // Initialize APIC
@@ -393,44 +398,83 @@ pub extern "x86-interrupt" fn timer_handler(_sf: idt::X86Iframe) {
     }
 }
 
-// Syscall handler (int 0x80 = Vector 0x80)
+// int 0x80 system call entry
 //
-// This handler is invoked when userspace executes `int 0x80`.
-// It extracts the syscall number and arguments from the interrupt frame
-// and dispatches to the appropriate syscall implementation.
+// ABI: syscall number in RAX, arguments in RBX, RCX, RDX, R10, R8, R9;
+// result returned in RAX. The CPU pushes SS/RSP/RFLAGS/CS/RIP (switching to
+// TSS.RSP0 when coming from ring 3); the stub saves every general register,
+// calls the Rust dispatcher with a pointer to them, and restores them with
+// RAX replaced by the result. Interrupts are re-enabled while the syscall
+// runs so that blocking calls (e.g. read on stdin) can receive keyboard IRQs.
+core::arch::global_asm!(
+    ".global rustux_int80_entry",
+    "rustux_int80_entry:",
+    "push rax",
+    "push rbx",
+    "push rcx",
+    "push rdx",
+    "push rsi",
+    "push rdi",
+    "push rbp",
+    "push r8",
+    "push r9",
+    "push r10",
+    "push r11",
+    "push r12",
+    "push r13",
+    "push r14",
+    "push r15",
+    "cld",
+    // 5 CPU-pushed + 15 saved qwords keep RSP 16-byte aligned for the call
+    "mov rdi, rsp",
+    "sti",
+    "call rustux_int80_dispatch",
+    "cli",
+    "pop r15",
+    "pop r14",
+    "pop r13",
+    "pop r12",
+    "pop r11",
+    "pop r10",
+    "pop r9",
+    "pop r8",
+    "pop rbp",
+    "pop rdi",
+    "pop rsi",
+    "pop rdx",
+    "pop rcx",
+    "pop rbx",
+    "pop rax",
+    "iretq",
+);
+
+extern "C" {
+    fn rustux_int80_entry();
+}
+
+/// Registers saved by `rustux_int80_entry` (lowest address first)
+#[repr(C)]
+struct Int80Regs {
+    r15: u64, r14: u64, r13: u64, r12: u64, r11: u64, r10: u64, r9: u64, r8: u64,
+    rbp: u64, rdi: u64, rsi: u64, rdx: u64, rcx: u64, rbx: u64, rax: u64,
+}
+
 #[no_mangle]
-pub extern "x86-interrupt" fn syscall_handler(sf: idt::X86Iframe) {
+extern "sysv64" fn rustux_int80_dispatch(regs: &mut Int80Regs) {
     use rustux::syscall::{SyscallArgs, syscall_dispatch};
 
-    // PROOF: Syscall reached - fill top half CYAN to verify
-    unsafe {
-        if FRAMEBUFFER_ADDR != 0 {
-            let fb_ptr = FRAMEBUFFER_ADDR as *mut u16;
-            let pixel_count = FRAMEBUFFER_SIZE as usize / 2;
-            // Fill top half with CYAN (RGB565: 0x07FF)
-            for i in 0..(pixel_count / 2) {
-                *(fb_ptr.add(i)) = 0x07FF;
-            }
-        }
-    }
-
-    let syscall_num = sf.rax as u32;
-
-    // Note: The int 0x80 ABI uses ebx/ecx/edx for args 0/1/2
-    let syscall_args = SyscallArgs::new(
-        syscall_num,
+    let args = SyscallArgs::new(
+        regs.rax as u32,
         [
-            sf.rbx as usize,  // arg0 (ebx)
-            sf.rcx as usize,  // arg1 (ecx)
-            sf.rdx as usize,  // arg2 (edx)
-            sf.r10 as usize,  // arg3 (not used by int 0x80, but we have it in the frame)
-            sf.r8  as usize,  // arg4 (not used by int 0x80)
-            sf.r9  as usize,  // arg5 (not used by int 0x80)
+            regs.rbx as usize,
+            regs.rcx as usize,
+            regs.rdx as usize,
+            regs.r10 as usize,
+            regs.r8 as usize,
+            regs.r9 as usize,
         ],
     );
-
-    // Call the syscall dispatcher
-    let _ret = syscall_dispatch(syscall_args);
+    regs.rax = syscall_dispatch(args) as u64;
 }
 
 fn find_acpi_rsdp() -> Option<u64> {
@@ -447,143 +491,88 @@ fn find_acpi_rsdp() -> Option<u64> {
     result
 }
 
-/// Fill the framebuffer with a solid color for progress indication
-///
-/// Color format: RGB565
-/// - Red:   0xF800
-/// - Green: 0x07E0
-/// - Blue:  0x001F
-/// - White: 0xFFFF
-/// - Black: 0x0000
-fn fill_framebuffer_color(color_rgb565: u32) {
+/// Framebuffer information saved from GOP before ExitBootServices
+static mut FRAMEBUFFER_ADDR: u64 = 0;
+static mut FRAMEBUFFER_SIZE: u64 = 0; // bytes
+static mut FRAMEBUFFER_WIDTH: usize = 0; // visible pixels
+static mut FRAMEBUFFER_HEIGHT: usize = 0;
+static mut FRAMEBUFFER_STRIDE: usize = 0; // pixels per scan line (>= width)
+/// true when byte 0 of a pixel is blue (UEFI PixelBlueGreenRedReserved)
+static mut FRAMEBUFFER_BLUE_FIRST: bool = true;
+
+/// Query GOP once, while boot services are active, and save the
+/// framebuffer address, geometry and pixel layout.
+fn capture_framebuffer() {
     use uefi::boot;
-    use uefi::proto::console::gop::GraphicsOutput;
-    use core::mem::transmute;
+    use uefi::proto::console::gop::{GraphicsOutput, PixelFormat as GopFormat};
 
+    let Ok(handle) = boot::get_handle_for_protocol::<GraphicsOutput>() else {
+        return;
+    };
+    let Ok(mut gop) = boot::open_protocol_exclusive::<GraphicsOutput>(handle) else {
+        return;
+    };
+    let mode = gop.current_mode_info();
+    let blue_first = match mode.pixel_format() {
+        GopFormat::Bgr => true,
+        GopFormat::Rgb => false,
+        // Bitmask / BltOnly: no linear 32-bit framebuffer we can draw to
+        _ => return,
+    };
+    let (width, height) = mode.resolution();
+    let mut fb = gop.frame_buffer();
     unsafe {
-        // Get GOP handle using the boot services API
-        let gop_handle = boot::get_handle_for_protocol::<GraphicsOutput>()
-            .expect("Failed to get GOP handle");
-
-        // Open GOP protocol
-        let mut gop = boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle)
-            .expect("Failed to open GOP protocol");
-
-        let mode = gop.current_mode_info();
-        let fb = gop.frame_buffer();
-
-        // Use transmute to convert FrameBuffer to a mutable u8 slice
-        // This is unsafe but necessary because the FrameBuffer type doesn't expose the slice directly
-        let fb_slice: &mut [u8] = transmute_copy(&fb);
-
-        // Fill the framebuffer with the color
-        let pixel_count = mode.resolution().0 * mode.resolution().1;
-        let color_bytes = [
-            (color_rgb565 & 0xFF) as u8,
-            ((color_rgb565 >> 8) & 0xFF) as u8,
-        ];
-
-        for i in 0..pixel_count {
-            let offset = i * 2;
-            if offset + 1 < fb_slice.len() {
-                fb_slice[offset] = color_bytes[0];
-                fb_slice[offset + 1] = color_bytes[1];
-            }
-        }
+        FRAMEBUFFER_ADDR = fb.as_mut_ptr() as u64;
+        FRAMEBUFFER_SIZE = fb.size() as u64;
+        FRAMEBUFFER_WIDTH = width;
+        FRAMEBUFFER_HEIGHT = height;
+        FRAMEBUFFER_STRIDE = mode.stride();
+        FRAMEBUFFER_BLUE_FIRST = blue_first;
     }
 }
 
-// Helper function for transmuting references
-unsafe fn transmute_copy<T, U>(src: &T) -> U {
-    let mut dst: U = core::mem::zeroed();
-    core::ptr::copy_nonoverlapping(
-        src as *const T as *const u8,
-        &mut dst as *mut U as *mut u8,
-        core::mem::size_of::<T>(),
-    );
-    dst
+/// Fill the visible screen with one colour (32 bits per pixel).
+/// Works before and after ExitBootServices; does nothing without a framebuffer.
+fn fill_screen(r: u8, g: u8, b: u8) {
+    unsafe {
+        if FRAMEBUFFER_ADDR == 0 {
+            return;
+        }
+        let pixel: u32 = if FRAMEBUFFER_BLUE_FIRST {
+            (b as u32) | ((g as u32) << 8) | ((r as u32) << 16)
+        } else {
+            (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
+        };
+        let base = FRAMEBUFFER_ADDR as *mut u32;
+        let limit = FRAMEBUFFER_SIZE as usize / 4;
+        for y in 0..FRAMEBUFFER_HEIGHT {
+            for x in 0..FRAMEBUFFER_WIDTH {
+                let i = y * FRAMEBUFFER_STRIDE + x;
+                if i < limit {
+                    write_volatile(base.add(i), pixel);
+                }
+            }
+        }
+    }
 }
 
 /// Fill framebuffer red - EFI entry point reached
 fn fb_red() {
-    fill_framebuffer_color(0xF800);
+    fill_screen(0xFF, 0x00, 0x00);
 }
 
 /// Fill framebuffer green - ExitBootServices succeeded
-/// Also saves framebuffer info for post-ExitBootServices use
 fn fb_green() {
-    use uefi::boot;
-    use uefi::proto::console::gop::GraphicsOutput;
-
-    unsafe {
-        let gop_handle = boot::get_handle_for_protocol::<GraphicsOutput>()
-            .expect("Failed to get GOP handle");
-
-        let mut gop = boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle)
-            .expect("Failed to open GOP protocol");
-
-        let mode = gop.current_mode_info();
-        let fb = gop.frame_buffer();
-
-        // Use transmute_copy to convert FrameBuffer to a mutable u8 slice
-        let fb_slice: &mut [u8] = transmute_copy(&fb);
-        let fb_addr = fb_slice.as_mut_ptr() as u64;
-        let pixel_count = mode.resolution().0 * mode.resolution().1;
-
-        // Save framebuffer info for later use
-        FRAMEBUFFER_ADDR = fb_addr;
-        FRAMEBUFFER_SIZE = (pixel_count * 2) as u64; // 2 bytes per pixel (RGB565)
-        FRAMEBUFFER_WIDTH = mode.resolution().0;
-        FRAMEBUFFER_HEIGHT = mode.resolution().1;
-
-        // Fill with green (0x07E0 in RGB565)
-        let color_bytes = [0xE0, 0x07]; // Little-endian RGB565
-        for i in 0..pixel_count {
-            let offset = i * 2;
-            if offset + 1 < fb_slice.len() {
-                fb_slice[offset] = color_bytes[0];
-                fb_slice[offset + 1] = color_bytes[1];
-            }
-        }
-    }
+    fill_screen(0x00, 0xFF, 0x00);
 }
-
-// Save framebuffer info for use after ExitBootServices
-static mut FRAMEBUFFER_ADDR: u64 = 0;
-static mut FRAMEBUFFER_SIZE: u64 = 0;
-static mut FRAMEBUFFER_WIDTH: usize = 0;
-static mut FRAMEBUFFER_HEIGHT: usize = 0;
 
 /// Fill framebuffer blue - CR3 load succeeded (works after ExitBootServices)
-/// NOTE: Must be called after fb_green() to capture framebuffer address
+#[no_mangle]
 pub extern "C" fn fb_blue() {
-    unsafe {
-        if FRAMEBUFFER_ADDR == 0 {
-            return; // No framebuffer available
-        }
-        let fb_ptr = FRAMEBUFFER_ADDR as *mut u16;
-        let pixel_count = FRAMEBUFFER_SIZE as usize / 2;
-        for i in 0..pixel_count {
-            *(fb_ptr.add(i)) = 0x001F; // Blue (RGB565)
-        }
-    }
+    fill_screen(0x00, 0x00, 0xFF);
 }
 
-/// Fill framebuffer white - About to IRETQ to userspace (works after ExitBootServices)
-pub extern "C" fn fb_white() {
-    unsafe {
-        if FRAMEBUFFER_ADDR == 0 {
-            return; // No framebuffer available
-        }
-        let fb_ptr = FRAMEBUFFER_ADDR as *mut u16;
-        let pixel_count = FRAMEBUFFER_SIZE as usize / 2;
-        for i in 0..pixel_count {
-            *(fb_ptr.add(i)) = 0xFFFF; // White (RGB565)
-        }
-    }
-}
-
-/// Get the framebuffer address (for passing to userspace)
+/// Get framebuffer address (for use after ExitBootServices)
 pub fn get_framebuffer_addr() -> u64 {
     unsafe { FRAMEBUFFER_ADDR }
 }
@@ -615,9 +604,11 @@ pub unsafe fn init_display_console() {
         return;
     }
 
-    // Calculate pitch (stride) from width and bytes per pixel
-    let bpp = 16; // RGB565
-    let pitch = FRAMEBUFFER_WIDTH * (bpp / 8);
+    // GOP framebuffers are 32 bits per pixel; rows are `stride` pixels apart.
+    // The display driver's PixelFormat::RGB stores blue in byte 0 (UEFI Bgr).
+    let bpp = 32;
+    let pitch = FRAMEBUFFER_STRIDE * 4;
+    let format = if FRAMEBUFFER_BLUE_FIRST { PixelFormat::RGB } else { PixelFormat::BGR };
 
     let framebuffer = Framebuffer::new(
         FRAMEBUFFER_ADDR,
@@ -625,7 +616,7 @@ pub unsafe fn init_display_console() {
         FRAMEBUFFER_HEIGHT,
         pitch,
         bpp,
-        PixelFormat::RGB,
+        format,
     );
 
     display_init(framebuffer);
@@ -641,16 +632,7 @@ pub unsafe fn init_display_console() {
 /// Fill framebuffer yellow - Process exited
 /// Works after ExitBootServices
 pub extern "C" fn fb_yellow() {
-    unsafe {
-        if FRAMEBUFFER_ADDR == 0 {
-            return; // No framebuffer available
-        }
-        let fb_ptr = FRAMEBUFFER_ADDR as *mut u16;
-        let pixel_count = FRAMEBUFFER_SIZE as usize / 2;
-        for i in 0..pixel_count {
-            *(fb_ptr.add(i)) = 0xFFE0; // Yellow (RGB565)
-        }
-    }
+    fill_screen(0xFF, 0xFF, 0x00);
 }
 
 const QEMU_DEBUGCON_PORT: u16 = 0xE9;
