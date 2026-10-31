@@ -33,7 +33,9 @@ riscv64 = []
 # Enable kernel test mode (includes test_entry and interrupt tests)
 kernel_test = []
 # Enable UEFI kernel (for the binary target)
-uefi_kernel = ["uefi"]
+uefi_kernel = ["uefi", "standalone"]
+# Defines the kernel global allocator (src/mm/allocator.rs)
+standalone = []
 # Enable userspace test (embeds userspace binary and tests mexec)
 userspace_test = []
 
