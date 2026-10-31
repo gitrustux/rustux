@@ -1195,6 +1195,8 @@ unsafe impl GlobalAlloc for LinkedListAllocator {
 /// Global heap allocator instance
 ///
 /// This is exported as the global allocator for the Rust standard library.
+/// Only defined when building as a standalone kernel binary.
+#[cfg(feature = "standalone")]
 #[global_allocator]
 static HEAP_ALLOCATOR: LinkedListAllocator = LinkedListAllocator::new();
 

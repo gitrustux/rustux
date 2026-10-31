@@ -120,6 +120,15 @@ pub unsafe fn flush_output_buffer() {
     }
 }
 
+/// Check if PS/2 controller is present
+///
+/// Returns true if the 8042 controller responds.
+/// A status of 0xFF indicates no controller is present.
+pub unsafe fn controller_present() -> bool {
+    let status = controller_status();
+    status != 0xFF
+}
+
 /// Read byte from keyboard with timeout (returns None on timeout)
 pub unsafe fn keyboard_read_timeout() -> Option<u8> {
     let mut timeout = 100_000;

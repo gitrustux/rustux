@@ -38,19 +38,43 @@ fn main() {
     let obj_file = out_dir.join("switch.o");
 
     if asm_file.exists() {
-        let status = std::process::Command::new("cc")
-            .arg("-c")
-            .arg("-o")
-            .arg(&obj_file)
-            .arg(&asm_file)
-            .status()
-            .expect("Failed to execute cc command");
+        // Determine the target
+        let target = env::var("TARGET").unwrap_or_default();
 
-        if !status.success() {
-            panic!("Failed to compile assembly file: {:?}", asm_file);
+        // For UEFI targets, skip assembly compilation for now
+        // The assembly file needs COFF format for UEFI which requires special tooling
+        // The kernel can boot without context switching for initial testing
+        if target.contains("uefi") {
+            println!("cargo:warning=Skipping switch.S compilation for UEFI target (context switching unavailable)");
+        } else {
+            // For normal targets, use gcc for GAS syntax
+            let status = std::process::Command::new("gcc")
+                .arg("-c")
+                .arg("-o")
+                .arg(&obj_file)
+                .arg(&asm_file)
+                .status();
+
+            let status = match status {
+                Ok(s) => s,
+                Err(_) => {
+                    // If gcc fails, try with clang
+                    std::process::Command::new("clang")
+                        .arg("-c")
+                        .arg("-o")
+                        .arg(&obj_file)
+                        .arg(&asm_file)
+                        .status()
+                        .expect("Failed to execute compiler command")
+                }
+            };
+
+            if !status.success() {
+                panic!("Failed to compile assembly file: {:?}", asm_file);
+            } else {
+                println!("cargo:rustc-link-arg={}", obj_file.display());
+            }
         }
-
-        println!("cargo:rustc-link-arg={}", obj_file.display());
     }
 
     // ============================================================================

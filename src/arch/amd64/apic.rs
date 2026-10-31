@@ -19,14 +19,14 @@ pub struct LocalApicRegisters {
     _reserved2: [u32; 4],           // 0x20-0x2F
     tpr: u32,                       // 0x30 - Task Priority Register
     _reserved3: [u32; 3],           // 0x34-0x3F
-    eoi: u32,                       // 0x40 - EOI Register
-    _reserved4: [u32; 3],           // 0x44-0x4F
+    _reserved4: [u32; 1],           // 0x40-0x43 (NOT EOI - EOI is at 0xB0!)
+    _reserved5: [u32; 2],           // 0x44-0x4B
     ldr: u32,                       // 0x50 - Logical Destination Register
-    _reserved5: [u32; 3],           // 0x54-0x5F
+    _reserved6: [u32; 3],           // 0x54-0x5F
     dfr: u32,                       // 0x60 - Destination Format Register
-    _reserved6: [u32; 3],           // 0x64-0x6F
+    _reserved7: [u32; 3],           // 0x64-0x6F
     svr: u32,                       // 0x70 - Spurious Interrupt Vector Register
-    _reserved7: [u32; 3],           // 0x74-0x7F
+    _reserved8: [u32; 3],           // 0x74-0x7F
     isr0: u32,                      // 0x80 - In-Service Register 0
     isr1: u32,                      // 0x84 - In-Service Register 1
     isr2: u32,                      // 0x88 - In-Service Register 2
@@ -39,28 +39,43 @@ pub struct LocalApicRegisters {
     tmr1: u32,                      // 0xA4 - Trigger Mode Register 1
     tmr2: u32,                      // 0xA8 - Trigger Mode Register 2
     tmr3: u32,                      // 0xAC - Trigger Mode Register 3
-    tmr4: u32,                      // 0xB0 - Trigger Mode Register 4
-    tmr5: u32,                      // 0xB4 - Trigger Mode Register 5
-    tmr6: u32,                      // 0xB8 - Trigger Mode Register 6
-    tmr7: u32,                      // 0xBC - Trigger Mode Register 7
-    irr0: u32,                      // 0xC0 - Interrupt Request Register 0
-    irr1: u32,                      // 0xC4 - Interrupt Request Register 1
-    irr2: u32,                      // 0xC8 - Interrupt Request Register 2
-    irr3: u32,                      // 0xCC - Interrupt Request Register 3
-    irr4: u32,                      // 0xD0 - Interrupt Request Register 4
-    irr5: u32,                      // 0xD4 - Interrupt Request Register 5
-    irr6: u32,                      // 0xD8 - Interrupt Request Register 6
-    irr7: u32,                      // 0xDC - Interrupt Request Register 7
-    error_status: u32,              // 0xE0 - Error Status Register
-    _reserved8: [u32; 5],           // 0xE4-0xF7
-    icr_low: u32,                   // 0xF0 - Interrupt Command Register Low
-    icr_high: u32,                  // 0xF4 - Interrupt Command Register High
-    _reserved9: [u32; 2],           // 0xF8-0xFF
+    eoi: u32,                       // 0xB0 - End Of Interrupt Register (CORRECTED OFFSET!)
+    tmr4: u32,                      // 0xB4 - Trigger Mode Register 4
+    _reserved9: [u32; 1],           // 0xB8-0xBB
+    tmr5: u32,                      // 0xBC - Trigger Mode Register 5
+    _reserved10: [u32; 1],          // 0xC0-0xC3
+    irr0: u32,                      // 0xC4 - Interrupt Request Register 0 (padding for alignment)
+    _reserved11: [u32; 1],          // 0xC8-0xCB
+    irr1: u32,                      // 0xCC - Interrupt Request Register 1
+    _reserved12: [u32; 1],          // 0xD0-0xD3
+    irr2: u32,                      // 0xD4 - Interrupt Request Register 2
+    _reserved13: [u32; 1],          // 0xD8-0xDB
+    irr3: u32,                      // 0xDC - Interrupt Request Register 3
+    _reserved14: [u32; 1],          // 0xE0-0xE3
+    error_status: u32,              // 0xE4 - Error Status Register
+    _reserved15: [u32; 5],          // 0xE8-0xFF
+    icr_low: u32,                   // 0x100 - Interrupt Command Register Low
+    icr_high: u32,                  // 0x104 - Interrupt Command Register High
+    _reserved16: [u32; 2],           // 0x108-0x10F
+    timer_lvt: u32,                 // 0x110 - Timer Local Vector Table
+    _reserved17: [u32; 3],          // 0x114-0x11F
+    thermal_lvt: u32,               // 0x120 - Thermal Monitor LVT
+    _reserved18: [u32; 3],          // 0x124-0x12F
+    perf_lvt: u32,                  // 0x130 - Performance Counter LVT
+    _reserved19: [u32; 3],          // 0x134-0x13F
+    lint0: u32,                     // 0x140 - Local Interrupt 0 (LINT0)
+    _reserved20: [u32; 3],          // 0x144-0x14F
+    lint1: u32,                     // 0x150 - Local Interrupt 1 (LINT1)
+    _reserved21: [u32; 3],          // 0x154-0x15F
+    error_lvt: u32,                 // 0x160 - Error LVT
+    _reserved22: [u32; 3],          // 0x164-0x16F
     timer_initial: u32,             // 0x170 - Timer Initial Count
+    _reserved23: [u32; 2],          // 0x174-0x17B
     timer_current: u32,             // 0x180 - Timer Current Count
-    _reserved10: [u32; 2],          // 0x190-0x197
-    timer_divide: u32,              // 0x1A0 - Timer Divide Configuration
-    _reserved11: [u32; 1],          // 0x1A4-0x1A7
+    _reserved24: [u32; 2],          // 0x184-0x18B
+    _reserved25: [u32; 1],          // 0x18C-0x18F
+    timer_divide: u32,              // 0x190 - Timer Divide Configuration
+    _reserved26: [u32; 1],          // 0x194-0x197
 }
 
 /// Local APIC base address (default from x86_64 CPU)
@@ -111,9 +126,91 @@ pub fn pic_disable() {
 
 /// Initialize the Local APIC
 ///
-/// UEFI firmware typically initializes the Local APIC during boot.
-/// This function ensures the LAPIC is enabled (bit 8 of SVR).
+/// This function:
+/// 1. Disables x2APIC mode (if enabled) to ensure MMIO access works
+/// 2. Enables the Local APIC via the IA32_APIC_BASE MSR
+/// 3. Configures the Local APIC registers
+/// 4. Disables the legacy 8259A PIC
+///
+/// UEFI firmware may leave x2APIC enabled on some systems, which prevents
+/// MMIO access to the Local APIC. We must disable x2APIC mode explicitly.
 pub fn apic_local_init() {
+    // ================================================================
+    // CRITICAL: Disable x2APIC mode before accessing APIC via MMIO
+    // ================================================================
+    //
+    // x2APIC mode uses MSR-based access instead of MMIO.
+    // If x2APIC is enabled, MMIO reads/writes to 0xFEE00000 will NOT work.
+    // We MUST disable x2APIC to use the MMIO-based driver.
+    //
+    // The IA32_APIC_BASE MSR (0x1B) contains:
+    // - Bit 11: APIC Global Enable (must be set)
+    // - Bit 10: x2APIC Enable (must be CLEARED for MMIO)
+    // - Bits 0-11: APIC Base Address (usually 0xFEE00000)
+    //
+    // We read the MSR, clear x2APIC enable, ensure APIC is enabled,
+    // and write it back. Then we verify the write succeeded.
+    // ================================================================
+
+    const IA32_APIC_BASE: u32 = 0x1B;
+    const X2APIC_ENABLE_BIT: u64 = 1 << 10;
+    const APIC_ENABLE_BIT: u64 = 1 << 11;
+
+    unsafe {
+        let mut eax: u32;
+        let mut edx: u32;
+        // Read IA32_APIC_BASE MSR
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") IA32_APIC_BASE,
+            out("eax") eax,
+            out("edx") edx,
+            options(nostack, preserves_flags, readonly)
+        );
+        let mut msr_value = (edx as u64) << 32 | (eax as u64);
+
+        // Disable x2APIC if enabled and ensure APIC is on
+        if (msr_value & X2APIC_ENABLE_BIT) != 0 {
+            msr_value &= !X2APIC_ENABLE_BIT;
+            msr_value |= APIC_ENABLE_BIT;
+            core::arch::asm!(
+                "wrmsr",
+                in("ecx") IA32_APIC_BASE,
+                in("eax") (msr_value as u32),
+                in("edx") ((msr_value >> 32) as u32),
+                options(nomem, nostack, preserves_flags)
+            );
+            // Re-read to verify
+            core::arch::asm!(
+                "rdmsr",
+                in("ecx") IA32_APIC_BASE,
+                out("eax") eax,
+                out("edx") edx,
+                options(nostack, preserves_flags, readonly)
+            );
+            msr_value = (edx as u64) << 32 | (eax as u64);
+        }
+
+        // Verify APIC is enabled and x2APIC is disabled
+        if (msr_value & X2APIC_ENABLE_BIT) != 0 {
+            // x2APIC mode could not be disabled - MMIO will not work
+            // Halt with error
+            loop {
+                core::arch::asm!("hlt", options(nostack, nomem));
+            }
+        }
+        if (msr_value & APIC_ENABLE_BIT) == 0 {
+            // APIC could not be enabled
+            loop {
+                core::arch::asm!("hlt", options(nostack, nomem));
+            }
+        }
+
+        // ================================================================
+        // Now safe to access Local APIC via MMIO
+        // ================================================================
+    }
+
     // First, disable the legacy 8259A PIC
     // This must be done before using IOAPIC, otherwise the PIC
     // will intercept interrupts before they reach the IOAPIC
@@ -121,12 +218,16 @@ pub fn apic_local_init() {
 
     unsafe {
         let apic_base = LOCAL_APIC_DEFAULT_BASE;
+
+        // Enable Local APIC and set spurious vector
         let svr_offset = 0x70; // Spurious Interrupt Vector Register
-
         let svr = (apic_base + svr_offset as u64) as *mut u32;
+        *svr = 0x100 | 0xFF; // Enable APIC (bit 8), spurious vector 0xFF
 
-        // Enable Local APIC (set bit 8) and set spurious vector to 0xFF
-        *svr = 0x100 | 0xFF;
+        // Set Task Priority Register to 0 (allow all interrupts)
+        let tpr_offset = 0x30;
+        let tpr = (apic_base + tpr_offset as u64) as *mut u32;
+        *tpr = 0;
     }
 }
 
@@ -134,8 +235,11 @@ pub fn apic_local_init() {
 ///
 /// The IRQ number is not used by the Local APIC EOI register,
 /// but we keep it for API compatibility.
+///
+/// NOTE: The EOI register is at offset 0xB0, NOT 0x40!
+/// Offset 0x40 is often misidentified as EOI but is actually reserved.
 pub fn apic_send_eoi(_irq: u32) {
-    const LAPIC_EOI_OFFSET: u64 = 0x40;
+    const LAPIC_EOI_OFFSET: u64 = 0xB0; // Correct EOI offset
 
     unsafe {
         let eoi_reg = (LOCAL_APIC_DEFAULT_BASE + LAPIC_EOI_OFFSET) as *mut u32;

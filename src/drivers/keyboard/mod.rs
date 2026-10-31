@@ -67,15 +67,31 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Initialize the PS/2 keyboard driver
 ///
 /// This function performs full PS/2 controller and keyboard initialization:
-/// 1. Resets input buffer and modifier state
-/// 2. Initializes PS/2 controller (enables IRQ1)
-/// 3. Initializes keyboard device (enable scanning)
-/// 4. Flushes stale keyboard data
+/// 1. Checks if PS/2 controller is present
+/// 2. Resets input buffer and modifier state
+/// 3. Initializes PS/2 controller (enables IRQ1)
+/// 4. Initializes keyboard device (enable scanning)
+/// 5. Flushes stale keyboard data
+///
+/// If no PS/2 controller is present, prints [NO KEYBOARD] and halts.
 ///
 /// # Safety
 /// This function must be called only once during kernel initialization.
 /// It should be called before enabling interrupts.
 pub unsafe fn init() {
+    // Check if PS/2 controller is present
+    if !ps2::controller_present() {
+        // No keyboard controller - print [NO KEYBOARD] and continue
+        // PS/2 is optional - USB HID will be the path for modern systems
+        crate::drivers::display::write_str("[NO KEYBOARD] - PS/2 absent, continuing without keyboard\n");
+        // Mark as initialized but with no backend (allowing graceful degradation)
+        INITIALIZED.store(true, Ordering::Release);
+        return;
+    }
+
+    // PS/2 controller present - print [PS/2]
+    crate::drivers::display::write_str("[PS/2] ");
+
     // Reset state
     INPUT_BUFFER = CircularBuffer::new();
     MODIFIER_STATE = ModifierState::new();

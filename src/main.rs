@@ -69,6 +69,31 @@ fn main() -> Status {
 }
 
 fn kernel_main() -> ! {
+    // ================================================================
+    // PRIMITIVE DEBUG PROOF - Kernel entry executes
+    // ================================================================
+    // This is the FIRST thing that runs in kernel mode.
+    // Uses port 0xE9 which works without framebuffer, stack, or Rust runtime.
+    // If you see 'K' in QEMU debug console, kernel entry was reached.
+    // ================================================================
+    unsafe {
+        // Step 1: Send 'K' to prove we're in kernel mode
+        core::arch::asm!(
+            "mov dx, 0xE9",
+            "mov al, 0x4B",  // 'K' in ASCII
+            "out dx, al",
+            options(nomem, nostack)
+        );
+
+        // Step 2: Send '1' to prove we can execute sequential instructions
+        core::arch::asm!(
+            "mov dx, 0xE9",
+            "mov al, 0x31",  // '1' in ASCII
+            "out dx, al",
+            options(nomem, nostack)
+        );
+    }
+
     debug_print("╔══════════════════════════════════════════════════════════╗\n");
     debug_print("║  KERNEL MODE - Testing Interrupts                       ║\n");
     debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
@@ -167,7 +192,12 @@ fn kernel_main_on_new_stack() -> ! {
     debug_print("║  PHASE 5D: Loading Init Process                         ║\n");
     debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
 
-    let init_loaded = unsafe {
+    // Try to load and execute init.elf from ramdisk (Phase 5D)
+    debug_print("╔══════════════════════════════════════════════════════════╗\n");
+    debug_print("║  PHASE 5D: Loading Init Process                         ║\n");
+    debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
+
+    unsafe {
         use rustux::fs::ramdisk;
         use rustux::exec::load_elf_process;
         use rustux::process::table::{Process, PROCESS_TABLE};
@@ -177,7 +207,8 @@ fn kernel_main_on_new_stack() -> ! {
             Ok(r) => r,
             Err(_) => {
                 debug_print("[INIT] Ramdisk not available, skipping init load\n\n");
-                false
+                // Continue without init process - halt
+                loop { core::arch::asm!("hlt"); }
             }
         };
 
@@ -186,7 +217,8 @@ fn kernel_main_on_new_stack() -> ! {
             Some(f) => f,
             None => {
                 debug_print("[INIT] init.elf not found in ramdisk, skipping\n\n");
-                false
+                // Continue without init process - halt
+                loop { core::arch::asm!("hlt"); }
             }
         };
 
@@ -210,7 +242,8 @@ fn kernel_main_on_new_stack() -> ! {
                     core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
                 }
                 debug_print("\n");
-                false
+                // Continue without init process - halt
+                loop { core::arch::asm!("hlt"); }
             }
         };
 
@@ -225,28 +258,28 @@ fn kernel_main_on_new_stack() -> ! {
                 Ok(p) => p,
                 Err(_) => {
                     debug_print("[INIT] Failed to allocate kernel stack\n");
-                    false
+                    0 // Invalid physical address (will cause failure later)
                 }
             },
             match rustux::mm::pmm::pmm_alloc_kernel_page() {
                 Ok(p) => p,
                 Err(_) => {
                     debug_print("[INIT] Failed to allocate kernel stack\n");
-                    false
+                    0
                 }
             },
             match rustux::mm::pmm::pmm_alloc_kernel_page() {
                 Ok(p) => p,
                 Err(_) => {
                     debug_print("[INIT] Failed to allocate kernel stack\n");
-                    false
+                    0
                 }
             },
             match rustux::mm::pmm::pmm_alloc_kernel_page() {
                 Ok(p) => p,
                 Err(_) => {
                     debug_print("[INIT] Failed to allocate kernel stack\n");
-                    false
+                    0
                 }
             },
         ];
@@ -266,7 +299,7 @@ fn kernel_main_on_new_stack() -> ! {
         let page_table_phys = process_image.address_space.page_table.phys;
 
         // Create process with PID 1
-        let process = Process::new(
+        let mut process = Process::new(
             1,  // PID 1 (init)
             0,  // PPID 0 (kernel)
             page_table_phys,
@@ -306,11 +339,6 @@ fn kernel_main_on_new_stack() -> ! {
         );
 
         // Unreachable
-        false
-    };
-
-    if !init_loaded {
-        debug_print("[INIT] Failed to load init process, halting...\n");
         loop { unsafe { asm!("hlt"); } }
     }
 
@@ -346,9 +374,9 @@ pub extern "x86-interrupt" fn keyboard_handler(_sf: idt::X86Iframe) {
         // Debug: show we received an interrupt
         // debug_print("[K]\n");
 
-        // Send EOI to LAPIC (write 0 to EOI register at offset 0x40)
+        // Send EOI to LAPIC (write 0 to EOI register at offset 0xB0)
         let lapic = 0xFEE00000usize;
-        write_volatile((lapic + 0x40) as *mut u32, 0);
+        write_volatile((lapic + 0xB0) as *mut u32, 0);
     }
 }
 
