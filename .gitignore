@@ -21,3 +21,9 @@ Thumbs.db
 
 # Debug logs
 *.log
+
+# Sibling repositories (if checked out inside this folder)
+/apps/
+/loader/
+/rustica/
+/rustux/

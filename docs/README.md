@@ -1,6 +1,6 @@
 # Rustux Kernel Documentation
 
-**Refactored UEFI x86_64 Kernel Architecture**
+**UEFI x86_64 microkernel written in Rust**
 
 **Repository:** https://github.com/gitrustux/rustux
 
@@ -8,62 +8,94 @@
 
 ## Overview
 
-The Rustux kernel is a refactored UEFI x86_64 kernel with cross-architecture interrupt controller support, ACPI-based hardware discovery, and Zircon-inspired capability-based security model.
+Rustux is a UEFI x86_64 kernel with a cross-architecture interrupt controller trait, ACPI-based hardware discovery, and a capability-based security model inspired by Zircon.
 
-**Last Updated:** 2026-01-18
+The kernel builds as a single UEFI application (`rustux.efi`). The application is installed as `EFI/BOOT/BOOTX64.EFI`, finds the ACPI RSDP, calls `ExitBootServices`, and then runs the kernel. No separate bootloader is used.
+
+**Last Updated:** 2026-10-31
 
 ---
 
 ## Repository Structure
 
-### Main Repository (`https://github.com/gitrustux/rustux`)
-
-**Working Directory:** `/var/www/rustux.com/prod/rustux/`
+The repository root holds the kernel crate (`Cargo.toml` defines the `rustux` library and the `rustux` UEFI binary).
 
 ```
-rustux/
-├── Cargo.toml
+./
+├── Cargo.toml               # rustux lib + rustux bin (feature: uefi_kernel)
+├── .cargo/config.toml       # default target x86_64-unknown-uefi, 128 KB stack
+├── build.rs
+├── build.sh                 # Build kernel + create bootable image
+├── build                    # Older copy of build.sh
+├── build-live-image.sh      # Build the Rustica live USB image
+├── test-qemu.sh             # QEMU interrupt test (checks for [TICK])
+├── quick-test.sh            # QEMU memory-mapping debug run ([MAP] output)
+├── scripts/
+│   └── create-bootable-image.sh
+├── PLAN.md
+├── TEST_INTERRUPTS.md
+├── docs/                    # This documentation
+├── files/test.txt           # Ramdisk test file
+├── test-hello/              # Minimal asm userspace binary
+├── test-userspace/          # C test programs + shell (shell/shell.c)
+├── userspace/
+│   ├── c-progs/             # C userspace programs (init, hello, counter)
+│   └── test/                # Rust userspace test binary (x86_64-unknown-none)
 └── src/
-    ├── lib.rs              # Main library with panic handler
-    ├── traits.rs           # Cross-architecture interrupt traits
-    ├── arch/               # Architecture-specific code
-    │   ├── amd64/          # x86_64 APIC implementation ✅
-    │   ├── arm64/          # ARM64 GIC (stub)
-    │   └── riscv64/        # RISC-V PLIC (stub)
-    ├── interrupt/          # Generic interrupt handling
-    ├── acpi/               # ACPI table parsing ✅
-    ├── sched/              # Scheduler and thread management ✅
-    ├── mm/                 # Memory management (migrated)
-    ├── process/            # Process management (migrated)
-    ├── sync/               # Synchronization primitives (migrated)
-    ├── object/             # Kernel objects & handles (migrated)
-    ├── syscall/            # System call handlers (migrated)
-    └── drivers/            # Device drivers (migrated)
+    ├── lib.rs               # Library root and module declarations
+    ├── main.rs              # UEFI entry point (#[entry]); requires uefi_kernel
+    ├── init.rs              # Kernel initialization
+    ├── traits.rs            # Cross-architecture InterruptController trait
+    ├── test_entry.rs        # Kernel test entry (feature: kernel_test)
+    ├── acpi/                # RSDP, RSDT/XSDT, MADT parsing
+    ├── arch/
+    │   ├── amd64/           # x86_64: APIC, GDT/IDT, MMU, syscall, userspace entry
+    │   │   └── mm/          # Page tables, constants
+    │   ├── arm64/           # GIC interrupt controller, MMU
+    │   │   ├── interrupt/gic.rs
+    │   │   └── mm/
+    │   └── riscv64/         # PLIC interrupt controller, MMU
+    │       ├── interrupt/plic.rs
+    │       └── mm/
+    ├── interrupt/           # Generic interrupt handling
+    ├── mm/                  # PMM, kernel heap allocator
+    ├── sched/               # Scheduler, threads, run queue
+    ├── process/             # Processes, address spaces, context switch
+    ├── sync/                # Spinlock, event, wait queue
+    ├── object/              # Kernel objects and handles
+    ├── syscall/             # Syscall dispatch, file descriptors
+    ├── exec/                # ELF loader, process loader
+    ├── fs/                  # VFS and ramdisk
+    ├── drivers/             # UART, PS/2 keyboard, framebuffer display
+    ├── testing/             # Test harness, QEMU exit helpers
+    └── tests/               # Syscall tests
 ```
 
-### Legacy Reference (Kept for Reference)
+### Related Repositories
 
-**Directory:** `/var/www/rustux.com/prod/kernel/` (NOT in git repo)
+These repositories are separate from this one:
 
-```
-kernel/
-├── kernel-efi/            # Legacy UEFI kernel (deprecated)
-├── uefi-loader/           # UEFI bootloader
-└── src/kernel/            # Original kernel source (migrated to rustux/)
-```
+| Repository | Contents |
+|------------|----------|
+| [gitrustux/loader](https://github.com/gitrustux/loader) | Legacy UEFI kernel (`kernel-efi/`, including USB/xHCI work), `uefi-loader/`, `rustux_macros/` |
+| [gitrustux/apps](https://github.com/gitrustux/apps) | Rustica userspace applications (CLI tools, Aurora GUI, shared libs) |
+| [gitrustux/rustica](https://github.com/gitrustux/rustica) | Rustica OS distribution: images, releases, package repo, update system. Includes this kernel as a git submodule at `repo/kernel`. Disk image docs are in `rustica/docs/IMAGE.md` |
 
 ### Documentation (In This Repository)
 
 ```
 docs/
-├── README.md                    # This file
-├── REFACTORING_PLAN.md          # Refactoring progress & phases
-├── TESTS.md                     # Test documentation
-├── IMAGE.md                     # Disk image documentation
-├── design/                      # Design documents
-│   └── capability-system.md     # Zircon-inspired capability system design
-└── decisions/                   # Architecture decisions
-    └── structural-mistake.md    # Lessons learned
+├── README.md                     # This file
+├── ARCHITECTURE.md               # Kernel architecture
+├── OBJECTS.md                    # Kernel object reference
+├── SYSCALL.md                    # System call reference
+├── TESTS.md                      # Test documentation
+├── polling.txt                   # Keyboard input troubleshooting notes (Aug 2026)
+├── design/
+│   └── capability-system.md      # Capability system design
+└── decisions/
+    ├── refactoring-progress.md   # Refactoring progress report
+    └── structural-mistake.md     # Lessons learned
 ```
 
 ---
@@ -73,8 +105,8 @@ docs/
 ### Phase 1: Interrupt System Integration (Complete)
 
 **Completed 2026-01-18:**
-- ✅ IDT (Interrupt Descriptor Table) setup and handler installation
-- ✅ GDT (Global Descriptor Table) configuration
+- ✅ IDT setup and handler installation (`arch/amd64/idt.rs`)
+- ✅ GDT configuration (`arch/amd64/descriptor.rs`)
 - ✅ Timer interrupt handler (vector 32) with periodic TICK output
 - ✅ Keyboard interrupt handler (vector 33) with scancode capture
 - ✅ APIC initialization and IRQ routing
@@ -102,17 +134,15 @@ docs/
 
 **Cross-Architecture Interrupt Controller Trait**
 - Location: `src/traits.rs`
-- Architecture-agnostic API for x86_64 (APIC), ARM64 (GIC), RISC-V (PLIC)
+- Implemented by `X86_64InterruptController` (APIC), `Arm64InterruptController` (GIC) and `RiscvInterruptController` (PLIC), re-exported from `src/arch/mod.rs`
 
 **x86_64 APIC Implementation**
-- Location: `src/arch/amd64/apic.rs`
-- Local APIC initialization (UEFI firmware support)
-- EOI handling, I/O APIC configuration
-- `X86_64InterruptController` implements `InterruptController` trait
+- Location: `src/arch/amd64/apic.rs`, `src/arch/amd64/controller.rs`
+- Local APIC initialization, EOI handling, I/O APIC configuration
 
 **ACPI MADT Parsing**
 - Location: `src/acpi/`
-- `rsdp.rs` - RSDP discovery from legacy BIOS locations
+- `rsdp.rs` - RSDP discovery
 - `rsdt.rs` - RSDT/XSDT parsing with iterator
 - `madt.rs` - MADT parsing for IOAPIC/LAPIC discovery
 - Dynamic IOAPIC address discovery (not hardcoded)
@@ -121,15 +151,13 @@ docs/
 - Location: `src/sched/`
 - `state.rs` - ThreadState, ThreadPriority, RunQueue
 - `thread.rs` - Thread, SavedRegisters, StackConfig
-- `scheduler.rs` - Round-robin scheduler with priority
+- `scheduler.rs` - Scheduler with priority
+- `round_robin.rs` - Round-robin scheduling
 
 **Capability System Design**
 - Location: `docs/design/capability-system.md`
-- KernelObject trait
-- Handle rights system (20+ right types)
-- HandleTable per-process management
-- Interrupt objects with port binding
-- Zircon-inspired security model
+- KernelObject trait, handle rights, per-process HandleTable
+- Interrupt objects with port binding (design only)
 
 ---
 
@@ -140,80 +168,106 @@ docs/
 - Debug log shows timer TICK messages
 - Key presses generate [KEY:XX] scancode messages
 
-### Phase 2B: Shell Migration with Interrupt-Driven Input ✅ (Complete)
-- Shell migrated from `kernel/user/shell.rs` to `rustux/userspace/shell/`
-- Polling input replaced with interrupt-driven keyboard handler
-- Input buffer for keyboard events implemented
+### Phase 2B: Shell with Interrupt-Driven Input ✅ (Complete)
+- Shell source: `test-userspace/shell/shell.c`
+- PS/2 keyboard driver: `src/drivers/keyboard/` (`ps2.rs`, `layout.rs`)
 
-### Phase 2C: Full Kernel Component Migration ✅ (Complete)
+### Phase 2C: Kernel Component Migration ✅ (Complete)
 
-#### Architecture Components (AMD64)
+#### Architecture Components (`src/arch/amd64/`)
 - ✅ `registers.rs` - CPU register access
 - ✅ `tsc.rs` - Time Stamp Counter
+- ✅ `descriptor.rs` - GDT/TSS
+- ✅ `idt.rs` - Interrupt Descriptor Table
 - ✅ `syscall.rs` - Syscall entry point
-- ✅ `uspace_entry.rs` - Userspace entry
+- ✅ `uspace.rs`, `uspace_entry.rs` - Userspace entry
 - ✅ `ioport.rs` - Port I/O
 - ✅ `bootstrap16.rs` - 16-bit bootstrap
 - ✅ `cache.rs` - Cache operations
 - ✅ `ops.rs` - Architecture operations
 - ✅ `faults.rs` - Page fault handling
-- ✅ `page_tables.rs` - Paging setup (in `mm/` subdirectory)
 - ✅ `mmu.rs` - MMU operations
+- ✅ `mm/page_tables.rs` - Paging setup
+- ✅ `mexec.rs` - Userspace execution
+- ✅ `switch.S` - Context switch
+- ✅ `init.rs` - Architecture initialization
 
-#### Memory Management
+#### Memory Management (`src/mm/`)
 - ✅ `pmm.rs` - Physical memory manager
-- ✅ `vm/*.rs` - Virtual memory manager (init, aspace, page_table, arch_vm_aspace)
-- ✅ `allocator.rs` - Kernel allocator
+- ✅ `allocator.rs` - Kernel heap allocator (global allocator after `ExitBootServices`)
+- Virtual memory: page tables in `arch/*/mm/`, address spaces in `process/address_space.rs`
 
 #### Process & Thread Management
 - ✅ `process/mod.rs` - Process management
-- ✅ `thread/mod.rs` - Thread implementation (merged with existing scheduler)
+- ✅ `process/table.rs` - Process table
+- ✅ `process/address_space.rs` - Per-process address spaces
+- ✅ `process/switch.rs` - Process switching
+- ✅ `sched/thread.rs` - Thread implementation
 - ✅ `init.rs` - Kernel initialization
 
-#### Synchronization Primitives
-- ✅ `sync/*.rs` - Synchronization module
-- ✅ `mutex.rs` - Mutex implementation
-- ✅ `spinlock.rs` - Spinlock implementation
+#### Synchronization Primitives (`src/sync/`)
+- ✅ `spinlock.rs` - SpinMutex / SpinLock
+- ✅ `event.rs` - Event
+- ✅ `wait_queue.rs` - Wait queue
 
-#### Objects & Capabilities
-- ✅ `object/mod.rs` - Object module
-- ✅ `object/handle.rs` - Handle management
-- ✅ `object/channel.rs` - Channel objects
-- ✅ `object/event.rs` - Event objects
-- ✅ `object/vmo.rs` - VMO (Virtual Memory Object)
-- ✅ `object/timer.rs` - Timer objects
-- ✅ `object/job.rs` - Job objects
+#### Objects & Capabilities (`src/object/`)
+- ✅ `handle.rs` - Handle management
+- ✅ `channel.rs` - Channel objects
+- ✅ `event.rs` - Event objects
+- ✅ `vmo.rs` - VMO (Virtual Memory Object)
+- ✅ `timer.rs` - Timer objects
+- ✅ `job.rs` - Job objects
 
-#### System Calls
-- ✅ `syscalls/mod.rs` - Syscall dispatch
-- ✅ `syscalls/handle_ops.rs` - Handle operations
-- ✅ `syscalls/object.rs` - Object syscalls
-- ✅ `syscalls/vmo.rs` - VMO syscalls
-- ✅ `syscalls/channel.rs` - Channel syscalls
+#### System Calls (`src/syscall/`)
+- ✅ `mod.rs` - Syscall dispatch and handlers
+- ✅ `fd.rs` - File descriptor table
 
-#### Device Drivers
-- ✅ `dev/uart/*.rs` - UART drivers (PL011, etc.)
-- ✅ `dev/timer/*.rs` - Timer drivers
-- ✅ `dev/interrupt/*.rs` - Interrupt controllers (GICv2, etc.)
+#### Executables & Filesystem
+- ✅ `exec/elf.rs` - ELF loader
+- ✅ `exec/process_loader.rs` - Process loader
+- ✅ `fs/vfs.rs` - Virtual filesystem
+- ✅ `fs/ramdisk.rs` - Embedded ramdisk
+
+#### Device Drivers (`src/drivers/`)
+- ✅ `uart.rs` - 16550 UART (COM1–COM4)
+- ✅ `keyboard/` - PS/2 keyboard driver and layout
+- ✅ `display/` - Framebuffer, font, text console
 
 #### ARM64 & RISC-V Support
-- ✅ `arch/arm64/*.rs` - ARM64 interrupts, timer, threads
-- ✅ `arch/riscv64/*.rs` - RISC-V PLIC
-- ✅ `dev/interrupt/arm_gic/*` - ARM GIC support
+- ✅ `arch/arm64/` - GIC (`interrupt/gic.rs`), MMU (`mm/`)
+- ✅ `arch/riscv64/` - PLIC (`interrupt/plic.rs`), MMU (`mm/`)
+- The build is configured for `x86_64-unknown-uefi` only.
+
+### Phase 7A: APIC and Keyboard Fixes (Merged from `loader`)
+
+These changes were made in the `loader` repository's copy of the kernel and were merged here on 2026-10-31:
+- Local APIC EOI written at offset `0xB0` (was `0x40`)
+- `IA32_APIC_BASE` MSR handling and x2APIC detection
+- PS/2 controller presence check; the kernel continues without a keyboard if none is found
+- `switch.S` is not assembled for UEFI targets (context switching unavailable)
+- The kernel global allocator is enabled by the `standalone` feature, which `uefi_kernel` turns on
+
+---
+
+## Known Issues
+
+**Keyboard on real hardware.** The kernel has only a PS/2 (8042) keyboard driver. On USB-only machines no 8042 controller responds, so no keyboard input arrives. USB HID support (xHCI) is the planned fix. Experimental USB/xHCI code is in the `loader` repository (`kernel-efi/src/usb/`, latest work on branch `wip/xhci-2026-08`). See `docs/polling.txt` for the full history.
+
+**Local APIC register map.** In `src/arch/amd64/apic.rs`, the `LocalApic` struct offsets and the TPR offset (`0x30`) do not match the Intel SDM layout (registers sit on 16-byte boundaries; TPR is `0x80`). EOI uses the correct `0xB0` constant.
 
 ---
 
 ## Critical Migration Rules ⚠️
 
 ### DO NOT MIGRATE (ACPI Conflicts)
-These files were NOT migrated as they conflict with the new ACPI implementation in `rustux/src/acpi/`:
+These legacy files conflict with the Rust ACPI implementation in `src/acpi/` and must not be migrated:
 
 | Old Path | Reason | Replacement |
 |----------|--------|-------------|
-| `kernel/src/kernel/arch/amd64/include/arch/amd64/acpi.rs` | ACPI header | `rustux/src/acpi/` |
-| `kernel/src/kernel/arch/amd64/acpi.S` | ACPI assembly | `rustux/src/acpi/` (Rust) |
-| `kernel/src/kernel/platform/pc/acpi.cpp` | ACPI parsing | `rustux/src/acpi/` |
-| `kernel/src/kernel/platform/pc/include/platform/pc/acpi.h` | ACPI header | `rustux/src/acpi/` |
+| `kernel/src/kernel/arch/amd64/include/arch/amd64/acpi.rs` | ACPI header | `src/acpi/` |
+| `kernel/src/kernel/arch/amd64/acpi.S` | ACPI assembly | `src/acpi/` (Rust) |
+| `kernel/src/kernel/platform/pc/acpi.cpp` | ACPI parsing | `src/acpi/` |
+| `kernel/src/kernel/platform/pc/include/platform/pc/acpi.h` | ACPI header | `src/acpi/` |
 
 ---
 
@@ -236,43 +290,53 @@ These files were NOT migrated as they conflict with the new ACPI implementation 
 - Dynamic IOAPIC discovery via ACPI MADT parsing
 - Cross-architecture interrupt controller trait
 - Vector-based IRQ routing (IRQ1 → Vector 33, etc.)
-- Proper EOI handling
+- EOI handling
 
 ### Boot Flow
 
 ```
 UEFI Firmware
     ↓
-uefi-loader (finds ACPI RSDP, builds memory map)
+EFI/BOOT/BOOTX64.EFI  (rustux.efi, entry point in src/main.rs)
     ↓
-KernelHandoff structure (passed to kernel)
+Find ACPI RSDP, ExitBootServices
     ↓
-kernel init (IDT, GDT, paging setup, ACPI parsing)
+Kernel init (GDT, IDT, paging, heap, ACPI parsing)
     ↓
 Interrupt controller initialization (APIC via discovered address)
     ↓
 Scheduler starts
     ↓
-Shell runs (interrupt-driven input)
+Init (PID 1) → Shell (PID 2)
 ```
 
 ---
 
 ## Testing
 
-### QEMU Test Command
+### QEMU Test
+
+```bash
+./test-qemu.sh
+```
+
+This builds `rustux.img` with `scripts/create-bootable-image.sh` and runs:
 
 ```bash
 qemu-system-x86_64 \
   -bios /usr/share/ovmf/OVMF.fd \
   -drive file=rustux.img,format=raw \
-  -debugcon file:/tmp/rustux-qemu-debug.log \
-  -serial stdio \
+  -nographic \
+  -device isa-debugcon,iobase=0xE9,chardev=debug \
+  -chardev file,id=debug,path=/tmp/rustux-qemu-debug.log \
   -m 512M \
   -machine q35 \
+  -smp 1 \
   -no-reboot \
   -no-shutdown
 ```
+
+The script passes if `/tmp/rustux-qemu-debug.log` contains `[TICK]` messages.
 
 ### Expected Debug Output
 
@@ -295,82 +359,58 @@ Should show:
 
 | File | Purpose |
 |------|---------|
-| `rustux/src/lib.rs` | Main library entry point |
-| `rustux/src/traits.rs` | Interrupt controller trait |
-| `rustux/src/acpi/*.rs` | ACPI parsing (RSDP, RSDT, MADT) |
-| `rustux/src/arch/amd64/apic.rs` | x86_64 APIC implementation |
-| `rustux/src/sched/*.rs` | Scheduler and thread management |
-| `rustux/src/mm/*.rs` | Memory management (migrated) |
-| `rustux/src/process/*.rs` | Process management (migrated) |
-| `rustux/src/sync/*.rs` | Synchronization primitives (migrated) |
-| `rustux/src/object/*.rs` | Kernel objects (migrated) |
-| `rustux/src/syscall/*.rs` | System calls (migrated) |
-| `rustux/src/drivers/*.rs` | Device drivers (migrated) |
+| `src/main.rs` | UEFI entry point |
+| `src/lib.rs` | Library root |
+| `src/init.rs` | Kernel initialization |
+| `src/traits.rs` | Interrupt controller trait |
+| `src/acpi/*.rs` | ACPI parsing (RSDP, RSDT, MADT) |
+| `src/arch/amd64/apic.rs` | x86_64 APIC implementation |
+| `src/sched/*.rs` | Scheduler and threads |
+| `src/mm/*.rs` | Physical memory and heap |
+| `src/process/*.rs` | Processes and address spaces |
+| `src/sync/*.rs` | Synchronization primitives |
+| `src/object/*.rs` | Kernel objects and handles |
+| `src/syscall/*.rs` | System calls |
+| `src/exec/*.rs` | ELF and process loading |
+| `src/fs/*.rs` | VFS and ramdisk |
+| `src/drivers/` | UART, keyboard, display |
 
 ### Documentation Files
 
 | File | Purpose |
 |------|---------|
 | `docs/README.md` | This file |
-| `docs/REFACTORING_PLAN.md` | Refactoring progress & phases |
+| `docs/ARCHITECTURE.md` | Kernel architecture |
+| `docs/OBJECTS.md` | Kernel objects |
+| `docs/SYSCALL.md` | System calls |
 | `docs/TESTS.md` | Test documentation |
-| `docs/IMAGE.md` | Disk image documentation |
+| `docs/polling.txt` | Keyboard input troubleshooting |
 | `docs/design/capability-system.md` | Capability system design |
+| `docs/decisions/refactoring-progress.md` | Refactoring progress |
 | `docs/decisions/structural-mistake.md` | Lessons learned |
+| `PLAN.md` | Project plan |
+| `TEST_INTERRUPTS.md` | Interrupt test notes |
 
 ---
 
 ## Build Commands
 
+The UEFI binary needs the `uefi_kernel` feature, so a plain `cargo build` builds only the library.
+
 ```bash
-# Build the kernel
-cargo build
+# Build kernel and create bootable image (rustux.img)
+./build.sh
 
-# Build with release optimization
-cargo build --release
+# Build the kernel binary only
+cargo build --release --bin rustux --features uefi_kernel --target x86_64-unknown-uefi
+# Output: target/x86_64-unknown-uefi/release/rustux.efi
 
-# Run QEMU test
+# Build the Rustica live USB image
+./build-live-image.sh
+
+# Run the QEMU interrupt test
 ./test-qemu.sh
 ```
-
----
-
-# Rustica Apps
-
-Official application suite for the Rustux operating system.
-
-## Overview
-
-This repository contains all user-space applications for Rustux, organized into:
-- **CLI utilities**: Essential command-line tools
-- **GUI applications**: Aurora desktop environment components
-- **Shared libraries**: Common utilities for app development
-
-## Directory Structure
-
-See [STRUCTURE.md](STRUCTURE.md) for the complete directory layout.
-
-## Building
-
-```bash
-# Build all apps
-./scripts/build-all.sh
-
-# Build specific app
-cargo build -p redit
-
-# Build with release optimization
-cargo build --release -p redit
-```
-
-## Repository Structure
-
-- `cli/` - Command-line utilities
-- `gui/` - Desktop applications (Aurora)
-- `libs/` - Shared Rust libraries
-- `examples/` - Example applications
-- `tests/` - Integration tests
-- `scripts/` - Build and deployment scripts
 
 ---
 

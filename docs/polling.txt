@@ -1,0 +1,298 @@
+RUSTICA KERNEL — KEYBOARD / POLLING ISSUE
+Troubleshooting History and Current State
+Date: August 15, 2026
+
+1. ORIGINAL SYMPTOM
+-------------------
+Rustica successfully booted to its CLI, but keyboard input did not work.
+The kernel displayed:
+
+    [POLLING]
+
+The system appeared to be polling for keyboard input rather than receiving
+keyboard interrupts.
+
+The initial investigation focused heavily on the IRQ1 -> IOAPIC -> Local APIC
+interrupt path.
+
+2. INITIAL INTERRUPT / APIC INVESTIGATION
+------------------------------------------
+Several interrupt-routing changes were made while investigating the problem:
+
+- ACPI MADT parsing was added to determine whether legacy IRQ1 was remapped
+  to another GSI.
+- IRQ1 defaults to GSI 1 when no ACPI Interrupt Source Override exists.
+- The kernel displayed:
+      IRQ1 Override: None (default GSI=1)
+
+- IOAPIC redirection for IRQ1 was configured.
+- The Local APIC destination was changed to the actual BSP APIC ID rather than
+  assuming APIC ID 0.
+- The IRQ vector was tested using vector 0x41.
+- The keyboard IDT handler was installed at both 0x21 and 0x41 as a diagnostic.
+- IOAPIC masking was checked.
+- The Local APIC TPR was set to zero.
+- The Local APIC SVR was enabled.
+- The EOI register was corrected from 0x40 to the correct 0xB0 offset.
+- x2APIC detection and disabling was added using IA32_APIC_BASE MSR.
+- The kernel verified the APIC base address.
+- Diagnostic pixels and messages were added to confirm APIC/IOAPIC state.
+- A software interrupt / halt-style diagnostic was considered to prove that
+  the IDT/interrupt path itself could execute independently of keyboard input.
+
+These changes did not make physical keyboard input work.
+
+3. IMPORTANT DISCOVERY — THE KEYBOARD WAS USB
+---------------------------------------------
+The critical discovery was that testing had been performed with:
+
+- A USB keyboard.
+- Previously, a laptop keyboard.
+
+The kernel's existing keyboard driver was a PS/2 (8042) driver.
+
+Therefore, the kernel was waiting for PS/2 IRQ1/input even though the actual
+keyboard was USB.
+
+This explains why extensive IRQ1/APIC debugging did not produce keyboard
+input: there was no PS/2 keyboard generating IRQ1.
+
+4. PS/2 CONTROLLER TEST
+-----------------------
+The kernel checked the traditional PS/2 controller ports:
+
+    0x64  — 8042 status
+    0x60  — keyboard data
+
+The diagnostic result on the tested environment was effectively:
+
+    8042 status: 0xFF
+    8042 self-test response: 0xFF
+
+This indicates that an 8042/PS/2 controller is not available/responding in
+the environment being tested.
+
+The conclusion was that the PS/2 path is not useful for the target hardware.
+
+5. UEFI INPUT EXPERIMENT
+------------------------
+A UEFI SimpleTextInput fallback was added/tested.
+
+The kernel could detect the saved UEFI input protocol and displayed:
+
+    [UEFI]
+
+However, after ExitBootServices, UEFI Boot Services console input cannot
+normally be relied upon. The kernel did not receive usable keyboard input
+through this mechanism.
+
+The [UEFI] message therefore did NOT prove that keyboard input was working.
+It only showed that the UEFI input protocol pointer had been detected.
+
+6. QEMU TESTING
+---------------
+QEMU was used to test the kernel.
+
+The goal was to provide PS/2 emulation and determine whether the existing
+PS/2 interrupt implementation worked in a controlled environment.
+
+QEMU configurations involving the PC machine type and attempted i8042
+configuration were tried/discussed.
+
+The result was still not a successful keyboard-input test, and the diagnostic
+output continued to indicate that the PS/2 controller was unavailable or that
+the kernel was not reaching the expected working input path.
+
+A later recommendation was to use the standard QEMU "pc" machine rather than
+overcomplicating the machine configuration, since the PC machine normally
+provides legacy PS/2 devices.
+
+7. [NO KEYBOARD] DIAGNOSTIC
+---------------------------
+A stronger diagnostic was then introduced:
+
+- Check whether a PS/2 controller is actually present.
+- If present, initialize the PS/2 path and display [PS/2].
+- If absent, display [NO KEYBOARD] and halt.
+
+This was intended to prevent the kernel from silently falling into an
+unproductive polling loop when no PS/2 device exists.
+
+The source was updated so the keyboard initialization checks
+controller_present() before continuing.
+
+8. CURRENT USB KEYBOARD DIRECTION
+---------------------------------
+The correct long-term solution for modern physical hardware is USB HID
+keyboard support.
+
+The planned architecture is:
+
+    PCI discovery
+        |
+        v
+    USB host controller
+        |
+        +--> xHCI (primary target for modern hardware)
+        |
+        v
+    USB HID keyboard
+        |
+        v
+    HID Boot Protocol reports
+        |
+        v
+    Keyboard event/scancode translation
+        |
+        v
+    Rustica shell / CLI
+
+The first implementation should be intentionally minimal:
+
+- Detect xHCI via PCI.
+- Map the xHCI MMIO BAR.
+- Initialize the controller.
+- Detect the USB root hub/port.
+- Enumerate the keyboard.
+- Configure the USB HID keyboard interface.
+- Use HID Boot Protocol.
+- Receive the standard keyboard reports.
+- Translate HID usage codes into Rustica key events.
+- Initially polling the USB controller is acceptable as a diagnostic.
+- USB interrupts can be added after basic input works.
+
+This is preferable to continuing to debug PS/2 IRQ1 on USB-only hardware.
+
+9. SOURCE-TREE / BUILD CONFUSION
+--------------------------------
+There was also a major source-tree problem during the debugging process.
+
+Relevant directories included:
+
+    /var/www/rustux.com/prod/kernel-efi
+    /var/www/rustux.com/prod/loader/kernel-efi
+    /var/www/rustux.com/prod/loader/rustux
+    /var/www/rustux.com/prod/uefi-loader
+
+Some of these contained overlapping or detached copies of kernel/UEFI code.
+
+At one point the detached copy was mistakenly considered a duplicate and
+deleted. It was later determined that the /loader tree was part of the
+working/canonical build path.
+
+The current intended canonical source is associated with:
+
+    /var/www/rustux.com/prod/loader/rustux
+
+Do NOT blindly copy an entire kernel-efi directory from one tree to another.
+Changes need to be reconciled file-by-file against the canonical source.
+
+10. APIC CHANGES THAT SHOULD BE PRESERVED
+------------------------------------------
+The following APIC-related fixes were considered valid and should not be
+discarded merely because the keyboard turned out to be USB:
+
+- Correct Local APIC EOI offset:
+      0xB0
+
+- IA32_APIC_BASE MSR handling.
+
+- x2APIC detection and controlled transition to xAPIC when MMIO access is
+  required.
+
+- APIC global enable verification.
+
+- Reading the actual BSP Local APIC ID.
+
+- Routing IOAPIC interrupts to the actual BSP APIC ID.
+
+- ACPI MADT parsing for IRQ1 Interrupt Source Overrides.
+
+These are useful infrastructure for future interrupt-driven devices.
+
+11. BUILD REGRESSION / "EFI OK" PROBLEM
+---------------------------------------
+After source reconciliation, the build process became unstable.
+
+A later build produced only:
+
+    EFI OK
+
+instead of the previous full kernel boot output.
+
+Investigation showed a major difference in EFI binary sizes:
+
+    Old working BOOTX64.EFI: approximately 28 KB
+    New EFI: approximately 2.5 KB
+
+The new EFI appeared to contain only the UEFI stub and was not correctly
+linking the actual kernel implementation.
+
+The Rust library itself produced a large rlib (approximately 6.4 MB), but
+the final EFI executable was not incorporating the kernel code correctly.
+
+Claude began investigating Cargo.toml / rlib vs final EFI linking and was
+about to copy the old working EFI as a temporary workaround. That action was
+stopped.
+
+IMPORTANT:
+Do NOT replace the working build with an old EFI binary as a "temporary fix"
+without first understanding the build/linking problem. That can hide the
+source/build regression.
+
+12. CURRENT PRIORITY
+--------------------
+The project should now be treated as two separate problems:
+
+A. INPUT HARDWARE SUPPORT
+   The original [POLLING] problem was caused by the kernel's PS/2 assumption
+   while testing with USB keyboards.
+
+   The correct next driver is a minimal USB HID keyboard driver, preferably
+   xHCI for modern hardware.
+
+B. BUILD / SOURCE INTEGRITY
+   The UEFI build must first be restored so that the actual Rustica kernel is
+   linked into BOOTX64.EFI.
+
+   The fact that the image previously booted to the CLI but now only says
+   "EFI OK" indicates a build/linking/source-tree regression, not a keyboard
+   hardware problem.
+
+13. RECOMMENDED ORDER OF OPERATIONS
+-----------------------------------
+1. Stop making additional APIC/IRQ1 changes.
+2. Restore the known-good canonical source/build structure.
+3. Verify that BOOTX64.EFI contains the actual kernel and boots to the CLI.
+4. Verify the exact source directory used by the build.
+5. Remove obsolete duplicate/debug source trees only after confirming they are
+   not build inputs.
+6. Keep the useful APIC fixes, but do not use them as the primary keyboard
+   debugging target.
+7. Implement minimal xHCI USB HID keyboard support.
+8. Initially use USB polling to prove enumeration and HID reports work.
+9. Once USB keyboard input works, add xHCI interrupt support.
+10. Remove temporary debug messages such as [UEFI], [POLLING], APIC pixel
+    markers, and halt-test code after the corresponding subsystem is verified.
+
+14. KEY LESSON
+-------------
+The original diagnosis was backwards:
+
+The kernel was not necessarily failing to deliver IRQ1.
+
+It was attempting to use a PS/2 keyboard interface while the test keyboard
+was USB.
+
+Therefore:
+
+    USB keyboard
+        X
+        |
+    PS/2 8042 / IRQ1
+
+is the fundamental hardware mismatch.
+
+The next-generation Rustica design should not assume POSIX or legacy PC
+input interfaces. Device drivers should be built around explicit hardware
+abstractions, with USB HID support treated as a first-class input path.
