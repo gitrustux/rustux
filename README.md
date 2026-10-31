@@ -27,7 +27,7 @@ UEFI Firmware → BOOTX64.EFI (rustux.efi) → Kernel → Init (PID 1) → Shell
 ### Known Issues
 
 - **Userspace does not run yet.** The kernel boots through all subsystems in QEMU and enters ring 3, but user programs are linked at `0x400000`, which every process still maps through the firmware's identity mapping (copied into the lower half of each address space). `init` therefore faults on its first instruction. Fix: move the kernel out of the lower half.
-- **No USB keyboard support.** Only PS/2 is implemented, so most modern hardware has no keyboard input. USB HID (xHCI) is the next driver; see [`docs/polling.txt`](docs/polling.txt).
+- **No USB keyboard support.** Only PS/2 is implemented, so most modern hardware has no keyboard input. USB HID (xHCI) is the next driver; see [`docs/usb-keyboard.md`](docs/usb-keyboard.md).
 - **Local APIC register map** in `src/arch/amd64/apic.rs` does not match the Intel layout (EOI is correct). See [`docs/README.md`](docs/README.md#known-issues).
 
 ## Building
@@ -77,9 +77,11 @@ Writing and booting the image is covered in the [Rustica README](https://github.
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Kernel architecture |
 | [`docs/OBJECTS.md`](docs/OBJECTS.md) | Kernel objects |
 | [`docs/SYSCALL.md`](docs/SYSCALL.md) | System calls |
-| [`docs/TESTS.md`](docs/TESTS.md) | Tests |
-| [`docs/design/capability-system.md`](docs/design/capability-system.md) | Capability system design |
-| [`PLAN.md`](PLAN.md) | Development plan |
+| [`docs/TESTS.md`](docs/TESTS.md) | Build, QEMU testing and debugging |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Architecture checklist |
+| [`docs/HISTORY.md`](docs/HISTORY.md) | Project history and decisions |
+| [`docs/usb-keyboard.md`](docs/usb-keyboard.md) | USB keyboard status and debugging history |
+| [`docs/design/`](docs/design/) | Design documents: capabilities, scheduler and IPC, syscall ABI, HAL traits |
 
 ## Related Repositories
 

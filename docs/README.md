@@ -32,8 +32,6 @@ The repository root holds the kernel crate (`Cargo.toml` defines the `rustux` li
 ├── quick-test.sh            # QEMU memory-mapping debug run ([MAP] output)
 ├── scripts/
 │   └── create-bootable-image.sh
-├── PLAN.md
-├── TEST_INTERRUPTS.md
 ├── docs/                    # This documentation
 ├── files/test.txt           # Ramdisk test file
 ├── test-hello/              # Minimal asm userspace binary
@@ -89,13 +87,16 @@ docs/
 ├── ARCHITECTURE.md               # Kernel architecture
 ├── OBJECTS.md                    # Kernel object reference
 ├── SYSCALL.md                    # System call reference
-├── TESTS.md                      # Test documentation
-├── polling.txt                   # Keyboard input troubleshooting notes (Aug 2026)
-├── design/
-│   └── capability-system.md      # Capability system design
-└── decisions/
-    ├── refactoring-progress.md   # Refactoring progress report
-    └── structural-mistake.md     # Lessons learned
+├── TESTS.md                      # Build, QEMU testing and debugging
+├── ROADMAP.md                    # Architecture checklist (Jan 2026 plan)
+├── HISTORY.md                    # Project history and decisions
+├── usb-keyboard.md               # USB keyboard status and debugging history
+└── design/
+    ├── capability-system.md      # Capability system design
+    ├── scheduler-and-ipc.md      # Scheduler and IPC design target
+    ├── syscall-abi-v1.md         # Planned syscall ABI (draft)
+    ├── hal-traits.md             # Planned hardware abstraction traits
+    └── planning-notes.md         # Original design notes (reference)
 ```
 
 ---
@@ -251,7 +252,7 @@ These changes were made in the `loader` repository's copy of the kernel and were
 
 ## Known Issues
 
-**Keyboard on real hardware.** The kernel has only a PS/2 (8042) keyboard driver. On USB-only machines no 8042 controller responds, so no keyboard input arrives. USB HID support (xHCI) is the planned fix. Experimental USB/xHCI code is in the `loader` repository (`kernel-efi/src/usb/`, latest work on branch `wip/xhci-2026-08`). See `docs/polling.txt` for the full history.
+**Keyboard on real hardware.** The kernel has only a PS/2 (8042) keyboard driver. On USB-only machines no 8042 controller responds, so no keyboard input arrives. USB HID support (xHCI) is the planned fix. Experimental USB/xHCI code is in the `loader` repository (`kernel-efi/src/usb/`, latest work on branch `wip/xhci-2026-08`). See `docs/usb-keyboard.md` for the full history.
 
 **Local APIC register map.** In `src/arch/amd64/apic.rs`, the `LocalApic` struct offsets and the TPR offset (`0x30`) do not match the Intel SDM layout (registers sit on 16-byte boundaries; TPR is `0x80`). EOI uses the correct `0xB0` constant.
 
@@ -383,13 +384,15 @@ Should show:
 | `docs/ARCHITECTURE.md` | Kernel architecture |
 | `docs/OBJECTS.md` | Kernel objects |
 | `docs/SYSCALL.md` | System calls |
-| `docs/TESTS.md` | Test documentation |
-| `docs/polling.txt` | Keyboard input troubleshooting |
+| `docs/TESTS.md` | Build, QEMU testing and debugging |
+| `docs/ROADMAP.md` | Architecture checklist |
+| `docs/HISTORY.md` | Project history and decisions |
+| `docs/usb-keyboard.md` | USB keyboard status and debugging history |
 | `docs/design/capability-system.md` | Capability system design |
-| `docs/decisions/refactoring-progress.md` | Refactoring progress |
-| `docs/decisions/structural-mistake.md` | Lessons learned |
-| `PLAN.md` | Project plan |
-| `TEST_INTERRUPTS.md` | Interrupt test notes |
+| `docs/design/scheduler-and-ipc.md` | Scheduler and IPC design target |
+| `docs/design/syscall-abi-v1.md` | Planned syscall ABI |
+| `docs/design/hal-traits.md` | Planned hardware abstraction traits |
+| `docs/design/planning-notes.md` | Original design notes |
 
 ---
 

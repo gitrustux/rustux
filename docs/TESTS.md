@@ -1,215 +1,116 @@
-# Rustux Kernel Testing Procedures
+# Testing the Rustux Kernel
 
-## Overview
+How to build the kernel, boot it in QEMU, and debug it. This replaces the older `TEST_INTERRUPTS.md` and the January version of this file.
 
-This document describes the complete testing setup for the Rustux UEFI kernel, including build procedures, disk image creation, and QEMU testing.
-
-## Directory Structure
-
-```
-/var/www/rustux.com/
-├── prod/rustux/               # Main kernel source (refactored)
-│   ├── src/
-│   │   ├── main.rs            # Kernel entry point
-│   │   ├── init.rs            # Kernel initialization
-│   │   ├── lib.rs             # Main library with panic handler
-│   │   ├── traits.rs          # Cross-architecture interrupt traits
-│   │   ├── arch/              # Architecture-specific code
-│   │   │   ├── amd64/         # x86_64 APIC, IDT, GDT, etc.
-│   │   │   ├── arm64/         # ARM64 GIC (stub)
-│   │   │   └── riscv64/       # RISC-V PLIC (stub)
-│   │   ├── acpi/              # ACPI table parsing
-│   │   ├── sched/             # Scheduler and thread management
-│   │   ├── interrupt/         # Generic interrupt handling
-│   │   └── testing/           # Test harness and QEMU configuration
-│   ├── Cargo.toml             # Rust project config
-│   ├── build.sh               # Build script
-│   └── test-qemu.sh           # QEMU test script
-├── html/rustica/
-│   └── rustica-live-amd64-0.1.0.img  # Bootable disk image (GPT + FAT32 ESP)
-└── prod/docs/
-    └── TESTS.md               # This file
-```
-
-## Build Procedure
-
-### 1. Build the Kernel
+## Prerequisites
 
 ```bash
-cd /var/www/rustux.com/prod/rustux
-./build.sh
+rustup toolchain install nightly          # the kernel uses #![feature(abi_x86_interrupt)]
+rustup target add x86_64-unknown-uefi
+sudo apt install qemu-system-x86 ovmf dosfstools mtools
 ```
 
-Or manually:
+Without `rustup` (e.g. a sandbox), a distro Rust plus its matching source package also works, building `core`/`alloc` from source:
+
 ```bash
-cd /var/www/rustux.com/prod/rustux
-cargo build --release
+sudo apt install rustc-1.91 cargo-1.91 rust-1.91-src lld
+RUSTC_BOOTSTRAP=1 cargo-1.91 build --release --bin rustux --features uefi_kernel \
+  --target x86_64-unknown-uefi \
+  -Zbuild-std=core,alloc,compiler_builtins -Zbuild-std-features=compiler-builtins-mem \
+  --config 'target.x86_64-unknown-uefi.linker="lld-link"'
 ```
 
-**Output**: Built kernel binary in `target/x86_64-unknown-uefi/release/`
-
-### 2. Create Bootable Disk Image
-
-The build script automatically creates a bootable UEFI disk image:
+## Build
 
 ```bash
-./build.sh
+./build.sh                                   # kernel + rustux.img
+# or the kernel only:
+cargo build --release --bin rustux --features uefi_kernel --target x86_64-unknown-uefi
 ```
 
-This creates `rustux.img` - a 512MB GPT disk with FAT32 EFI System Partition containing the kernel.
+The output is `target/x86_64-unknown-uefi/release/rustux.efi`. **Check its size:** a working kernel is about 1.8 MB. A file of a few KB means the compiler proved the entry path always panics and removed the kernel (this was the cause of the old "EFI OK" freeze).
 
-### 3. Create/Update Disk Image (Manual)
+`build.rs` embeds a ramdisk with `bin/init`, `bin/shell` and `bin/hello`. It uses freshly built `target/*.elf` files when present, otherwise the prebuilt binaries in `test-userspace/`.
 
-If you need to manually update an existing disk image:
+## Run in QEMU
 
 ```bash
-# Setup loop device
-LOOPDEV=$(losetup -f)
-losetup -P $LOOPDEV /var/www/rustux.com/prod/rustux/rustux.img
-partprobe $LOOPDEV
-
-# Mount EFI System Partition (partition 1)
-mkdir -p /mnt/rustux-test
-mount ${LOOPDEV}p1 /mnt/rustux-test
-
-# Copy kernel (if needed)
-cp target/x86_64-unknown-uefi/release/rustux.efi /mnt/rustux-test/EFI/BOOT/
-
-# Unmount
-umount /mnt/rustux-test
-losetup -d $LOOPDEV
+./test-qemu.sh          # builds rustux.img, boots it, checks the log for [TICK]
 ```
 
-**Required paths on disk image**:
-- `/EFI/BOOT/BOOTX64.EFI` - UEFI kernel/application
-
-## QEMU Testing
-
-### Basic Test (Interactive)
+Manually:
 
 ```bash
-cd /var/www/rustux.com/prod/rustux
-./test-qemu.sh
-```
-
-Or manually:
-
-```bash
-qemu-system-x86_64 \
-  -bios /usr/share/ovmf/OVMF.fd \
-  -drive file=rustux.img,format=raw \
-  -m 512M \
-  -machine q35
-```
-
-**Key options**:
-- `-bios /usr/share/ovmf/OVMF.fd` - UEFI firmware (OVMF)
-- `-drive file=rustux.img,format=raw` - Bootable disk image
-- `-m 512M` - Memory size
-- `-machine q35` - Q35 chipset
-
-### Test with Debug Output
-
-```bash
-cd /var/www/rustux.com/prod/rustux
-qemu-system-x86_64 \
+qemu-system-x86_64 -machine q35 -m 512M -smp 1 \
   -bios /usr/share/ovmf/OVMF.fd \
   -drive file=rustux.img,format=raw \
   -debugcon file:/tmp/rustux-qemu-debug.log \
-  -serial stdio \
-  -m 512M \
-  -machine q35 \
-  -no-reboot \
-  -no-shutdown
+  -no-reboot
 ```
 
-Check debug log after test:
+To build an image by hand:
+
 ```bash
-cat /tmp/rustux-qemu-debug.log
+dd if=/dev/zero of=rustux.img bs=1M count=64
+mkfs.fat -F 32 rustux.img
+mkdir -p esp/EFI/BOOT && cp target/x86_64-unknown-uefi/release/rustux.efi esp/EFI/BOOT/BOOTX64.EFI
+mcopy -i rustux.img -s esp/EFI ::
 ```
 
-## Boot Sequence
+### Expected debug output
 
-### 1. UEFI Firmware (OVMF) Loads
-- Reads GPT partition table
-- Finds EFI System Partition
-- Loads `/EFI/BOOT/BOOTX64.EFI`
+The kernel writes progress to the QEMU debug port (0xE9). A good boot looks like this (heap and PMM lines omitted):
 
-### 2. Kernel Entry
-- UEFI firmware loads the kernel
-- Kernel initialization begins
-- IDT and GDT setup
-- ACPI RSDP discovery
-- Interrupt controller initialization
-- Timer and keyboard handlers installed
-
-### 3. Runtime Mode
-- Kernel interrupts are active
-- Timer ticks produce [TICK] messages
-- Keyboard input produces [KEY:XX] scancode messages
-
-## Current Kernel State (2026-01-18)
-
-### Working ✅
-- UEFI boot and kernel loading
-- IDT/GDT setup
-- Interrupt controller initialization (APIC via ACPI)
-- Timer interrupt handler (produces [TICK] messages)
-- Keyboard interrupt handler (produces [KEY:XX] scancodes)
-- QEMU test infrastructure with debug logging
-
-### Test Results
-
-Expected debug output:
 ```
-[OK] ACPI RSDP found: 0x...
-[PHASE] Exiting boot services...
-[1/5] Setting up GDT...
-✓ GDT configured
-[2/5] Setting up IDT...
-✓ IDT configured
-[3/5] Installing timer handler...
-✓ Timer handler at vector 32
+EBS OK
+[INIT] Heap initialized successfully (16MB)
+[1/5] Setting up GDT...           ✓ GDT configured
+[2/5] Setting up IDT...           ✓ IDT configured
+[3/5] Installing timer handler... ✓ Timer handler at vector 32
 [3.5/5] Installing keyboard handler...
-✓ Keyboard handler at vector 33
-[4/5] Initializing APIC...
-✓ APIC initialized
-[4.5/5] Configuring keyboard IRQ...
-✓ IRQ1 → Vector 33
+[3.6/5] Installing syscall handler...
+[4/5] Initializing APIC...        ✓ APIC initialized
+[4.5/5] Configuring keyboard IRQ... IRQ1 → Vector 33
 [5/5] Configuring timer...
-✓ Timer configured
-[TICK]
+[DISPLAY] Text console initialized
+[INIT] Found init.elf in ramdisk
+[INIT] Entry point: 0x401000
+[USPACE] Loading CR3 and entering ring 3
 [TICK]
 ```
 
-Press keys in QEMU to see:
-```
-[KEY:1E]  ← Press 'A'
-[KEY:9E]  ← Release 'A'
-```
+The screen turns red at UEFI entry and green after ExitBootServices.
 
-## Quick Test Commands
+## Debugging techniques
+
+**Watch CPU exceptions and interrupts.** Add `-d int,cpu_reset -D /tmp/qemu.log`. Each line shows the vector (`v=0e` page fault, `v=0d` general protection, `v=06` invalid opcode, `v=20` timer, `v=21` keyboard), the privilege level (`cpl=3` is userspace), `IP` and `CR2`.
+
+**Use the QEMU monitor.** Add `-monitor unix:/tmp/mon.sock,server,nowait`, then send commands with `socat`:
 
 ```bash
-# Kill any existing QEMU
-pkill -9 qemu
-
-# Build
-cd /var/www/rustux.com/prod/rustux
-./build.sh
-
-# Test with QEMU
-./test-qemu.sh
-
-# Check debug log
-cat /tmp/rustux-qemu-debug.log
+m() { echo "$1" | socat - UNIX-CONNECT:/tmp/mon.sock; }
+m stop                       # pause the CPU
+m "info registers"           # RIP, RSP, CR3 ...
+m "gva2gpa 0x401000"         # where does a virtual address map in the current CR3?
+m "xp /16xb 0x2001000"       # dump physical memory
+m "sendkey h"; m "sendkey ret"   # type into the guest
+m "screendump /tmp/screen.ppm"   # capture the framebuffer
 ```
 
-## References
+**Debug with GDB.** Add `-s -S` to QEMU and attach with `gdb` → `target remote :1234`.
 
-- UEFI Specification
-- OVMF (EDK2) for x86_64 UEFI firmware
-- ACPI Specification (MADT table for interrupt controller discovery)
-- GPT partition format
-- FAT32 file system for ESP
-- **Repository**: https://github.com/gitrustux/rustux
+**Inspect the binary.** `objdump -d target/x86_64-unknown-uefi/release/rustux.efi | head` shows whether the kernel was optimised away (a tiny `.text` ending in a `hlt; jmp` loop is the panic handler).
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---------|--------------|
+| `rustux.efi` is a few KB | Something on the entry path always panics (e.g. `mem::zeroed()` of a reference, `uefi::system::with_stdout` after ExitBootServices); the optimizer removed the rest |
+| QEMU exits right after a step (with `-no-reboot`) | Triple fault; run with `-d int,cpu_reset` and look at the last exception |
+| `init.elf not found in ramdisk` | Ramdisk built without ELFs, or offsets wrong in `build.rs` |
+| Fault at `cpl=3` on the first user instruction | User mapping hidden by the identity map copied into the lower half (current known issue) |
+| No `[TICK]` | LAPIC timer not configured, or interrupts not enabled |
+
+## Kernel test mode
+
+`--features kernel_test` builds `src/test_entry.rs`, a minimal interrupt test (GDT, IDT, LAPIC timer) that prints `[TICK n]` every 10 ticks on the debug port and reports `TEST PASSED` once it has seen at least 10 ticks. The handlers it uses are in `src/arch/amd64/test.rs`.
