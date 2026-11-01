@@ -19,6 +19,7 @@
 //! never contended. Timers fire lazily: their state is computed when it is
 //! looked at, and waiters use the deadline to wake up in time.
 
+pub mod channel;
 pub mod event;
 pub mod handle;
 pub mod timer;
@@ -27,6 +28,7 @@ use crate::sync::SpinMutex;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+pub use channel::Channel;
 pub use event::{Event, EventPair};
 pub use handle::{HandleTable, Rights};
 pub use timer::Timer;
@@ -112,6 +114,7 @@ impl SignalState {
 /// A reference to a kernel object of any type
 #[derive(Clone)]
 pub enum KObject {
+    Channel(Arc<Channel>),
     Event(Arc<Event>),
     EventPair(Arc<EventPair>),
     Timer(Arc<Timer>),
@@ -120,6 +123,7 @@ pub enum KObject {
 impl KObject {
     pub fn obj_type(&self) -> ObjType {
         match self {
+            KObject::Channel(_) => ObjType::Channel,
             KObject::Event(_) => ObjType::Event,
             KObject::EventPair(_) => ObjType::EventPair,
             KObject::Timer(_) => ObjType::Timer,
@@ -128,6 +132,7 @@ impl KObject {
 
     pub fn signal_state(&self) -> &SignalState {
         match self {
+            KObject::Channel(o) => &o.signals,
             KObject::Event(o) => &o.signals,
             KObject::EventPair(o) => &o.signals,
             KObject::Timer(o) => &o.signals,

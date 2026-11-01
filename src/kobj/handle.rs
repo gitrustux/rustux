@@ -37,6 +37,7 @@ impl Rights {
     pub const EVENT: u32 = Self::BASIC | Self::SIGNAL;
     pub const EVENTPAIR: u32 = Self::BASIC | Self::SIGNAL | Self::SIGNAL_PEER;
     pub const TIMER: u32 = Self::BASIC | Self::WRITE | Self::SIGNAL;
+    pub const CHANNEL: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL | Self::SIGNAL_PEER;
 
     pub fn has(self, r: u32) -> bool {
         self.0 & r == r

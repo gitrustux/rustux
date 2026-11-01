@@ -314,9 +314,9 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x16 => sys_vmar_protect(args),
 
         // IPC & Sync (0x20-0x2F)
-        0x20 => sys_channel_create(args),
-        0x21 => sys_channel_write(args),
-        0x22 => sys_channel_read(args),
+        0x20 => object::sys_channel_create(args),
+        0x21 => object::sys_channel_write(args),
+        0x22 => object::sys_channel_read(args),
         0x23 => object::sys_event_create(args),
         0x24 => object::sys_eventpair_create(args),
         0x25 => object::sys_object_signal(args),
@@ -759,9 +759,6 @@ syscall_stub!(sys_vmar_unmap);
 syscall_stub!(sys_vmar_protect);
 
 // IPC & Sync syscalls
-syscall_stub!(sys_channel_create);
-syscall_stub!(sys_channel_write);
-syscall_stub!(sys_channel_read);
 
 // Jobs & Handles syscalls
 syscall_stub!(sys_job_create);

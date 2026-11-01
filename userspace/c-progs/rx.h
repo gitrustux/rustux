@@ -27,6 +27,7 @@ typedef int64_t rx_status_t;
 #define RX_ERR_SHOULD_WAIT    -13
 #define RX_ERR_PEER_CLOSED    -14
 #define RX_ERR_BUFFER_TOO_SMALL -15
+#define RX_ERR_OUT_OF_RANGE   -16
 
 #define RX_TIME_INFINITE  UINT64_MAX
 
@@ -50,6 +51,7 @@ typedef int64_t rx_status_t;
 #define RX_RIGHT_SAME_RIGHTS (1u << 31)
 
 // Object types
+#define RX_OBJ_TYPE_CHANNEL   4
 #define RX_OBJ_TYPE_EVENT     5
 #define RX_OBJ_TYPE_EVENTPAIR 16
 #define RX_OBJ_TYPE_TIMER     22
@@ -73,6 +75,7 @@ static inline int64_t rx_syscall(int64_t n, int64_t a, int64_t b, int64_t c, int
 }
 
 #define RX_SYS(n, a, b, c, d) rx_syscall((n), (int64_t)(a), (int64_t)(b), (int64_t)(c), (int64_t)(d), 0, 0)
+#define RX_SYS6(n, a, b, c, d, e, f) rx_syscall((n), (int64_t)(a), (int64_t)(b), (int64_t)(c), (int64_t)(d), (int64_t)(e), (int64_t)(f))
 
 static inline rx_status_t rx_handle_close(rx_handle_t h) { return RX_SYS(0x07, h, 0, 0, 0); }
 static inline rx_status_t rx_handle_duplicate(rx_handle_t h, uint32_t rights, rx_handle_t *out) { return RX_SYS(0x31, h, rights, out, 0); }
@@ -83,6 +86,23 @@ static inline rx_status_t rx_object_signal_peer(rx_handle_t h, uint32_t clear, u
 static inline rx_status_t rx_object_wait_one(rx_handle_t h, uint32_t signals, uint64_t deadline, uint32_t *observed) { return RX_SYS(0x26, h, signals, deadline, observed); }
 static inline rx_status_t rx_object_wait_many(rx_wait_item_t *items, uint64_t count, uint64_t deadline) { return RX_SYS(0x27, items, count, deadline, 0); }
 static inline rx_status_t rx_object_get_type(rx_handle_t h) { return RX_SYS(0x29, h, 0, 0, 0); }
+static inline rx_status_t rx_channel_create(uint32_t options, rx_handle_t *out0, rx_handle_t *out1) { return RX_SYS(0x20, options, out0, out1, 0); }
+static inline rx_status_t rx_channel_write(rx_handle_t h, uint32_t options, const void *bytes, uint32_t num_bytes,
+                                           const rx_handle_t *handles, uint32_t num_handles) {
+    return RX_SYS6(0x21, h, options, bytes, num_bytes, handles, num_handles);
+}
+// Same signature as zx_channel_read; the kernel takes the two capacities
+// packed into one register and the two counts through one pointer.
+static inline rx_status_t rx_channel_read(rx_handle_t h, uint32_t options, void *bytes, rx_handle_t *handles,
+                                          uint32_t num_bytes, uint32_t num_handles,
+                                          uint32_t *actual_bytes, uint32_t *actual_handles) {
+    uint32_t actual[2] = {0, 0};
+    rx_status_t r = RX_SYS6(0x22, h, options, bytes, handles,
+                            (uint64_t)num_bytes | ((uint64_t)num_handles << 32), actual);
+    if (actual_bytes) *actual_bytes = actual[0];
+    if (actual_handles) *actual_handles = actual[1];
+    return r;
+}
 static inline uint64_t rx_clock_get_monotonic(void) { return (uint64_t)RX_SYS(0x40, 0, 0, 0, 0); }
 static inline rx_status_t rx_timer_create(uint32_t options, uint32_t clock_id, rx_handle_t *out) { return RX_SYS(0x41, options, clock_id, out, 0); }
 static inline rx_status_t rx_timer_set(rx_handle_t h, uint64_t deadline, uint64_t slack) { return RX_SYS(0x42, h, deadline, slack, 0); }

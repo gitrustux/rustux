@@ -353,9 +353,9 @@ Deadline resolution is the 10 ms scheduler tick.
 
 | Syscall | Number | Description | Status |
 |---------|--------|-------------|--------|
-| `CHANNEL_CREATE` | 0x20 | Create an IPC channel | 🔶 Stub (next) |
-| `CHANNEL_WRITE` | 0x21 | Write to a channel | 🔶 Stub (next) |
-| `CHANNEL_READ` | 0x22 | Read from a channel | 🔶 Stub (next) |
+| `CHANNEL_CREATE` | 0x20 | Create a channel (two endpoints) | ✅ |
+| `CHANNEL_WRITE` | 0x21 | Send bytes and handles | ✅ |
+| `CHANNEL_READ` | 0x22 | Receive bytes and handles | ✅ |
 | `EVENT_CREATE` | 0x23 | Create an event | ✅ |
 | `EVENTPAIR_CREATE` | 0x24 | Create an event pair | ✅ |
 | `OBJECT_SIGNAL` | 0x25 | Set/clear signals on an object | ✅ |
@@ -390,8 +390,9 @@ bit gives `ERR_INVALID_ARGS`. Waiters are woken if the signals change.
 
 `object_signal_peer(rx_handle_t h, uint32_t clear_mask, uint32_t set_mask)`
 
-Same as `object_signal`, applied to the other end of an event pair. Needs
-`SIGNAL_PEER`. `ERR_WRONG_TYPE` on anything but an event pair,
+Same as `object_signal`, applied to the other end of an event pair or a
+channel (on a channel only user signals may be changed). Needs
+`SIGNAL_PEER`. `ERR_WRONG_TYPE` on any other object,
 `ERR_PEER_CLOSED` if the other end is gone.
 
 #### OBJECT_WAIT_ONE (0x26)
@@ -422,10 +423,45 @@ Every item's `pending` is filled in on return (including on `ERR_TIMED_OUT`).
 `object_get_type(rx_handle_t h)` returns the object type: 5 = event,
 16 = event pair, 22 = timer (Zircon values). Needs no rights.
 
-#### CHANNEL_CREATE / WRITE / READ (0x20-0x22) — planned
+#### CHANNEL_CREATE (0x20)
 
-Bidirectional message pipes that carry bytes and handles. Being implemented
-next; see the checklist.
+`channel_create(uint32_t options, rx_handle_t *out0, rx_handle_t *out1)`
+
+Creates the two endpoints of a channel. A message written to one endpoint
+is read from the other. Rights: BASIC + READ + WRITE + SIGNAL + SIGNAL_PEER.
+New endpoints have `CHANNEL_WRITABLE` set. When one endpoint is closed the
+other gets `PEER_CLOSED` and loses `CHANNEL_WRITABLE`; messages still queued
+on it can be read, and handles in messages queued on the closed endpoint
+are closed.
+
+#### CHANNEL_WRITE (0x21)
+
+`channel_write(rx_handle_t h, uint32_t options, const void *bytes, uint32_t num_bytes, const rx_handle_t *handles, uint32_t num_handles)`
+
+Needs `WRITE`. At most 65536 bytes and 64 handles (`ERR_OUT_OF_RANGE`).
+Each handle sent needs `TRANSFER`; it leaves the caller's handle table and
+arrives in the reader's table with the same rights. As in Zircon, the
+listed handles are **always consumed**, even when the write fails.
+Sending the channel's own handle or its peer gives `ERR_NOT_SUPPORTED`.
+Errors: `ERR_PEER_CLOSED` (other end gone), `ERR_SHOULD_WAIT` (1024
+messages already queued), `ERR_BAD_HANDLE` (a listed handle is invalid).
+
+#### CHANNEL_READ (0x22)
+
+`channel_read(rx_handle_t h, uint32_t options, void *bytes, rx_handle_t *handles, uint64_t capacity, uint32_t actual[2])`
+
+Needs `READ`. `capacity` packs the buffer sizes: `num_bytes | (num_handles << 32)`.
+`actual` (may be NULL) receives the message's byte and handle counts.
+The C wrapper `rx_channel_read()` in `rx.h` has the Zircon signature
+(`num_bytes, num_handles, *actual_bytes, *actual_handles`) and does the
+packing.
+
+- `ERR_SHOULD_WAIT`: nothing queued (wait for `CHANNEL_READABLE`)
+- `ERR_PEER_CLOSED`: nothing queued and the other end is gone
+- `ERR_BUFFER_TOO_SMALL`: the next message does not fit; `actual` is
+  filled in and the message stays queued
+
+`CHANNEL_READABLE` is set while at least one message is queued.
 
 ---
 
@@ -491,7 +527,7 @@ Needs `WRITE`. Clears `TIMER_SIGNALED` and arms the timer;
 |----------|-------|-------------|------|
 | Process & Thread | 7 | 3 (spawn, process_exit, handle_close) | 4 |
 | Memory / VMO | 7 | 0 | 7 |
-| IPC & Sync | 10 | 7 | 3 (channels) |
+| IPC & Sync | 10 | 10 | 0 |
 | Jobs & Handles | 3 | 1 | 2 |
 | Time | 4 | 4 | 0 |
 

@@ -25,6 +25,96 @@ static void check(const char *name, int ok, int64_t got) {
 
 #define MS 1000000ull
 
+static int same(const char *a, const char *b, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) if (a[i] != b[i]) return 0;
+    return 1;
+}
+
+static void channel_tests(void) {
+    rx_handle_t c0 = 0, c1 = 0, ev = 0, weak = 0, got[4] = {0}, p0 = 0, p1 = 0;
+    uint32_t observed = 0, nb = 0, nh = 0;
+    char buf[64];
+    int64_t r;
+    rx_puts("channels:\n");
+
+    r = rx_channel_create(0, &c0, &c1);
+    check("channel_create", r == RX_OK && c0 && c1 && rx_object_get_type(c0) == RX_OBJ_TYPE_CHANNEL, r);
+    rx_object_wait_one(c0, 0xFFFFFFFF, 0, &observed);
+    check("new endpoint is WRITABLE, not READABLE", (observed & RX_CHANNEL_WRITABLE) && !(observed & RX_CHANNEL_READABLE), observed);
+    r = rx_channel_read(c1, 0, buf, got, sizeof buf, 4, &nb, &nh);
+    check("read empty channel -> SHOULD_WAIT", r == RX_ERR_SHOULD_WAIT, r);
+
+    r = rx_channel_write(c0, 0, "hello", 5, 0, 0);
+    check("write 5 bytes", r == RX_OK, r);
+    r = rx_object_wait_one(c1, RX_CHANNEL_READABLE, 0, &observed);
+    check("other end becomes READABLE", r == RX_OK, r);
+    r = rx_channel_read(c0, 0, buf, got, sizeof buf, 4, &nb, &nh);
+    check("writer's own end has nothing", r == RX_ERR_SHOULD_WAIT, r);
+    r = rx_channel_read(c1, 0, buf, got, 2, 4, &nb, &nh);
+    check("small buffer -> BUFFER_TOO_SMALL with sizes", r == RX_ERR_BUFFER_TOO_SMALL && nb == 5 && nh == 0, r);
+    r = rx_channel_read(c1, 0, buf, got, sizeof buf, 4, &nb, &nh);
+    check("message was kept; read it", r == RX_OK && nb == 5 && nh == 0 && same(buf, "hello", 5), r);
+    rx_object_wait_one(c1, RX_CHANNEL_READABLE, 0, &observed);
+    check("READABLE cleared when empty", !(observed & RX_CHANNEL_READABLE), observed);
+
+    rx_channel_write(c0, 0, "one", 3, 0, 0);
+    rx_channel_write(c0, 0, "two", 3, 0, 0);
+    rx_channel_read(c1, 0, buf, got, sizeof buf, 4, &nb, 0);
+    r = same(buf, "one", 3);
+    rx_channel_read(c1, 0, buf, got, sizeof buf, 4, &nb, 0);
+    check("messages arrive in order", r && same(buf, "two", 3), 0);
+
+    // Moving a handle
+    rx_event_create(0, &ev);
+    r = rx_channel_write(c0, 0, "ev", 2, &ev, 1);
+    check("write a message carrying an event handle", r == RX_OK, r);
+    r = rx_object_get_type(ev);
+    check("sender's handle is gone", r == RX_ERR_BAD_HANDLE, r);
+    r = rx_channel_read(c1, 0, buf, got, sizeof buf, 4, &nb, &nh);
+    check("receiver gets 1 handle", r == RX_OK && nh == 1 && got[0] != 0, r);
+    check("received handle is the event", rx_object_get_type(got[0]) == RX_OBJ_TYPE_EVENT, rx_object_get_type(got[0]));
+    rx_object_signal(got[0], 0, RX_EVENT_SIGNALED);
+    r = rx_object_wait_one(got[0], RX_EVENT_SIGNALED, 0, &observed);
+    check("received handle keeps its rights", r == RX_OK, r);
+
+    r = rx_handle_duplicate(got[0], RX_RIGHT_WAIT, &weak);
+    r = rx_channel_write(c0, 0, "x", 1, &weak, 1);
+    check("handle without TRANSFER -> ACCESS_DENIED", r == RX_ERR_ACCESS_DENIED, r);
+    check("  ... and it is consumed anyway (as in Zircon)", rx_object_get_type(weak) == RX_ERR_BAD_HANDLE, 0);
+    r = rx_channel_read(c1, 0, buf, got, sizeof buf, 4, &nb, &nh);
+    check("a failed write queues nothing", r == RX_ERR_SHOULD_WAIT, r);
+    r = rx_channel_write(c0, 0, "x", 1, &c0, 1);
+    check("writing a channel into itself -> NOT_SUPPORTED", r == RX_ERR_NOT_SUPPORTED, r);
+    rx_handle_t bogus = 0x12345;
+    r = rx_channel_write(c1, 0, "x", 1, &bogus, 1);
+    check("bad handle in the list -> BAD_HANDLE", r == RX_ERR_BAD_HANDLE, r);
+
+    // c0 was consumed by the failed write above; make a new pair
+    rx_channel_create(0, &c0, &c1);
+    r = rx_object_signal_peer(c0, 0, RX_USER_SIGNAL_0);
+    r = rx_object_wait_one(c1, RX_USER_SIGNAL_0, 0, &observed);
+    check("signal_peer on a channel", r == RX_OK, r);
+
+    // Closing
+    rx_eventpair_create(0, &p0, &p1);
+    rx_channel_write(c0, 0, "keep", 4, &p1, 1);
+    rx_channel_write(c1, 0, "last", 4, 0, 0);
+    rx_handle_close(c1);
+    rx_object_wait_one(c0, 0xFFFFFFFF, 0, &observed);
+    check("close one end: PEER_CLOSED, not WRITABLE", (observed & RX_PEER_CLOSED) && !(observed & RX_CHANNEL_WRITABLE), observed);
+    r = rx_object_wait_one(p0, RX_PEER_CLOSED, 0, &observed);
+    check("handles in unread messages are closed", r == RX_OK, r);
+    r = rx_channel_write(c0, 0, "x", 1, 0, 0);
+    check("write after close -> PEER_CLOSED", r == RX_ERR_PEER_CLOSED, r);
+    r = rx_channel_read(c0, 0, buf, got, sizeof buf, 4, &nb, &nh);
+    check("queued message still readable after close", r == RX_OK && same(buf, "last", 4), r);
+    r = rx_channel_read(c0, 0, buf, got, sizeof buf, 4, &nb, &nh);
+    check("then read -> PEER_CLOSED", r == RX_ERR_PEER_CLOSED, r);
+    rx_handle_close(c0);
+    rx_handle_close(p0);
+    rx_handle_close(got[0]);
+}
+
 void _start(void) {
     rx_handle_t ev = 0, dup = 0, tm = 0, p0 = 0, p1 = 0;
     uint32_t observed = 0;
@@ -127,6 +217,8 @@ void _start(void) {
     check("unmapped out pointer -> INVALID_ARGS", r == RX_ERR_INVALID_ARGS, r);
     r = rx_event_create(0, (rx_handle_t *)0xffff800000001000ull);
     check("kernel out pointer -> INVALID_ARGS", r == RX_ERR_INVALID_ARGS, r);
+
+    channel_tests();
 
     rx_puts("objtest: ");
     rx_putd(passed);
