@@ -32,6 +32,7 @@
 //! ```
 
 pub mod fd;
+pub mod memory;
 pub mod object;
 pub mod user;
 
@@ -305,13 +306,14 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x07 => sys_handle_close(args),
 
         // Memory / VMO (0x10-0x1F)
-        0x10 => sys_vmo_create(args),
-        0x11 => sys_vmo_read(args),
-        0x12 => sys_vmo_write(args),
-        0x13 => sys_vmo_clone(args),
-        0x14 => sys_vmar_map(args),
-        0x15 => sys_vmar_unmap(args),
-        0x16 => sys_vmar_protect(args),
+        0x10 => memory::sys_vmo_create(args),
+        0x11 => memory::sys_vmo_read(args),
+        0x12 => memory::sys_vmo_write(args),
+        0x13 => memory::sys_vmo_clone(args),
+        0x14 => memory::sys_vmar_map(args),
+        0x15 => memory::sys_vmar_unmap(args),
+        0x16 => memory::sys_vmar_protect(args),
+        0x17 => memory::sys_vmo_get_size(args),
 
         // IPC & Sync (0x20-0x2F)
         0x20 => object::sys_channel_create(args),
@@ -461,7 +463,7 @@ fn sys_process_create(args: SyscallArgs) -> SyscallRet {
             None => return err_to_ret(RxStatus::ERR_NO_MEMORY),
         };
 
-        let process = Process::new(
+        let mut process = Process::new(
             pid,
             parent_pid,
             page_table_phys,
@@ -470,6 +472,7 @@ fn sys_process_create(args: SyscallArgs) -> SyscallRet {
             process_image.entry,
         );
 
+        object::give_root_vmar(&mut process);
         table.insert(process);
         table.set_current(pid);
 
@@ -671,6 +674,7 @@ fn sys_spawn(args: SyscallArgs) -> SyscallRet {
         };
         process.set_name(name);
 
+        object::give_root_vmar(&mut process);
         table.insert(process);
 
         (pid, process_image.entry, process_image.stack_top)
@@ -750,13 +754,6 @@ fn sys_handle_close(args: SyscallArgs) -> SyscallRet {
 }
 
 // Memory / VMO syscalls
-syscall_stub!(sys_vmo_create);
-syscall_stub!(sys_vmo_read);
-syscall_stub!(sys_vmo_write);
-syscall_stub!(sys_vmo_clone);
-syscall_stub!(sys_vmar_map);
-syscall_stub!(sys_vmar_unmap);
-syscall_stub!(sys_vmar_protect);
 
 // IPC & Sync syscalls
 

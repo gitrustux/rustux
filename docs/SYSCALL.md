@@ -137,6 +137,7 @@ The C header `userspace/c-progs/rx.h` defines them as `RX_ERR_*`.
 | `ERR_BUFFER_TOO_SMALL` | 15 | Output buffer too small |
 | `ERR_OUT_OF_RANGE` | 16 | Value out of range |
 | `ERR_BAD_STATE` | 17 | Object or process in the wrong state |
+| `ERR_ALREADY_EXISTS` | 18 | Something is already there (e.g. a mapping at a specific address) |
 
 Checks happen in this order: handle valid (`BAD_HANDLE`), object type (`WRONG_TYPE`), rights (`ACCESS_DENIED`), then arguments.
 
@@ -255,49 +256,87 @@ All handles of a process are closed when it exits.
 
 | Syscall | Number | Description | Status |
 |---------|--------|-------------|--------|
-| `VMO_CREATE` | 0x10 | Create a Virtual Memory Object | 🔶 Stub |
-| `VMO_READ` | 0x11 | Read from a VMO | 🔶 Stub |
-| `VMO_WRITE` | 0x12 | Write to a VMO | 🔶 Stub |
-| `VMO_CLONE` | 0x13 | Clone a VMO | 🔶 Stub |
-| `VMAR_MAP` | 0x14 | Map a VMO into address space | 🔶 Stub |
-| `VMAR_UNMAP` | 0x15 | Unmap a VMO from address space | 🔶 Stub |
-| `VMAR_PROTECT` | 0x16 | Change memory protection | 🔶 Stub |
+| `VMO_CREATE` | 0x10 | Create a virtual memory object | ✅ |
+| `VMO_READ` | 0x11 | Copy bytes out of a VMO | ✅ |
+| `VMO_WRITE` | 0x12 | Copy bytes into a VMO | ✅ |
+| `VMO_CLONE` | 0x13 | Create a snapshot child VMO | ✅ |
+| `VMAR_MAP` | 0x14 | Map a VMO into an address space | ✅ |
+| `VMAR_UNMAP` | 0x15 | Remove mappings | ✅ |
+| `VMAR_PROTECT` | 0x16 | Change mapping permissions | ✅ |
+| `VMO_GET_SIZE` | 0x17 | Size of a VMO | ✅ |
+
+A **VMO** is a piece of memory, a whole number of pages long (at most 1 GiB).
+Pages are allocated on first write or when mapped; unwritten memory reads
+as zero. Rights: BASIC + READ + WRITE + MAP + GET_PROPERTY + SET_PROPERTY
+(no EXECUTE yet, so VMO memory cannot be mapped executable).
+
+A **VMAR** is a range of a process's address space. Every process gets a
+handle to its root VMAR, `[0x1_0000_0000, 0x7f00_0000_0000)`, in **RSI**
+when it starts (RDI is reserved for a bootstrap channel). The program image
+and stack set up by the loader lie outside the root VMAR and cannot be
+unmapped through it. Root VMAR rights: BASIC + READ + WRITE + EXECUTE.
+A mapping keeps its VMO alive after the VMO's handles are closed.
 
 #### VMO_CREATE (0x10)
 
-Create a Virtual Memory Object (VMO) - a contiguous region of memory that can be mapped into process address spaces.
+`vmo_create(uint64_t size, uint32_t options, rx_handle_t *out)` — `size`
+is rounded up to whole pages; `options` must be 0. `ERR_OUT_OF_RANGE`
+above 1 GiB.
 
-**Arguments:**
-- `arg0`: Size of VMO in bytes
-- `arg1`: VMO flags (reserved, set to 0)
+#### VMO_READ (0x11) / VMO_WRITE (0x12)
 
-**Returns:**
-- Success: Handle to the new VMO
-- Failure: Negative error code
+`vmo_read(rx_handle_t h, void *buf, uint64_t offset, size_t len)` (needs `READ`)
+`vmo_write(rx_handle_t h, const void *buf, uint64_t offset, size_t len)` (needs `WRITE`)
 
-**Example:**
-```c
-// Create a 4KB VMO
-handle_t vmo = syscall(SYS_VMO_CREATE, 4096, 0);
-if (vmo < 0) {
-    perror("Failed to create VMO");
-}
-```
+`ERR_OUT_OF_RANGE` if `offset + len` is past the end of the VMO.
+
+#### VMO_CLONE (0x13)
+
+`vmo_clone(rx_handle_t h, uint32_t options, uint64_t offset, uint64_t size, rx_handle_t *out)`
+
+Like `zx_vmo_create_child` with `ZX_VMO_CHILD_SNAPSHOT` (`options` 0 or 1):
+the child starts as a copy of `[offset, offset + size)` (page-aligned
+`offset`; bytes past the parent's end are zero) and the two are
+independent afterwards. Needs `DUPLICATE` and `READ`. The copy is made at
+once (no copy-on-write yet). C: `rx_vmo_create_child()`.
+
+#### VMO_GET_SIZE (0x17)
+
+`vmo_get_size(rx_handle_t h, uint64_t *size)`
 
 #### VMAR_MAP (0x14)
 
-Map a VMO into the current process's address space.
+`vmar_map(rx_handle_t vmar, uint64_t options | (vmo << 32), uint64_t vmar_offset, uint64_t vmo_offset, uint64_t len, uint64_t *mapped_addr)`
 
-**Arguments:**
-- `arg0`: VMO handle to map
-- `arg1`: Virtual address hint (0 for any)
-- `arg2`: Size to map
-- `arg3`: Protection flags (READ=1, WRITE=2, EXEC=4)
-- `arg4`: Mapping flags (reserved, set to 0)
+The C wrapper `rx_vmar_map()` has the Zircon signature
+(`vmar, options, vmar_offset, vmo, vmo_offset, len, *mapped_addr`).
 
-**Returns:**
-- Success: Mapped virtual address
-- Failure: Negative error code
+Options (Zircon values): `PERM_READ` 1, `PERM_WRITE` 2, `PERM_EXECUTE` 4,
+`SPECIFIC` 16. Without `SPECIFIC` the kernel picks the lowest free address
+and `vmar_offset` must be 0; with it the mapping goes at
+`vmar base + vmar_offset` (`ERR_ALREADY_EXISTS` if something is there).
+`len` is rounded up to pages; `vmo_offset` must be page aligned and the
+range must lie inside the VMO (`ERR_OUT_OF_RANGE`). Write or execute
+without read is `ERR_INVALID_ARGS` (x86 cannot express it).
+
+The VMO handle needs `MAP`; each permission needs the matching right
+(`READ`, `WRITE`, `EXECUTE`) on both the VMO and the VMAR handle. Those
+rights also cap what `vmar_protect` can grant later.
+
+#### VMAR_UNMAP (0x15)
+
+`vmar_unmap(rx_handle_t vmar, uint64_t addr, uint64_t len)` — removes
+whatever is mapped in the page-aligned range, splitting mappings that cross
+its edges. `ERR_NOT_FOUND` if nothing was mapped there, `ERR_INVALID_ARGS`
+if the range is not inside the VMAR.
+
+#### VMAR_PROTECT (0x16)
+
+`vmar_protect(rx_handle_t vmar, uint32_t options, uint64_t addr, uint64_t len)`
+
+Sets the permissions (options as for `vmar_map`) of a range that must be
+completely mapped (`ERR_NOT_FOUND` otherwise). `ERR_ACCESS_DENIED` if a
+mapping was made through handles that lacked the right.
 
 ---
 
@@ -526,7 +565,7 @@ Needs `WRITE`. Clears `TIMER_SIGNALED` and arms the timer;
 | Category | Total | Implemented | Stub |
 |----------|-------|-------------|------|
 | Process & Thread | 7 | 3 (spawn, process_exit, handle_close) | 4 |
-| Memory / VMO | 7 | 0 | 7 |
+| Memory / VMO | 8 | 8 | 0 |
 | IPC & Sync | 10 | 10 | 0 |
 | Jobs & Handles | 3 | 1 | 2 |
 | Time | 4 | 4 | 0 |

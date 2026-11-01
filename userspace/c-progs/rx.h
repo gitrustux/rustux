@@ -28,6 +28,8 @@ typedef int64_t rx_status_t;
 #define RX_ERR_PEER_CLOSED    -14
 #define RX_ERR_BUFFER_TOO_SMALL -15
 #define RX_ERR_OUT_OF_RANGE   -16
+#define RX_ERR_NOT_FOUND       -5
+#define RX_ERR_ALREADY_EXISTS -18
 
 #define RX_TIME_INFINITE  UINT64_MAX
 
@@ -45,16 +47,29 @@ typedef int64_t rx_status_t;
 #define RX_RIGHT_TRANSFER    (1u << 1)
 #define RX_RIGHT_READ        (1u << 2)
 #define RX_RIGHT_WRITE       (1u << 3)
+#define RX_RIGHT_EXECUTE     (1u << 4)
+#define RX_RIGHT_MAP         (1u << 5)
 #define RX_RIGHT_SIGNAL      (1u << 12)
 #define RX_RIGHT_SIGNAL_PEER (1u << 13)
 #define RX_RIGHT_WAIT        (1u << 14)
 #define RX_RIGHT_SAME_RIGHTS (1u << 31)
 
 // Object types
+#define RX_OBJ_TYPE_VMO       3
 #define RX_OBJ_TYPE_CHANNEL   4
+#define RX_OBJ_TYPE_VMAR      18
 #define RX_OBJ_TYPE_EVENT     5
 #define RX_OBJ_TYPE_EVENTPAIR 16
 #define RX_OBJ_TYPE_TIMER     22
+
+// vmar_map / vmar_protect options
+#define RX_VM_PERM_READ    (1u << 0)
+#define RX_VM_PERM_WRITE   (1u << 1)
+#define RX_VM_PERM_EXECUTE (1u << 2)
+#define RX_VM_SPECIFIC     (1u << 4)
+
+// Start of every process's root VMAR (it ends at 0x7f0000000000)
+#define RX_ROOT_VMAR_BASE  0x100000000ull
 
 typedef struct {
     rx_handle_t handle;
@@ -103,6 +118,21 @@ static inline rx_status_t rx_channel_read(rx_handle_t h, uint32_t options, void 
     if (actual_handles) *actual_handles = actual[1];
     return r;
 }
+static inline rx_status_t rx_vmo_create(uint64_t size, uint32_t options, rx_handle_t *out) { return RX_SYS(0x10, size, options, out, 0); }
+static inline rx_status_t rx_vmo_read(rx_handle_t h, void *buf, uint64_t offset, uint64_t len) { return RX_SYS(0x11, h, buf, offset, len); }
+static inline rx_status_t rx_vmo_write(rx_handle_t h, const void *buf, uint64_t offset, uint64_t len) { return RX_SYS(0x12, h, buf, offset, len); }
+static inline rx_status_t rx_vmo_create_child(rx_handle_t h, uint32_t options, uint64_t offset, uint64_t size, rx_handle_t *out) {
+    return RX_SYS6(0x13, h, options, offset, size, out, 0);
+}
+static inline rx_status_t rx_vmo_get_size(rx_handle_t h, uint64_t *size) { return RX_SYS(0x17, h, size, 0, 0); }
+// Same signature as zx_vmar_map; the kernel takes options and the VMO
+// handle packed into one register.
+static inline rx_status_t rx_vmar_map(rx_handle_t vmar, uint32_t options, uint64_t vmar_offset, rx_handle_t vmo,
+                                      uint64_t vmo_offset, uint64_t len, uint64_t *mapped_addr) {
+    return RX_SYS6(0x14, vmar, (uint64_t)options | ((uint64_t)vmo << 32), vmar_offset, vmo_offset, len, mapped_addr);
+}
+static inline rx_status_t rx_vmar_unmap(rx_handle_t vmar, uint64_t addr, uint64_t len) { return RX_SYS(0x15, vmar, addr, len, 0); }
+static inline rx_status_t rx_vmar_protect(rx_handle_t vmar, uint32_t options, uint64_t addr, uint64_t len) { return RX_SYS(0x16, vmar, options, addr, len); }
 static inline uint64_t rx_clock_get_monotonic(void) { return (uint64_t)RX_SYS(0x40, 0, 0, 0, 0); }
 static inline rx_status_t rx_timer_create(uint32_t options, uint32_t clock_id, rx_handle_t *out) { return RX_SYS(0x41, options, clock_id, out, 0); }
 static inline rx_status_t rx_timer_set(rx_handle_t h, uint64_t deadline, uint64_t slack) { return RX_SYS(0x42, h, deadline, slack, 0); }

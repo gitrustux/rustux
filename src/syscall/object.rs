@@ -14,9 +14,9 @@ use crate::process::run;
 use crate::process::table::PROCESS_TABLE;
 use alloc::vec::Vec;
 
-type R<T> = Result<T, RxStatus>;
+pub(super) type R<T> = Result<T, RxStatus>;
 
-fn ret(r: R<usize>) -> SyscallRet {
+pub(super) fn ret(r: R<usize>) -> SyscallRet {
     match r {
         Ok(v) => ok_to_ret(v),
         Err(e) => err_to_ret(e),
@@ -36,6 +36,15 @@ pub fn lookup(handle: u32, required: u32) -> R<(KObject, Rights)> {
         return Err(RxStatus::ERR_ACCESS_DENIED);
     }
     Ok((obj, rights))
+}
+
+/// Give a new process a handle to its root VMAR, passed to it in RSI
+/// (RDI is 0 until processes get a bootstrap channel)
+pub fn give_root_vmar(p: &mut crate::process::table::Process) {
+    let vmar = kobj::Vmar::root(p.aspace.clone());
+    if let Some(h) = p.handles.add(KObject::Vmar(vmar), Rights(Rights::VMAR)) {
+        unsafe { run::set_start_args(p.kernel_rsp, 0, h as u64) };
+    }
 }
 
 /// Add a handle to the current process

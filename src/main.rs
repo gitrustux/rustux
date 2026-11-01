@@ -107,6 +107,13 @@ fn kernel_main() -> ! {
     // CRITICAL: Initialize PMM first (needed for stack allocation)
     rustux::init::pmm_init();
 
+    // No-execute pages, before any page table entry uses bit 63
+    if unsafe { rustux::arch::amd64::mm::kernel_map::enable_nx() } {
+        debug_print("[VM] No-execute pages enabled\n");
+    } else {
+        debug_print("[VM] CPU has no NX bit; execute permission not enforced\n");
+    }
+
     // Build the kernel's own page tables (higher-half direct map of physical
     // memory) before anything allocates the kernel stack or heap, so those
     // live at addresses that are valid in every address space.

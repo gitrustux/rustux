@@ -199,6 +199,10 @@ pub struct Process {
 
     /// Handles to kernel objects
     pub handles: crate::kobj::HandleTable,
+
+    /// Mappings made through VMAR handles (the ELF image and stack are
+    /// mapped outside this, below the root VMAR)
+    pub aspace: alloc::sync::Arc<crate::kobj::Aspace>,
 }
 
 impl Process {
@@ -243,6 +247,7 @@ impl Process {
             sched_time: 0,
             name: None,
             handles: crate::kobj::HandleTable::new(),
+            aspace: crate::kobj::Aspace::new(page_table),
         }
     }
 

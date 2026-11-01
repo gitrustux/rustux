@@ -115,7 +115,103 @@ static void channel_tests(void) {
     rx_handle_close(got[0]);
 }
 
-void _start(void) {
+static void memory_tests(rx_handle_t root) {
+    rx_handle_t vmo = 0, ro = 0, child = 0, tmp = 0;
+    uint64_t size = 0, addr = 0, addr2 = 0;
+    char buf[16];
+    int64_t r;
+    rx_puts("memory:\n");
+
+    check("root VMAR handle passed at start", root != 0 && rx_object_get_type(root) == RX_OBJ_TYPE_VMAR, root);
+    r = rx_vmo_create(10000, 0, &vmo);
+    check("vmo_create", r == RX_OK && rx_object_get_type(vmo) == RX_OBJ_TYPE_VMO, r);
+    r = rx_vmo_get_size(vmo, &size);
+    check("size rounded up to pages (12288)", r == RX_OK && size == 12288, (int64_t)size);
+    r = rx_vmo_write(vmo, "abc", 4096 + 10, 3);
+    check("vmo_write", r == RX_OK, r);
+    buf[0] = 'x';
+    r = rx_vmo_read(vmo, buf, 4096 + 10, 3);
+    check("vmo_read gets it back", r == RX_OK && same(buf, "abc", 3), r);
+    buf[0] = 'x';
+    rx_vmo_read(vmo, buf, 8192, 4);
+    check("untouched memory reads as zero", buf[0] == 0 && buf[3] == 0, buf[0]);
+    r = rx_vmo_read(vmo, buf, 12280, 16);
+    check("read past the end -> OUT_OF_RANGE", r == RX_ERR_OUT_OF_RANGE, r);
+    r = rx_vmo_create(1ull << 31, 0, &tmp);
+    check("2 GiB VMO -> OUT_OF_RANGE", r == RX_ERR_OUT_OF_RANGE, r);
+
+    r = rx_vmar_map(root, RX_VM_PERM_READ | RX_VM_PERM_WRITE, 0, vmo, 0, 12288, &addr);
+    check("vmar_map read/write", r == RX_OK && addr >= RX_ROOT_VMAR_BASE, r);
+    volatile char *p = (volatile char *)addr;
+    check("mapping shows the VMO's contents", p[4096 + 10] == 'a' && p[4096 + 12] == 'c', p[4096 + 10]);
+    p[100] = 'Z';
+    rx_vmo_read(vmo, buf, 100, 1);
+    check("stores through the mapping reach the VMO", buf[0] == 'Z', buf[0]);
+    rx_handle_close(vmo);
+    p[200] = 'Q';
+    check("mapping outlives the closed VMO handle", p[200] == 'Q' && p[100] == 'Z', p[200]);
+
+    r = rx_vmar_protect(root, RX_VM_PERM_READ, addr, 12288);
+    check("vmar_protect to read-only", r == RX_OK, r);
+    r = rx_event_create(0, (rx_handle_t *)(addr + 64));
+    check("  kernel refuses to write there", r == RX_ERR_INVALID_ARGS, r);
+    check("  still readable", p[100] == 'Z', p[100]);
+    r = rx_vmar_protect(root, RX_VM_PERM_READ | RX_VM_PERM_WRITE, addr, 12288);
+    r = rx_event_create(0, &tmp);
+    r = rx_event_create(0, (rx_handle_t *)(addr + 64));
+    check("protect back to read/write", r == RX_OK, r);
+
+    r = rx_vmar_unmap(root, addr + 4096, 4096);
+    check("unmap the middle page", r == RX_OK, r);
+    r = rx_event_create(0, (rx_handle_t *)(addr + 4096 + 64));
+    check("  middle page is gone", r == RX_ERR_INVALID_ARGS, r);
+    r = rx_event_create(0, (rx_handle_t *)(addr + 8192 + 64));
+    check("  pages on both sides remain", r == RX_OK && p[100] == 'Z', r);
+    r = rx_vmar_unmap(root, addr + 4096, 4096);
+    check("unmap it again -> NOT_FOUND", r == RX_ERR_NOT_FOUND, r);
+    r = rx_vmar_unmap(root, 0x400000, 4096);
+    check("unmap outside the VMAR (own code) -> INVALID_ARGS", r == RX_ERR_INVALID_ARGS, r);
+    rx_vmar_unmap(root, addr, 12288);
+
+    rx_vmo_create(8192, 0, &vmo);
+    r = rx_vmar_map(root, RX_VM_PERM_READ | RX_VM_SPECIFIC, 0x10000000, vmo, 0, 8192, &addr2);
+    check("map at a specific address", r == RX_OK && addr2 == RX_ROOT_VMAR_BASE + 0x10000000, r);
+    r = rx_vmar_map(root, RX_VM_PERM_READ | RX_VM_SPECIFIC, 0x10001000, vmo, 0, 4096, &addr);
+    check("overlapping specific map -> ALREADY_EXISTS", r == RX_ERR_ALREADY_EXISTS, r);
+    r = rx_vmar_map(root, RX_VM_PERM_WRITE, 0, vmo, 0, 4096, &addr);
+    check("write without read -> INVALID_ARGS", r == RX_ERR_INVALID_ARGS, r);
+    r = rx_vmar_map(root, RX_VM_PERM_READ | RX_VM_PERM_EXECUTE, 0, vmo, 0, 4096, &addr);
+    check("execute without EXECUTE right -> ACCESS_DENIED", r == RX_ERR_ACCESS_DENIED, r);
+    r = rx_vmar_map(root, RX_VM_PERM_READ, 0, vmo, 4096, 8192, &addr);
+    check("range past the VMO's end -> OUT_OF_RANGE", r == RX_ERR_OUT_OF_RANGE, r);
+
+    rx_handle_duplicate(vmo, RX_RIGHT_READ | RX_RIGHT_MAP, &ro);
+    r = rx_vmar_map(root, RX_VM_PERM_READ | RX_VM_PERM_WRITE, 0, ro, 0, 4096, &addr);
+    check("read-only VMO handle: map writable -> ACCESS_DENIED", r == RX_ERR_ACCESS_DENIED, r);
+    r = rx_vmar_map(root, RX_VM_PERM_READ, 0, ro, 0, 4096, &addr);
+    check("  map read-only works", r == RX_OK, r);
+    r = rx_vmar_protect(root, RX_VM_PERM_READ | RX_VM_PERM_WRITE, addr, 4096);
+    check("  and cannot be made writable later", r == RX_ERR_ACCESS_DENIED, r);
+    r = rx_vmo_write(ro, "x", 0, 1);
+    check("  vmo_write through it -> ACCESS_DENIED", r == RX_ERR_ACCESS_DENIED, r);
+
+    rx_vmo_write(vmo, "orig", 0, 4);
+    r = rx_vmo_create_child(vmo, 1, 0, 4096, &child);
+    check("vmo_create_child (snapshot)", r == RX_OK, r);
+    rx_vmo_write(vmo, "new!", 0, 4);
+    rx_vmo_read(child, buf, 0, 4);
+    check("  child keeps the old contents", same(buf, "orig", 4), buf[0]);
+    rx_vmo_write(child, "kid", 0, 3);
+    rx_vmo_read(vmo, buf, 0, 4);
+    check("  parent does not see the child's writes", same(buf, "new!", 4), buf[0]);
+
+    rx_handle_close(vmo);
+    rx_handle_close(ro);
+    rx_handle_close(child);
+}
+
+void _start(rx_handle_t bootstrap, rx_handle_t root_vmar) {
+    (void)bootstrap;
     rx_handle_t ev = 0, dup = 0, tm = 0, p0 = 0, p1 = 0;
     uint32_t observed = 0;
     int64_t r;
@@ -219,6 +315,7 @@ void _start(void) {
     check("kernel out pointer -> INVALID_ARGS", r == RX_ERR_INVALID_ARGS, r);
 
     channel_tests();
+    memory_tests(root_vmar);
 
     rx_puts("objtest: ");
     rx_putd(passed);

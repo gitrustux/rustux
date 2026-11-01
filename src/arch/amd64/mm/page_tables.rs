@@ -167,6 +167,9 @@ pub enum RxStatus {
     ERR_OUT_OF_RANGE = 16,
     /// Operation not valid in the object's current state
     ERR_BAD_STATE = 17,
+
+    /// Something is already there (e.g. a mapping at a specific address)
+    ERR_ALREADY_EXISTS = 18,
 }
 
 /// Result type using RxStatus

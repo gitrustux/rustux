@@ -46,6 +46,10 @@ pub fn write_u32(addr: usize, v: u32) -> Result<(), RxStatus> {
     Ok(())
 }
 
+pub fn write_u64(addr: usize, v: u64) -> Result<(), RxStatus> {
+    write_bytes(addr, &v.to_le_bytes())
+}
+
 pub fn read_u32(addr: usize) -> Result<u32, RxStatus> {
     check(addr, 4, false)?;
     Ok(unsafe { core::ptr::read_unaligned(addr as *const u32) })

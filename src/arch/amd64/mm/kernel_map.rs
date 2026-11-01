@@ -37,6 +37,33 @@ pub const PTE_WRITABLE: u64 = 1 << 1;
 pub const PTE_USER: u64 = 1 << 2;
 const PTE_HUGE: u64 = 1 << 7;
 pub const PTE_NO_EXECUTE: u64 = 1 << 63;
+
+/// Whether EFER.NXE is on (bit 63 of a PTE is reserved otherwise)
+static NX_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Turn on no-execute pages (EFER.NXE) if the CPU has them. Firmware
+/// usually leaves NXE on, but nothing guarantees it, and with NXE off a PTE
+/// with bit 63 set faults as "reserved bit set".
+///
+/// # Safety
+/// Must run at CPL 0.
+pub unsafe fn enable_nx() -> bool {
+    let ext = core::arch::x86_64::__cpuid(0x8000_0001);
+    if ext.edx & (1 << 20) == 0 {
+        return false;
+    }
+    let (mut lo, hi): (u32, u32);
+    core::arch::asm!("rdmsr", in("ecx") 0xC000_0080u32, out("eax") lo, out("edx") hi, options(nomem, nostack));
+    lo |= 1 << 11;
+    core::arch::asm!("wrmsr", in("ecx") 0xC000_0080u32, in("eax") lo, in("edx") hi, options(nomem, nostack));
+    NX_ON.store(true, core::sync::atomic::Ordering::Relaxed);
+    true
+}
+
+/// [`PTE_NO_EXECUTE`] when no-execute pages are enabled, else 0
+pub fn nx_flag() -> u64 {
+    if NX_ON.load(core::sync::atomic::Ordering::Relaxed) { PTE_NO_EXECUTE } else { 0 }
+}
 /// Page-level write-through / cache-disable (uncached when both set)
 pub const PTE_PWT: u64 = 1 << 3;
 pub const PTE_PCD: u64 = 1 << 4;
@@ -326,7 +353,7 @@ pub unsafe fn map_mmio(paddr: u64, size: u64, alloc: AllocFn) -> Result<u64, &'s
     if va_base + pages * PAGE_SIZE > MMIO_BASE + MMIO_SIZE {
         return Err("kernel_map: MMIO window full");
     }
-    let flags = PTE_WRITABLE | PTE_PCD | PTE_PWT | PTE_NO_EXECUTE;
+    let flags = PTE_WRITABLE | PTE_PCD | PTE_PWT | nx_flag();
     for i in 0..pages {
         map_kernel_page(va_base + i * PAGE_SIZE, first + i * PAGE_SIZE, flags, alloc)?;
     }
@@ -451,6 +478,54 @@ pub unsafe fn user_access_ok(pml4: u64, vaddr: u64, write: bool) -> bool {
         t = table(e & PTE_ADDR_MASK);
     }
     false
+}
+
+/// Find the leaf PTE for a lower-half 4 KiB page, if its tables exist
+unsafe fn user_pte(pml4: u64, vaddr: u64) -> Option<*mut u64> {
+    if vaddr >= 0x0000_8000_0000_0000 {
+        return None;
+    }
+    let mut t = table(pml4);
+    for shift in [39u64, 30, 21] {
+        let e = *t.add(((vaddr >> shift) & 0x1ff) as usize);
+        if e & PTE_PRESENT == 0 || e & PTE_HUGE != 0 {
+            return None;
+        }
+        t = table(e & PTE_ADDR_MASK);
+    }
+    Some(t.add(((vaddr >> 12) & 0x1ff) as usize))
+}
+
+/// Remove a user page mapping; returns the physical page it pointed at.
+/// Page tables are left in place.
+///
+/// # Safety
+/// `pml4` must be a user PML4 from [`new_user_pml4`].
+pub unsafe fn unmap_4k(pml4: u64, vaddr: u64) -> Option<u64> {
+    let pte = user_pte(pml4, vaddr)?;
+    let old = *pte;
+    if old & PTE_PRESENT == 0 {
+        return None;
+    }
+    *pte = 0;
+    core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack));
+    Some(old & PTE_ADDR_MASK)
+}
+
+/// Change the access flags of a mapped user page (`flags` as for
+/// [`map_4k`]). Returns false if the page is not mapped.
+///
+/// # Safety
+/// `pml4` must be a user PML4 from [`new_user_pml4`].
+pub unsafe fn protect_4k(pml4: u64, vaddr: u64, flags: u64) -> bool {
+    let Some(pte) = user_pte(pml4, vaddr) else { return false };
+    let old = *pte;
+    if old & PTE_PRESENT == 0 {
+        return false;
+    }
+    *pte = (old & PTE_ADDR_MASK) | PTE_PRESENT | (flags & (PTE_WRITABLE | PTE_USER | PTE_NO_EXECUTE));
+    core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack));
+    true
 }
 
 /// Translate a lower-half address through `pml4` (debugging aid).

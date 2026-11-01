@@ -121,11 +121,27 @@ core::arch::global_asm!(
     "ret",
     // First entry of a new process: the IRETQ frame is on the stack.
     ".global rustux_enter_user",
+    // RBX and R12 (restored from the prepared frame) hold the two start
+    // arguments; every other register is cleared so no kernel value leaks.
     "rustux_enter_user:",
     "mov ax, 0x23",
     "mov ds, ax",
     "mov es, ax",
+    "mov rdi, rbx",
+    "mov rsi, r12",
     "xor eax, eax",
+    "xor ebx, ebx",
+    "xor ecx, ecx",
+    "xor edx, edx",
+    "xor ebp, ebp",
+    "xor r8d, r8d",
+    "xor r9d, r9d",
+    "xor r10d, r10d",
+    "xor r11d, r11d",
+    "xor r12d, r12d",
+    "xor r13d, r13d",
+    "xor r14d, r14d",
+    "xor r15d, r15d",
     "iretq",
 );
 
@@ -166,6 +182,17 @@ pub unsafe fn prepare_kernel_stack(kernel_stack_top: u64, entry: u64, user_stack
         p.add(i).write(*v);
     }
     rsp
+}
+
+/// Set the two values a new process finds in RDI and RSI when it first
+/// enters user mode (`kernel_rsp` as returned by [`prepare_kernel_stack`]).
+///
+/// # Safety
+/// The process must not have run yet.
+pub unsafe fn set_start_args(kernel_rsp: u64, arg1: u64, arg2: u64) {
+    let p = kernel_rsp as *mut u64;
+    p.add(4).write(arg1); // restored into RBX
+    p.add(3).write(arg2); // restored into R12
 }
 
 /// Size of each process's kernel stack. Syscall paths (ELF loading in
@@ -226,14 +253,15 @@ pub fn yield_now() {
 /// End the current process and run the next one. Never returns.
 /// Its handles are closed first (peers see PEER_CLOSED, waiters wake).
 pub fn exit_current() -> ! {
-    let objects = {
+    let (objects, mappings) = {
         let mut table = PROCESS_TABLE.lock();
         match table.current_pid().and_then(|c| table.get_mut(c)) {
-            Some(p) => p.handles.take_all(),
-            None => alloc::vec::Vec::new(),
+            Some(p) => (p.handles.take_all(), Some(p.aspace.destroy())),
+            None => (alloc::vec::Vec::new(), None),
         }
     };
     drop(objects);
+    drop(mappings);
     switch_away(ProcessState::Zombie);
     // Not reached: switch_away idles until another process can run, and a
     // zombie is never scheduled again.

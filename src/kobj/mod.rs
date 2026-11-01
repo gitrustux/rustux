@@ -23,6 +23,8 @@ pub mod channel;
 pub mod event;
 pub mod handle;
 pub mod timer;
+pub mod vmar;
+pub mod vmo;
 
 use crate::sync::SpinMutex;
 use alloc::sync::Arc;
@@ -32,6 +34,8 @@ pub use channel::Channel;
 pub use event::{Event, EventPair};
 pub use handle::{HandleTable, Rights};
 pub use timer::Timer;
+pub use vmar::{Aspace, Vmar};
+pub use vmo::Vmo;
 
 /// Signal bits (Zircon numbering)
 pub mod signals {
@@ -118,6 +122,8 @@ pub enum KObject {
     Event(Arc<Event>),
     EventPair(Arc<EventPair>),
     Timer(Arc<Timer>),
+    Vmo(Arc<Vmo>),
+    Vmar(Arc<Vmar>),
 }
 
 impl KObject {
@@ -127,6 +133,8 @@ impl KObject {
             KObject::Event(_) => ObjType::Event,
             KObject::EventPair(_) => ObjType::EventPair,
             KObject::Timer(_) => ObjType::Timer,
+            KObject::Vmo(_) => ObjType::Vmo,
+            KObject::Vmar(_) => ObjType::Vmar,
         }
     }
 
@@ -136,6 +144,8 @@ impl KObject {
             KObject::Event(o) => &o.signals,
             KObject::EventPair(o) => &o.signals,
             KObject::Timer(o) => &o.signals,
+            KObject::Vmo(o) => &o.signals,
+            KObject::Vmar(o) => &o.signals,
         }
     }
 
