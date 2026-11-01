@@ -64,6 +64,10 @@ static mut EXTENDED_SCANCODE: bool = false;
 /// Flag to track if keyboard has been initialized
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// An 8042 controller was found and set up (polling must not touch the
+/// ports otherwise: a missing controller reads as 0xFF, "data waiting")
+static PRESENT: AtomicBool = AtomicBool::new(false);
+
 /// Initialize the PS/2 keyboard driver
 ///
 /// This function performs full PS/2 controller and keyboard initialization:
@@ -97,11 +101,9 @@ pub unsafe fn init() {
     MODIFIER_STATE = ModifierState::new();
     EXTENDED_SCANCODE = false;
 
-    // Initialize PS/2 controller
+    // Set up the 8042 and the keyboard (prints a diagnostic line)
     ps2::ps2_controller_init();
-
-    // Initialize keyboard device
-    ps2::ps2_keyboard_init();
+    PRESENT.store(true, Ordering::Release);
 
     // CRITICAL: Flush any stale scan codes from keyboard buffer
     ps2::flush_output_buffer();
@@ -126,24 +128,39 @@ pub unsafe fn init() {
 /// # Safety
 /// This function must only be called from an interrupt handler.
 pub unsafe fn handle_irq() {
-    // Check controller status first
-    let status = controller_status();
-
-    // Bit 0: output buffer full
-    // Bit 5: mouse data (ignore)
-    if status & ps2::STATUS_OBF == 0 {
-        return; // No data available
+    // Read every byte waiting: the controller raises IRQ1 again only once
+    // its output buffer has been emptied
+    for _ in 0..64 {
+        let status = controller_status();
+        if status & ps2::STATUS_OBF == 0 {
+            break;
+        }
+        let byte = read_data_port();
+        if status & (ps2::STATUS_AUXDATA | ps2::STATUS_ERRORS) != 0 {
+            continue; // mouse data or a transmission error
+        }
+        process_scancode(byte);
     }
+}
 
-    // Ignore mouse data (bit 5 set)
-    if status & ps2::STATUS_AUXDATA != 0 {
-        let _ = read_data_port(); // Flush and ignore
-        return;
+/// Polling fallback for when IRQ1 is not delivered (e.g. a firmware
+/// routing the kernel does not handle): decode pending bytes directly.
+pub fn poll() {
+    unsafe {
+        if !PRESENT.load(Ordering::Acquire) || controller_status() & ps2::STATUS_OBF == 0 {
+            return;
+        }
+        let flags: u64;
+        core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem));
+        handle_irq();
+        if flags & 0x200 != 0 {
+            core::arch::asm!("sti", options(nomem, nostack));
+        }
     }
+}
 
-    // Read scancode from data port
-    let scancode = read_data_port();
-
+/// Decode one scancode (set 1, as delivered with translation on)
+unsafe fn process_scancode(scancode: u8) {
     // Check for 0xE0 prefix (extended scancode)
     if scancode == 0xE0 {
         EXTENDED_SCANCODE = true;
@@ -230,6 +247,10 @@ pub unsafe fn handle_irq() {
 /// This function is non-blocking. Returns immediately if no data is available.
 pub fn read_char() -> Option<char> {
     unsafe {
+        if let Some(b) = INPUT_BUFFER.read() {
+            return Some(b as char);
+        }
+        poll();
         INPUT_BUFFER.read().map(|b| b as char)
     }
 }

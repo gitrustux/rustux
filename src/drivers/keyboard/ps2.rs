@@ -30,6 +30,19 @@ pub const KBD_ACK: u8 = 0xFA;
 pub const STATUS_OBF: u8 = 0x01; // Output buffer full
 pub const STATUS_IBF: u8 = 0x02; // Input buffer full
 pub const STATUS_AUXDATA: u8 = 0x20; // Mouse data
+pub const STATUS_ERRORS: u8 = 0xC0; // Timeout / parity error
+
+/// Controller commands used during setup
+pub const CMD_DISABLE_AUX: u8 = 0xA7;
+pub const CMD_SELF_TEST: u8 = 0xAA;
+pub const CMD_TEST_KEYBOARD_PORT: u8 = 0xAB;
+
+/// Configuration byte bits
+const CFG_KBD_IRQ: u8 = 0x01;
+const CFG_AUX_IRQ: u8 = 0x02;
+const CFG_KBD_CLOCK_OFF: u8 = 0x10;
+const CFG_AUX_CLOCK_OFF: u8 = 0x20;
+const CFG_TRANSLATE: u8 = 0x40;
 
 /// Input buffer size for circular buffer
 pub const INPUT_BUFFER_SIZE: usize = 256;
@@ -145,84 +158,82 @@ pub unsafe fn keyboard_read_timeout() -> Option<u8> {
     None
 }
 
-/// Initialize PS/2 controller for keyboard operation
-pub unsafe fn ps2_controller_init() {
-    // 1. Disable keyboard port
-    controller_write(CMD_DISABLE_KEYBOARD);
+fn hex2(v: Option<u8>) -> [u8; 2] {
+    let h = b"0123456789ABCDEF";
+    match v {
+        Some(b) => [h[(b >> 4) as usize], h[(b & 0xF) as usize]],
+        None => [b'-', b'-'],
+    }
+}
 
-    // 2. Flush any pending data from output buffer
+/// Send a controller command that returns one byte
+unsafe fn command_with_reply(cmd: u8) -> Option<u8> {
+    controller_write(cmd);
+    keyboard_read_timeout()
+}
+
+/// Initialize the 8042 controller and keyboard.
+///
+/// Does not rely on the state the firmware left behind (on the test
+/// laptop it leaves the keyboard clock disabled, configuration byte 0x75):
+/// both ports off, flush, self-test, configuration byte with IRQ1 and
+/// scancode translation on and the mouse port off, keyboard port test,
+/// keyboard port on, scanning on. Prints one diagnostic line:
+///
+///   PS/2: test=55 cfg=75->65 port=00 kbd=FA
+///
+/// (55 = self-test passed, 00 = port test passed, FA = keyboard ACK; "--"
+/// means no reply.) Call with interrupts disabled: the replies arrive on
+/// the data port the IRQ handler reads.
+pub unsafe fn ps2_controller_init() {
+    controller_write(CMD_DISABLE_KEYBOARD);
+    controller_write(CMD_DISABLE_AUX);
     flush_output_buffer();
 
-    // 3. Read controller configuration byte
-    controller_write(CMD_READ_CONFIG);
-    let config = if let Some(c) = keyboard_read_timeout() {
-        c
-    } else {
-        // Default config if read fails
-        0b0100_0001 // IRQ1 disabled, system flag set
-    };
+    let cfg_before = command_with_reply(CMD_READ_CONFIG);
 
-    // 4. Enable IRQ1 (bit 0) for keyboard interrupt generation
-    let new_config = config | 0x01; // Set bit 0 to enable IRQ1
+    // Some controllers reset the configuration byte during the self-test,
+    // so the configuration is written afterwards
+    let self_test = command_with_reply(CMD_SELF_TEST);
+
+    let cfg = (cfg_before.unwrap_or(0) | CFG_KBD_IRQ | CFG_TRANSLATE | CFG_AUX_CLOCK_OFF)
+        & !(CFG_AUX_IRQ | CFG_KBD_CLOCK_OFF);
     controller_write(CMD_WRITE_CONFIG);
-    write_data_port(new_config);
+    write_data_port(cfg);
+    let cfg_after = command_with_reply(CMD_READ_CONFIG);
 
-    // 5. Enable keyboard port
+    let port_test = command_with_reply(CMD_TEST_KEYBOARD_PORT);
+
     controller_write(CMD_ENABLE_KEYBOARD);
 
-    // Small delay to let commands take effect
-    for _ in 0..10_000 {
-        core::arch::asm!("nop", options(nomem, nostack));
-    }
-}
-
-/// Initialize PS/2 keyboard device
-///
-/// This performs the standard PS/2 keyboard initialization sequence:
-/// 1. Disable scanning
-/// 2. Wait for ACK
-/// 3. Flush buffer
-/// 4. Enable scanning
-/// 5. Wait for ACK
-pub unsafe fn ps2_keyboard_init() {
-    // 1. Disable scanning
-    write_data_port(KBD_DISABLE_SCANNING);
-
-    // 2. Wait for ACK (0xFA)
-    if let Some(resp) = keyboard_read_timeout() {
-        if resp != KBD_ACK {
-            // No ACK, but continue anyway - keyboard may not respond properly
+    // Enable scanning; retry on "resend" (0xFE)
+    let mut kbd = None;
+    for _ in 0..3 {
+        flush_output_buffer();
+        write_data_port(KBD_ENABLE_SCANNING);
+        kbd = keyboard_read_timeout();
+        if kbd != Some(0xFE) {
+            break;
         }
     }
-
-    // 3. Flush any remaining data AND clear any stale scan codes
-    // This is CRITICAL - stale scan codes cause keyboard bugs
     flush_output_buffer();
 
-    // Additional flush - read up to 256 times to ensure buffer is completely clear
-    for _ in 0..256 {
-        if controller_status() & STATUS_OBF == 0 {
-            break; // Buffer is empty
-        }
-        let _ = read_data_port();
+    let mut line = *b"PS/2: test=.. cfg=..->.. port=.. kbd=..\n";
+    let fields = [(11, self_test), (18, cfg_before), (22, cfg_after), (30, port_test), (37, kbd)];
+    for (pos, v) in fields {
+        let h = hex2(v);
+        line[pos] = h[0];
+        line[pos + 1] = h[1];
     }
-
-    // 4. Enable scanning
-    write_data_port(KBD_ENABLE_SCANNING);
-
-    // 5. Wait for ACK (0xFA)
-    if let Some(resp) = keyboard_read_timeout() {
-        if resp != KBD_ACK {
-            // No ACK, but continue anyway - keyboard may still work
-        }
-    }
-
-    // 6. Give keyboard time to stabilize after enabling scanning
-    // This ensures IRQs start working properly
-    for _ in 0..100_000 {
-        core::arch::asm!("nop", options(nomem, nostack));
+    crate::drivers::display::write_str(core::str::from_utf8_unchecked(&line));
+    for &b in line.iter() {
+        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
     }
 }
+
+/// Keyboard device setup is part of [`ps2_controller_init`] (enable
+/// scanning); kept for existing callers.
+pub unsafe fn ps2_keyboard_init() {}
 
 /// Circular input buffer for keyboard events
 pub struct CircularBuffer<T, const N: usize> {
@@ -241,33 +252,40 @@ impl<T: Copy, const N: usize> CircularBuffer<T, N> {
     }
 
     /// Write a value to the buffer
+    /// Positions and data are shared between the IRQ handler and readers,
+    /// so they are accessed with volatile reads/writes (otherwise a read
+    /// loop may never see the handler's writes).
     pub fn write(&mut self, value: T) -> bool {
-        let next_pos = (self.write_pos + 1) % N;
-
-        // Check if buffer is full
-        if next_pos == self.read_pos {
-            return false; // Buffer full
+        unsafe {
+            let write_pos = core::ptr::read_volatile(&self.write_pos);
+            let next_pos = (write_pos + 1) % N;
+            if next_pos == core::ptr::read_volatile(&self.read_pos) {
+                return false; // Buffer full
+            }
+            core::ptr::write_volatile(&mut self.data[write_pos], value);
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
+            core::ptr::write_volatile(&mut self.write_pos, next_pos);
         }
-
-        self.data[self.write_pos] = value;
-        self.write_pos = next_pos;
         true
     }
 
     /// Read a value from the buffer
     pub fn read(&mut self) -> Option<T> {
-        if self.read_pos == self.write_pos {
-            return None; // Buffer empty
+        unsafe {
+            let read_pos = core::ptr::read_volatile(&self.read_pos);
+            if read_pos == core::ptr::read_volatile(&self.write_pos) {
+                return None; // Buffer empty
+            }
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Acquire);
+            let value = core::ptr::read_volatile(&self.data[read_pos]);
+            core::ptr::write_volatile(&mut self.read_pos, (read_pos + 1) % N);
+            Some(value)
         }
-
-        let value = self.data[self.read_pos];
-        self.read_pos = (self.read_pos + 1) % N;
-        Some(value)
     }
 
     /// Check if buffer has data
     pub fn has_data(&self) -> bool {
-        self.read_pos != self.write_pos
+        unsafe { core::ptr::read_volatile(&self.read_pos) != core::ptr::read_volatile(&self.write_pos) }
     }
 
     /// Get number of available items

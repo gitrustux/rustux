@@ -91,6 +91,7 @@ EBS OK
 [3.6/5] Installing syscall handler...
 [4/5] Initializing APIC...        ✓ APIC initialized
 [4.5/5] Configuring keyboard IRQ... IRQ1 → Vector 33
+PS/2: test=55 cfg=77->65 port=00 kbd=FA
 [5/5] Configuring timer...
 [DISPLAY] Text console initialized
 [INIT] Found init.elf in ramdisk
@@ -135,6 +136,7 @@ m "screendump /tmp/screen.ppm"   # capture the framebuffer
 | Fault in user mode right after `[SPAWN]` | Program linked over the kernel image, or built with the `syscall` instruction instead of `int 0x80` |
 | No `[TICK]` | LAPIC timer not configured, or interrupts not enabled |
 | `[PMM] OUT OF MEMORY` | The line shows what was asked for (pages, flags) and how many pages are still free |
+| `PS/2: test=55 ... kbd=FA` | 8042 self-test passed (`55`), keyboard port OK (`00`), keyboard acknowledged scanning (`FA`); `--` means no reply |
 | `[DMA] SELF-TEST FAILED` | Contiguous or below-4 GiB allocation broken in the PMM |
 
 ## Kernel test mode

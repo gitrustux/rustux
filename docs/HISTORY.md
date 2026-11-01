@@ -62,3 +62,7 @@ Checklist step 1, continued. The PMM no longer uses fixed zones (kernel 2–16 M
 
 `src/mm/dma.rs` adds `dma_alloc` / `dma_alloc_aligned` / `dma_free`: zeroed, physically contiguous buffers with both addresses, optionally below 4 GiB and aligned to a boundary, for the USB port. A self-test runs at boot. Tested in QEMU with 128 MB, 512 MB and 6 GB of RAM.
 
+## 2026-11-01: PS/2 driver ready for real hardware
+
+Lessons from getting `kernel-efi` to take input on the test laptop (MSI GS75; see the loader README's hardware notes). The firmware there leaves the 8042's keyboard clock disabled, so the driver now sets the controller up itself: ports off, flush, self-test, configuration byte with IRQ1 and translation on and the mouse port off, keyboard port test, keyboard port on, scanning on, with one diagnostic line (`PS/2: test=55 cfg=75->65 port=00 kbd=FA`). The IRQ handler drains every pending byte, the input buffer shared with it uses volatile accesses, and `read_char` polls the controller when IRQ1 is not delivered.
+
