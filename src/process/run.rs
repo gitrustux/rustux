@@ -26,6 +26,14 @@
 //! process as runnable once its flag is set or its deadline has passed. When
 //! nothing can run, the CPU halts until the next interrupt (timer tick,
 //! keyboard) and looks again.
+//!
+//! Killing: table entries are threads (see `kobj::task`). A thread is never
+//! removed while it may hold references on its kernel stack; [`kill`] sets
+//! a flag and wakes it, and the thread exits itself the next time it would
+//! return to user mode (end of a syscall, timer preemption), unwinding
+//! whatever it was doing first (waits return early once killed). The
+//! process is finished off when its last thread is gone. Exited entries
+//! are reaped (kernel stack freed, id reused) when a new thread starts.
 
 use crate::process::table::{ProcessState, PROCESS_TABLE};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,6 +49,50 @@ const DEADLINE_INIT: AtomicU64 = AtomicU64::new(u64::MAX);
 static WAKE: [AtomicBool; MAX_PIDS] = [WAKE_INIT; MAX_PIDS];
 /// Monotonic ns at which a blocked process becomes runnable anyway
 static DEADLINE: [AtomicU64; MAX_PIDS] = [DEADLINE_INIT; MAX_PIDS];
+/// Set by [`kill`]: the thread must exit before returning to user mode
+static KILLED: [AtomicBool; MAX_PIDS] = [WAKE_INIT; MAX_PIDS];
+
+/// Ask thread `tid` to exit (it does so at its next return to user mode)
+pub fn kill(tid: u32) {
+    if (tid as usize) < MAX_PIDS {
+        KILLED[tid as usize].store(true, Ordering::Release);
+        wake(tid);
+    }
+}
+
+/// Whether the current thread has been killed (long waits check this and
+/// return early)
+pub fn is_killed() -> bool {
+    match PROCESS_TABLE.lock().current_pid() {
+        Some(c) if (c as usize) < MAX_PIDS => KILLED[c as usize].load(Ordering::Acquire),
+        _ => false,
+    }
+}
+
+/// Exit the current thread if it was killed. Called on the way back to
+/// user mode.
+pub fn exit_if_killed() {
+    if is_killed() {
+        exit_thread();
+    }
+}
+
+/// Clear the per-id flags of a newly started thread
+pub fn reset_flags(tid: u32) {
+    if (tid as usize) < MAX_PIDS {
+        let i = tid as usize;
+        WAKE[i].store(false, Ordering::Release);
+        KILLED[i].store(false, Ordering::Release);
+        DEADLINE[i].store(u64::MAX, Ordering::Release);
+    }
+}
+
+/// The current thread's object
+pub fn current_thread() -> Option<(u32, alloc::sync::Arc<crate::kobj::task::Thread>)> {
+    let table = PROCESS_TABLE.lock();
+    let cur = table.current_pid()?;
+    table.get(cur).map(|p| (cur, p.thread.clone()))
+}
 
 /// Make `pid` runnable if it is blocked (or make its next block return at
 /// once). Safe from interrupt handlers.
@@ -59,7 +111,7 @@ pub fn block_current(deadline: u64) {
     let cur = PROCESS_TABLE.lock().current_pid();
     if let Some(cur) = cur {
         let i = cur as usize;
-        if i < MAX_PIDS && !WAKE[i].swap(false, Ordering::AcqRel) {
+        if i < MAX_PIDS && !KILLED[i].load(Ordering::Acquire) && !WAKE[i].swap(false, Ordering::AcqRel) {
             DEADLINE[i].store(deadline, Ordering::Release);
             switch_away(ProcessState::Blocked);
             WAKE[i].store(false, Ordering::Release);
@@ -250,24 +302,56 @@ pub fn yield_now() {
     switch_away(ProcessState::Ready);
 }
 
-/// End the current process and run the next one. Never returns.
-/// Its handles are closed first (peers see PEER_CLOSED, waiters wake).
-pub fn exit_current() -> ! {
-    let (objects, mappings) = {
-        let mut table = PROCESS_TABLE.lock();
-        match table.current_pid().and_then(|c| table.get_mut(c)) {
-            Some(p) => (p.handles.take_all(), Some(p.aspace.destroy())),
-            None => (alloc::vec::Vec::new(), None),
+/// End the current thread and run the next one. Never returns. If it was
+/// the last thread of its process, the process is finished: its handles
+/// are closed (peers see PEER_CLOSED), its memory is freed, and it is
+/// signalled TERMINATED.
+pub fn exit_thread() -> ! {
+    if let Some((tid, thread)) = current_thread() {
+        thread.mark_dead();
+        if thread.process.thread_exited(tid) {
+            let remains = thread.process.finalize();
+            drop(remains);
         }
-    };
-    drop(objects);
-    drop(mappings);
+        drop(thread);
+    }
     switch_away(ProcessState::Zombie);
-    // Not reached: switch_away idles until another process can run, and a
-    // zombie is never scheduled again.
+    // Not reached: a zombie is never scheduled again
     loop {
         unsafe { core::arch::asm!("cli", "hlt", options(nomem, nostack)) };
     }
+}
+
+/// Kill a process with return code `code`: every thread is asked to exit
+/// and the process is finished when the last one has. If the current
+/// thread belongs to it, this does not return. Takes the reference by value
+/// so nothing stays behind on a kernel stack that is never unwound.
+pub fn kill_process(process: alloc::sync::Arc<crate::kobj::task::Process>, code: i64) {
+    if let Some(threads) = process.begin_kill(code) {
+        if threads.is_empty() {
+            drop(process.finalize());
+        }
+        for tid in threads {
+            kill(tid);
+        }
+    }
+    let mine = match current_thread() {
+        Some((_, t)) => alloc::sync::Arc::ptr_eq(&t.process, &process),
+        None => false,
+    };
+    drop(process);
+    if mine {
+        exit_thread();
+    }
+}
+
+/// End the current process with `code` (process_exit, fatal CPU exception).
+/// Never returns.
+pub fn exit_current(code: i64) -> ! {
+    if let Some(p) = current_thread().map(|(_, t)| t.process.clone()) {
+        kill_process(p, code);
+    }
+    exit_thread();
 }
 
 /// Switch to the next runnable process, leaving the current one in `state`.

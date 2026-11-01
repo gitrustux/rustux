@@ -27,41 +27,34 @@ fn current_pid() -> R<u32> {
     PROCESS_TABLE.lock().current_pid().ok_or(RxStatus::ERR_BAD_STATE)
 }
 
+/// The process the current thread belongs to
+pub fn current_process() -> R<alloc::sync::Arc<kobj::task::Process>> {
+    run::current_thread().map(|(_, t)| t.process.clone()).ok_or(RxStatus::ERR_BAD_STATE)
+}
+
 /// Look up a handle in the current process and check its rights
 pub fn lookup(handle: u32, required: u32) -> R<(KObject, Rights)> {
-    let table = PROCESS_TABLE.lock();
-    let p = table.current_pid().and_then(|c| table.get(c)).ok_or(RxStatus::ERR_BAD_STATE)?;
-    let (obj, rights) = p.handles.get(handle).ok_or(RxStatus::ERR_BAD_HANDLE)?;
+    let p = current_process()?;
+    let (obj, rights) = p.handles.lock().get(handle).ok_or(RxStatus::ERR_BAD_HANDLE)?;
     if !rights.has(required) {
         return Err(RxStatus::ERR_ACCESS_DENIED);
     }
     Ok((obj, rights))
 }
 
-/// Give a new process a handle to its root VMAR, passed to it in RSI
-/// (RDI is 0 until processes get a bootstrap channel)
-pub fn give_root_vmar(p: &mut crate::process::table::Process) {
-    let vmar = kobj::Vmar::root(p.aspace.clone());
-    if let Some(h) = p.handles.add(KObject::Vmar(vmar), Rights(Rights::VMAR)) {
-        unsafe { run::set_start_args(p.kernel_rsp, 0, h as u64) };
-    }
-}
-
 /// Add a handle to the current process
 pub fn install(obj: KObject, rights: u32) -> R<u32> {
-    let mut table = PROCESS_TABLE.lock();
-    let cur = table.current_pid().ok_or(RxStatus::ERR_BAD_STATE)?;
-    let p = table.get_mut(cur).ok_or(RxStatus::ERR_BAD_STATE)?;
-    p.handles.add(obj, Rights(rights)).ok_or(RxStatus::ERR_NO_MEMORY)
+    let p = current_process()?;
+    let v = p.handles.lock().add(obj, Rights(rights));
+    v.ok_or(RxStatus::ERR_NO_MEMORY)
 }
 
 /// Remove a handle from the current process (the object is returned so it
-/// is dropped after the process table lock is released)
-fn take(handle: u32) -> R<(KObject, Rights)> {
-    let mut table = PROCESS_TABLE.lock();
-    let cur = table.current_pid().ok_or(RxStatus::ERR_BAD_STATE)?;
-    let p = table.get_mut(cur).ok_or(RxStatus::ERR_BAD_STATE)?;
-    p.handles.remove(handle).ok_or(RxStatus::ERR_BAD_HANDLE)
+/// is dropped after the handle table lock is released)
+pub fn take(handle: u32) -> R<(KObject, Rights)> {
+    let p = current_process()?;
+    let e = p.handles.lock().remove(handle);
+    e.ok_or(RxStatus::ERR_BAD_HANDLE)
 }
 
 /// Install both ends of a pair and write the two handle values out
@@ -193,6 +186,10 @@ fn wait_on(objects: &[KObject], masks: &[u32], deadline: u64) -> (R<()>, Vec<u32
     };
     loop {
         let observed: Vec<u32> = objects.iter().map(|o| o.signals()).collect();
+        if run::is_killed() {
+            // The thread is being killed: give up so it can exit
+            return (Err(RxStatus::ERR_BAD_STATE), observed);
+        }
         if observed.iter().zip(masks).any(|(s, m)| s & m != 0) {
             return (Ok(()), observed);
         }
@@ -353,13 +350,12 @@ pub fn sys_channel_write(args: SyscallArgs) -> SyscallRet {
 
         // Take every listed handle out of the table
         let (taken, all_found) = {
-            let mut table = PROCESS_TABLE.lock();
-            let cur = table.current_pid().ok_or(RxStatus::ERR_BAD_STATE)?;
-            let p = table.get_mut(cur).ok_or(RxStatus::ERR_BAD_STATE)?;
+            let p = current_process()?;
+            let mut ht = p.handles.lock();
             let mut taken = Vec::with_capacity(values.len());
             let mut all = true;
             for &v in &values {
-                match p.handles.remove(v) {
+                match ht.remove(v) {
                     Some(e) => taken.push(e),
                     None => all = false,
                 }
@@ -428,17 +424,16 @@ pub fn sys_channel_read(args: SyscallArgs) -> SyscallRet {
 
         // Move the handles into this process
         let values = {
-            let mut table = PROCESS_TABLE.lock();
-            let cur = table.current_pid().ok_or(RxStatus::ERR_BAD_STATE)?;
-            let p = table.get_mut(cur).ok_or(RxStatus::ERR_BAD_STATE)?;
-            if p.handles.count() + msg.handles.len() > kobj::handle::MAX_HANDLES {
-                drop(table);
+            let p = current_process()?;
+            let mut ht = p.handles.lock();
+            if ht.count() + msg.handles.len() > kobj::handle::MAX_HANDLES {
+                drop(ht);
                 chan.untake(msg);
                 return Err(RxStatus::ERR_NO_MEMORY);
             }
             let mut values = Vec::with_capacity(msg.handles.len());
             for (obj, rights) in msg.handles {
-                values.push(p.handles.add(obj, rights).ok_or(RxStatus::ERR_NO_MEMORY)?);
+                values.push(ht.add(obj, rights).ok_or(RxStatus::ERR_NO_MEMORY)?);
             }
             values
         };

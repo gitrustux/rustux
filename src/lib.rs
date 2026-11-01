@@ -110,12 +110,6 @@ pub mod fs;
 // Device drivers
 pub mod drivers;
 
-// Execution and ELF loading
-pub mod exec;
-
-// Kernel objects (capability-based security)
-pub mod object;
-
 /// Kernel objects reached through handles (events, timers, channels, ...)
 pub mod kobj;
 
@@ -219,36 +213,9 @@ pub use sync::{
     WAIT_OK, WAIT_TIMED_OUT,
 };
 
-// Re-export process types
-pub use process::{
-    ProcessId, PID_INVALID, PID_KERNEL, PID_FIRST_USER,
-    ProcessState,
-    AddressSpace,
-    ProcessFlags,
-    ReturnCode,
-    Process, MAX_THREADS_PER_PROCESS,
-};
-
 // Re-export driver types
 pub use drivers::{
     Uart16550, COM1_PORT, COM2_PORT, COM3_PORT, COM4_PORT, init_com1, com1,
-};
-
-// Re-export kernel object types
-pub use object::{
-    // Handle & rights
-    Handle, HandleId, HandleOwner, HandleTable, KernelObjectBase, Rights, ObjectType,
-    HandleEntry, MAX_HANDLES,
-    // Job
-    Job, JobId, JobPolicy, ResourceLimits, JobStats, JOB_ID_ROOT, JOB_ID_INVALID,
-    // Event
-    Event, EventId, EventFlags,
-    // Timer
-    Timer, TimerId, TimerState, SlackPolicy,
-    // Channel
-    Channel, ChannelId, ChannelState, Message, ReadResult, MAX_MSG_SIZE, MAX_MSG_HANDLES,
-    // VMO
-    Vmo, VmoId, VmoFlags, CachePolicy,
 };
 
 // Integration tests (only compiled in test mode)

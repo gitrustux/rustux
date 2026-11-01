@@ -22,6 +22,7 @@
 pub mod channel;
 pub mod event;
 pub mod handle;
+pub mod task;
 pub mod timer;
 pub mod vmar;
 pub mod vmo;
@@ -124,6 +125,9 @@ pub enum KObject {
     Timer(Arc<Timer>),
     Vmo(Arc<Vmo>),
     Vmar(Arc<Vmar>),
+    Process(Arc<task::Process>),
+    Thread(Arc<task::Thread>),
+    Job(Arc<task::Job>),
 }
 
 impl KObject {
@@ -135,6 +139,9 @@ impl KObject {
             KObject::Timer(_) => ObjType::Timer,
             KObject::Vmo(_) => ObjType::Vmo,
             KObject::Vmar(_) => ObjType::Vmar,
+            KObject::Process(_) => ObjType::Process,
+            KObject::Thread(_) => ObjType::Thread,
+            KObject::Job(_) => ObjType::Job,
         }
     }
 
@@ -146,6 +153,9 @@ impl KObject {
             KObject::Timer(o) => &o.signals,
             KObject::Vmo(o) => &o.signals,
             KObject::Vmar(o) => &o.signals,
+            KObject::Process(o) => &o.signals,
+            KObject::Thread(o) => &o.signals,
+            KObject::Job(o) => &o.signals,
         }
     }
 
@@ -179,6 +189,13 @@ impl KObject {
 pub fn now_ns() -> u64 {
     use crate::arch::amd64::tsc;
     tsc::tsc_to_ns(unsafe { tsc::rdtsc() })
+}
+
+/// Write to the QEMU debug console (port 0xE9; ignored on hardware)
+pub fn debugcon(s: &str) {
+    for b in s.bytes() {
+        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack, preserves_flags)) };
+    }
 }
 
 /// "Wait forever"

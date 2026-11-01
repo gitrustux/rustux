@@ -6,6 +6,7 @@ SECTIONS {
     /* Program code and read-only data */
     /* Load at 1MB (standard x86_64 userspace load address) */
     . = 0x100000;
+    __image_start = .;
 
     .text : {
         *(.text*)
@@ -22,6 +23,7 @@ SECTIONS {
         *(.bss*)
         *(COMMON)
     }
+    __image_end = .;
 
     /* Stack grows down from high memory */
     /* Reserve 1MB for stack at 8MB */

@@ -26,11 +26,15 @@ impl Rights {
     pub const MAP: u32 = 1 << 5;
     pub const GET_PROPERTY: u32 = 1 << 6;
     pub const SET_PROPERTY: u32 = 1 << 7;
+    pub const ENUMERATE: u32 = 1 << 8;
+    pub const DESTROY: u32 = 1 << 9;
     pub const SIGNAL: u32 = 1 << 12;
     pub const SIGNAL_PEER: u32 = 1 << 13;
     pub const WAIT: u32 = 1 << 14;
     pub const INSPECT: u32 = 1 << 15;
+    pub const MANAGE_JOB: u32 = 1 << 16;
     pub const MANAGE_PROCESS: u32 = 1 << 17;
+    pub const MANAGE_THREAD: u32 = 1 << 18;
     pub const SAME_RIGHTS: u32 = 1 << 31;
 
     pub const BASIC: u32 = Self::DUPLICATE | Self::TRANSFER | Self::WAIT | Self::INSPECT;
@@ -39,6 +43,13 @@ impl Rights {
     pub const TIMER: u32 = Self::BASIC | Self::WRITE | Self::SIGNAL;
     pub const VMO: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::MAP | Self::GET_PROPERTY | Self::SET_PROPERTY;
     pub const VMAR: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::EXECUTE;
+    pub const PROPERTY: u32 = Self::GET_PROPERTY | Self::SET_PROPERTY;
+    pub const PROCESS: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::PROPERTY | Self::ENUMERATE
+        | Self::DESTROY | Self::SIGNAL | Self::MANAGE_PROCESS | Self::MANAGE_THREAD;
+    pub const THREAD: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::PROPERTY | Self::DESTROY
+        | Self::SIGNAL | Self::MANAGE_THREAD;
+    pub const JOB: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::PROPERTY | Self::ENUMERATE
+        | Self::DESTROY | Self::SIGNAL | Self::MANAGE_JOB | Self::MANAGE_PROCESS | Self::MANAGE_THREAD;
     pub const CHANNEL: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL | Self::SIGNAL_PEER;
 
     pub fn has(self, r: u32) -> bool {

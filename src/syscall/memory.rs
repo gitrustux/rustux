@@ -107,6 +107,23 @@ pub fn sys_vmo_get_size(args: SyscallArgs) -> SyscallRet {
     })())
 }
 
+/// vmo_replace_as_executable(handle, vmex, *out) — the VMO handle is
+/// replaced by one that also has EXECUTE (closed even on failure). `vmex`
+/// is not checked yet: any process may do this.
+pub fn sys_vmo_replace_as_executable(args: SyscallArgs) -> SyscallRet {
+    let (h, out) = (args.arg_u32(0), args.arg(2));
+    ret((|| {
+        user::check(out, 4, true)?;
+        let (obj, rights) = super::object::take(h)?;
+        if !matches!(obj, KObject::Vmo(_)) {
+            return Err(RxStatus::ERR_WRONG_TYPE);
+        }
+        let v = install(obj, rights.0 | Rights::EXECUTE)?;
+        user::write_u32(out, v)?;
+        Ok(0)
+    })())
+}
+
 /// vmar_map(vmar, options | (vmo << 32), vmar_offset, vmo_offset, len, *mapped_addr)
 pub fn sys_vmar_map(args: SyscallArgs) -> SyscallRet {
     let (vh, packed, vmar_offset) = (args.arg_u32(0), args.arg_u64(1), args.arg_u64(2));

@@ -197,12 +197,9 @@ pub struct Process {
     /// Process name (for debugging)
     pub name: Option<alloc::string::String>,
 
-    /// Handles to kernel objects
-    pub handles: crate::kobj::HandleTable,
-
-    /// Mappings made through VMAR handles (the ELF image and stack are
-    /// mapped outside this, below the root VMAR)
-    pub aspace: alloc::sync::Arc<crate::kobj::Aspace>,
+    /// The thread object this entry runs; its process holds the handle
+    /// table and address space
+    pub thread: alloc::sync::Arc<crate::kobj::task::Thread>,
 }
 
 impl Process {
@@ -219,11 +216,12 @@ impl Process {
     pub fn new(
         pid: u32,
         ppid: u32,
-        page_table: PAddr,
+        thread: alloc::sync::Arc<crate::kobj::task::Thread>,
         kernel_stack: u64,
         user_stack: u64,
         entry: u64,
     ) -> Self {
+        let page_table: PAddr = thread.process.pml4;
         let mut fd_table = FileDescriptorTable::new();
         fd_table.init();
 
@@ -246,8 +244,7 @@ impl Process {
             cpu_time: 0,
             sched_time: 0,
             name: None,
-            handles: crate::kobj::HandleTable::new(),
-            aspace: crate::kobj::Aspace::new(page_table),
+            thread,
         }
     }
 
@@ -315,25 +312,30 @@ impl ProcessTable {
 
     /// Allocate a new PID
     pub fn alloc_pid(&mut self) -> Option<u32> {
-        // Find next free PID
-        let start = self.next_pid;
-        loop {
-            if self.next_pid >= MAX_PROCESSES as u32 {
-                return None; // No more PIDs available
-            }
-
+        // Next free id after the last one handed out (ids are reused only
+        // after a full lap, so stale ids stay unused for a while)
+        for _ in 1..MAX_PROCESSES {
             let pid = self.next_pid;
-            self.next_pid += 1;
-
-            if self.processes[pid as usize].is_none() {
+            self.next_pid = if self.next_pid + 1 >= MAX_PROCESSES as u32 { 1 } else { self.next_pid + 1 };
+            if pid != 0 && self.processes[pid as usize].is_none() {
                 return Some(pid);
             }
+        }
+        None
+    }
 
-            // Wrapped around
-            if self.next_pid == start {
-                return None;
+    /// Remove exited entries (other than the current one, whose kernel
+    /// stack is in use) and return them; the caller frees their kernel
+    /// stacks and drops them
+    pub fn reap_zombies(&mut self) -> alloc::vec::Vec<Process> {
+        let cur = self.current;
+        let mut out = alloc::vec::Vec::new();
+        for (pid, slot) in self.processes.iter_mut().enumerate() {
+            if Some(pid as u32) != cur && matches!(slot, Some(p) if p.state == ProcessState::Zombie) {
+                out.push(slot.take().unwrap());
             }
         }
+        out
     }
 
     /// Insert a process into the table

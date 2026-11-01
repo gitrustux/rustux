@@ -11,9 +11,11 @@
 //! VMO, so the memory stays alive while it is mapped even if every VMO
 //! handle is closed.
 //!
-//! A process's root VMAR covers [`ROOT_BASE`, `ROOT_END`). The program image
-//! and stack that the ELF loader sets up live outside it (below 4 GiB and
-//! at the top of the lower half), so the two never collide.
+//! A process's root VMAR covers [`ROOT_BASE`, `ROOT_END`): all of user space
+//! except the first 64 KiB, so null-pointer accesses fault. The program
+//! image and stack set up by the kernel's loader are ordinary mappings in
+//! it. Mappings without a fixed address go at or above [`ALLOC_HINT`] when
+//! there is room, away from where programs are linked.
 
 use super::{vmo::PAGE, SignalState, Vmo};
 use crate::arch::amd64::mm::{kernel_map, RxStatus};
@@ -22,8 +24,10 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-pub const ROOT_BASE: u64 = 0x0000_0001_0000_0000;
-pub const ROOT_END: u64 = 0x0000_7f00_0000_0000;
+pub const ROOT_BASE: u64 = 0x0000_0000_0001_0000;
+pub const ROOT_END: u64 = 0x0000_7fff_ffff_f000;
+/// Where mappings without a fixed address start (4 GiB)
+pub const ALLOC_HINT: u64 = 0x0000_0001_0000_0000;
 
 /// vmar_map / vmar_protect options (Zircon values)
 pub mod opts {
@@ -106,7 +110,10 @@ impl Aspace {
                 }
                 a
             }
-            None => find_gap(&inner.maps, lo, hi, len).ok_or(RxStatus::ERR_NO_MEMORY)?,
+            None => {
+                let from_hint = if lo < ALLOC_HINT && ALLOC_HINT < hi { find_gap(&inner.maps, ALLOC_HINT, hi, len) } else { None };
+                from_hint.or_else(|| find_gap(&inner.maps, lo, hi, len)).ok_or(RxStatus::ERR_NO_MEMORY)?
+            }
         };
         let pages = vmo.commit_range(vmo_offset, len)?;
         if perms != 0 {

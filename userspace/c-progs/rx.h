@@ -29,7 +29,11 @@ typedef int64_t rx_status_t;
 #define RX_ERR_BUFFER_TOO_SMALL -15
 #define RX_ERR_OUT_OF_RANGE   -16
 #define RX_ERR_NOT_FOUND       -5
+#define RX_ERR_BAD_STATE      -17
 #define RX_ERR_ALREADY_EXISTS -18
+
+#define RX_TASK_RETCODE_SYSCALL_KILL   -1024
+#define RX_TASK_RETCODE_EXCEPTION_KILL -1025
 
 #define RX_TIME_INFINITE  UINT64_MAX
 
@@ -40,6 +44,7 @@ typedef int64_t rx_status_t;
 #define RX_EVENT_SIGNALED     (1u << 3)
 #define RX_TIMER_SIGNALED     (1u << 3)
 #define RX_PROCESS_TERMINATED (1u << 3)
+#define RX_THREAD_TERMINATED  (1u << 3)
 #define RX_USER_SIGNAL_0      (1u << 24)
 
 // Rights
@@ -49,14 +54,18 @@ typedef int64_t rx_status_t;
 #define RX_RIGHT_WRITE       (1u << 3)
 #define RX_RIGHT_EXECUTE     (1u << 4)
 #define RX_RIGHT_MAP         (1u << 5)
+#define RX_RIGHT_DESTROY     (1u << 9)
 #define RX_RIGHT_SIGNAL      (1u << 12)
 #define RX_RIGHT_SIGNAL_PEER (1u << 13)
 #define RX_RIGHT_WAIT        (1u << 14)
 #define RX_RIGHT_SAME_RIGHTS (1u << 31)
 
 // Object types
+#define RX_OBJ_TYPE_PROCESS   1
+#define RX_OBJ_TYPE_THREAD    2
 #define RX_OBJ_TYPE_VMO       3
 #define RX_OBJ_TYPE_CHANNEL   4
+#define RX_OBJ_TYPE_JOB       17
 #define RX_OBJ_TYPE_VMAR      18
 #define RX_OBJ_TYPE_EVENT     5
 #define RX_OBJ_TYPE_EVENTPAIR 16
@@ -68,8 +77,26 @@ typedef int64_t rx_status_t;
 #define RX_VM_PERM_EXECUTE (1u << 2)
 #define RX_VM_SPECIFIC     (1u << 4)
 
-// Start of every process's root VMAR (it ends at 0x7f0000000000)
-#define RX_ROOT_VMAR_BASE  0x100000000ull
+// Every process's root VMAR is [0x10000, 0x7ffffffff000). Mappings
+// without RX_VM_SPECIFIC go at or above 4 GiB when there is room.
+#define RX_ROOT_VMAR_BASE  0x10000ull
+#define RX_VM_ALLOC_HINT   0x100000000ull
+
+// Bootstrap message handle tags (Fuchsia PA_* values)
+#define RX_PA_PROC_SELF   0x01
+#define RX_PA_THREAD_SELF 0x02
+#define RX_PA_JOB_DEFAULT 0x03
+#define RX_PA_VMAR_ROOT   0x04
+
+#define RX_INFO_PROCESS 3
+typedef struct {
+    int64_t return_code;
+    int64_t start_time;
+    uint32_t flags;      // RX_INFO_PROCESS_FLAG_*
+    uint32_t padding;
+} rx_info_process_t;
+#define RX_INFO_PROCESS_FLAG_STARTED (1u << 0)
+#define RX_INFO_PROCESS_FLAG_EXITED  (1u << 1)
 
 typedef struct {
     rx_handle_t handle;
@@ -133,6 +160,31 @@ static inline rx_status_t rx_vmar_map(rx_handle_t vmar, uint32_t options, uint64
 }
 static inline rx_status_t rx_vmar_unmap(rx_handle_t vmar, uint64_t addr, uint64_t len) { return RX_SYS(0x15, vmar, addr, len, 0); }
 static inline rx_status_t rx_vmar_protect(rx_handle_t vmar, uint32_t options, uint64_t addr, uint64_t len) { return RX_SYS(0x16, vmar, options, addr, len); }
+static inline rx_status_t rx_vmo_replace_as_executable(rx_handle_t h, rx_handle_t vmex, rx_handle_t *out) { return RX_SYS(0x18, h, vmex, out, 0); }
+
+// Tasks
+static inline rx_status_t rx_process_create(rx_handle_t job, const char *name, uint64_t name_len, uint32_t options,
+                                            rx_handle_t *proc_out, rx_handle_t *vmar_out) {
+    return RX_SYS6(0x01, job, name, name_len, options, proc_out, vmar_out);
+}
+static inline rx_status_t rx_process_start(rx_handle_t proc, rx_handle_t thread, uint64_t entry, uint64_t stack,
+                                           rx_handle_t arg1, uint64_t arg2) {
+    return RX_SYS6(0x02, proc, thread, entry, stack, arg1, arg2);
+}
+static inline rx_status_t rx_thread_create(rx_handle_t proc, const char *name, uint64_t name_len, uint32_t options, rx_handle_t *out) {
+    return RX_SYS6(0x08, proc, name, name_len, options, out, 0);
+}
+static inline rx_status_t rx_thread_start(rx_handle_t thread, uint64_t entry, uint64_t stack, uint64_t arg1, uint64_t arg2) {
+    return RX_SYS6(0x04, thread, entry, stack, arg1, arg2, 0);
+}
+static inline void rx_thread_exit(void) { RX_SYS(0x05, 0, 0, 0, 0); for (;;) {} }
+static inline rx_status_t rx_task_kill(rx_handle_t h) { return RX_SYS(0x09, h, 0, 0, 0); }
+static inline rx_status_t rx_object_get_info(rx_handle_t h, uint32_t topic, void *buf, uint64_t size, uint64_t *actual, uint64_t *avail) {
+    return RX_SYS6(0x0A, h, topic, buf, size, actual, avail);
+}
+static inline rx_status_t rx_job_create(rx_handle_t parent, uint32_t options, rx_handle_t *out) { return RX_SYS(0x30, parent, options, out, 0); }
+static inline rx_status_t rx_handle_replace(rx_handle_t h, uint32_t rights, rx_handle_t *out) { return RX_SYS(0x32, h, rights, out, 0); }
+
 static inline uint64_t rx_clock_get_monotonic(void) { return (uint64_t)RX_SYS(0x40, 0, 0, 0, 0); }
 static inline rx_status_t rx_timer_create(uint32_t options, uint32_t clock_id, rx_handle_t *out) { return RX_SYS(0x41, options, clock_id, out, 0); }
 static inline rx_status_t rx_timer_set(rx_handle_t h, uint64_t deadline, uint64_t slack) { return RX_SYS(0x42, h, deadline, slack, 0); }
@@ -140,6 +192,30 @@ static inline rx_status_t rx_timer_cancel(rx_handle_t h) { return RX_SYS(0x43, h
 
 static inline int64_t rx_write(int fd, const void *buf, uint64_t len) { return RX_SYS(0x60, fd, buf, len, 0); }
 static inline void rx_exit(int64_t code) { RX_SYS(0x06, code, 0, 0, 0); for (;;) {} }
+
+// --- startup ---
+// Programs started by the kernel (init, spawn) get a bootstrap channel in
+// the first argument of _start. rx_startup() reads its one message and
+// fills these in.
+static rx_handle_t rx_proc_self, rx_thread_self, rx_job_default, rx_vmar_root;
+
+static inline void rx_startup(rx_handle_t bootstrap) {
+    uint32_t tags[8];
+    rx_handle_t handles[8];
+    uint32_t nb = 0, nh = 0;
+    if (rx_channel_read(bootstrap, 0, tags, handles, sizeof tags, 8, &nb, &nh) == RX_OK) {
+        for (uint32_t i = 0; i < nh && i < nb / 4; i++) {
+            switch (tags[i]) {
+            case RX_PA_PROC_SELF: rx_proc_self = handles[i]; break;
+            case RX_PA_THREAD_SELF: rx_thread_self = handles[i]; break;
+            case RX_PA_JOB_DEFAULT: rx_job_default = handles[i]; break;
+            case RX_PA_VMAR_ROOT: rx_vmar_root = handles[i]; break;
+            default: rx_handle_close(handles[i]); break;
+            }
+        }
+    }
+    rx_handle_close(bootstrap);
+}
 
 // --- tiny output helpers ---
 static inline uint64_t rx_strlen(const char *s) { uint64_t n = 0; while (s[n]) n++; return n; }

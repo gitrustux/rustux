@@ -34,6 +34,7 @@
 pub mod fd;
 pub mod memory;
 pub mod object;
+pub mod task;
 pub mod user;
 
 use crate::arch::amd64::mm::RxStatus;
@@ -297,13 +298,17 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
 
     match num {
         // Process & Thread (0x01-0x0F)
-        0x01 => sys_process_create(args),
-        0x02 => sys_process_start(args),
-        0x03 => sys_spawn(args),
-        0x04 => sys_thread_start(args),
-        0x05 => sys_thread_exit(args),
-        0x06 => sys_process_exit(args),
+        0x01 => task::sys_process_create(args),
+        0x02 => task::sys_process_start(args),
+        0x03 => task::sys_spawn(args),
+        0x04 => task::sys_thread_start(args),
+        0x05 => task::sys_thread_exit(args),
+        0x06 => task::sys_process_exit(args),
         0x07 => sys_handle_close(args),
+        0x08 => task::sys_thread_create(args),
+        0x09 => task::sys_task_kill(args),
+        0x0A => task::sys_object_get_info(args),
+        0x0B => task::sys_spawn_process(args),
 
         // Memory / VMO (0x10-0x1F)
         0x10 => memory::sys_vmo_create(args),
@@ -314,6 +319,7 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x15 => memory::sys_vmar_unmap(args),
         0x16 => memory::sys_vmar_protect(args),
         0x17 => memory::sys_vmo_get_size(args),
+        0x18 => memory::sys_vmo_replace_as_executable(args),
 
         // IPC & Sync (0x20-0x2F)
         0x20 => object::sys_channel_create(args),
@@ -328,9 +334,9 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x29 => object::sys_object_get_type(args),
 
         // Jobs & Handles (0x30-0x3F)
-        0x30 => sys_job_create(args),
+        0x30 => task::sys_job_create(args),
         0x31 => object::sys_handle_duplicate(args),
-        0x32 => sys_handle_transfer(args),
+        0x32 => task::sys_handle_replace(args),
 
         // Time (0x40-0x4F)
         0x40 => sys_clock_get(args),
@@ -375,380 +381,6 @@ macro_rules! syscall_stub {
     };
 }
 
-// Process & Thread syscalls
-syscall_stub!(sys_process_start);
-syscall_stub!(sys_thread_start);
-syscall_stub!(sys_thread_exit);
-
-/// Process create syscall (Phase 5B)
-///
-/// This syscall creates a new process from an ELF binary.
-///
-/// Arguments (Phase 5B):
-///   arg0: pointer to ELF data (userspace virtual address)
-///   arg1: size of ELF data
-///
-/// Returns:
-///   Positive: new process PID
-///   Negative: error code
-///
-/// Note: In Phase 5C, this will be replaced by sys_spawn that takes
-/// a path string and looks up the file in the embedded filesystem.
-fn sys_process_create(args: SyscallArgs) -> SyscallRet {
-    use crate::exec::load_elf_process;
-    use crate::process::table::{Process, PROCESS_TABLE};
-    use crate::mm::pmm;
-    use crate::sync::SpinMutex;
-
-    let elf_ptr = args.arg_u64(0) as *const u8;
-    let elf_size = args.arg(1);
-
-    // Validate arguments
-    if elf_ptr.is_null() || elf_size == 0 {
-        return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-    }
-
-    // Get parent PID
-    let parent_pid = {
-        let table = PROCESS_TABLE.lock();
-        table.current_pid().unwrap_or(0)
-    };
-
-    // Read ELF data from userspace
-    let elf_data = unsafe {
-        core::slice::from_raw_parts(elf_ptr, elf_size)
-    };
-
-    // Load the ELF binary
-    let process_image = match load_elf_process(elf_data) {
-        Ok(img) => img,
-        Err(e) => {
-            // Debug output for error
-            let msg = b"[SPAWN] Failed to load ELF: ";
-            for &b in msg {
-                unsafe {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-                }
-            }
-            for b in e.as_bytes() {
-                unsafe {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") *b, options(nomem, nostack));
-                }
-            }
-            let msg = b"\n";
-            for &b in msg {
-                unsafe {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-                }
-            }
-            return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-        }
-    };
-
-    // Allocate a kernel stack
-    let kernel_stack_top = match crate::process::run::alloc_kernel_stack() {
-        Ok(top) => top,
-        Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-    };
-
-    // Get page table physical address
-    let page_table_phys = process_image.address_space.page_table.phys;
-
-    // Allocate PID and create process
-    let (pid, entry, user_stack_top) = {
-        let mut table = PROCESS_TABLE.lock();
-
-        let pid = match table.alloc_pid() {
-            Some(p) => p,
-            None => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-        };
-
-        let mut process = Process::new(
-            pid,
-            parent_pid,
-            page_table_phys,
-            kernel_stack_top,
-            process_image.stack_top,
-            process_image.entry,
-        );
-
-        object::give_root_vmar(&mut process);
-        table.insert(process);
-        table.set_current(pid);
-
-        (pid, process_image.entry, process_image.stack_top)
-    };
-
-    // Debug output
-    unsafe {
-        let msg = b"[SPAWN] Created process PID=";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-        let mut n = pid;
-        let mut buf = [0u8; 16];
-        let mut i = 0;
-        loop {
-            buf[i] = b'0' + (n % 10) as u8;
-            n /= 10;
-            i += 1;
-            if n == 0 { break; }
-        }
-        while i > 0 {
-            i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-        }
-        let msg = b" entry=0x";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-        let mut n = entry;
-        let mut buf = [0u8; 16];
-        let mut i = 0;
-        if n == 0 {
-            buf[i] = b'0';
-            i += 1;
-        } else {
-            while n > 0 {
-                let digit = (n & 0xF) as u8;
-                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                n >>= 4;
-                i += 1;
-            }
-        }
-        while i > 0 {
-            i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-        }
-        let msg = b"\n";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-    }
-
-    ok_to_ret(pid as usize)
-}
-
-/// Spawn a process from a file in the ramdisk
-///
-/// Arguments:
-///   arg0: pointer to path string (null-terminated, userspace)
-///
-/// Returns: new process PID, or negative error code
-///
-/// Phase 5D: This spawns a process from an ELF file in the ramdisk.
-/// The path must be a null-terminated string in userspace memory.
-/// This is simpler than sys_process_create because userspace doesn't
-/// need to know the ELF format - just provides the path.
-fn sys_spawn(args: SyscallArgs) -> SyscallRet {
-    use crate::exec::load_elf_process;
-    use crate::fs::ramdisk;
-    use crate::process::table::{Process, PROCESS_TABLE};
-    use crate::mm::pmm;
-
-    let path_ptr = args.arg_u64(0) as *const u8;
-
-    // Validate path pointer
-    if path_ptr.is_null() {
-        return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-    }
-
-    // Read null-terminated path string from userspace (max 256 bytes)
-    let mut path_bytes = alloc::vec::Vec::new();
-    unsafe {
-        let mut i = 0;
-        loop {
-            if i >= 256 {
-                return err_to_ret(RxStatus::ERR_INVALID_ARGS); // Path too long
-            }
-            let c = *path_ptr.add(i);
-            if c == 0 {
-                break;
-            }
-            path_bytes.push(c);
-            i += 1;
-        }
-    }
-
-    // Convert to string
-    let path = match core::str::from_utf8(&path_bytes) {
-        Ok(s) => s,
-        Err(_) => return err_to_ret(RxStatus::ERR_INVALID_ARGS),
-    };
-
-    // Get the ramdisk
-    let ramdisk = match ramdisk::get_ramdisk() {
-        Ok(r) => r,
-        Err(_) => return err_to_ret(RxStatus::ERR_NOT_FOUND),
-    };
-
-    // Look up file in ramdisk
-    let ramdisk_file = match ramdisk.find_file(path) {
-        Some(f) => f,
-        None => return err_to_ret(RxStatus::ERR_NOT_FOUND), // ENOENT
-    };
-
-    // Debug output
-    unsafe {
-        let msg = b"[SPAWN] Loading process from ramdisk: ";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-        for b in path_bytes.iter() {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") *b, options(nomem, nostack));
-        }
-        let msg = b"\n";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-    }
-
-    // Read the ELF data from ramdisk
-    let elf_data_ptr = unsafe {
-        ramdisk.data.as_ptr().add(ramdisk_file.data_offset as usize)
-    };
-    let elf_data = unsafe {
-        core::slice::from_raw_parts(elf_data_ptr, ramdisk_file.size as usize)
-    };
-
-    // Load the ELF binary
-    let process_image = match load_elf_process(elf_data) {
-        Ok(img) => img,
-        Err(e) => {
-            // Debug output for error
-            unsafe {
-                let msg = b"[SPAWN] Failed to load ELF: ";
-                for &b in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-                }
-                for b in e.as_bytes() {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") *b, options(nomem, nostack));
-                }
-                let msg = b"\n";
-                for &b in msg {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-                }
-            }
-            return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-        }
-    };
-
-    // Get parent PID
-    let parent_pid = {
-        let table = PROCESS_TABLE.lock();
-        table.current_pid().unwrap_or(0)
-    };
-
-    // Allocate a kernel stack
-    let kernel_stack_top = match crate::process::run::alloc_kernel_stack() {
-        Ok(top) => top,
-        Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-    };
-
-    // Get page table physical address
-    let page_table_phys = process_image.address_space.page_table.phys;
-
-    // Allocate PID and create process
-    let (pid, entry, user_stack_top) = {
-        let mut table = PROCESS_TABLE.lock();
-
-        let pid = match table.alloc_pid() {
-            Some(p) => p,
-            None => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-        };
-
-        let mut process = Process::new(
-            pid,
-            parent_pid,
-            page_table_phys,
-            kernel_stack_top,
-            process_image.stack_top,
-            process_image.entry,
-        );
-
-        // Set process name from path
-        let name = if let Some(last_slash) = path.rfind('/') {
-            alloc::string::String::from(&path[last_slash + 1..])
-        } else {
-            alloc::string::String::from(path)
-        };
-        process.set_name(name);
-
-        object::give_root_vmar(&mut process);
-        table.insert(process);
-
-        (pid, process_image.entry, process_image.stack_top)
-    };
-
-    // Debug output
-    unsafe {
-        let msg = b"[SPAWN] Created process PID=";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-        let mut n = pid;
-        let mut buf = [0u8; 16];
-        let mut i = 0;
-        loop {
-            buf[i] = b'0' + (n % 10) as u8;
-            n /= 10;
-            i += 1;
-            if n == 0 { break; }
-        }
-        while i > 0 {
-            i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-        }
-        let msg = b" entry=0x";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-        let mut n = entry;
-        let mut buf = [0u8; 16];
-        let mut i = 0;
-        if n == 0 {
-            buf[i] = b'0';
-            i += 1;
-        } else {
-            while n > 0 {
-                let digit = (n & 0xF) as u8;
-                buf[i] = if digit < 10 { b'0' + digit } else { b'a' + digit - 10 };
-                n >>= 4;
-                i += 1;
-            }
-        }
-        while i > 0 {
-            i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
-        }
-        let msg = b"\n";
-        for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-    }
-
-    ok_to_ret(pid as usize)
-}
-
-/// Process exit syscall
-///
-/// Terminates the current process. For now, this just halts the CPU.
-/// In a full implementation, this would mark the process as exited
-/// and schedule another process.
-fn sys_process_exit(args: SyscallArgs) -> SyscallRet {
-    let exit_code = args.arg_i64(0) as i32;
-    let _ = exit_code; // TODO: report to the parent
-
-    for &b in b"[EXIT]\n" {
-        unsafe {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-        }
-    }
-
-    // Run the next process; this one never resumes
-    crate::process::run::exit_current()
-}
-
 fn sys_handle_close(args: SyscallArgs) -> SyscallRet {
     object::sys_handle_close(args)
 }
@@ -758,8 +390,6 @@ fn sys_handle_close(args: SyscallArgs) -> SyscallRet {
 // IPC & Sync syscalls
 
 // Jobs & Handles syscalls
-syscall_stub!(sys_job_create);
-syscall_stub!(sys_handle_transfer);
 
 // Time syscalls
 fn sys_clock_get(args: SyscallArgs) -> SyscallRet {
@@ -909,6 +539,9 @@ fn sys_read(args: SyscallArgs) -> SyscallRet {
                 // Release process table lock before blocking
                 drop(current);
                 drop(table);
+                if user::check(ptr as usize, 1, true).is_err() {
+                    return err_to_ret(RxStatus::ERR_INVALID_ARGS);
+                }
 
                 // Block until character available from keyboard
                 // Sleep between checks: a PS/2 key wakes us at once (IRQ1);
@@ -916,6 +549,9 @@ fn sys_read(args: SyscallArgs) -> SyscallRet {
                 let ch = loop {
                     if let Some(ch) = crate::drivers::keyboard::read_char() {
                         break ch;
+                    }
+                    if crate::process::run::is_killed() {
+                        return err_to_ret(RxStatus::ERR_BAD_STATE);
                     }
                     if let Some(pid) = crate::process::table::PROCESS_TABLE.lock().current_pid() {
                         crate::drivers::keyboard::set_waiter(pid);

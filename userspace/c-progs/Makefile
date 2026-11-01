@@ -8,7 +8,7 @@ CFLAGS = -ffreestanding -nostdlib -fno-stack-protector -fno-pic -O2 -Wall -Wextr
 LDFLAGS = -nostdlib -T linker.ld
 
 # Default target
-all: hello.elf counter.elf init.elf objtest.elf
+all: hello.elf counter.elf init.elf objtest.elf ipctest.elf spawntest.elf true.elf
 
 # Build hello.elf
 hello.elf: hello.o
@@ -36,6 +36,26 @@ objtest.elf: objtest.o
 	$(LD) $(LDFLAGS) -o $@ $<
 
 objtest.o: objtest.c rx.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Build ipctest.elf (processes, threads, jobs)
+ipctest.elf: ipctest.o
+	$(LD) $(LDFLAGS) -o $@ $<
+
+ipctest.o: ipctest.c rx.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Build spawntest.elf and true.elf (process cleanup)
+spawntest.elf: spawntest.o
+	$(LD) $(LDFLAGS) -o $@ $<
+
+spawntest.o: spawntest.c rx.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+true.elf: true.o
+	$(LD) $(LDFLAGS) -o $@ $<
+
+true.o: true.c rx.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Copy binaries to expected locations

@@ -16,6 +16,13 @@
 #define SYS_SPAWN        0x03
 #define SYS_EXIT         0x06
 #define SYS_YIELD        0x72
+#define SYS_SPAWN_PROCESS 0x0B
+#define SYS_WAIT_ONE     0x26
+#define SYS_HANDLE_CLOSE 0x07
+#define SYS_GET_INFO     0x0A
+
+#define PROCESS_TERMINATED (1u << 3)
+#define INFO_PROCESS       3
 
 // File descriptor numbers
 #define STDOUT  1
@@ -42,8 +49,16 @@ static inline long syscall3(long number, long arg1, long arg2, long arg3) {
     return ret;
 }
 
-static inline long sys_spawn(const char *path) {
-    return syscall1(SYS_SPAWN, (long)path);
+static inline long syscall4(long number, long arg1, long arg2, long arg3, long arg4) {
+    long ret;
+    register long r10 __asm__("r10") = arg4;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a" (ret)
+        : "a" (number), "D" (arg1), "S" (arg2), "d" (arg3), "r" (r10)
+        : "memory"
+    );
+    return ret;
 }
 
 static inline void sys_exit(int code) {
@@ -66,16 +81,17 @@ void _start(void) {
     print("Init process (PID 1) starting...\n");
     print("Spawning shell...\n\n");
 
-    // Spawn the shell
-    long result = sys_spawn("/bin/shell");
-
-    if (result < 0) {
-        print("Failed to spawn shell!\n");
-        sys_exit(1);
-    }
-
-    // There is no wait() yet: keep PID 1 alive and give the CPU away
+    // Run the shell; if it ever exits, start a new one
     for (;;) {
-        syscall1(SYS_YIELD, 0);
+        unsigned int proc = 0;
+        long result = syscall3(SYS_SPAWN_PROCESS, (long)"/bin/shell", (long)&proc, 0);
+        if (result < 0) {
+            print("Failed to spawn shell!\n");
+            sys_exit(1);
+        }
+        // Sleep until the shell's process is TERMINATED
+        syscall4(SYS_WAIT_ONE, proc, PROCESS_TERMINATED, -1L, 0);
+        syscall1(SYS_HANDLE_CLOSE, proc);
+        print("\nShell exited; starting a new one\n\n");
     }
 }

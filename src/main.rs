@@ -301,110 +301,24 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
 
     unsafe {
         use rustux::fs::ramdisk;
-        use rustux::exec::load_elf_process;
         use rustux::process::table::{Process, PROCESS_TABLE};
 
-        // Get the ramdisk
-        let ramdisk = match ramdisk::get_ramdisk() {
-            Ok(r) => r,
+        // Load /bin/init from the ramdisk into a new process in the root job
+        // and hand the CPU to the scheduler; init runs first. The boot
+        // context is never resumed.
+        match rustux::process::launch::spawn_elf("bin/init", &rustux::kobj::task::Job::root()) {
+            Ok((_, tid)) => {
+                debug_print("[INIT] init started\n");
+                debug_print("╔══════════════════════════════════════════════════════════╗\n");
+                debug_print("║  Jumping to Init Process (Userspace)                   ║\n");
+                debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
+                rustux::process::run::start(tid);
+            }
             Err(_) => {
-                debug_print("[INIT] Ramdisk not available, skipping init load\n\n");
-                // Continue without init process - halt
+                debug_print("[INIT] could not start /bin/init\n");
                 loop { core::arch::asm!("hlt"); }
             }
-        };
-
-        // Look for init.elf in ramdisk
-        let init_file = match ramdisk.find_file("bin/init") {
-            Some(f) => f,
-            None => {
-                debug_print("[INIT] init.elf not found in ramdisk, skipping\n\n");
-                // Continue without init process - halt
-                loop { core::arch::asm!("hlt"); }
-            }
-        };
-
-        debug_print("[INIT] Found init.elf in ramdisk\n");
-        debug_print("[INIT] File size: ");
-        print_hex(init_file.size as u64);
-        debug_print(" bytes\n");
-
-        // Read the ELF data from ramdisk
-        let elf_data_ptr = ramdisk.data.as_ptr().add(init_file.data_offset as usize);
-        let elf_data = core::slice::from_raw_parts(elf_data_ptr, init_file.size as usize);
-
-        debug_print("[INIT] Loading ELF binary...\n");
-
-        // Load the ELF binary
-        let process_image = match load_elf_process(elf_data) {
-            Ok(img) => img,
-            Err(e) => {
-                debug_print("[INIT] Failed to load ELF: ");
-                for &b in e.as_bytes() {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-                }
-                debug_print("\n");
-                // Continue without init process - halt
-                loop { core::arch::asm!("hlt"); }
-            }
-        };
-
-        debug_print("[INIT] ELF loaded successfully\n");
-        debug_print("[INIT] Entry point: 0x");
-        print_hex(process_image.entry);
-        debug_print("\n");
-
-        // Allocate init's kernel stack
-        let kernel_stack_top = match rustux::process::run::alloc_kernel_stack() {
-            Ok(top) => top,
-            Err(e) => {
-                debug_print("[INIT] ");
-                debug_print(e);
-                debug_print("\n");
-                loop { core::arch::asm!("hlt"); }
-            }
-        };
-
-        // Get page table physical address
-        let page_table_phys = process_image.address_space.page_table.phys;
-
-        // Create process with PID 1
-        let mut process = Process::new(
-            1,  // PID 1 (init)
-            0,  // PPID 0 (kernel)
-            page_table_phys,
-            kernel_stack_top,
-            process_image.stack_top,
-            process_image.entry,
-        );
-
-        // Set process name
-        let mut name_owned = alloc::string::String::from("init");
-        process.set_name(name_owned);
-
-        // Add to process table
-        PROCESS_TABLE.lock().insert(process);
-        PROCESS_TABLE.lock().set_current(1);
-
-        debug_print("[INIT] Process created with PID 1\n");
-        debug_print("[INIT] Kernel stack: 0x");
-        print_hex(kernel_stack_top);
-        debug_print("\n");
-        debug_print("[INIT] User stack: 0x");
-        print_hex(process_image.stack_top);
-        debug_print("\n");
-        debug_print("[INIT] Page table: 0x");
-        print_hex(page_table_phys);
-        debug_print("\n\n");
-
-        debug_print("╔══════════════════════════════════════════════════════════╗\n");
-        debug_print("║  Jumping to Init Process (Userspace)                   ║\n");
-        debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
-
-        // Execute the init process - never returns
-        // Hand the CPU to the scheduler; init runs first. The boot context
-        // is never resumed.
-        rustux::process::run::start(1);
+        }
 
         // Unreachable
         loop { unsafe { asm!("hlt"); } }
@@ -511,7 +425,7 @@ fn handle_exception(vector: u64, code: Option<u64>, frame: &InterruptFrame) {
     }
 
     if user {
-        rustux::process::run::exit_current();
+        rustux::process::run::exit_current(rustux::kobj::task::RETCODE_EXCEPTION);
     }
     loop {
         unsafe { asm!("cli", "hlt", options(nomem, nostack)) };
@@ -597,6 +511,9 @@ pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
     // process would need.
     if frame.cs & 3 == 3 {
         rustux::process::run::yield_now();
+        // A thread killed while it was preempted exits instead of
+        // returning to user mode
+        rustux::process::run::exit_if_killed();
     }
 }
 
@@ -678,6 +595,8 @@ extern "sysv64" fn rustux_int80_dispatch(regs: &mut Int80Regs) {
         ],
     );
     regs.rax = syscall_dispatch(args) as u64;
+    // A killed thread exits instead of returning to user mode
+    rustux::process::run::exit_if_killed();
 }
 
 fn find_acpi_rsdp() -> Option<u64> {
@@ -922,6 +841,20 @@ fn print_hex(n: u64) {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop { unsafe { asm!("hlt", options(nostack, nomem)) }; }
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    // Report where and why, then stop this CPU for good
+    unsafe { asm!("cli", options(nostack, nomem)) };
+    struct Out;
+    impl core::fmt::Write for Out {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            rustux::kobj::debugcon(s);
+            if rustux::drivers::display::is_initialized() {
+                rustux::drivers::display::write_str(s);
+            }
+            Ok(())
+        }
+    }
+    use core::fmt::Write;
+    let _ = write!(Out, "\n[PANIC] {}\n", info);
+    loop { unsafe { asm!("cli", "hlt", options(nostack, nomem)) }; }
 }

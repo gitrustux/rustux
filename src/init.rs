@@ -483,37 +483,6 @@ fn init_late() {
         }
     }
 
-    // Test userspace execution (Phase 4A)
-    #[cfg(feature = "userspace_test")]
-    {
-        // DEBUG: Before userspace_exec_test call
-        unsafe {
-            let msg = b"[INIT] BEFORE userspace_exec_test call\n";
-            for &b in msg {
-                core::arch::asm!("out dx, al",
-                    in("dx") 0xE9u16,
-                    in("al") b,
-                    options(nomem, nostack));
-            }
-        }
-
-        unsafe {
-            crate::exec::userspace_exec_test::test_userspace_execution();
-        }
-
-        // DEBUG: After userspace_exec_test call (should never reach here)
-        unsafe {
-            let msg = b"[INIT] AFTER userspace_exec_test call (UNREACHABLE)\n";
-            for &b in msg {
-                core::arch::asm!("out dx, al",
-                    in("dx") 0xE9u16,
-                    in("al") b,
-                    options(nomem, nostack));
-            }
-        }
-    }
-
-    #[cfg(not(feature = "userspace_test"))]
     {
         // DEBUG: Feature gate not enabled
         unsafe {

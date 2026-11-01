@@ -528,6 +528,33 @@ pub unsafe fn protect_4k(pml4: u64, vaddr: u64, flags: u64) -> bool {
     true
 }
 
+/// Free the page-table pages of a user address space's lower half and the
+/// PML4 itself. The pages they mapped are not touched (they belong to VMOs).
+///
+/// # Safety
+/// `pml4` must be a user PML4 from [`new_user_pml4`] that is not loaded in
+/// CR3 and will never be used again.
+pub unsafe fn free_user_tables(pml4: u64, free: fn(u64)) {
+    unsafe fn free_tree(t: u64, level: u32, free: fn(u64)) {
+        if level > 1 {
+            for i in 0..ENTRIES {
+                let e = *table(t).add(i);
+                if e & PTE_PRESENT != 0 && e & PTE_HUGE == 0 {
+                    free_tree(e & PTE_ADDR_MASK, level - 1, free);
+                }
+            }
+        }
+        free(t);
+    }
+    for i in 0..ENTRIES / 2 {
+        let e = *table(pml4).add(i);
+        if e & PTE_PRESENT != 0 {
+            free_tree(e & PTE_ADDR_MASK, 3, free);
+        }
+    }
+    free(pml4);
+}
+
 /// Translate a lower-half address through `pml4` (debugging aid).
 pub unsafe fn translate(pml4: u64, vaddr: u64) -> Option<u64> {
     let mut t = table(pml4);

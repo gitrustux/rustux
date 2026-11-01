@@ -141,7 +141,7 @@ static void memory_tests(rx_handle_t root) {
     check("2 GiB VMO -> OUT_OF_RANGE", r == RX_ERR_OUT_OF_RANGE, r);
 
     r = rx_vmar_map(root, RX_VM_PERM_READ | RX_VM_PERM_WRITE, 0, vmo, 0, 12288, &addr);
-    check("vmar_map read/write", r == RX_OK && addr >= RX_ROOT_VMAR_BASE, r);
+    check("vmar_map read/write (placed at or above 4 GiB)", r == RX_OK && addr >= RX_VM_ALLOC_HINT, r);
     volatile char *p = (volatile char *)addr;
     check("mapping shows the VMO's contents", p[4096 + 10] == 'a' && p[4096 + 12] == 'c', p[4096 + 10]);
     p[100] = 'Z';
@@ -169,8 +169,8 @@ static void memory_tests(rx_handle_t root) {
     check("  pages on both sides remain", r == RX_OK && p[100] == 'Z', r);
     r = rx_vmar_unmap(root, addr + 4096, 4096);
     check("unmap it again -> NOT_FOUND", r == RX_ERR_NOT_FOUND, r);
-    r = rx_vmar_unmap(root, 0x400000, 4096);
-    check("unmap outside the VMAR (own code) -> INVALID_ARGS", r == RX_ERR_INVALID_ARGS, r);
+    r = rx_vmar_unmap(root, 0x1000, 4096);
+    check("unmap below the VMAR (null page) -> INVALID_ARGS", r == RX_ERR_INVALID_ARGS, r);
     rx_vmar_unmap(root, addr, 12288);
 
     rx_vmo_create(8192, 0, &vmo);
@@ -210,8 +210,9 @@ static void memory_tests(rx_handle_t root) {
     rx_handle_close(child);
 }
 
-void _start(rx_handle_t bootstrap, rx_handle_t root_vmar) {
-    (void)bootstrap;
+void _start(rx_handle_t bootstrap) {
+    rx_startup(bootstrap);
+    rx_handle_t root_vmar = rx_vmar_root;
     rx_handle_t ev = 0, dup = 0, tm = 0, p0 = 0, p1 = 0;
     uint32_t observed = 0;
     int64_t r;

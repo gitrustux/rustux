@@ -50,6 +50,23 @@ pub fn write_u64(addr: usize, v: u64) -> Result<(), RxStatus> {
     write_bytes(addr, &v.to_le_bytes())
 }
 
+/// A NUL-terminated string of at most `max` bytes from user memory
+pub fn read_cstr(addr: usize, max: usize) -> Result<alloc::string::String, RxStatus> {
+    let mut out = alloc::vec::Vec::new();
+    for i in 0..max {
+        let a = addr.checked_add(i).ok_or(RxStatus::ERR_INVALID_ARGS)?;
+        if i == 0 || a % 4096 == 0 {
+            check(a, 1, false)?;
+        }
+        let c = unsafe { *(a as *const u8) };
+        if c == 0 {
+            return alloc::string::String::from_utf8(out).map_err(|_| RxStatus::ERR_INVALID_ARGS);
+        }
+        out.push(c);
+    }
+    Err(RxStatus::ERR_INVALID_ARGS)
+}
+
 pub fn read_u32(addr: usize) -> Result<u32, RxStatus> {
     check(addr, 4, false)?;
     Ok(unsafe { core::ptr::read_unaligned(addr as *const u32) })

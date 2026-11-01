@@ -19,6 +19,13 @@
 #define SYS_YIELD        0x72  // yield()
 #define SYS_EXIT         0x06  // exit(code)
 #define SYS_SPAWN        0x03  // spawn(path)
+#define SYS_SPAWN_PROCESS 0x0B // spawn_process(path, *process_handle)
+#define SYS_WAIT_ONE     0x26  // object_wait_one(handle, signals, deadline, *observed)
+#define SYS_HANDLE_CLOSE 0x07  // handle_close(handle)
+#define SYS_GET_INFO     0x0A  // object_get_info(handle, topic, *buf, size, *actual, *avail)
+
+#define PROCESS_TERMINATED (1u << 3)
+#define INFO_PROCESS       3
 
 // File descriptor numbers
 #define STDIN   0
@@ -74,8 +81,32 @@ static inline long sys_read(int fd, char *buf, long len) {
     return syscall3(SYS_READ, fd, (long)buf, len);
 }
 
-static inline long sys_spawn(const char *path) {
-    return syscall1(SYS_SPAWN, (long)path);
+static inline long syscall6(long number, long a1, long a2, long a3, long a4, long a5, long a6) {
+    long ret;
+    register long r10 __asm__("r10") = a4;
+    register long r8 __asm__("r8") = a5;
+    register long r9 __asm__("r9") = a6;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a" (ret)
+        : "a" (number), "D" (a1), "S" (a2), "d" (a3), "r" (r10), "r" (r8), "r" (r9)
+        : "memory"
+    );
+    return ret;
+}
+
+// Start /bin/<name>; *proc receives a process handle to wait on
+static inline long sys_spawn_process(const char *path, unsigned int *proc) {
+    return syscall6(SYS_SPAWN_PROCESS, (long)path, (long)proc, 0, 0, 0, 0);
+}
+
+// Block until the process has exited; returns its exit code
+static long wait_process(unsigned int proc) {
+    struct { long return_code; long start_time; unsigned int flags, pad; } info = {0, 0, 0, 0};
+    syscall6(SYS_WAIT_ONE, proc, PROCESS_TERMINATED, -1L, 0, 0, 0);
+    syscall6(SYS_GET_INFO, proc, INFO_PROCESS, (long)&info, sizeof info, 0, 0);
+    syscall1(SYS_HANDLE_CLOSE, proc);
+    return info.return_code;
 }
 
 static inline void sys_exit(int code) {
@@ -230,10 +261,11 @@ static int spawn_external(const char *name) {
     }
     *p = '\0';
 
-    // Try to spawn the program
-    long pid = sys_spawn(path);
+    // Run the program and wait for it to finish
+    unsigned int proc = 0;
+    long tid = sys_spawn_process(path, &proc);
 
-    if (pid < 0) {
+    if (tid < 0) {
         print_color(ANSI_RED, "error: ");
         print("command not found: ");
         print(name);
@@ -241,34 +273,20 @@ static int spawn_external(const char *name) {
         return -1;
     }
 
-    // Success
-    print_color(ANSI_GREEN, "✓ ");
-    print("started process with PID ");
-
-    // Simple decimal conversion for PID
-    char pid_buf[16];
-    char *ppid = pid_buf;
-    long temp = pid;
-    int digits = 0;
-    if (temp == 0) {
-        *ppid++ = '0';
-        digits++;
-    } else {
-        while (temp > 0) {
-            ppid[digits++] = '0' + (temp % 10);
-            temp /= 10;
-        }
+    long code = wait_process(proc);
+    if (code != 0) {
+        // Print the exit code (may be negative: killed = -1024, crashed = -1025)
+        char buf[24];
+        int i = 23;
+        int neg = code < 0;
+        unsigned long u = neg ? (unsigned long)(-code) : (unsigned long)code;
+        buf[i] = '\0';
+        do { buf[--i] = '0' + (u % 10); u /= 10; } while (u);
+        if (neg) buf[--i] = '-';
+        print_color(ANSI_RED, "[exit code ");
+        print(&buf[i]);
+        print("]\n");
     }
-    // Reverse the digits
-    for (int i = 0; i < digits / 2; i++) {
-        char tmp = ppid[i];
-        ppid[i] = ppid[digits - 1 - i];
-        ppid[digits - 1 - i] = tmp;
-    }
-    ppid[digits] = '\0';
-    print(pid_buf);
-    print("\n");
-
     return 0;
 }
 

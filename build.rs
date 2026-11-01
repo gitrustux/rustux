@@ -115,6 +115,9 @@ fn main() {
         (&["target/hello.elf", "userspace/c-progs/hello.elf"], "bin/hello"),
         (&["target/counter.elf", "userspace/c-progs/counter.elf"], "bin/counter"),
         (&["target/objtest.elf", "userspace/c-progs/objtest.elf"], "bin/objtest"),
+        (&["target/ipctest.elf", "userspace/c-progs/ipctest.elf"], "bin/ipctest"),
+        (&["target/spawntest.elf", "userspace/c-progs/spawntest.elf"], "bin/spawntest"),
+        (&["target/true.elf", "userspace/c-progs/true.elf"], "bin/true"),
         (&["target/init.elf", "test-userspace/init.elf"], "bin/init"),
         (&["target/shell.elf", "test-userspace/shell/shell.elf"], "bin/shell"),
     ];
