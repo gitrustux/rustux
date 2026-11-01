@@ -226,31 +226,16 @@ static mut KERNEL_STACK: Option<(u64, usize)> = None; // (physical_address, size
 pub unsafe fn init_kernel_stack(continuation: usize) -> ! {
     use crate::mm::pmm;
 
-    // Allocate 64 pages (256 KB) from kernel zone for the stack
-    // The UEFI-provided stack is typically only 4-8 KB
+    // 64 physically contiguous pages (256 KB); the UEFI-provided stack is
+    // typically only 4-8 KB
     const STACK_PAGES: usize = 64; // 256 KB
 
-    // Allocate pages one at a time (since pmm_alloc_kernel_page only allocates 1 page)
-    let mut stack_pages: [u64; 64] = [0; 64];
-    let mut allocated_count = 0;
-
-    for i in 0..STACK_PAGES {
-        match pmm::pmm_alloc_kernel_page() {
-            Ok(paddr) => {
-                stack_pages[i] = paddr;
-                allocated_count += 1;
-            }
-            Err(_) => break,
-        }
-    }
-
-    if allocated_count == 0 {
-        panic!("Failed to allocate any pages for kernel stack!");
-    }
-
-    let stack_paddr = stack_pages[0];
+    let stack_paddr = match pmm::pmm_alloc_contiguous(STACK_PAGES, pmm::PMM_ALLOC_FLAG_KERNEL, 0) {
+        Ok(p) => p,
+        Err(_) => panic!("Failed to allocate the kernel stack"),
+    };
     let stack_vaddr = pmm::paddr_to_vaddr(stack_paddr) as usize;
-    let stack_size = allocated_count * 4096;
+    let stack_size = STACK_PAGES * 4096;
 
     // Store the stack info for debugging
     KERNEL_STACK = Some((stack_paddr, stack_size));

@@ -53,6 +53,7 @@
 //! ```
 
 pub mod pmm;
+pub mod dma;
 pub mod allocator;
 
 // Re-export PAGE_SIZE explicitly from page_tables to avoid ambiguity
@@ -100,6 +101,11 @@ pub use pmm::{
     pmm_count_total_bytes,
     paddr_to_page,
     pmm_init_early,
+    pmm_init_from_memory_map,
+    note_usable_memory,
+    pmm_arena_count,
+    pmm_from_memory_map,
+    pmm_reserve_pages,
     // Convenience wrappers
     alloc_page,
     free_page,

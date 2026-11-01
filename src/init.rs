@@ -277,56 +277,16 @@ fn init_early() {
             core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
         }
 
-        // Initialize PMM - we need memory allocation before anything else
-        //
-        // PHYSICAL MEMORY ZONING (Fix #1):
-        // Split physical memory into separate zones to prevent VMO clone
-        // operations from corrupting kernel heap metadata.
-        //
-        // Kernel Zone: 0x00200000 - 0x00FFFFFF (14 MB)
-        //   - Kernel heap
-        //   - Page tables
-        //   - Kernel metadata structures
-        //
-        // Heap Zone: 0x01000000 - 0x01FFFFFF (16 MB)
-        //   - Kernel heap (metadata, allocations)
-        //
-        // User Zone: 0x02000000 - 0x07FE0000 (96 MB)
-        //   - VMO backing pages
-        //   - User data
-        //   - Clone destinations
-        //
-        const KERNEL_ZONE_BASE: u64 = 0x0020_0000;   // 2MB (after kernel image)
-        const KERNEL_ZONE_SIZE: usize = 14 * 1024 * 1024;  // 14MB
-        const USER_ZONE_BASE: u64 = 0x0200_0000;    // 32MB (AFTER heap zone)
-        const USER_ZONE_SIZE: usize = 96 * 1024 * 1024;   // 96MB (reduced to make room for heap)
-
-        // Add kernel zone arena
-        let kernel_info = pmm::ArenaInfo::new(
-            b"kernel\0\0\0\0\0\0\0\0\0\0",
-            pmm::ARENA_FLAG_LOW_MEM | pmm::ARENA_FLAG_KERNEL,
-            0, // highest priority
-            KERNEL_ZONE_BASE,
-            KERNEL_ZONE_SIZE,
-        );
-        let _ = pmm::pmm_add_arena(kernel_info);
-
-        // Add user zone arena
-        let user_info = pmm::ArenaInfo::new(
-            b"user\0\0\0\0\0\0\0\0\0\0\0\0",
-            pmm::ARENA_FLAG_LOW_MEM | pmm::ARENA_FLAG_USER,
-            1, // lower priority
-            USER_ZONE_BASE,
-            USER_ZONE_SIZE,
-        );
-        let _ = pmm::pmm_add_arena(user_info);
-
-        // CRITICAL: Reserve kernel stack pages in the PMM
-        // The kernel stack is at 0x200000 with size 0x40000 (256KB = 64 pages)
-        // These pages must NOT be allocated for page tables or other uses
-        const KERNEL_STACK_BASE: u64 = 0x0020_0000;   // 2MB
-        const KERNEL_STACK_PAGES: usize = 64;          // 256KB
-        let _ = pmm::pmm_reserve_pages(KERNEL_STACK_BASE, KERNEL_STACK_PAGES);
+        // Build the PMM from the UEFI memory map recorded by main.rs. Only
+        // when there is none (e.g. the kernel_test entry point) fall back to
+        // the old fixed zones, which assume at least 128 MB of RAM at 2 MB.
+        if !pmm::pmm_init_from_memory_map() {
+            let msg = b"[INIT] No memory map recorded: using fixed zones (2-16 MB, 32-128 MB)\n";
+            for &byte in msg {
+                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            }
+            init_fixed_zones();
+        }
 
         // Debug print
         let msg = b"[INIT] PMM init complete, free pages: \n";
@@ -345,6 +305,32 @@ fn init_early() {
 
         INIT_STATE = InitState::Early;
     }
+}
+
+/// Fallback physical memory layout used when no UEFI memory map was
+/// recorded: kernel zone 2-16 MB, heap 16-32 MB (outside the PMM), user zone
+/// 32-128 MB.
+unsafe fn init_fixed_zones() {
+    use crate::mm::pmm;
+    const KERNEL_ZONE_BASE: u64 = 0x0020_0000;
+    const KERNEL_ZONE_SIZE: usize = 14 * 1024 * 1024;
+    const USER_ZONE_BASE: u64 = 0x0200_0000;
+    const USER_ZONE_SIZE: usize = 96 * 1024 * 1024;
+
+    let _ = pmm::pmm_add_arena(pmm::ArenaInfo::new(
+        b"kernel",
+        pmm::ARENA_FLAG_LOW_MEM | pmm::ARENA_FLAG_KERNEL,
+        0,
+        KERNEL_ZONE_BASE,
+        KERNEL_ZONE_SIZE,
+    ));
+    let _ = pmm::pmm_add_arena(pmm::ArenaInfo::new(
+        b"user",
+        pmm::ARENA_FLAG_LOW_MEM | pmm::ARENA_FLAG_USER,
+        1,
+        USER_ZONE_BASE,
+        USER_ZONE_SIZE,
+    ));
 }
 
 /// Architecture-specific initialization
@@ -396,45 +382,47 @@ fn init_memory() {
                 );
             }
 
-            // TODO: Get actual memory map from UEFI
-            // WORKAROUND: PMM has a bug where it only allocates 1 page
-            // Use a hardcoded physical address for the heap
-            // In QEMU with 128MB RAM, physical address 0x1000000 (16MB) should be safe
-            //
-            // MEMORY ZONES:
-            // KERNEL_ZONE: 0x00200000 - 0x00FFFFFF (14 MB) - for page tables only
-            // USER_ZONE:   0x01000000 - 0x7FFFFFFF (2 GB+) - for VMO backing pages, heap
-            //
-            // FIX: The heap was consuming most of the kernel zone, leaving no pages
-            // for page tables. Moved heap to start AFTER kernel zone ends.
-            // The heap (kernel metadata) is now in a separate "heap zone" at 0x01000000.
-            const HEAP_PADDR: u64 = 0x0100_0000;  // 16MB physical address (AFTER kernel zone)
-            const HEAP_SIZE: usize = 16 * 1024 * 1024; // 16MB heap (reduced to avoid consuming too much memory)
+            // Kernel heap: 16 MB of physically contiguous memory from the
+            // PMM, used through the direct map. (Without a memory map the
+            // fixed layout puts it at 16 MB, outside the PMM's zones.)
+            const HEAP_SIZE: usize = 16 * 1024 * 1024;
+            const HEAP_PAGES: usize = HEAP_SIZE / 4096;
+            const FIXED_HEAP_PADDR: u64 = 0x0100_0000;
 
-            let heap_start_vaddr = pmm::paddr_to_vaddr(HEAP_PADDR);
+            let heap_paddr = if pmm::pmm_from_memory_map() {
+                match pmm::pmm_alloc_contiguous(HEAP_PAGES, pmm::PMM_ALLOC_FLAG_KERNEL, 0) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        let msg = b"[INIT] FATAL: no 16 MB contiguous block for the kernel heap\n";
+                        for &byte in msg {
+                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                        }
+                        loop { core::arch::asm!("cli; hlt"); }
+                    }
+                }
+            } else {
+                FIXED_HEAP_PADDR
+            };
+            let heap_start_vaddr = pmm::paddr_to_vaddr(heap_paddr);
 
-            let msg = b"[INIT] Using hardcoded heap at 0x";
+            let msg = b"[INIT] Heap: 16 MB at physical 0x";
             for &byte in msg {
                 core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }
-            print_hex(heap_start_vaddr as u64);
-            let msg = b", size: 0x4000000 (64MB)\n[INIT] Initializing heap...\n";
+            print_hex(heap_paddr);
+            let msg = b"\n";
             for &byte in msg {
                 core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }
 
-            // Initialize the heap
             crate::mm::heap_init_aligned(heap_start_vaddr as usize, HEAP_SIZE);
-
-            // Reserve the heap pages in the PMM so they won't be allocated for other uses
-            // Heap size: 16MB = 4096 pages
-            const HEAP_PAGES: usize = 4096;
-            let _ = pmm::pmm_reserve_pages(HEAP_PADDR, HEAP_PAGES);
 
             let msg = b"[INIT] Heap initialized successfully (16MB)\n";
             for &byte in msg {
                 core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
             }
+
+            crate::mm::dma::dma_self_test();
 
             INIT_STATE = InitState::VM;
         }

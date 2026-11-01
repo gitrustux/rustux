@@ -667,12 +667,21 @@ fn record_kernel_image() {
     }
 }
 
-/// Note the highest physical address in the UEFI memory map (RAM and MMIO)
-/// and the framebuffer, so the direct map covers all of it.
+/// Record what the kernel needs from the UEFI memory map:
+/// - the highest physical address (RAM and MMIO) and the framebuffer, so
+///   the direct map covers all of it;
+/// - every free (`EfiConventionalMemory`) region, for the PMM.
+///
+/// Boot services code/data is not reclaimed yet: the firmware stack the
+/// kernel is still running on lives there until the stack switch.
 fn record_phys_limit(map: &impl uefi::mem::memory_map::MemoryMap) {
     use rustux::arch::amd64::mm::kernel_map::note_phys_limit;
+    use uefi::mem::memory_map::MemoryType;
     for desc in map.entries() {
         note_phys_limit(desc.phys_start + desc.page_count * 4096);
+        if desc.ty == MemoryType::CONVENTIONAL {
+            rustux::mm::pmm::note_usable_memory(desc.phys_start, desc.page_count);
+        }
     }
     unsafe {
         if FRAMEBUFFER_ADDR != 0 {

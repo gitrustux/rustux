@@ -48,6 +48,8 @@ gcc $F -T userspace/c-progs/linker.ld -o userspace/c-progs/counter.elf userspace
 ./test-qemu.sh          # builds rustux.img, boots it, checks the log for [TICK]
 ```
 
+Try different memory sizes too: the PMM is built from the firmware's memory map, so `-m 128M`, `-m 512M` and `-m 6G` (memory above 4 GiB) exercise different layouts.
+
 Manually:
 
 ```bash
@@ -73,9 +75,15 @@ The kernel writes progress to the QEMU debug port (0xE9). A good boot looks like
 
 ```
 EBS OK
+[PMM] UEFI memory map: 9 free regions -> 8 arenas
+[PMM]   0x100000 - 0x800000  7 MiB
+...
+[PMM] Usable: 454 MiB, page records: 2748 KiB at 0x1b8c6000
 [VM] Kernel page tables active, physical memory mapped at 0xffff800000000000
 [STACK] Switching to kernel stack: vaddr=0xffff800000442000 size=0x40000
+[INIT] Heap: 16 MB at physical 0x1780000
 [INIT] Heap initialized successfully (16MB)
+[DMA] Self-test passed
 [1/5] Setting up GDT...           ✓ GDT configured
 [2/5] Setting up IDT...           ✓ IDT configured
 [3/5] Installing timer handler... ✓ Timer handler at vector 32
@@ -126,6 +134,8 @@ m "screendump /tmp/screen.ppm"   # capture the framebuffer
 | `[FAULT] ... in KERNEL mode` | Kernel bug; the line shows RIP and (for page faults) the address |
 | Fault in user mode right after `[SPAWN]` | Program linked over the kernel image, or built with the `syscall` instruction instead of `int 0x80` |
 | No `[TICK]` | LAPIC timer not configured, or interrupts not enabled |
+| `[PMM] OUT OF MEMORY` | The line shows what was asked for (pages, flags) and how many pages are still free |
+| `[DMA] SELF-TEST FAILED` | Contiguous or below-4 GiB allocation broken in the PMM |
 
 ## Kernel test mode
 
