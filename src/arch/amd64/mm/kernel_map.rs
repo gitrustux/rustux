@@ -55,6 +55,12 @@ static KERNEL_IMAGE_BASE: AtomicU64 = AtomicU64::new(0);
 static KERNEL_IMAGE_SIZE: AtomicU64 = AtomicU64::new(0);
 static PHYS_LIMIT: AtomicU64 = AtomicU64::new(0);
 
+/// Where the kernel image runs after [`relocate_kernel`]: the top 2 GiB
+/// (PML4 entry 511), shared by every address space.
+pub const KERNEL_VBASE: u64 = 0xffff_ffff_8000_0000;
+/// `KERNEL_VBASE - load address` once relocated, 0 before
+static KERNEL_DELTA: AtomicU64 = AtomicU64::new(0);
+
 /// Record where UEFI loaded the kernel image (call before ExitBootServices).
 pub fn set_kernel_image(base: u64, size: u64) {
     KERNEL_IMAGE_BASE.store(base, Ordering::Relaxed);
@@ -187,8 +193,7 @@ pub unsafe fn init(alloc: AllocFn) -> Result<(), &'static str> {
 }
 
 /// Create the top-level table for a new user address space: kernel half
-/// (PML4 256–511) shared with the kernel, and a private lower half that
-/// contains only the kernel image, mapped supervisor-only.
+/// (PML4 256–511) shared with the kernel, and an empty private lower half.
 ///
 /// # Safety
 /// [`init`] must have run.
@@ -205,18 +210,21 @@ pub unsafe fn new_user_pml4(alloc: AllocFn) -> Result<u64, &'static str> {
         *dst.add(i) = *src.add(i);
     }
 
-    // Kernel code, data and statics (GDT, IDT, TSS, ramdisk) keep running at
-    // their load address while a process is active.
-    let (base, size) = kernel_image();
-    if size == 0 {
-        return Err("kernel_map: kernel image range unknown");
-    }
-    let start = base & !(PAGE_SIZE - 1);
-    let end = (base + size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let mut va = start;
-    while va < end {
-        map_4k(pml4, va, va, PTE_WRITABLE, alloc)?;
-        va += PAGE_SIZE;
+    // Before relocation the kernel still runs at its load address, so the
+    // image must be reachable there; afterwards (the normal case) the lower
+    // half belongs to the process entirely.
+    if kernel_delta() == 0 {
+        let (base, size) = kernel_image();
+        if size == 0 {
+            return Err("kernel_map: kernel image range unknown");
+        }
+        let start = base & !(PAGE_SIZE - 1);
+        let end = (base + size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let mut va = start;
+        while va < end {
+            map_4k(pml4, va, va, PTE_WRITABLE, alloc)?;
+            va += PAGE_SIZE;
+        }
     }
     Ok(pml4)
 }
@@ -268,6 +276,38 @@ pub unsafe fn map_4k(pml4: u64, vaddr: u64, paddr: u64, flags: u64, alloc: Alloc
     Ok(())
 }
 
+/// Map one 4 KiB page in the kernel half of the kernel's PML4, creating
+/// intermediate tables. A missing PML4 entry may only be created before any
+/// user address space exists (they copy entries 256-511 when created).
+unsafe fn map_kernel_page(vaddr: u64, paddr: u64, flags: u64, alloc: AllocFn) -> Result<(), &'static str> {
+    let kernel = kernel_pml4();
+    if kernel == 0 {
+        return Err("kernel_map: not initialised");
+    }
+    if vaddr < HHDM_BASE {
+        return Err("kernel_map: not a kernel-half address");
+    }
+    let mut t = table(kernel);
+    for shift in [39u64, 30, 21] {
+        let idx = ((vaddr >> shift) & 0x1ff) as usize;
+        let entry = *t.add(idx);
+        let next = if entry & PTE_PRESENT == 0 {
+            let p = alloc().ok_or("kernel_map: out of pages (kernel table)")?;
+            zero_page(p);
+            *t.add(idx) = p | PTE_PRESENT | PTE_WRITABLE;
+            p
+        } else if entry & PTE_HUGE != 0 {
+            return Err("kernel_map: address covered by a large page");
+        } else {
+            entry & PTE_ADDR_MASK
+        };
+        t = table(next);
+    }
+    *t.add(((vaddr >> 12) & 0x1ff) as usize) = (paddr & PTE_ADDR_MASK) | flags | PTE_PRESENT;
+    core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack));
+    Ok(())
+}
+
 /// Map `size` bytes of device registers at physical `paddr` uncached
 /// (PCD|PWT, no execute) into the MMIO window and return the kernel virtual
 /// address of `paddr`. Mappings are never removed.
@@ -286,28 +326,107 @@ pub unsafe fn map_mmio(paddr: u64, size: u64, alloc: AllocFn) -> Result<u64, &'s
     if va_base + pages * PAGE_SIZE > MMIO_BASE + MMIO_SIZE {
         return Err("kernel_map: MMIO window full");
     }
-    let flags = PTE_PRESENT | PTE_WRITABLE | PTE_PCD | PTE_PWT | PTE_NO_EXECUTE;
+    let flags = PTE_WRITABLE | PTE_PCD | PTE_PWT | PTE_NO_EXECUTE;
     for i in 0..pages {
-        let vaddr = va_base + i * PAGE_SIZE;
-        // PML4[257] exists (init); walk/create PDPT -> PD -> PT
-        let mut t = table(*table(kernel).add(257) & PTE_ADDR_MASK);
-        for shift in [30u64, 21] {
-            let idx = ((vaddr >> shift) & 0x1ff) as usize;
-            let entry = *t.add(idx);
-            let next = if entry & PTE_PRESENT == 0 {
-                let p = alloc().ok_or("kernel_map: out of pages (MMIO table)")?;
-                zero_page(p);
-                *t.add(idx) = p | PTE_PRESENT | PTE_WRITABLE;
-                p
-            } else {
-                entry & PTE_ADDR_MASK
-            };
-            t = table(next);
-        }
-        *t.add(((vaddr >> 12) & 0x1ff) as usize) = (first + i * PAGE_SIZE) | flags;
-        core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack));
+        map_kernel_page(va_base + i * PAGE_SIZE, first + i * PAGE_SIZE, flags, alloc)?;
     }
     Ok(va_base + (paddr - first))
+}
+
+/// Move the kernel image to [`KERNEL_VBASE`]: map its pages there, then
+/// apply the PE base relocations (absolute addresses in the image) for the
+/// new address. Returns the delta to add to an address in the old range.
+///
+/// Code keeps running at the load address until the caller jumps to the
+/// new range (it must not return into old frames afterwards); both ranges
+/// map the same physical pages, so data written through either is shared.
+///
+/// # Safety
+/// Call once, after [`init`] and before any user address space exists,
+/// while the load address is still mapped (identity map).
+pub unsafe fn relocate_kernel(alloc: AllocFn) -> Result<u64, &'static str> {
+    let (base, size) = kernel_image();
+    if size == 0 || base & (PAGE_SIZE - 1) != 0 {
+        return Err("kernel_map: kernel image range unknown");
+    }
+    if KERNEL_DELTA.load(Ordering::Acquire) != 0 {
+        return Err("kernel_map: already relocated");
+    }
+
+    // PE headers of the loaded image: DOS header -> "PE\0\0" -> optional
+    // header (PE32+) -> data directory 5 (base relocations)
+    let rd16 = |a: u64| core::ptr::read_unaligned(a as *const u16);
+    let rd32 = |a: u64| core::ptr::read_unaligned(a as *const u32);
+    if rd16(base) != 0x5A4D {
+        return Err("kernel_map: no MZ header at the image base");
+    }
+    let pe = base + rd32(base + 0x3C) as u64;
+    if rd32(pe) != 0x0000_4550 {
+        return Err("kernel_map: no PE header");
+    }
+    let opt = pe + 24;
+    if rd16(opt) != 0x20B {
+        return Err("kernel_map: not a PE32+ image");
+    }
+    if rd32(opt + 108) < 6 {
+        return Err("kernel_map: no base relocation directory");
+    }
+    let reloc_rva = rd32(opt + 112 + 5 * 8) as u64;
+    let reloc_size = rd32(opt + 112 + 5 * 8 + 4) as u64;
+
+    // Map the image high (writable and executable: sections are not split)
+    let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    for i in 0..pages {
+        map_kernel_page(KERNEL_VBASE + i * PAGE_SIZE, base + i * PAGE_SIZE, PTE_WRITABLE, alloc)?;
+    }
+    let delta = KERNEL_VBASE.wrapping_sub(base);
+
+    // Apply IMAGE_REL_BASED_DIR64 fixups (the firmware already applied them
+    // for the load address; add the further move)
+    let mut block = base + reloc_rva;
+    let end = block + reloc_size;
+    while block + 8 <= end {
+        let page_rva = rd32(block) as u64;
+        let block_size = rd32(block + 4) as u64;
+        if block_size < 8 {
+            break;
+        }
+        let mut e = block + 8;
+        while e + 2 <= block + block_size {
+            let entry = rd16(e);
+            match entry >> 12 {
+                0 => {} // padding
+                10 => {
+                    let target = (base + page_rva + (entry & 0xFFF) as u64) as *mut u64;
+                    core::ptr::write_unaligned(target, core::ptr::read_unaligned(target).wrapping_add(delta));
+                }
+                _ => return Err("kernel_map: unsupported relocation type"),
+            }
+            e += 2;
+        }
+        block += block_size;
+    }
+    KERNEL_DELTA.store(delta, Ordering::Release);
+    Ok(delta)
+}
+
+/// `KERNEL_VBASE - load address` after [`relocate_kernel`], else 0
+pub fn kernel_delta() -> u64 {
+    KERNEL_DELTA.load(Ordering::Acquire)
+}
+
+/// Remove the boot identity map (PML4 entry 0) from the kernel's own
+/// tables once nothing runs at or points into low addresses any more.
+///
+/// # Safety
+/// Call after the kernel runs from [`KERNEL_VBASE`] and on a direct-map stack.
+pub unsafe fn drop_identity_map() {
+    let pml4 = kernel_pml4();
+    if pml4 == 0 {
+        return;
+    }
+    *table(pml4).add(0) = 0;
+    core::arch::asm!("mov {0}, cr3", "mov cr3, {0}", out(reg) _, options(nostack));
 }
 
 /// Translate a lower-half address through `pml4` (debugging aid).

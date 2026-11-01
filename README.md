@@ -6,7 +6,7 @@ Rustux is the kernel of **Rustica OS**. The full OS (live USB image, shell, apps
 
 ## Status
 
-**Boots to an interactive shell in QEMU.** Checklist step 1 (kernel memory management: own page tables, physical memory from the UEFI memory map, DMA allocator) is done except linking the kernel into the upper half; see [`docs/ROADMAP.md`](docs/ROADMAP.md) and the checklist in the Rustux project.
+**Boots to an interactive shell in QEMU.** Checklist steps 1 and 2 are done (own page tables with the kernel in the upper half, physical memory from the UEFI memory map, DMA allocator; boots on the test laptop with PS/2 and USB keyboards); see [`docs/ROADMAP.md`](docs/ROADMAP.md) and the checklist in the Rustux project.
 
 | Area | State |
 |------|-------|
@@ -30,7 +30,6 @@ UEFI Firmware → BOOTX64.EFI (rustux.efi) → Kernel → Init (PID 1) → Shell
 
 - **No `wait`.** The shell starts a program and immediately shows its prompt, so program output can appear after the next prompt.
 - **Boot services memory is not reclaimed.** The PMM uses only the free (`EfiConventionalMemory`) regions of the UEFI memory map; memory the firmware used during boot (`EfiBootServicesCode/Data`) stays unused.
-- **The kernel image still runs at the address UEFI loaded it to** and is mapped (supervisor-only) into each process's lower half. User programs must not overlap it.
 - **Local APIC register struct** in `src/arch/amd64/apic.rs` does not match the Intel layout (the EOI and TPR writes the kernel uses are correct). See [`docs/README.md`](docs/README.md#known-issues).
 
 ## Building

@@ -243,6 +243,15 @@ pub fn kernel_init_rest() {
     }
 }
 
+/// Re-store the pointers `pmm_init` saved before the kernel image moved to
+/// the upper half (they pointed into the old load address).
+pub fn after_relocation() {
+    unsafe {
+        BOOT_ALLOCATOR.init(core::ptr::addr_of!(BOOT_ALLOC_BUFFER) as usize);
+        crate::mm::pmm::set_boot_allocator(boot_alloc_callback);
+    }
+}
+
 /// Get the current initialization state
 pub fn init_state() -> InitState {
     unsafe { INIT_STATE }

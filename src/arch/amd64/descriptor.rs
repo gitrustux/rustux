@@ -126,14 +126,19 @@ impl GdtEntry {
         }
     }
 
+    /// Upper half of a 16-byte TSS descriptor: bytes 8-11 hold base bits
+    /// 63:32, bytes 12-15 are reserved (zero). In this struct's layout that
+    /// is `limit_low` (bits 47:32) and `base_low` (bits 63:48).
+    /// (Bits 63:48 used to land in the reserved bytes; harmless while the
+    /// TSS was below 4 GiB, fatal once the kernel runs at 0xffffffff8....)
     pub fn set_tss_high(base: u64) -> Self {
         Self {
             limit_low: ((base >> 32) & 0xFFFF) as u16,
-            base_low: 0,
+            base_low: ((base >> 48) & 0xFFFF) as u16,
             base_mid: 0,
             access: 0,
-            flags_limit_high: ((base >> 48) as u8) & 0xFF,
-            base_high: ((base >> 56) as u8) & 0xFF,
+            flags_limit_high: 0,
+            base_high: 0,
         }
     }
 }

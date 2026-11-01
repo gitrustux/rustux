@@ -127,18 +127,57 @@ fn kernel_main() -> ! {
         }
     }
 
+    // Move the kernel image to the top 2 GiB (KERNEL_VBASE). Code keeps
+    // running at the load address until the jump below; from then on
+    // nothing returns into the old frames.
+    let delta = unsafe {
+        use rustux::arch::amd64::mm::kernel_map;
+        match kernel_map::relocate_kernel(|| rustux::mm::pmm::pmm_alloc_kernel_page().ok()) {
+            Ok(d) => {
+                debug_print("[VM] Kernel image relocated to 0x");
+                print_hex(kernel_map::KERNEL_VBASE);
+                debug_print("\n");
+                d
+            }
+            Err(e) => {
+                debug_print("[VM] FATAL: ");
+                debug_print(e);
+                debug_print("\n");
+                loop { asm!("hlt"); }
+            }
+        }
+    };
+
+    // The continuation's address at the new location. Taken RIP-relative
+    // (the code is still at the load address) and moved by the delta.
+    let continuation: u64;
+    unsafe {
+        asm!("lea {}, [rip + {f}]", out(reg) continuation, f = sym kernel_main_on_new_stack, options(nomem, nostack));
+    }
+    let continuation = continuation.wrapping_add(delta);
+
     // CRITICAL: Switch to proper kernel stack BEFORE any deep operations
     // The firmware stack is too small and causes corruption during ELF loading.
     // This function does NOT return - it jumps to kernel_main_on_new_stack()
+    // in the relocated image.
     unsafe {
-        rustux::arch::amd64::init::init_kernel_stack(kernel_main_on_new_stack as usize);
+        rustux::arch::amd64::init::init_kernel_stack(continuation as usize);
     }
 }
 
 /// Continuation of kernel_main() - runs on the new kernel stack
 /// This function is jumped to directly by init_kernel_stack(), it is never called normally.
-fn kernel_main_on_new_stack() -> ! {
+extern "C" fn kernel_main_on_new_stack() -> ! {
     debug_print("[STACK] Now running on new kernel stack!\n");
+    {
+        let rip: u64;
+        unsafe { asm!("lea {}, [rip]", out(reg) rip, options(nomem, nostack)) };
+        debug_print("[VM] Running at 0x");
+        print_hex(rip);
+        debug_print("\n");
+    }
+    // Pointers the boot code stored at runtime before the move
+    rustux::init::after_relocation();
 
     // Complete the rest of kernel initialization on the new stack
     debug_print("[INIT] Calling kernel_init_rest()...\n");
@@ -154,6 +193,12 @@ fn kernel_main_on_new_stack() -> ! {
     debug_print("[2/5] Setting up IDT...\n");
     unsafe { descriptor::idt_setup_readonly(); }
     unsafe { install_exception_handlers(); }
+
+    // The kernel's own GDT and IDT are loaded (the firmware's were in low
+    // memory); nothing needs the boot identity map any more. Dropping it
+    // makes any stray low-address access fault instead of silently working.
+    unsafe { rustux::arch::amd64::mm::kernel_map::drop_identity_map(); }
+    debug_print("[VM] Boot identity map removed\n");
     debug_print("      ✓ IDT configured\n");
 
     // Install timer handler

@@ -90,6 +90,7 @@ EBS OK
 ...
 [PMM] Usable: 454 MiB, page records: 2748 KiB at 0x1b8c6000
 [VM] Kernel page tables active, physical memory mapped at 0xffff800000000000
+[VM] Kernel image relocated to 0xffffffff80000000
 [STACK] Switching to kernel stack: vaddr=0xffff800000442000 size=0x40000
 [INIT] Heap: 16 MB at physical 0x1780000
 [INIT] Heap initialized successfully (16MB)
@@ -143,7 +144,8 @@ m "screendump /tmp/screen.ppm"   # capture the framebuffer
 | QEMU exits right after a step (with `-no-reboot`) | Triple fault; run with `-d int,cpu_reset` and look at the last exception |
 | `init.elf not found in ramdisk` | Ramdisk built without ELFs, or offsets wrong in `build.rs` |
 | `[FAULT] ... in KERNEL mode` | Kernel bug; the line shows RIP and (for page faults) the address |
-| Fault in user mode right after `[SPAWN]` | Program linked over the kernel image, or built with the `syscall` instruction instead of `int 0x80` |
+| Fault in user mode right after `[SPAWN]` | Program built with the `syscall` instruction instead of `int 0x80` |
+| Triple fault on the first interrupt from user mode | TSS/IDT/GDT descriptor wrong for an upper-half address (the TSS descriptor once dropped bits 63:48 of its base) |
 | No `[TICK]` | LAPIC timer not configured, or interrupts not enabled |
 | `[PMM] OUT OF MEMORY` | The line shows what was asked for (pages, flags) and how many pages are still free |
 | `PS/2: test=55 ... kbd=FA` | 8042 self-test passed (`55`), keyboard port OK (`00`), keyboard acknowledged scanning (`FA`); `--` means no reply |
