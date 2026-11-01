@@ -228,23 +228,7 @@ pub unsafe fn timer_tick() {
 /// * `Ok(())` - Successfully yielded
 /// * `Err(&str)` - Failed to yield (no current process, etc.)
 pub fn yield_cpu() -> Result<(), &'static str> {
-    let mut scheduler = SCHEDULER.lock();
-    let mut process_table = PROCESS_TABLE.lock();
-
-    // Get current process
-    let current_pid = scheduler.current().ok_or("No current process")?;
-
-    // Check if there's another runnable process
-    let next_pid = process_table.find_next_runnable(Some(current_pid));
-
-    if let Some(next_pid) = next_pid {
-        if next_pid != current_pid {
-            unsafe {
-                scheduler.context_switch(&mut process_table);
-            }
-        }
-    }
-
+    crate::process::run::yield_now();
     Ok(())
 }
 
@@ -257,7 +241,8 @@ pub fn yield_cpu() -> Result<(), &'static str> {
 ///
 /// The PID of the current process, or None if no process is running
 pub fn get_current_pid() -> Option<u32> {
-    SCHEDULER.lock().current()
+    // The process table's current PID is maintained by process::run
+    PROCESS_TABLE.lock().current_pid()
 }
 
 /// Get the parent process PID of the current process
@@ -269,7 +254,7 @@ pub fn get_current_pid() -> Option<u32> {
 /// The PPID of the current process, or None if no process is running
 pub fn get_current_ppid() -> Option<u32> {
     let table = PROCESS_TABLE.lock();
-    let current_pid = SCHEDULER.lock().current()?;
+    let current_pid = table.current_pid()?;
     let process = table.get(current_pid)?;
     Some(process.ppid)
 }

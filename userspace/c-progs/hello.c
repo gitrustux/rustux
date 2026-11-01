@@ -20,7 +20,7 @@ void _start(void) {
     const char *newline = "\n";
 
     // Print greeting
-    sys_write(STDOUT_FILENO, msg1, 20);
+    sys_write(STDOUT_FILENO, msg1, 22);
 
     // Get and print PID
     int64_t pid = sys_getpid();

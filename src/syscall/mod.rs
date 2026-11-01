@@ -439,36 +439,11 @@ fn sys_process_create(args: SyscallArgs) -> SyscallRet {
         }
     };
 
-    // Allocate a kernel stack (4 pages)
-    let kernel_stack_paddrs = [
-        match pmm::pmm_alloc_kernel_page() {
-            Ok(p) => p,
-            Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-        },
-        match pmm::pmm_alloc_kernel_page() {
-            Ok(p) => p,
-            Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-        },
-        match pmm::pmm_alloc_kernel_page() {
-            Ok(p) => p,
-            Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-        },
-        match pmm::pmm_alloc_kernel_page() {
-            Ok(p) => p,
-            Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-        },
-    ];
-
-    // Get the kernel stack virtual addresses
-    let kernel_stack_vaddrs = [
-        pmm::paddr_to_vaddr(kernel_stack_paddrs[0]),
-        pmm::paddr_to_vaddr(kernel_stack_paddrs[1]),
-        pmm::paddr_to_vaddr(kernel_stack_paddrs[2]),
-        pmm::paddr_to_vaddr(kernel_stack_paddrs[3]),
-    ];
-
-    // Stack grows down, so top is at the highest address
-    let kernel_stack_top = (kernel_stack_vaddrs[3] + 4096) as u64;
+    // Allocate a kernel stack
+    let kernel_stack_top = match crate::process::run::alloc_kernel_stack() {
+        Ok(top) => top,
+        Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
+    };
 
     // Get page table physical address
     let page_table_phys = process_image.address_space.page_table.phys;
@@ -657,36 +632,11 @@ fn sys_spawn(args: SyscallArgs) -> SyscallRet {
         table.current_pid().unwrap_or(0)
     };
 
-    // Allocate a kernel stack (4 pages)
-    let kernel_stack_paddrs = [
-        match pmm::pmm_alloc_kernel_page() {
-            Ok(p) => p,
-            Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-        },
-        match pmm::pmm_alloc_kernel_page() {
-            Ok(p) => p,
-            Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-        },
-        match pmm::pmm_alloc_kernel_page() {
-            Ok(p) => p,
-            Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-        },
-        match pmm::pmm_alloc_kernel_page() {
-            Ok(p) => p,
-            Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
-        },
-    ];
-
-    // Get the kernel stack virtual addresses
-    let kernel_stack_vaddrs = [
-        pmm::paddr_to_vaddr(kernel_stack_paddrs[0]),
-        pmm::paddr_to_vaddr(kernel_stack_paddrs[1]),
-        pmm::paddr_to_vaddr(kernel_stack_paddrs[2]),
-        pmm::paddr_to_vaddr(kernel_stack_paddrs[3]),
-    ];
-
-    // Stack grows down, so top is at the highest address
-    let kernel_stack_top = (kernel_stack_vaddrs[3] + 4096) as u64;
+    // Allocate a kernel stack
+    let kernel_stack_top = match crate::process::run::alloc_kernel_stack() {
+        Ok(top) => top,
+        Err(_) => return err_to_ret(RxStatus::ERR_NO_MEMORY),
+    };
 
     // Get page table physical address
     let page_table_phys = process_image.address_space.page_table.phys;
@@ -779,22 +729,16 @@ fn sys_spawn(args: SyscallArgs) -> SyscallRet {
 /// and schedule another process.
 fn sys_process_exit(args: SyscallArgs) -> SyscallRet {
     let exit_code = args.arg_i64(0) as i32;
-    let _ = exit_code; // TODO: track exit code
+    let _ = exit_code; // TODO: report to the parent
 
-    // PROOF: sys_exit called - fill framebuffer YELLOW
-    // We need to access the framebuffer from the library side
-    // For now, we'll use a different approach - write to port 0xE9 to signal exit
-    unsafe {
-        let msg = b"[EXIT]"; // Signal that sys_exit was called
-        for &b in msg {
+    for &b in b"[EXIT]\n" {
+        unsafe {
             core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
         }
     }
 
-    // Halt forever - process has exited
-    loop {
-        unsafe { core::arch::asm!("hlt") };
-    }
+    // Run the next process; this one never resumes
+    crate::process::run::exit_current()
 }
 
 fn sys_handle_close(args: SyscallArgs) -> SyscallRet {

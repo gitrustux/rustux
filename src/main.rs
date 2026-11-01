@@ -54,7 +54,9 @@ fn main() -> Status {
     fb_red();
 
     let _acpi_rsdp = find_acpi_rsdp();
-    let _memory_map = unsafe { uefi::boot::exit_boot_services(None) };
+    record_kernel_image();
+    let memory_map = unsafe { uefi::boot::exit_boot_services(None) };
+    record_phys_limit(&memory_map);
 
     // PROGRESS MARKER: ExitBootServices succeeded.
     // UEFI console output is no longer available (uefi::system::with_stdout
@@ -105,6 +107,26 @@ fn kernel_main() -> ! {
     // CRITICAL: Initialize PMM first (needed for stack allocation)
     rustux::init::pmm_init();
 
+    // Build the kernel's own page tables (higher-half direct map of physical
+    // memory) before anything allocates the kernel stack or heap, so those
+    // live at addresses that are valid in every address space.
+    unsafe {
+        use rustux::arch::amd64::mm::kernel_map;
+        match kernel_map::init(|| rustux::mm::pmm::pmm_alloc_kernel_page().ok()) {
+            Ok(()) => {
+                debug_print("[VM] Kernel page tables active, physical memory mapped at 0x");
+                print_hex(kernel_map::HHDM_BASE);
+                debug_print("\n");
+            }
+            Err(e) => {
+                debug_print("[VM] FATAL: ");
+                debug_print(e);
+                debug_print("\n");
+                loop { asm!("hlt"); }
+            }
+        }
+    }
+
     // CRITICAL: Switch to proper kernel stack BEFORE any deep operations
     // The firmware stack is too small and causes corruption during ELF loading.
     // This function does NOT return - it jumps to kernel_main_on_new_stack()
@@ -131,6 +153,7 @@ fn kernel_main_on_new_stack() -> ! {
     // Setup IDT
     debug_print("[2/5] Setting up IDT...\n");
     unsafe { descriptor::idt_setup_readonly(); }
+    unsafe { install_exception_handlers(); }
     debug_print("      ✓ IDT configured\n");
 
     // Install timer handler
@@ -167,7 +190,7 @@ fn kernel_main_on_new_stack() -> ! {
     // Configure timer
     debug_print("[5/5] Configuring timer...\n");
     unsafe {
-        let lapic = 0xFEE00000usize;
+        let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
         write_volatile((lapic + 0x3E0) as *mut u32, 0x03);
         write_volatile((lapic + 0x320) as *mut u32, 32 | (1 << 17));
         write_volatile((lapic + 0x380) as *mut u32, 10_000_000);
@@ -257,48 +280,16 @@ fn kernel_main_on_new_stack() -> ! {
         print_hex(process_image.entry);
         debug_print("\n");
 
-        // Allocate kernel stack (4 pages)
-        let kernel_stack_paddrs = [
-            match rustux::mm::pmm::pmm_alloc_kernel_page() {
-                Ok(p) => p,
-                Err(_) => {
-                    debug_print("[INIT] Failed to allocate kernel stack\n");
-                    0 // Invalid physical address (will cause failure later)
-                }
-            },
-            match rustux::mm::pmm::pmm_alloc_kernel_page() {
-                Ok(p) => p,
-                Err(_) => {
-                    debug_print("[INIT] Failed to allocate kernel stack\n");
-                    0
-                }
-            },
-            match rustux::mm::pmm::pmm_alloc_kernel_page() {
-                Ok(p) => p,
-                Err(_) => {
-                    debug_print("[INIT] Failed to allocate kernel stack\n");
-                    0
-                }
-            },
-            match rustux::mm::pmm::pmm_alloc_kernel_page() {
-                Ok(p) => p,
-                Err(_) => {
-                    debug_print("[INIT] Failed to allocate kernel stack\n");
-                    0
-                }
-            },
-        ];
-
-        // Get the kernel stack virtual addresses
-        let kernel_stack_vaddrs = [
-            rustux::mm::pmm::paddr_to_vaddr(kernel_stack_paddrs[0]),
-            rustux::mm::pmm::paddr_to_vaddr(kernel_stack_paddrs[1]),
-            rustux::mm::pmm::paddr_to_vaddr(kernel_stack_paddrs[2]),
-            rustux::mm::pmm::paddr_to_vaddr(kernel_stack_paddrs[3]),
-        ];
-
-        // Stack grows down, so top is at the highest address
-        let kernel_stack_top = (kernel_stack_vaddrs[3] + 4096) as u64;
+        // Allocate init's kernel stack
+        let kernel_stack_top = match rustux::process::run::alloc_kernel_stack() {
+            Ok(top) => top,
+            Err(e) => {
+                debug_print("[INIT] ");
+                debug_print(e);
+                debug_print("\n");
+                loop { core::arch::asm!("hlt"); }
+            }
+        };
 
         // Get page table physical address
         let page_table_phys = process_image.address_space.page_table.phys;
@@ -337,11 +328,9 @@ fn kernel_main_on_new_stack() -> ! {
         debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
 
         // Execute the init process - never returns
-        rustux::arch::amd64::uspace::execute_process(
-            process_image.entry,
-            process_image.stack_top,
-            page_table_phys,
-        );
+        // Hand the CPU to the scheduler; init runs first. The boot context
+        // is never resumed.
+        rustux::process::run::start(1);
 
         // Unreachable
         loop { unsafe { asm!("hlt"); } }
@@ -380,27 +369,162 @@ pub extern "x86-interrupt" fn keyboard_handler(_sf: idt::X86Iframe) {
         // debug_print("[K]\n");
 
         // Send EOI to LAPIC (write 0 to EOI register at offset 0xB0)
-        let lapic = 0xFEE00000usize;
+        let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
         write_volatile((lapic + 0xB0) as *mut u32, 0);
+    }
+}
+
+/// Frame pushed by the CPU on an interrupt (what the x86-interrupt ABI
+/// passes to the handler)
+#[repr(C)]
+pub struct InterruptFrame {
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
+}
+
+// ---------------------------------------------------------------------------
+// CPU exceptions (vectors 0-31)
+// ---------------------------------------------------------------------------
+
+const EXCEPTION_NAMES: [&str; 21] = [
+    "divide error", "debug", "NMI", "breakpoint", "overflow", "bound range",
+    "invalid opcode", "device not available", "double fault", "coprocessor overrun",
+    "invalid TSS", "segment not present", "stack fault", "general protection",
+    "page fault", "reserved", "x87 error", "alignment check", "machine check",
+    "SIMD error", "virtualization",
+];
+
+/// Report a CPU exception. User-mode faults kill the current process;
+/// kernel-mode faults halt the machine.
+fn handle_exception(vector: u64, code: Option<u64>, frame: &InterruptFrame) {
+    let cr2: u64;
+    unsafe { asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)) };
+    let name = EXCEPTION_NAMES.get(vector as usize).copied().unwrap_or("exception");
+    let user = frame.cs & 3 == 3;
+    let pid = rustux::process::table::PROCESS_TABLE.lock().current_pid().unwrap_or(0);
+
+    // Debug port: full detail
+    unsafe { DEBUG_ENABLED = true; }
+    debug_print("\n[FAULT] ");
+    debug_print(name);
+    debug_print(" (vector 0x");
+    print_hex(vector);
+    debug_print(") in ");
+    debug_print(if user { "user mode, pid 0x" } else { "KERNEL mode, pid 0x" });
+    print_hex(pid as u64);
+    debug_print(" rip=0x");
+    print_hex(frame.rip);
+    debug_print(" rsp=0x");
+    print_hex(frame.rsp);
+    if let Some(c) = code {
+        debug_print(" error=0x");
+        print_hex(c);
+    }
+    if vector == 14 {
+        debug_print(" addr=0x");
+        print_hex(cr2);
+    }
+    debug_print("\n");
+
+    // Screen: one line for the user
+    if rustux::drivers::display::is_initialized() {
+        rustux::drivers::display::write_str("\n[");
+        rustux::drivers::display::write_str(name);
+        rustux::drivers::display::write_str(if user { ": process killed]\n" } else { ": kernel halted]\n" });
+    }
+
+    if user {
+        rustux::process::run::exit_current();
+    }
+    loop {
+        unsafe { asm!("cli", "hlt", options(nomem, nostack)) };
+    }
+}
+
+macro_rules! exception_handler {
+    ($name:ident, $vector:expr) => {
+        extern "x86-interrupt" fn $name(frame: InterruptFrame) {
+            handle_exception($vector, None, &frame);
+        }
+    };
+    ($name:ident, $vector:expr, error_code) => {
+        extern "x86-interrupt" fn $name(frame: InterruptFrame, code: u64) {
+            handle_exception($vector, Some(code), &frame);
+        }
+    };
+}
+
+exception_handler!(exc_divide, 0);
+exception_handler!(exc_debug, 1);
+exception_handler!(exc_nmi, 2);
+exception_handler!(exc_breakpoint, 3);
+exception_handler!(exc_overflow, 4);
+exception_handler!(exc_bound, 5);
+exception_handler!(exc_invalid_opcode, 6);
+exception_handler!(exc_no_device, 7);
+exception_handler!(exc_double_fault, 8, error_code);
+exception_handler!(exc_invalid_tss, 10, error_code);
+exception_handler!(exc_segment, 11, error_code);
+exception_handler!(exc_stack, 12, error_code);
+exception_handler!(exc_gp, 13, error_code);
+exception_handler!(exc_page_fault, 14, error_code);
+exception_handler!(exc_x87, 16);
+exception_handler!(exc_alignment, 17, error_code);
+exception_handler!(exc_machine_check, 18);
+exception_handler!(exc_simd, 19);
+
+/// Install handlers for CPU exceptions 0-19
+unsafe fn install_exception_handlers() {
+    let handlers: [(u8, u64); 18] = [
+        (0, exc_divide as u64),
+        (1, exc_debug as u64),
+        (2, exc_nmi as u64),
+        (3, exc_breakpoint as u64),
+        (4, exc_overflow as u64),
+        (5, exc_bound as u64),
+        (6, exc_invalid_opcode as u64),
+        (7, exc_no_device as u64),
+        (8, exc_double_fault as u64),
+        (10, exc_invalid_tss as u64),
+        (11, exc_segment as u64),
+        (12, exc_stack as u64),
+        (13, exc_gp as u64),
+        (14, exc_page_fault as u64),
+        (16, exc_x87 as u64),
+        (17, exc_alignment as u64),
+        (18, exc_machine_check as u64),
+        (19, exc_simd as u64),
+    ];
+    for (vector, handler) in handlers {
+        idt::idt_set_gate(vector, handler, 0x08, 0x8E);
     }
 }
 
 // Timer handler (Vector 32)
 #[no_mangle]
-pub extern "x86-interrupt" fn timer_handler(_sf: idt::X86Iframe) {
+pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
     unsafe {
         let msg = b"[TICK]\n";
         for &b in msg {
             asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack, preserves_flags));
         }
-        let lapic = 0xFEE00000usize;
+        let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
         write_volatile((lapic + 0xB0) as *mut u32, 0);
+    }
+    // Preempt only user mode: kernel code may hold spin locks that the next
+    // process would need.
+    if frame.cs & 3 == 3 {
+        rustux::process::run::yield_now();
     }
 }
 
 // int 0x80 system call entry
 //
-// ABI: syscall number in RAX, arguments in RBX, RCX, RDX, R10, R8, R9;
+// ABI: syscall number in RAX, arguments in RDI, RSI, RDX, R10, R8, R9
+// (the System V order documented in docs/SYSCALL.md);
 // result returned in RAX. The CPU pushes SS/RSP/RFLAGS/CS/RIP (switching to
 // TSS.RSP0 when coming from ring 3); the stub saves every general register,
 // calls the Rust dispatcher with a pointer to them, and restores them with
@@ -466,8 +590,8 @@ extern "sysv64" fn rustux_int80_dispatch(regs: &mut Int80Regs) {
     let args = SyscallArgs::new(
         regs.rax as u32,
         [
-            regs.rbx as usize,
-            regs.rcx as usize,
+            regs.rdi as usize,
+            regs.rsi as usize,
             regs.rdx as usize,
             regs.r10 as usize,
             regs.r8 as usize,
@@ -531,6 +655,32 @@ fn capture_framebuffer() {
     }
 }
 
+/// Record where UEFI loaded this image, so user address spaces can keep the
+/// kernel mapped (call before ExitBootServices).
+fn record_kernel_image() {
+    use uefi::boot;
+    use uefi::proto::loaded_image::LoadedImage;
+
+    if let Ok(image) = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle()) {
+        let (base, size) = image.info();
+        rustux::arch::amd64::mm::kernel_map::set_kernel_image(base as u64, size);
+    }
+}
+
+/// Note the highest physical address in the UEFI memory map (RAM and MMIO)
+/// and the framebuffer, so the direct map covers all of it.
+fn record_phys_limit(map: &impl uefi::mem::memory_map::MemoryMap) {
+    use rustux::arch::amd64::mm::kernel_map::note_phys_limit;
+    for desc in map.entries() {
+        note_phys_limit(desc.phys_start + desc.page_count * 4096);
+    }
+    unsafe {
+        if FRAMEBUFFER_ADDR != 0 {
+            note_phys_limit(FRAMEBUFFER_ADDR + FRAMEBUFFER_SIZE);
+        }
+    }
+}
+
 /// Fill the visible screen with one colour (32 bits per pixel).
 /// Works before and after ExitBootServices; does nothing without a framebuffer.
 fn fill_screen(r: u8, g: u8, b: u8) {
@@ -543,7 +693,7 @@ fn fill_screen(r: u8, g: u8, b: u8) {
         } else {
             (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
         };
-        let base = FRAMEBUFFER_ADDR as *mut u32;
+        let base = rustux::arch::amd64::mm::kernel_map::phys_to_virt(FRAMEBUFFER_ADDR) as *mut u32;
         let limit = FRAMEBUFFER_SIZE as usize / 4;
         for y in 0..FRAMEBUFFER_HEIGHT {
             for x in 0..FRAMEBUFFER_WIDTH {
@@ -610,8 +760,10 @@ pub unsafe fn init_display_console() {
     let pitch = FRAMEBUFFER_STRIDE * 4;
     let format = if FRAMEBUFFER_BLUE_FIRST { PixelFormat::RGB } else { PixelFormat::BGR };
 
+    // Draw through the direct map so the console also works while a user
+    // address space is active (e.g. during sys_write).
     let framebuffer = Framebuffer::new(
-        FRAMEBUFFER_ADDR,
+        rustux::arch::amd64::mm::kernel_map::phys_to_virt(FRAMEBUFFER_ADDR),
         FRAMEBUFFER_WIDTH,
         FRAMEBUFFER_HEIGHT,
         pitch,

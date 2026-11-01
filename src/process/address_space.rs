@@ -78,6 +78,11 @@ fn alloc_as_id() -> u64 {
     unsafe { NEXT_AS_ID.fetch_add(1, Ordering::Relaxed) }
 }
 
+/// Allocate a page for page tables from the kernel zone
+fn alloc_table_page() -> Option<u64> {
+    crate::mm::pmm::pmm_alloc_kernel_page().ok()
+}
+
 impl AddressSpace {
     /// Create a new address space
     ///
@@ -85,16 +90,13 @@ impl AddressSpace {
     ///
     /// New address space with empty page tables
     pub fn new() -> Result<Self, &'static str> {
-        use crate::mm::pmm;
-        use crate::arch::amd64::init;
+        use crate::arch::amd64::mm::kernel_map;
 
-        // Allocate a page for the PML4 from kernel zone
-        let pml4_paddr = pmm::pmm_alloc_kernel_page()
-            .map_err(|_| "Failed to allocate PML4 page")?;
+        // Kernel half shared with the kernel, private lower half containing
+        // only the (supervisor-only) kernel image.
+        let pml4_paddr = unsafe { kernel_map::new_user_pml4(alloc_table_page)? };
+        let pml4_vaddr = kernel_map::phys_to_virt(pml4_paddr) as *mut pt_entry_t;
 
-        let pml4_vaddr = pmm::paddr_to_vaddr(pml4_paddr) as *mut pt_entry_t;
-
-        // Initialize the page table structure
         let page_table = X86PageTableBase {
             phys: pml4_paddr,
             virt: pml4_vaddr,
@@ -102,40 +104,6 @@ impl AddressSpace {
             role: PageTableRole::Independent,
             num_references: 0,
         };
-
-        // Zero the PML4
-        unsafe {
-            let pml4_bytes = core::slice::from_raw_parts_mut(
-                pml4_vaddr as *mut u8,
-                PAGE_SIZE,
-            );
-            pml4_bytes.fill(0);
-        }
-
-        // CRITICAL: Copy ALL kernel PML4 entries (0-511) to process page table
-        // This ensures that when we switch CR3, the kernel code remains accessible
-        // The kernel code is executing at low addresses (identity-mapped), so we need
-        // to copy all entries, not just the higher-half entries.
-
-        unsafe {
-            let kernel_cr3 = init::x86_read_cr3();
-            let kernel_pml4_paddr = kernel_cr3 & !0xFFF;
-            let kernel_pml4_vaddr = pmm::paddr_to_vaddr(kernel_pml4_paddr) as *const pt_entry_t;
-
-            // First, copy low address entries (0-255) for kernel identity mapping
-            for i in 0..256 {
-                let entry = *kernel_pml4_vaddr.add(i);
-                // Copy the entry to process page table
-                *pml4_vaddr.add(i) = entry;
-            }
-
-            // Then, copy higher-half entries (256-511) for kernel higher-half mappings
-            for i in 256..512 {
-                let entry = *kernel_pml4_vaddr.add(i);
-                // Copy the entry to process page table
-                *pml4_vaddr.add(i) = entry;
-            }
-        }
 
         Ok(Self {
             id: alloc_as_id(),
@@ -244,243 +212,21 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Map a single page
+    /// Map a single user page
     ///
     /// # Arguments
     ///
-    /// * `vaddr` - Virtual address (must be page-aligned)
+    /// * `vaddr` - Virtual address (must be page-aligned, lower half)
     /// * `paddr` - Physical address (must be page-aligned)
-    /// * `flags` - Page flags (PF_R, PF_W, PF_X)
+    /// * `flags` - ELF segment flags (PF_X = 1, PF_W = 2, PF_R = 4)
     fn map_page(&self, vaddr: u64, paddr: PAddr, flags: u32) -> Result<(), &'static str> {
-        // Helper: get virtual address of a page table from a PML4/PDP/PD/PT entry
-        // CRITICAL: Always call this AFTER updating the parent entry, never cache and reuse!
-        unsafe fn table_from_entry(entry: u64) -> *mut pt_entry_t {
-            let paddr = entry & !0xFFF;
-            crate::mm::pmm::paddr_to_vaddr(paddr) as *mut pt_entry_t
+        use crate::arch::amd64::mm::kernel_map::{self, PTE_USER, PTE_WRITABLE};
+
+        let mut pte_flags = PTE_USER;
+        if flags & 0x2 != 0 {
+            pte_flags |= PTE_WRITABLE;
         }
-
-        // Debug output helper
-        unsafe fn debug_msg(msg: &[u8]) {
-            for &b in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
-            }
-        }
-
-        unsafe {
-            debug_msg(b"[MAP-P] Starting map_page\n");
-
-            let pml4 = self.page_table.virt;
-
-            // Walk the page tables
-            let pml4_idx = pml4_index(vaddr as usize);
-            let pdp_idx = pdp_index(vaddr as usize);
-            let pd_idx = pd_index(vaddr as usize);
-            let pt_idx = pt_index(vaddr as usize);
-
-            debug_msg(b"[MAP-P] About to check PML4 entry\n");
-
-            // CRITICAL: Check if this PML4 entry is from the kernel
-            // If so, we MUST NOT reuse it - allocate a new process-specific PDP
-            // instead to avoid polluting kernel page tables with user mappings
-            //
-            // ASSERTION: PML4 ownership rule
-            // - If PML4 entry matches kernel PML4 entry (same phys addr), we MUST replace it
-            // - This ensures kernel PML4 entries are never modified by userspace mappings
-            // - Process-specific PML4 entries are safe to reuse
-            unsafe {
-                use crate::arch::amd64::init::x86_read_cr3;
-                let kernel_cr3 = x86_read_cr3();
-                let kernel_pml4_paddr = kernel_cr3 & !0xFFF;
-                let kernel_pml4_vaddr = crate::mm::pmm::paddr_to_vaddr(kernel_pml4_paddr) as *const pt_entry_t;
-                let kernel_pml4_entry = *kernel_pml4_vaddr.add(pml4_idx);
-                let process_pml4_entry = *pml4.add(pml4_idx);
-
-                // Check if PML4 entry is from kernel (same physical address)
-                let is_kernel_entry = (kernel_pml4_entry & !0xFFF) == (process_pml4_entry & !0xFFF)
-                    && (kernel_pml4_entry & 1) != 0;
-
-                if is_kernel_entry {
-                    // This is a kernel PML4 entry - allocate new process-specific PDP
-                    debug_msg(b"[MAP-P] Kernel PML4 entry, allocating process-specific PDP\n");
-                    let new_pdp = self.alloc_page_table();
-                    if new_pdp == 0 { return Err("Failed to allocate page table"); }
-                    let new_pdp_vaddr = table_from_entry(new_pdp);
-
-                    // Copy kernel PDP entries, adding USER bit to present entries
-                    let kernel_pdp_vaddr = table_from_entry(kernel_pml4_entry);
-                    for i in 0..512 {
-                        let entry = *kernel_pdp_vaddr.add(i);
-                        *new_pdp_vaddr.add(i) = if entry & 1 != 0 { entry | 4 } else { 0 };
-                    }
-
-                    // Update PML4 to point to new process-specific PDP
-                    *pml4.add(pml4_idx) = (new_pdp | 7); // Present + Writable + User
-                    debug_msg(b"[MAP-P] Process PDP allocated and installed\n");
-                } else if (process_pml4_entry & 1) == 0 {
-                    // Empty PML4 entry - allocate new PDP
-                    debug_msg(b"[MAP-P] PML4 entry empty, allocating new PDP\n");
-                    let new_pdp = self.alloc_page_table();
-                    if new_pdp == 0 { return Err("Failed to allocate page table"); }
-                    let new_pdp_vaddr = table_from_entry(new_pdp);
-
-                    // Check if kernel has a PDP at this index to copy
-                    if kernel_pml4_entry & 1 != 0 {
-                        debug_msg(b"[MAP-P] Kernel PDP found, copying entries\n");
-                        let kernel_pdp_vaddr = table_from_entry(kernel_pml4_entry);
-                        for i in 0..512 {
-                            let entry = *kernel_pdp_vaddr.add(i);
-                            *new_pdp_vaddr.add(i) = if entry & 1 != 0 { entry | 4 } else { 0 };
-                        }
-                    } else {
-                        // No kernel PDP, zero the new PDP
-                        for i in 0..512 {
-                            *new_pdp_vaddr.add(i) = 0;
-                        }
-                    }
-                    *pml4.add(pml4_idx) = (new_pdp | 7);
-                    debug_msg(b"[MAP-P] New PDP allocated and installed\n");
-                } else {
-                    // Process-specific PML4 entry already exists, reuse it
-                    debug_msg(b"[MAP-P] Process PDP exists, reusing\n");
-                }
-            }
-
-            // CRITICAL: Re-read PML4 entry after potential update
-            let pdp = table_from_entry(*pml4.add(pml4_idx));
-
-            debug_msg(b"[MAP-P] About to check PDP entry\n");
-
-            // CRITICAL: Check if this PD entry is from the kernel
-            // If so, we MUST NOT reuse it - allocate a new process-specific PD
-            unsafe {
-                use crate::arch::amd64::init::x86_read_cr3;
-                let kernel_cr3 = x86_read_cr3();
-                let kernel_pml4_paddr = kernel_cr3 & !0xFFF;
-                let kernel_pml4_vaddr = crate::mm::pmm::paddr_to_vaddr(kernel_pml4_paddr) as *const pt_entry_t;
-                let kernel_pml4_entry = *kernel_pml4_vaddr.add(pml4_idx);
-
-                // Get kernel PD entry if kernel PDP exists
-                let kernel_pd_entry = if kernel_pml4_entry & 1 != 0 {
-                    let kernel_pdp_vaddr = table_from_entry(kernel_pml4_entry);
-                    *kernel_pdp_vaddr.add(pdp_idx)
-                } else {
-                    0
-                };
-
-                let process_pd_entry = *pdp.add(pdp_idx);
-
-                // Check if PD entry is from kernel (same physical address)
-                let is_kernel_entry = (kernel_pd_entry & !0xFFF) == (process_pd_entry & !0xFFF)
-                    && (kernel_pd_entry & 1) != 0;
-
-                if is_kernel_entry {
-                    // This is a kernel PD entry - allocate new process-specific PD
-                    debug_msg(b"[MAP-P] Kernel PD entry, allocating process-specific PD\n");
-                    let new_pd = self.alloc_page_table();
-                    if new_pd == 0 { return Err("Failed to allocate page table"); }
-                    let new_pd_vaddr = table_from_entry(new_pd);
-
-                    // Copy kernel PD entries, adding USER bit to present entries
-                    let kernel_pd_vaddr = table_from_entry(kernel_pd_entry);
-                    for i in 0..512 {
-                        let entry = *kernel_pd_vaddr.add(i);
-                        *new_pd_vaddr.add(i) = if entry & 1 != 0 { entry | 4 } else { 0 };
-                    }
-
-                    // Update PDP to point to new process-specific PD
-                    *pdp.add(pdp_idx) = (new_pd | 7);
-                    debug_msg(b"[MAP-P] Process PD allocated and installed\n");
-                } else if (process_pd_entry & 1) == 0 {
-                    // Empty PD entry - allocate new PD
-                    debug_msg(b"[MAP-P] PD entry empty, allocating new PD\n");
-                    let new_pd = self.alloc_page_table();
-                    if new_pd == 0 { return Err("Failed to allocate page table"); }
-                    let new_pd_vaddr = table_from_entry(new_pd);
-
-                    // Check if kernel has a PD at this index to copy
-                    if kernel_pd_entry & 1 != 0 {
-                        debug_msg(b"[MAP-P] Kernel PD found, copying entries\n");
-                        let kernel_pd_vaddr = table_from_entry(kernel_pd_entry);
-                        for i in 0..512 {
-                            let entry = *kernel_pd_vaddr.add(i);
-                            *new_pd_vaddr.add(i) = if entry & 1 != 0 { entry | 4 } else { 0 };
-                        }
-                    } else {
-                        // No kernel PD, zero the new PD
-                        for i in 0..512 {
-                            *new_pd_vaddr.add(i) = 0;
-                        }
-                    }
-                    *pdp.add(pdp_idx) = (new_pd | 7);
-                    debug_msg(b"[MAP-P] New PD allocated and installed\n");
-                } else {
-                    // Process-specific PD entry already exists, reuse it
-                    debug_msg(b"[MAP-P] Process PD exists, reusing\n");
-                }
-            }
-
-            // CRITICAL: Re-read PDP entry after potential update
-            let pd = table_from_entry(*pdp.add(pdp_idx));
-
-            debug_msg(b"[MAP-P] About to check PD entry\n");
-
-            // Get or create PT entry - allocate if empty, preserve if exists
-            if (*pd.add(pd_idx) & 1) == 0 {
-                // Allocate new PT for userspace mapping
-                debug_msg(b"[MAP-P] PD entry empty, allocating new PT\n");
-                let new_pt = self.alloc_page_table();
-                if new_pt == 0 { return Err("Failed to allocate page table"); }
-                let new_pt_vaddr = table_from_entry(new_pt);
-                // Zero the new PT
-                for i in 0..512 {
-                    *new_pt_vaddr.add(i) = 0;
-                }
-                *pd.add(pd_idx) = (new_pt | 7);
-            } else {
-                debug_msg(b"[MAP-P] PD user PT exists, reusing\n");
-            }
-
-            // CRITICAL: Re-read PD entry after potential update
-            let pt = table_from_entry(*pd.add(pd_idx));
-
-            debug_msg(b"[MAP-P] About to write final PT entry\n");
-
-            // Set the final page table entry
-            let mut pt_entry = paddr | 1; // Present
-
-            if flags & 0x2 != 0 {
-                // PF_W - Writable
-                pt_entry |= 2;
-            }
-
-            if flags & 0x1 == 0 {
-                // Not PF_R? Actually for x86, all pages are readable
-                // The user bit is set separately
-            }
-
-            // Set user bit (CPL=3 can access)
-            pt_entry |= 4;
-
-            *pt.add(pt_idx) = pt_entry;
-
-            debug_msg(b"[MAP-P] map_page complete\n");
-
-            Ok(())
-        }
-    }
-
-    /// Allocate a new page table
-    ///
-    /// # Returns
-    ///
-    /// Physical address of the new page table, or 0 on error
-    fn alloc_page_table(&self) -> PAddr {
-        use crate::mm::pmm;
-
-        match pmm::pmm_alloc_kernel_page() {
-            Ok(p) => p,
-            Err(_) => return 0,
-        }
+        unsafe { kernel_map::map_4k(self.page_table.phys, vaddr, paddr, pte_flags, alloc_table_page) }
     }
 
     /// Activate this address space

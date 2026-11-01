@@ -848,66 +848,20 @@ pub fn paddr_to_page(paddr: PAddr) -> *mut Page {
     core::ptr::null_mut()
 }
 
-/// Kernel physical offset for direct-mapped physical memory
-///
-/// Physical memory is mapped at this offset in kernel virtual address space.
-/// This allows the kernel to access any physical page by adding this offset.
-/// Using the standard x86_64 kernel direct map offset (same as Linux).
-const KERNEL_PHYS_OFFSET: u64 = 0xffff_8000_0000_0000;
 
-/// Maximum physical memory that is identity mapped by UEFI
+/// Convert a physical address to the kernel virtual address used to access it.
 ///
-/// UEFI typically identity maps the first 2GB of physical memory.
-/// For addresses below this threshold, use identity mapping.
-/// For addresses above, use the direct mapping offset.
-const IDENTITY_MAP_LIMIT: u64 = 0x8000_0000; // 2GB
-
-/// Convert physical address to virtual address (for KERNEL zone only)
-///
-/// For kernel zone memory (heap, page tables), uses identity mapping for low memory.
-/// This is safe because UEFI has identity-mapped the low memory region.
-///
-/// WARNING: Do NOT use this for user zone memory! Use paddr_to_vaddr_user_zone() instead.
-///
-/// # Safety
-///
-/// This function should only be used for kernel zone memory (physical addresses
-/// in the range KERNEL_ZONE_START to KERNEL_ZONE_END). For user zone memory,
-/// use paddr_to_vaddr_user_zone() to avoid corrupting kernel heap.
+/// Uses the higher-half direct map once the kernel page tables are active,
+/// so the result is valid in every address space.
 pub fn paddr_to_vaddr(paddr: PAddr) -> VAddr {
-    if paddr < IDENTITY_MAP_LIMIT {
-        // Low memory: use identity mapping (UEFI has this mapped)
-        paddr as VAddr
-    } else {
-        // High memory: use direct mapping offset
-        (KERNEL_PHYS_OFFSET + paddr) as VAddr
-    }
+    // Identity before the kernel page tables exist, the higher-half direct
+    // map afterwards (see arch::amd64::mm::kernel_map).
+    crate::arch::amd64::mm::kernel_map::phys_to_virt(paddr) as VAddr
 }
 
-/// Convert physical address to virtual address (for USER zone only)
-///
-/// ALWAYS uses the kernel's direct mapping region (KERNEL_PHYS_OFFSET).
-/// This prevents user zone memory operations from corrupting kernel heap.
-///
-/// # Example
-///
-/// ```rust
-/// let user_paddr = 0x1000000; // User zone physical address
-/// let user_vaddr = pmm::paddr_to_vaddr_user_zone(user_paddr); // 0xffff_8010_0000_0000
-/// ```
-///
-/// # Safety
-///
-/// This function should only be used for user zone memory (VMO backing pages,
-/// clone destinations, etc.). For kernel zone memory, use paddr_to_vaddr() instead.
+/// Same as [`paddr_to_vaddr`]; kept for existing callers.
 pub fn paddr_to_vaddr_user_zone(paddr: PAddr) -> VAddr {
-    // For low memory (< 2GB), use identity mapping (UEFI has this mapped)
-    // For high memory, use direct mapping offset
-    if paddr < IDENTITY_MAP_LIMIT {
-        paddr as VAddr  // Identity mapping for low memory
-    } else {
-        (KERNEL_PHYS_OFFSET + paddr) as VAddr  // Direct mapping for high memory
-    }
+    crate::arch::amd64::mm::kernel_map::phys_to_virt(paddr) as VAddr
 }
 
 /// Allocate a single page (convenience wrapper)

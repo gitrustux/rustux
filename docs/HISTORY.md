@@ -48,4 +48,10 @@ Keyboard input on real hardware failed for months. The causes turned out to be a
 
 - `gitrustux/rustux` (the `prod/` folder on the server) became the only kernel source; the copy in `loader/rustux` was merged and removed.
 - The "EFI OK" stub build was fixed; the kernel now boots in QEMU through every subsystem and enters ring 3.
-- Known blocker: user programs are linked at `0x400000`, inside the firmware identity mapping that every address space copies into its lower half. Next step: move the kernel out of the lower half.
+- Remaining blocker at that point: user programs ran inside the firmware identity mapping copied into every address space (resolved in the next entry).
+
+## 2026-10-31: Kernel memory management and first working userspace
+
+Checklist step 1. The kernel now builds its own page tables at boot: all physical memory is mapped at `0xffff_8000_0000_0000` (PML4 entry 256, 1 GiB pages where the CPU supports them, 2 MiB otherwise), and the kernel stack, heap, page tables, APIC and framebuffer are reached through that range. Each process gets a private lower half that contains only its own pages plus the kernel image mapped supervisor-only (the old code copied the firmware's lower half into every process and added the User bit to kernel entries). Processes switch by swapping kernel stacks (`src/process/run.rs`) on yield, exit and user-mode timer ticks, with 128 KiB kernel stacks (16 KiB overflowed in `spawn`). CPU exceptions are handled: user faults kill the process, kernel faults halt with a report.
+
+Along the way: the syscall ABI moved to the documented registers (`rdi, rsi, rdx, ...`); the console got a full 8×16 font, ANSI colours and the Dracula palette; Enter/Backspace no longer fire twice (they also triggered on key release); `getpid` returns the real PID. In QEMU the kernel boots to the shell and runs `hello`, `counter`, `echo` and `ps`.

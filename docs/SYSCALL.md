@@ -60,6 +60,8 @@ syscall                     ; Enter kernel
 - `rcx`: Return address (saved by `syscall`)
 - `r11`: RFLAGS (saved by `syscall`)
 
+> **Current implementation (2026-10-31):** the kernel enters system calls through `int 0x80` (vector 0x80, DPL 3), not the `syscall` instruction yet. The registers are the same: number in `rax`, arguments in `rdi, rsi, rdx, r10, r8, r9`, result in `rax`; all other registers are preserved. Programs built with the `syscall` instruction fault with "invalid opcode".
+
 ### ARM64 (AArch64)
 
 ```asm

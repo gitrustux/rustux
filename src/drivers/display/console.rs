@@ -26,7 +26,27 @@ pub struct TextConsole {
     bg_color: Color,
     cols: usize,
     rows: usize,
+    /// ANSI escape parser state: 0 = text, 1 = after ESC, 2 = inside CSI
+    esc_state: u8,
+    esc_params: [u16; 4],
+    esc_nparams: usize,
 }
+
+/// Dracula palette (the system theme)
+pub const DRACULA_BG: Color = Color::new(0x28, 0x2A, 0x36);
+pub const DRACULA_FG: Color = Color::new(0xF8, 0xF8, 0xF2);
+
+/// ANSI colours 0-7 mapped to the Dracula palette
+const ANSI_COLORS: [Color; 8] = [
+    Color::new(0x21, 0x22, 0x2C), // black
+    Color::new(0xFF, 0x55, 0x55), // red
+    Color::new(0x50, 0xFA, 0x7B), // green
+    Color::new(0xF1, 0xFA, 0x8C), // yellow
+    Color::new(0xBD, 0x93, 0xF9), // blue (purple)
+    Color::new(0xFF, 0x79, 0xC6), // magenta (pink)
+    Color::new(0x8B, 0xE9, 0xFD), // cyan
+    Color::new(0xF8, 0xF8, 0xF2), // white
+];
 
 impl TextConsole {
     /// Create a new text console
@@ -41,10 +61,13 @@ impl TextConsole {
             framebuffer,
             cursor_x: 0,
             cursor_y: 0,
-            fg_color: Color::WHITE,
-            bg_color: Color::BLACK,
+            fg_color: DRACULA_FG,
+            bg_color: DRACULA_BG,
             cols,
             rows,
+            esc_state: 0,
+            esc_params: [0; 4],
+            esc_nparams: 0,
         }
     }
 
@@ -88,7 +111,52 @@ impl TextConsole {
 
     /// Put a single character at the current cursor position
     pub fn put_char(&mut self, ch: u8) {
+        // Minimal ANSI escape support: ESC [ <params> m (colours),
+        // ESC [ 2 J (clear screen), ESC [ H / ESC [ row;col H (cursor), ESC [ K
+        match self.esc_state {
+            1 => {
+                if ch == b'[' {
+                    self.esc_state = 2;
+                    self.esc_params = [0; 4];
+                    self.esc_nparams = 0;
+                } else {
+                    self.esc_state = 0;
+                }
+                return;
+            }
+            2 => {
+                match ch {
+                    b'0'..=b'9' => {
+                        if self.esc_nparams == 0 {
+                            self.esc_nparams = 1;
+                        }
+                        let i = self.esc_nparams - 1;
+                        if i < self.esc_params.len() {
+                            self.esc_params[i] = self.esc_params[i].saturating_mul(10).saturating_add((ch - b'0') as u16);
+                        }
+                    }
+                    b';' => {
+                        if self.esc_nparams == 0 {
+                            self.esc_nparams = 1;
+                        }
+                        self.esc_nparams += 1;
+                    }
+                    0x40..=0x7E => {
+                        self.esc_state = 0;
+                        self.apply_csi(ch);
+                    }
+                    _ => self.esc_state = 0,
+                }
+                return;
+            }
+            _ => {}
+        }
+
         match ch {
+            0x1B => {
+                self.esc_state = 1;
+                return;
+            }
             b'\n' => {
                 // Newline - move to next line
                 self.cursor_y += 1;
@@ -141,6 +209,51 @@ impl TextConsole {
     }
 
     /// Write a string to the console
+    /// Apply a completed CSI escape sequence
+    fn apply_csi(&mut self, cmd: u8) {
+        let n = self.esc_nparams.min(self.esc_params.len());
+        let params = &self.esc_params[..n];
+        match cmd {
+            b'm' => {
+                if params.is_empty() {
+                    self.fg_color = DRACULA_FG;
+                    self.bg_color = DRACULA_BG;
+                }
+                for &p in params {
+                    match p {
+                        0 => {
+                            self.fg_color = DRACULA_FG;
+                            self.bg_color = DRACULA_BG;
+                        }
+                        30..=37 => self.fg_color = ANSI_COLORS[(p - 30) as usize],
+                        39 => self.fg_color = DRACULA_FG,
+                        40..=47 => self.bg_color = ANSI_COLORS[(p - 40) as usize],
+                        49 => self.bg_color = DRACULA_BG,
+                        90..=97 => self.fg_color = ANSI_COLORS[(p - 90) as usize],
+                        _ => {}
+                    }
+                }
+            }
+            b'J' => {
+                if params.first().copied().unwrap_or(0) == 2 {
+                    self.clear();
+                }
+            }
+            b'H' | b'f' => {
+                let row = params.first().copied().unwrap_or(1).max(1) as usize - 1;
+                let col = params.get(1).copied().unwrap_or(1).max(1) as usize - 1;
+                self.cursor_y = row.min(self.rows.saturating_sub(1));
+                self.cursor_x = col.min(self.cols.saturating_sub(1));
+            }
+            b'K' => {
+                for col in self.cursor_x..self.cols {
+                    self.clear_char_at(col, self.cursor_y);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn write_str(&mut self, s: &str) {
         for &b in s.as_bytes() {
             self.put_char(b);
@@ -236,7 +349,9 @@ impl TextConsole {
 /// This function must be called only once during kernel initialization.
 /// It must be called after the framebuffer has been initialized.
 pub unsafe fn init(framebuffer: Framebuffer) {
-    CONSOLE = Some(TextConsole::new(framebuffer));
+    let mut console = TextConsole::new(framebuffer);
+    console.clear();
+    CONSOLE = Some(console);
     CONSOLE_INITIALIZED.store(true, Ordering::Release);
 }
 
@@ -287,7 +402,7 @@ pub fn get_color() -> (Color, Color) {
         if let Some(ref console) = CONSOLE {
             (console.fg_color(), console.bg_color())
         } else {
-            (Color::WHITE, Color::BLACK)
+            (DRACULA_FG, DRACULA_BG)
         }
     }
 }

@@ -48,7 +48,7 @@ static inline long syscall1(long number, long arg1) {
     __asm__ volatile (
         "int $0x80"
         : "=a" (ret)
-        : "a" (number), "b" (arg1)
+        : "a" (number), "D" (arg1)
         : "memory"
     );
     return ret;
@@ -59,7 +59,7 @@ static inline long syscall3(long number, long arg1, long arg2, long arg3) {
     __asm__ volatile (
         "int $0x80"
         : "=a" (ret)
-        : "a" (number), "b" (arg1), "c" (arg2), "d" (arg3)
+        : "a" (number), "D" (arg1), "S" (arg2), "d" (arg3)
         : "memory"
     );
     return ret;
@@ -332,6 +332,7 @@ void _start(void) {
                     print("\010 \010");  // backspace, space, backspace
                 }
             } else if (*buf >= 0x20 && *buf <= 0x7E) {  // Printable ASCII
+                sys_write(STDOUT, buf, 1);  // echo
                 count++;
                 buf++;
             }

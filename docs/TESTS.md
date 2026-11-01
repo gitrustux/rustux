@@ -30,7 +30,17 @@ cargo build --release --bin rustux --features uefi_kernel --target x86_64-unknow
 
 The output is `target/x86_64-unknown-uefi/release/rustux.efi`. **Check its size:** a working kernel is about 1.8 MB. A file of a few KB means the compiler proved the entry path always panics and removed the kernel (this was the cause of the old "EFI OK" freeze).
 
-`build.rs` embeds a ramdisk with `bin/init`, `bin/shell` and `bin/hello`. It uses freshly built `target/*.elf` files when present, otherwise the prebuilt binaries in `test-userspace/`.
+`build.rs` embeds a ramdisk with `bin/init`, `bin/shell`, `bin/hello` and `bin/counter`. It uses freshly built `target/*.elf` files when present, otherwise the prebuilt binaries in `test-userspace/` and `userspace/c-progs/`.
+
+Rebuilding the user programs (no C library; `-ffreestanding -fno-builtin` stops GCC from inserting `strlen`/`memcpy` calls):
+
+```bash
+F="-static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -no-pie -O2"
+gcc $F -o test-userspace/init.elf test-userspace/init.c
+gcc $F -o test-userspace/shell/shell.elf test-userspace/shell/shell.c
+gcc $F -T userspace/c-progs/linker.ld -o userspace/c-progs/hello.elf userspace/c-progs/hello.c
+gcc $F -T userspace/c-progs/linker.ld -o userspace/c-progs/counter.elf userspace/c-progs/counter.c
+```
 
 ## Run in QEMU
 
@@ -63,6 +73,8 @@ The kernel writes progress to the QEMU debug port (0xE9). A good boot looks like
 
 ```
 EBS OK
+[VM] Kernel page tables active, physical memory mapped at 0xffff800000000000
+[STACK] Switching to kernel stack: vaddr=0xffff800000442000 size=0x40000
 [INIT] Heap initialized successfully (16MB)
 [1/5] Setting up GDT...           ✓ GDT configured
 [2/5] Setting up IDT...           ✓ IDT configured
@@ -75,11 +87,14 @@ EBS OK
 [DISPLAY] Text console initialized
 [INIT] Found init.elf in ramdisk
 [INIT] Entry point: 0x401000
-[USPACE] Loading CR3 and entering ring 3
+[SPAWN] Loading process from ramdisk: /bin/shell
+[SPAWN] Created process PID=2 entry=0x401080
 [TICK]
 ```
 
-The screen turns red at UEFI entry and green after ExitBootServices.
+The screen turns red at UEFI entry and green after ExitBootServices, then the console clears to the Dracula background and the shell prompt (`rustux >`) appears. Try `help`, `hello`, `counter`, `echo hi`, `ps`.
+
+A CPU exception in a user program prints `[<name>: process killed]` on screen and a `[FAULT] ...` line with RIP, error code and fault address on the debug port; the shell keeps running.
 
 ## Debugging techniques
 
@@ -108,7 +123,8 @@ m "screendump /tmp/screen.ppm"   # capture the framebuffer
 | `rustux.efi` is a few KB | Something on the entry path always panics (e.g. `mem::zeroed()` of a reference, `uefi::system::with_stdout` after ExitBootServices); the optimizer removed the rest |
 | QEMU exits right after a step (with `-no-reboot`) | Triple fault; run with `-d int,cpu_reset` and look at the last exception |
 | `init.elf not found in ramdisk` | Ramdisk built without ELFs, or offsets wrong in `build.rs` |
-| Fault at `cpl=3` on the first user instruction | User mapping hidden by the identity map copied into the lower half (current known issue) |
+| `[FAULT] ... in KERNEL mode` | Kernel bug; the line shows RIP and (for page faults) the address |
+| Fault in user mode right after `[SPAWN]` | Program linked over the kernel image, or built with the `syscall` instruction instead of `int 0x80` |
 | No `[TICK]` | LAPIC timer not configured, or interrupts not enabled |
 
 ## Kernel test mode

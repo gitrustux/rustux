@@ -15,6 +15,7 @@
 #define SYS_WRITE        0x60
 #define SYS_SPAWN        0x03
 #define SYS_EXIT         0x06
+#define SYS_YIELD        0x72
 
 // File descriptor numbers
 #define STDOUT  1
@@ -24,7 +25,7 @@ static inline long syscall1(long number, long arg1) {
     __asm__ volatile (
         "int $0x80"
         : "=a" (ret)
-        : "a" (number), "b" (arg1)
+        : "a" (number), "D" (arg1)
         : "memory"
     );
     return ret;
@@ -35,7 +36,7 @@ static inline long syscall3(long number, long arg1, long arg2, long arg3) {
     __asm__ volatile (
         "int $0x80"
         : "=a" (ret)
-        : "a" (number), "b" (arg1), "c" (arg2), "d" (arg3)
+        : "a" (number), "D" (arg1), "S" (arg2), "d" (arg3)
         : "memory"
     );
     return ret;
@@ -73,7 +74,8 @@ void _start(void) {
         sys_exit(1);
     }
 
-    // If shell exits, we exit too
-    print("Shell exited, shutting down...\n");
-    sys_exit(0);
+    // There is no wait() yet: keep PID 1 alive and give the CPU away
+    for (;;) {
+        syscall1(SYS_YIELD, 0);
+    }
 }

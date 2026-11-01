@@ -174,6 +174,10 @@ pub struct Process {
     /// Kernel stack base (virtual address)
     pub kernel_stack: u64,
 
+    /// Saved kernel stack pointer while the process is switched out
+    /// (see `process::run`)
+    pub kernel_rsp: u64,
+
     /// User stack top (virtual address)
     pub user_stack: u64,
 
@@ -216,12 +220,18 @@ impl Process {
         let mut fd_table = FileDescriptorTable::new();
         fd_table.init();
 
+        // First switch to this process enters user mode at `entry`
+        let kernel_rsp = unsafe {
+            crate::process::run::prepare_kernel_stack(kernel_stack, entry, user_stack)
+        };
+
         Self {
             pid,
             ppid,
             state: ProcessState::Ready,
             page_table,
             kernel_stack,
+            kernel_rsp,
             user_stack,
             saved_state: SavedState::for_userspace(entry, user_stack, page_table),
             syscall_ret: 0,

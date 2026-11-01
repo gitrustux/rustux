@@ -217,15 +217,16 @@ pub fn apic_local_init() {
     pic_disable();
 
     unsafe {
-        let apic_base = LOCAL_APIC_DEFAULT_BASE;
+        let apic_base = super::mm::kernel_map::phys_to_virt(LOCAL_APIC_DEFAULT_BASE);
 
         // Enable Local APIC and set spurious vector
         let svr_offset = 0x70; // Spurious Interrupt Vector Register
         let svr = (apic_base + svr_offset as u64) as *mut u32;
         *svr = 0x100 | 0xFF; // Enable APIC (bit 8), spurious vector 0xFF
 
-        // Set Task Priority Register to 0 (allow all interrupts)
-        let tpr_offset = 0x30;
+        // Set Task Priority Register to 0 (allow all interrupts).
+        // TPR is at offset 0x80 (0x30 is the read-only version register).
+        let tpr_offset = 0x80;
         let tpr = (apic_base + tpr_offset as u64) as *mut u32;
         *tpr = 0;
     }
@@ -242,7 +243,7 @@ pub fn apic_send_eoi(_irq: u32) {
     const LAPIC_EOI_OFFSET: u64 = 0xB0; // Correct EOI offset
 
     unsafe {
-        let eoi_reg = (LOCAL_APIC_DEFAULT_BASE + LAPIC_EOI_OFFSET) as *mut u32;
+        let eoi_reg = (super::mm::kernel_map::phys_to_virt(LOCAL_APIC_DEFAULT_BASE) + LAPIC_EOI_OFFSET) as *mut u32;
         *eoi_reg = 0;
     }
 }
@@ -257,15 +258,15 @@ pub fn apic_issue_eoi() {
 /// Reads the IOAPIC ID and version registers to verify the IOAPIC
 /// is responding at the expected base address.
 fn ioapic_probe() {
-    const IOAPIC_BASE: u64 = 0xFEC0_0000;
+    let ioapic_base: u64 = super::mm::kernel_map::phys_to_virt(0xFEC0_0000);
     const IOAPIC_IOREGSEL: u64 = 0x00;
     const IOAPIC_IOWIN: u64 = 0x10;
     const IOAPIC_ID_OFFSET: u32 = 0x00;
     const IOAPIC_VER_OFFSET: u32 = 0x01;
 
     unsafe {
-        let ioapic_sel = (IOAPIC_BASE + IOAPIC_IOREGSEL) as *mut u32;
-        let ioapic_win = (IOAPIC_BASE + IOAPIC_IOWIN) as *mut u32;
+        let ioapic_sel = (ioapic_base + IOAPIC_IOREGSEL) as *mut u32;
+        let ioapic_win = (ioapic_base + IOAPIC_IOWIN) as *mut u32;
 
         // Read IOAPIC ID
         ioapic_sel.write_volatile(IOAPIC_ID_OFFSET);
@@ -351,7 +352,7 @@ fn ioapic_probe() {
 pub fn apic_io_init(irq: u8, vector: u8) {
     // First, probe the IOAPIC to verify it's accessible
     ioapic_probe();
-    const IOAPIC_BASE: u64 = 0xFEC0_0000;
+    let ioapic_base: u64 = super::mm::kernel_map::phys_to_virt(0xFEC0_0000);
     const IOAPIC_IOREGSEL: u64 = 0x00;
     const IOAPIC_IOWIN: u64 = 0x10;
     // Redirection table entries start at IOREGSEL 0x12
@@ -400,8 +401,8 @@ pub fn apic_io_init(irq: u8, vector: u8) {
             core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
         }
 
-        let ioapic_sel = (IOAPIC_BASE + IOAPIC_IOREGSEL) as *mut u32;
-        let ioapic_win = (IOAPIC_BASE + IOAPIC_IOWIN) as *mut u32;
+        let ioapic_sel = (ioapic_base + IOAPIC_IOREGSEL) as *mut u32;
+        let ioapic_win = (ioapic_base + IOAPIC_IOWIN) as *mut u32;
 
         // Low dword: Vector in bits 0-7, delivery mode = 0 (fixed), mask = 0 (enabled)
         let low_dword = vector as u32;

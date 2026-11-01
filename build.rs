@@ -21,6 +21,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/arch/amd64/switch.S");
     println!("cargo:rerun-if-changed=test-userspace/");
     println!("cargo:rerun-if-changed=test-userspace/shell/");
+    println!("cargo:rerun-if-changed=userspace/c-progs/");
     println!("cargo:rerun-if-changed=files/");
     println!("cargo:rerun-if-changed=target/hello.elf");
     println!("cargo:rerun-if-changed=target/counter.elf");
@@ -108,11 +109,11 @@ fn main() {
     ];
 
     // ELF binaries to embed. A freshly compiled copy in target/ wins; otherwise
-    // fall back to the prebuilt binaries tracked in test-userspace/, so a clean
-    // checkout still produces a kernel with init and the shell.
+    // fall back to the prebuilt binaries tracked in the repo (test-userspace/
+    // and userspace/c-progs/), so a clean checkout still boots to the shell.
     let potential_elf_files: Vec<(&[&'static str], &'static str)> = vec![
-        (&["target/hello.elf", "test-userspace/hello.elf"], "bin/hello"),
-        (&["target/counter.elf"], "bin/counter"),
+        (&["target/hello.elf", "userspace/c-progs/hello.elf"], "bin/hello"),
+        (&["target/counter.elf", "userspace/c-progs/counter.elf"], "bin/counter"),
         (&["target/init.elf", "test-userspace/init.elf"], "bin/init"),
         (&["target/shell.elf", "test-userspace/shell/shell.elf"], "bin/shell"),
     ];

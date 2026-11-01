@@ -8,6 +8,7 @@
 
 pub mod constants;
 pub mod page_tables;
+pub mod kernel_map;
 
 // Re-export all constants and page table types
 #[allow(unused_imports)]

@@ -254,7 +254,7 @@ These changes were made in the `loader` repository's copy of the kernel and were
 
 **Keyboard on real hardware.** The kernel has only a PS/2 (8042) keyboard driver. On USB-only machines no 8042 controller responds, so no keyboard input arrives. USB HID support (xHCI) is the planned fix. Experimental USB/xHCI code is in the `loader` repository (`kernel-efi/src/usb/`, latest work on branch `wip/xhci-2026-08`). See `docs/usb-keyboard.md` for the full history.
 
-**Local APIC register map.** In `src/arch/amd64/apic.rs`, the `LocalApic` struct offsets and the TPR offset (`0x30`) do not match the Intel SDM layout (registers sit on 16-byte boundaries; TPR is `0x80`). EOI uses the correct `0xB0` constant.
+**Local APIC register struct.** In `src/arch/amd64/apic.rs`, the `LocalApic` struct offsets do not match the Intel SDM layout (registers sit on 16-byte boundaries). The kernel does not use the struct: EOI (`0xB0`) and TPR (`0x80`) are written at the correct offsets.
 
 ---
 

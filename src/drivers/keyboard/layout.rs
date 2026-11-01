@@ -305,6 +305,17 @@ pub fn scancode_to_keyevent(scancode: u8, modifiers: &ModifierState, extended: b
         } else {
             KeyEvent::Special(if extended { SpecialKey::RightAlt } else { SpecialKey::LeftAlt })
         },
+        _ => {}
+    }
+
+    // Every other key acts on press only; releases are reported so the
+    // caller can ignore them (previously Enter, Backspace, Tab, Escape and
+    // Caps Lock also fired on release).
+    if is_release {
+        return KeyEvent::Release(code);
+    }
+
+    match code {
         0x3A => return KeyEvent::Special(SpecialKey::CapsLock),
         0x01 => return KeyEvent::Special(SpecialKey::Escape),
         0x0E => return KeyEvent::Special(SpecialKey::Backspace),

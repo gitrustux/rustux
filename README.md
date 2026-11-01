@@ -6,17 +6,17 @@ Rustux is the kernel of **Rustica OS**. The full OS (live USB image, shell, apps
 
 ## Status
 
-**Phases 4–6 complete. Phase 7A in progress.**
+**Boots to an interactive shell in QEMU.** Checklist step 1 (kernel memory management) done; see [`docs/ROADMAP.md`](docs/ROADMAP.md) and the checklist in the Rustux project.
 
 | Area | State |
 |------|-------|
 | UEFI boot | Kernel is a standalone UEFI application (`BOOTX64.EFI`), no separate bootloader |
 | Interrupts | GDT/IDT, Local APIC + IOAPIC (discovered via ACPI MADT), timer |
-| Memory | Physical memory manager, kernel heap, per-process page tables |
-| Processes | ELF loading, process table (256 slots), round-robin scheduler, `int 0x80` syscalls |
+| Memory | Kernel-owned page tables; all physical memory mapped in the upper half (`0xffff_8000_0000_0000`); each process has a private lower half; kernel heap |
+| Processes | ELF loading, process table (256 slots), kernel-stack switching on yield, exit and timer (user mode only), `int 0x80` syscalls; faults kill only the offending process |
 | Objects | Handles, channels, events, VMOs, timers, jobs (Zircon-style capabilities) |
 | Filesystem | VFS + embedded ramdisk |
-| Drivers | 16550 UART, PS/2 keyboard, framebuffer console |
+| Drivers | 16550 UART, PS/2 keyboard, framebuffer console (ANSI colours, Dracula theme) |
 | Other architectures | ARM64 (GIC) and RISC-V (PLIC) code present; build targets x86_64 only |
 
 **Boot flow:**
@@ -26,9 +26,11 @@ UEFI Firmware → BOOTX64.EFI (rustux.efi) → Kernel → Init (PID 1) → Shell
 
 ### Known Issues
 
-- **Userspace does not run yet.** The kernel boots through all subsystems in QEMU and enters ring 3, but user programs are linked at `0x400000`, which every process still maps through the firmware's identity mapping (copied into the lower half of each address space). `init` therefore faults on its first instruction. Fix: move the kernel out of the lower half.
+- **No `wait`.** The shell starts a program and immediately shows its prompt, so program output can appear after the next prompt.
+- **Physical memory zones are hard-coded** (kernel 2–16 MB, heap 16–32 MB, user pages 32–128 MB) instead of coming from the UEFI memory map. Fine in QEMU; risky on real hardware.
+- **The kernel image still runs at the address UEFI loaded it to** and is mapped (supervisor-only) into each process's lower half. User programs must not overlap it.
 - **No USB keyboard support.** Only PS/2 is implemented, so most modern hardware has no keyboard input. USB HID (xHCI) is the next driver; see [`docs/usb-keyboard.md`](docs/usb-keyboard.md).
-- **Local APIC register map** in `src/arch/amd64/apic.rs` does not match the Intel layout (EOI is correct). See [`docs/README.md`](docs/README.md#known-issues).
+- **Local APIC register struct** in `src/arch/amd64/apic.rs` does not match the Intel layout (the EOI and TPR writes the kernel uses are correct). See [`docs/README.md`](docs/README.md#known-issues).
 
 ## Building
 
