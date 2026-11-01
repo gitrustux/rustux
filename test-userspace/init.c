@@ -6,92 +6,127 @@
 
 //! Init Process (PID 1)
 //!
-//! This is the first userspace process started by the kernel.
-//! Its job is to initialize the system and launch the shell.
+//! The first userspace process. It starts the PS/2 keyboard driver and the
+//! shell, and is the hub for keyboard input: characters arrive from the
+//! driver and from the kernel (USB keyboards) over channels, and init
+//! forwards them to the shell over the shell's channel. If the driver or
+//! the shell ends, init starts a new one. The shell can ask for a driver
+//! restart by sending "restart-kbd".
 //!
-//! Build: x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector init.c -o init.elf
+//! Build: gcc -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector
+//!        -fno-pie -no-pie -O2 -o init.elf init.c
 
-// Syscall numbers
-#define SYS_WRITE        0x60
-#define SYS_SPAWN        0x03
-#define SYS_EXIT         0x06
-#define SYS_YIELD        0x72
-#define SYS_SPAWN_PROCESS 0x0B
-#define SYS_WAIT_ONE     0x26
-#define SYS_HANDLE_CLOSE 0x07
-#define SYS_GET_INFO     0x0A
+#include "../userspace/c-progs/rx.h"
 
-#define PROCESS_TERMINATED (1u << 3)
-#define INFO_PROCESS       3
+static rx_handle_t resource;     // root resource, passed to the driver
+static rx_handle_t kernel_input; // USB keystrokes from the kernel
+static rx_handle_t drv_proc, drv_chan; // keyboard driver
+static rx_handle_t sh_proc, sh_chan;   // shell
+static int driver_failures;
 
-// File descriptor numbers
-#define STDOUT  1
-
-static inline long syscall1(long number, long arg1) {
-    long ret;
-    __asm__ volatile (
-        "int $0x80"
-        : "=a" (ret)
-        : "a" (number), "D" (arg1)
-        : "memory"
-    );
-    return ret;
-}
-
-static inline long syscall3(long number, long arg1, long arg2, long arg3) {
-    long ret;
-    __asm__ volatile (
-        "int $0x80"
-        : "=a" (ret)
-        : "a" (number), "D" (arg1), "S" (arg2), "d" (arg3)
-        : "memory"
-    );
-    return ret;
-}
-
-static inline long syscall4(long number, long arg1, long arg2, long arg3, long arg4) {
-    long ret;
-    register long r10 __asm__("r10") = arg4;
-    __asm__ volatile (
-        "int $0x80"
-        : "=a" (ret)
-        : "a" (number), "D" (arg1), "S" (arg2), "d" (arg3), "r" (r10)
-        : "memory"
-    );
-    return ret;
-}
-
-static inline void sys_exit(int code) {
-    syscall1(SYS_EXIT, code);
-    __builtin_unreachable();
-}
-
-static inline void print(const char *str) {
-    long len = 0;
-    const char *p = str;
-    while (*p) {
-        len++;
-        p++;
+static void start_driver(void) {
+    rx_handle_t ours, theirs, res;
+    if (!resource || driver_failures >= 5) return;
+    rx_channel_create(0, &ours, &theirs);
+    rx_handle_duplicate(resource, RX_RIGHT_SAME_RIGHTS, &res);
+    rx_handle_t hs[2] = { res, theirs };
+    uint32_t tags[2] = { RX_PA_ROOT_RESOURCE, RX_PA_USER0 };
+    if (rx_spawn_process("/bin/ps2kbd", &drv_proc, hs, tags, 2) < 0) {
+        rx_puts("init: cannot start /bin/ps2kbd\n");
+        rx_handle_close(ours);
+        drv_proc = 0;
+        driver_failures = 5;
+        return;
     }
-    syscall3(SYS_WRITE, STDOUT, (long)str, len);
+    drv_chan = ours;
 }
 
-void _start(void) {
-    // No screen clear: keep the kernel boot log (USB, PS/2) visible
-    print("Init process (PID 1) starting...\n");
-    print("Spawning shell...\n\n");
+static void start_shell(void) {
+    rx_handle_t ours, theirs;
+    rx_channel_create(0, &ours, &theirs);
+    uint32_t tag = RX_PA_USER0;
+    if (rx_spawn_process("/bin/shell", &sh_proc, &theirs, &tag, 1) < 0) {
+        rx_puts("init: failed to spawn shell!\n");
+        rx_exit(1);
+    }
+    sh_chan = ours;
+}
 
-    // Run the shell; if it ever exits, start a new one
-    for (;;) {
-        unsigned int proc = 0;
-        long result = syscall3(SYS_SPAWN_PROCESS, (long)"/bin/shell", (long)&proc, 0);
-        if (result < 0) {
-            print("Failed to spawn shell!\n");
-            sys_exit(1);
+static void forward(rx_handle_t from) {
+    char buf[256];
+    uint32_t n = 0;
+    while (rx_channel_read(from, 0, buf, 0, sizeof buf, 0, &n, 0) == RX_OK) {
+        if (sh_chan) rx_channel_write(sh_chan, 0, buf, n, 0, 0);
+    }
+}
+
+static int same(const char *a, const char *b, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) if (a[i] != b[i]) return 0;
+    return b[n] == 0;
+}
+
+// A request from the shell
+static void command(void) {
+    char buf[64];
+    uint32_t n = 0;
+    while (rx_channel_read(sh_chan, 0, buf, 0, sizeof buf, 0, &n, 0) == RX_OK) {
+        if (same(buf, "restart-kbd", n)) {
+            if (drv_proc) {
+                rx_puts("init: killing the keyboard driver\n");
+                rx_task_kill(drv_proc);
+            } else {
+                rx_puts("init: no keyboard driver is running\n");
+            }
         }
-        // Sleep until the shell's process is TERMINATED
-        syscall4(SYS_WAIT_ONE, proc, PROCESS_TERMINATED, -1L, 0);
-        syscall1(SYS_HANDLE_CLOSE, proc);
-        print("\nShell exited; starting a new one\n\n");
+    }
+}
+
+static void driver_ended(void) {
+    rx_info_process_t info = { 0, 0, 0, 0 };
+    rx_object_get_info(drv_proc, RX_INFO_PROCESS, &info, sizeof info, 0, 0);
+    rx_handle_close(drv_proc);
+    rx_handle_close(drv_chan);
+    drv_proc = drv_chan = 0;
+    if (info.return_code == 2) {
+        rx_puts("init: no PS/2 controller; keyboard driver not needed\n");
+        return;
+    }
+    rx_puts("init: keyboard driver exited (code ");
+    rx_putd(info.return_code);
+    rx_puts("); starting it again\n");
+    if (info.return_code != RX_TASK_RETCODE_SYSCALL_KILL) driver_failures++;
+    start_driver();
+}
+
+void _start(rx_handle_t bootstrap) {
+    rx_startup(bootstrap);
+    resource = rx_take_startup_handle(RX_PA_ROOT_RESOURCE);
+    kernel_input = rx_take_startup_handle(RX_PA_KERNEL_INPUT);
+    rx_puts("Init process (PID 1) starting...\n");
+    start_driver();
+    rx_puts("Spawning shell...\n\n");
+    start_shell();
+
+    for (;;) {
+        rx_wait_item_t items[5];
+        int n = 0, i_drv = -1, i_kin = -1, i_sh = -1, i_dproc = -1, i_sproc = -1;
+        if (drv_chan) { i_drv = n; items[n++] = (rx_wait_item_t){ drv_chan, RX_CHANNEL_READABLE, 0 }; }
+        if (kernel_input) { i_kin = n; items[n++] = (rx_wait_item_t){ kernel_input, RX_CHANNEL_READABLE, 0 }; }
+        i_sh = n; items[n++] = (rx_wait_item_t){ sh_chan, RX_CHANNEL_READABLE, 0 };
+        if (drv_proc) { i_dproc = n; items[n++] = (rx_wait_item_t){ drv_proc, RX_PROCESS_TERMINATED, 0 }; }
+        i_sproc = n; items[n++] = (rx_wait_item_t){ sh_proc, RX_PROCESS_TERMINATED, 0 };
+
+        if (rx_object_wait_many(items, n, RX_TIME_INFINITE) != RX_OK) continue;
+
+        if (i_drv >= 0 && (items[i_drv].pending & RX_CHANNEL_READABLE)) forward(drv_chan);
+        if (i_kin >= 0 && (items[i_kin].pending & RX_CHANNEL_READABLE)) forward(kernel_input);
+        if (items[i_sh].pending & RX_CHANNEL_READABLE) command();
+        if (i_dproc >= 0 && (items[i_dproc].pending & RX_PROCESS_TERMINATED)) driver_ended();
+        if (items[i_sproc].pending & RX_PROCESS_TERMINATED) {
+            rx_handle_close(sh_proc);
+            rx_handle_close(sh_chan);
+            rx_puts("\nShell exited; starting a new one\n\n");
+            start_shell();
+        }
     }
 }

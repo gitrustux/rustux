@@ -9,6 +9,8 @@
 //! Build: x86_64-linux-gnu-gcc -static -nostdlib -fno-stack-protector shell.c -o shell.elf
 
 // Syscall numbers (matching rustux kernel)
+#include "../../userspace/c-progs/rx.h"
+
 #define SYS_WRITE        0x60  // write(fd, buf, len)
 #define SYS_READ         0x61  // read(fd, buf, len)
 #define SYS_OPEN         0x62  // open(path, flags)
@@ -170,10 +172,12 @@ static void cmd_help(void) {
     print("    clear    - Clear the screen\n");
     print("    echo     - Print arguments\n");
     print("    ps       - List running processes\n");
+    print("    restart-kbd - Kill the keyboard driver (init starts a new one)\n");
     print("    exit     - Exit the shell\n\n");
     print("  External Programs:\n");
     print("    hello    - Hello world program\n");
-    print("    counter  - Counter program\n\n");
+    print("    counter  - Counter program\n");
+    print("    objtest, ipctest, spawntest, drvtest - kernel tests\n\n");
 }
 
 static void cmd_clear(void) {
@@ -250,6 +254,7 @@ static int parse_command(char *line, int *argc, char **argv) {
 static int spawn_external(const char *name) {
     char path[128];
     char *p = path;
+    const char *cmd_name = name;  // `name` is advanced while building the path
 
     // Build path: /bin/<name>
     const char prefix[] = "/bin/";
@@ -268,7 +273,7 @@ static int spawn_external(const char *name) {
     if (tid < 0) {
         print_color(ANSI_RED, "error: ");
         print("command not found: ");
-        print(name);
+        print(cmd_name);
         print("\n");
         return -1;
     }
@@ -318,10 +323,33 @@ static void print_prompt(void) {
 // ENTRY POINT
 // =============================================================
 
-void _start(void) {
+// Keyboard input arrives from init over a channel (init forwards the PS/2
+// driver's and the kernel's USB keystrokes)
+static rx_handle_t input;
+static char pending[256];
+static uint32_t pending_len, pending_pos;
+
+// Next typed character (blocks); 0 if the channel is gone
+static char read_key(void) {
+    while (pending_pos >= pending_len) {
+        pending_pos = pending_len = 0;
+        uint32_t observed = 0;
+        rx_object_wait_one(input, RX_CHANNEL_READABLE | RX_PEER_CLOSED, RX_TIME_INFINITE, &observed);
+        if (rx_channel_read(input, 0, pending, 0, sizeof pending, 0, &pending_len, 0) != RX_OK) {
+            pending_len = 0;
+            if (observed & RX_PEER_CLOSED) return 0;
+        }
+    }
+    return pending[pending_pos++];
+}
+
+void _start(rx_handle_t bootstrap) {
     static char input_buffer[INPUT_BUFFER_SIZE];
     static char *argv[MAX_ARGS];
     int argc;
+
+    rx_startup(bootstrap);
+    input = rx_take_startup_handle(RX_PA_USER0);
 
     // Show welcome below the boot log (the kernel clears the screen when
     // its console starts; the USB/PS/2 messages stay visible)
@@ -336,8 +364,8 @@ void _start(void) {
         char *buf = input_buffer;
 
         while (1) {
-            long ret = sys_read(STDIN, buf, 1);
-            if (ret <= 0) break;
+            *buf = read_key();
+            if (*buf == 0) break;
 
             if (*buf == '\n') {
                 print("\n");
@@ -379,6 +407,8 @@ void _start(void) {
             cmd_echo(argc, argv);
         } else if (strcmp(cmd, "ps") == 0) {
             cmd_ps();
+        } else if (strcmp(cmd, "restart-kbd") == 0) {
+            rx_channel_write(input, 0, "restart-kbd", 11, 0, 0);
         } else if (strcmp(cmd, "exit") == 0) {
             cmd_exit(argc, argv);
         } else {

@@ -87,6 +87,12 @@ pub fn reset_flags(tid: u32) {
     }
 }
 
+/// Put `process`'s I/O port permissions in the TSS (interrupts disabled)
+fn load_ports(process: &crate::kobj::task::Process) {
+    let m = process.io_map.lock();
+    unsafe { crate::arch::amd64::descriptor::load_io_map(process.koid, m.as_deref(), false) };
+}
+
 /// The current thread's object
 pub fn current_thread() -> Option<(u32, alloc::sync::Arc<crate::kobj::task::Thread>)> {
     let table = PROCESS_TABLE.lock();
@@ -286,6 +292,7 @@ pub fn start(pid: u32) -> ! {
         let p = table.get_mut(pid).expect("run::start: no such process");
         p.state = ProcessState::Running;
         let v = (p.kernel_rsp, p.page_table, p.kernel_stack);
+        load_ports(&p.thread.process);
         table.set_current(pid);
         v
     };
@@ -386,6 +393,7 @@ fn switch_away(state: ProcessState) {
                 let n = table.get_mut(next).expect("runnable process vanished");
                 n.state = ProcessState::Running;
                 let (rsp, cr3, kstack) = (n.kernel_rsp, n.page_table, n.kernel_stack);
+                load_ports(&n.thread.process);
                 table.set_current(next);
                 drop(table);
                 unsafe {

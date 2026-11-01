@@ -8,7 +8,7 @@ CFLAGS = -ffreestanding -nostdlib -fno-stack-protector -fno-pic -O2 -Wall -Wextr
 LDFLAGS = -nostdlib -T linker.ld
 
 # Default target
-all: hello.elf counter.elf init.elf objtest.elf ipctest.elf spawntest.elf true.elf
+all: hello.elf counter.elf init.elf objtest.elf ipctest.elf spawntest.elf true.elf ps2kbd.elf drvtest.elf
 
 # Build hello.elf
 hello.elf: hello.o
@@ -56,6 +56,19 @@ true.elf: true.o
 	$(LD) $(LDFLAGS) -o $@ $<
 
 true.o: true.c rx.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Build ps2kbd.elf (PS/2 keyboard driver) and drvtest.elf
+ps2kbd.elf: ps2kbd.o
+	$(LD) $(LDFLAGS) -o $@ $<
+
+ps2kbd.o: ps2kbd.c rx.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+drvtest.elf: drvtest.o
+	$(LD) $(LDFLAGS) -o $@ $<
+
+drvtest.o: drvtest.c rx.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Copy binaries to expected locations

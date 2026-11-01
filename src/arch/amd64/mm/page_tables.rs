@@ -170,6 +170,9 @@ pub enum RxStatus {
 
     /// Something is already there (e.g. a mapping at a specific address)
     ERR_ALREADY_EXISTS = 18,
+
+    /// The operation was cancelled (e.g. the object was destroyed)
+    ERR_CANCELED = 19,
 }
 
 /// Result type using RxStatus

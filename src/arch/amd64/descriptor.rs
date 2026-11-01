@@ -49,9 +49,17 @@ pub struct TaskStateSegment {
     pub ist5: u64,     // Interrupt Stack Table 5
     pub ist6: u64,     // Interrupt Stack Table 6
     pub ist7: u64,     // Interrupt Stack Table 7
-    pub reserved3: u16,
-    pub iomap_base: u16, // I/O map base address
+    pub reserved3: u64,
+    pub reserved4: u16,
+    pub iomap_base: u16, // I/O map base address (offset 102)
 }
+
+// The hardware layout is 104 bytes, with the I/O map base at offset 102.
+// (This struct used to lack `reserved3: u64`: it was 96 bytes and put the
+// field at offset 92, so the CPU read the bitmap offset from past the
+// end of the TSS and refused every user port access.)
+const _: () = assert!(core::mem::size_of::<TaskStateSegment>() == 104);
+const _: () = assert!(core::mem::offset_of!(TaskStateSegment, iomap_base) == 102);
 
 /// GDT Entry types
 pub const GDT_NULL: usize = 0;
@@ -79,7 +87,47 @@ pub const FLAG_SIZE_64BIT: u8 = 0x20;
 // Global GDT storage
 static mut GDT: [GdtEntry; GDT_ENTRIES] = [GdtEntry::null(); GDT_ENTRIES];
 static mut GDT_POINTER: GdtPointer = GdtPointer { limit: 0, base: 0 };
-static mut TSS: TaskStateSegment = TaskStateSegment::null();
+static mut TSS: TssWithIoMap = TssWithIoMap {
+    tss: TaskStateSegment::null(),
+    io_map: [0xFF; IO_MAP_BYTES],
+    io_map_end: 0xFF,
+};
+
+/// One bit per I/O port (65536 ports); a set bit denies user access
+pub const IO_MAP_BYTES: usize = 8192;
+
+/// The TSS followed by its I/O permission bitmap. Ring-3 `in`/`out` to a
+/// port whose bit is set (or beyond the TSS limit) raises #GP; every bit
+/// starts set, and a process gets ports through `ioports_request`.
+#[repr(C, packed)]
+struct TssWithIoMap {
+    tss: TaskStateSegment,
+    io_map: [u8; IO_MAP_BYTES],
+    /// Required all-ones byte after the bitmap
+    io_map_end: u8,
+}
+
+/// Koid of the process whose bitmap is in the TSS (0 = all ports denied)
+static mut IO_MAP_OWNER: u64 = 0;
+
+/// Load a process's I/O permission bitmap into the TSS (`None` = deny all).
+/// `owner` identifies the bitmap so switching between threads of the same
+/// process does not copy 8 KiB each time; pass `force` after a change.
+///
+/// # Safety
+/// Interrupts must be disabled (single CPU, no concurrent TSS writes).
+pub unsafe fn load_io_map(owner: u64, map: Option<&[u8; IO_MAP_BYTES]>, force: bool) {
+    let owner = if map.is_some() { owner } else { 0 };
+    if owner == IO_MAP_OWNER && !force {
+        return;
+    }
+    let dst = core::ptr::addr_of_mut!(TSS.io_map) as *mut u8;
+    match map {
+        Some(m) => core::ptr::copy_nonoverlapping(m.as_ptr(), dst, IO_MAP_BYTES),
+        None => core::ptr::write_bytes(dst, 0xFF, IO_MAP_BYTES),
+    }
+    IO_MAP_OWNER = owner;
+}
 
 /// Set the ring-0 stack the CPU switches to on an interrupt, exception or
 /// `int 0x80` taken while running in ring 3 (TSS.RSP0).
@@ -89,7 +137,7 @@ static mut TSS: TaskStateSegment = TaskStateSegment::null();
 /// that can run in ring 3.
 pub unsafe fn set_tss_rsp0(rsp0: u64) {
     // TSS is packed; write through a raw pointer to avoid an unaligned reference
-    core::ptr::addr_of_mut!(TSS.rsp0).write_unaligned(rsp0);
+    core::ptr::addr_of_mut!(TSS.tss.rsp0).write_unaligned(rsp0);
 }
 
 impl GdtEntry {
@@ -160,6 +208,7 @@ impl TaskStateSegment {
             ist6: 0,
             ist7: 0,
             reserved3: 0,
+            reserved4: 0,
             iomap_base: 0,
         }
     }
@@ -204,8 +253,11 @@ pub fn gdt_setup() {
         );
 
         // TSS entry (needs two entries)
-        let tss_base = &TSS as *const TaskStateSegment as u64;
-        let tss_limit = core::mem::size_of::<TaskStateSegment>() as u32;
+        // The I/O bitmap follows the 104-byte TSS
+        core::ptr::addr_of_mut!(TSS.tss.iomap_base)
+            .write_unaligned(core::mem::size_of::<TaskStateSegment>() as u16);
+        let tss_base = core::ptr::addr_of!(TSS) as u64;
+        let tss_limit = core::mem::size_of::<TssWithIoMap>() as u32 - 1;
         let tss_access = ACC_PRESENT | 0x09; // Present, TSS, DPL0
 
         GDT[GDT_TSS_LOW] = GdtEntry::set_tss_low(tss_base, tss_limit, tss_access);
@@ -411,5 +463,5 @@ pub unsafe fn tss_load(selector: u16) {
 ///
 /// Caller must ensure TSS has been initialized
 pub unsafe fn get_tss() -> &'static mut TaskStateSegment {
-    &mut TSS
+    &mut *core::ptr::addr_of_mut!(TSS.tss)
 }

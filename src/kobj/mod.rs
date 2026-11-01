@@ -22,6 +22,7 @@
 pub mod channel;
 pub mod event;
 pub mod handle;
+pub mod interrupt;
 pub mod task;
 pub mod timer;
 pub mod vmar;
@@ -62,6 +63,8 @@ pub enum ObjType {
     Thread = 2,
     Vmo = 3,
     Channel = 4,
+    Interrupt = 9,
+    Resource = 15,
     Event = 5,
     EventPair = 16,
     Job = 17,
@@ -128,6 +131,8 @@ pub enum KObject {
     Process(Arc<task::Process>),
     Thread(Arc<task::Thread>),
     Job(Arc<task::Job>),
+    Resource(Arc<interrupt::Resource>),
+    Interrupt(Arc<interrupt::Interrupt>),
 }
 
 impl KObject {
@@ -142,6 +147,8 @@ impl KObject {
             KObject::Process(_) => ObjType::Process,
             KObject::Thread(_) => ObjType::Thread,
             KObject::Job(_) => ObjType::Job,
+            KObject::Resource(_) => ObjType::Resource,
+            KObject::Interrupt(_) => ObjType::Interrupt,
         }
     }
 
@@ -156,6 +163,8 @@ impl KObject {
             KObject::Process(o) => &o.signals,
             KObject::Thread(o) => &o.signals,
             KObject::Job(o) => &o.signals,
+            KObject::Resource(o) => &o.signals,
+            KObject::Interrupt(o) => &o.signals,
         }
     }
 

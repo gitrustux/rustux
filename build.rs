@@ -118,6 +118,8 @@ fn main() {
         (&["target/ipctest.elf", "userspace/c-progs/ipctest.elf"], "bin/ipctest"),
         (&["target/spawntest.elf", "userspace/c-progs/spawntest.elf"], "bin/spawntest"),
         (&["target/true.elf", "userspace/c-progs/true.elf"], "bin/true"),
+        (&["target/ps2kbd.elf", "userspace/c-progs/ps2kbd.elf"], "bin/ps2kbd"),
+        (&["target/drvtest.elf", "userspace/c-progs/drvtest.elf"], "bin/drvtest"),
         (&["target/init.elf", "test-userspace/init.elf"], "bin/init"),
         (&["target/shell.elf", "test-userspace/shell/shell.elf"], "bin/shell"),
     ];

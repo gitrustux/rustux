@@ -137,6 +137,7 @@ The C header `userspace/c-progs/rx.h` defines them as `RX_ERR_*`.
 | `ERR_OUT_OF_RANGE` | 16 | Value out of range |
 | `ERR_BAD_STATE` | 17 | Object or process in the wrong state |
 | `ERR_ALREADY_EXISTS` | 18 | Something is already there (e.g. a mapping at a specific address) |
+| `ERR_CANCELED` | 19 | The wait was cancelled (object destroyed, thread killed) |
 
 Checks happen in this order: handle valid (`BAD_HANDLE`), object type (`WRONG_TYPE`), rights (`ACCESS_DENIED`), then arguments.
 
@@ -220,7 +221,10 @@ RSI and every other register zero. Programs started by the kernel (`init`,
 `spawn`) get a **bootstrap channel** in RDI holding one message: one u32
 tag per handle, with handles to the process itself (`PA_PROC_SELF` 1), its
 first thread (`PA_THREAD_SELF` 2), its job (`PA_JOB_DEFAULT` 3) and its
-root VMAR (`PA_VMAR_ROOT` 4), as in Fuchsia's processargs.
+root VMAR (`PA_VMAR_ROOT` 4), as in Fuchsia's processargs, followed by
+any handles the parent passed. `init` also gets the root resource
+(`PA_ROOT_RESOURCE` 0x20) and the kernel's input channel
+(`PA_KERNEL_INPUT` 0x21); these two tags are Rustux's own.
 `rx_startup()` in `rx.h` reads it. The kernel launcher's stack is 64 KiB
 ending at `0x7fff_ffff_f000`, and RSP starts 8 below a 16-byte boundary,
 as if `_start` had been called; pass a stack pointer aligned the same way
@@ -298,7 +302,13 @@ typedef struct {
 
 #### SPAWN (0x03) / SPAWN_PROCESS (0x0B)
 
-`spawn(const char *path)` and `spawn_process(const char *path, rx_handle_t *proc_out)`
+`spawn(const char *path)` and `spawn_process(const char *path, rx_handle_t *proc_out, const rx_handle_t *handles, const uint32_t *tags, uint32_t count)`
+
+If `handles` is not NULL, `count` (at most 8) handles are **moved** into
+the child's bootstrap message after the standard four, each with its tag
+(use `PA_USER0` = 0xF0 and up for your own); they need `TRANSFER` and leave
+the caller even on failure. `init` uses this to give the keyboard driver
+the root resource and a channel, and the shell its input channel.
 
 Kernel shortcut used by `init` and the shell until a userspace loader
 exists: loads `/bin/<name>` from the ramdisk into a new process in the
@@ -619,6 +629,61 @@ handle, e.g. one that can only wait.
 
 ---
 
+### Drivers (0x80-0x8F)
+
+| Syscall | Number | Description | Status |
+|---------|--------|-------------|--------|
+| `INTERRUPT_CREATE` | 0x80 | Bind a legacy ISA IRQ to a handle | ✅ (IRQ 1 only) |
+| `INTERRUPT_WAIT` | 0x81 | Block until the IRQ fires | ✅ |
+| `INTERRUPT_ACK` | 0x82 | Re-arm the IRQ | ✅ |
+| `INTERRUPT_DESTROY` | 0x83 | Cancel waits on the interrupt | ✅ |
+| `IOPORTS_REQUEST` | 0x84 | Let the calling process use I/O ports | ✅ |
+| `IOPORTS_RELEASE` | 0x85 | Give the ports back | ✅ |
+
+Drivers run as ordinary processes. Both calls that reach hardware need the
+**root resource** (object type 15, rights DUPLICATE + TRANSFER + WRITE +
+INSPECT), which the kernel gives only to `init`; `init` passes copies to
+the drivers it starts. Without it, ports stay closed: a user `in`/`out` to a
+port the process was not granted raises #GP and the process is killed
+(exit code -1025). The first driver is the PS/2 keyboard (`/bin/ps2kbd`,
+source `userspace/c-progs/ps2kbd.c`).
+
+#### INTERRUPT_CREATE (0x80)
+
+`interrupt_create(rx_handle_t resource, uint32_t irq, uint32_t options, rx_handle_t *out)`
+
+Binds legacy ISA `irq` (only 1, the PS/2 keyboard, is wired up so far;
+others give `ERR_NOT_SUPPORTED`) to a new interrupt object (type 9).
+`ERR_ALREADY_EXISTS` if another interrupt object holds the IRQ. While
+bound, the kernel's interrupt handler only records the IRQ and wakes the
+waiting thread; the driver reads the device itself. Closing the last handle
+unbinds it (for example when the driver is killed).
+
+#### INTERRUPT_WAIT (0x81)
+
+`interrupt_wait(rx_handle_t h, uint64_t *timestamp)` — needs `WAIT`.
+Returns at once if the IRQ fired since the last wait, otherwise blocks
+until it does; `timestamp` (may be NULL) receives the monotonic time of
+the firing. One thread at a time (`ERR_BAD_STATE` for a second).
+`ERR_CANCELED` after `interrupt_destroy` or when the thread is killed.
+
+#### INTERRUPT_ACK (0x82) / INTERRUPT_DESTROY (0x83)
+
+`interrupt_ack(rx_handle_t h)` and `interrupt_destroy(rx_handle_t h)` —
+need `WRITE`. Edge-triggered ISA IRQs are never masked, so `ack` has
+nothing to re-enable yet. `destroy` makes the current and later waits
+return `ERR_CANCELED`.
+
+#### IOPORTS_REQUEST (0x84) / IOPORTS_RELEASE (0x85)
+
+`ioports_request(rx_handle_t resource, uint16_t port, uint32_t len)` and
+`ioports_release(...)` — grant or take back `in`/`out` on ports
+`[port, port + len)` for the **calling process** (all its threads). The
+kernel keeps a 64 Ki-bit permission bitmap per process and loads it into
+the TSS when one of its threads runs.
+
+---
+
 ### Time (0x40-0x4F)
 
 | Syscall | Number | Description | Status |
@@ -664,9 +729,20 @@ in the ramdisk, run from the shell:
 | `objtest` | handles, rights, events, event pairs, waiting, timers, channels, VMOs, VMARs | 94 |
 | `ipctest` | processes, threads, jobs, `task_kill`, two processes exchanging a message and a handle over a channel | 31 |
 | `spawntest` | starts `/bin/true` 300 times; process clean-up | 1 |
+| `drvtest` | driver calls refused without the root resource; a direct port read kills the program (exit code -1025 expected) | 5 |
 
 Sources are in `userspace/c-progs/`; `rx.h` there has C wrappers for every
 call above with Zircon-style signatures.
+
+### Keyboard input
+
+Since step 4 the kernel does not hand out keystrokes. The PS/2 keyboard is
+driven by `/bin/ps2kbd`; the USB keyboard driver is still in the kernel,
+polled on the timer tick, and sends characters over the kernel input
+channel. `init` forwards both to the shell over the shell's channel
+(`PA_USER0`). `read` on fd 0 returns `ERR_NOT_SUPPORTED`. The shell's
+`restart-kbd` command asks `init` to kill the driver, which `init` then
+restarts.
 
 ### Unix-style calls (frozen)
 

@@ -140,6 +140,8 @@ pub struct Process {
     pub aspace: Arc<Aspace>,
     pub handles: SpinMutex<HandleTable>,
     pub name: alloc::string::String,
+    /// I/O ports this process may use (`ioports_request`); None = none
+    pub io_map: SpinMutex<Option<alloc::boxed::Box<[u8; crate::arch::amd64::descriptor::IO_MAP_BYTES]>>>,
     inner: SpinMutex<ProcInner>,
 }
 
@@ -172,6 +174,7 @@ impl Process {
             aspace: Aspace::new(pml4),
             handles: SpinMutex::new(HandleTable::new()),
             name: alloc::string::String::from(name),
+            io_map: SpinMutex::new(None),
             inner: SpinMutex::new(ProcInner { state: ProcState::Initial, threads: Vec::new(), return_code: 0, start_time: 0 }),
         });
         job.add_process(&p)?;

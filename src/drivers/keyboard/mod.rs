@@ -255,6 +255,53 @@ unsafe fn process_scancode(scancode: u8) {
     }
 }
 
+// ---------------------------------------------------------------------
+// Kernel input channel
+//
+// Since step 4 the PS/2 keyboard is driven by a userspace program
+// (`/bin/ps2kbd`). The USB keyboard driver still runs in the kernel: it is
+// polled on the timer tick and its characters go out over a channel whose
+// other end belongs to `init`, which forwards them to the shell.
+// ---------------------------------------------------------------------
+
+static KERNEL_INPUT: crate::sync::SpinMutex<Option<alloc::sync::Arc<crate::kobj::Channel>>> =
+    crate::sync::SpinMutex::new(None);
+static POLLING: AtomicBool = AtomicBool::new(false);
+
+/// Create the kernel input channel and return the end for `init`
+pub fn take_input_channel() -> alloc::sync::Arc<crate::kobj::Channel> {
+    let (ours, theirs) = crate::kobj::Channel::new_pair();
+    *KERNEL_INPUT.lock() = Some(ours);
+    theirs
+}
+
+/// Start polling USB on the timer tick (call once the scheduler runs)
+pub fn start_polling() {
+    POLLING.store(true, Ordering::Release);
+}
+
+/// Timer tick: poll the USB keyboards and send what they typed. Runs in
+/// the interrupt handler, which only fires in user mode or while the CPU
+/// idles, so no kernel lock is held by the code it interrupted.
+pub fn tick() {
+    if !POLLING.load(Ordering::Acquire) {
+        return;
+    }
+    crate::drivers::usb::poll();
+    let mut data = alloc::vec::Vec::new();
+    unsafe {
+        while let Some(b) = INPUT_BUFFER.read() {
+            data.push(b);
+        }
+    }
+    if data.is_empty() {
+        return;
+    }
+    if let Some(ch) = KERNEL_INPUT.lock().as_ref() {
+        let _ = ch.write(crate::kobj::channel::Message { data, handles: alloc::vec::Vec::new() });
+    }
+}
+
 /// Read a single character from the keyboard buffer
 ///
 /// # Returns
@@ -265,11 +312,6 @@ unsafe fn process_scancode(scancode: u8) {
 /// This function is non-blocking. Returns immediately if no data is available.
 pub fn read_char() -> Option<char> {
     unsafe {
-        if let Some(b) = INPUT_BUFFER.read() {
-            return Some(b as char);
-        }
-        poll();
-        crate::drivers::usb::poll();
         INPUT_BUFFER.read().map(|b| b as char)
     }
 }

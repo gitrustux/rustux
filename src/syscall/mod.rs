@@ -32,6 +32,7 @@
 //! ```
 
 pub mod fd;
+pub mod driver;
 pub mod memory;
 pub mod object;
 pub mod task;
@@ -355,6 +356,14 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x64 => sys_lseek(args),
 
         // Process Info (0x70-0x7F) - Phase 5A
+        // Drivers (0x80-0x8F)
+        0x80 => driver::sys_interrupt_create(args),
+        0x81 => driver::sys_interrupt_wait(args),
+        0x82 => driver::sys_interrupt_ack(args),
+        0x83 => driver::sys_interrupt_destroy(args),
+        0x84 => driver::sys_ioports_request(args),
+        0x85 => driver::sys_ioports_release(args),
+
         0x70 => sys_getpid(args),
         0x71 => sys_getppid(args),
         0x72 => sys_yield(args),
@@ -530,41 +539,12 @@ fn sys_read(args: SyscallArgs) -> SyscallRet {
 
         match file_desc.kind {
             FdKind::Stdin => {
-                // stdin (fd 0) - Read from keyboard driver
-                // Block until character available
-                if len == 0 {
-                    return ok_to_ret_isize(0);
-                }
-
-                // Release process table lock before blocking
-                drop(current);
-                drop(table);
-                if user::check(ptr as usize, 1, true).is_err() {
-                    return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-                }
-
-                // Block until character available from keyboard
-                // Sleep between checks: a PS/2 key wakes us at once (IRQ1);
-                // USB keyboards are polled, so wake every 10 ms anyway.
-                let ch = loop {
-                    if let Some(ch) = crate::drivers::keyboard::read_char() {
-                        break ch;
-                    }
-                    if crate::process::run::is_killed() {
-                        return err_to_ret(RxStatus::ERR_BAD_STATE);
-                    }
-                    if let Some(pid) = crate::process::table::PROCESS_TABLE.lock().current_pid() {
-                        crate::drivers::keyboard::set_waiter(pid);
-                    }
-                    crate::process::run::block_current(crate::kobj::now_ns() + 10_000_000);
-                };
-
-                // Write the character to userspace buffer
-                unsafe {
-                    *ptr = ch as u8;
-                }
-
-                return ok_to_ret_isize(1); // Read one character
+                // Keyboard input no longer comes through the kernel: the
+                // PS/2 driver is a userspace program, and init forwards its
+                // keys (and the kernel's USB keys) to the shell over a
+                // channel. There is no terminal behind fd 0.
+                let _ = (len, ptr);
+                return err_to_ret(RxStatus::ERR_NOT_SUPPORTED);
             }
             FdKind::File { inode, offset } => {
                 // Get the ramdisk file info

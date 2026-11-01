@@ -31,6 +31,7 @@ typedef int64_t rx_status_t;
 #define RX_ERR_NOT_FOUND       -5
 #define RX_ERR_BAD_STATE      -17
 #define RX_ERR_ALREADY_EXISTS -18
+#define RX_ERR_CANCELED       -19
 
 #define RX_TASK_RETCODE_SYSCALL_KILL   -1024
 #define RX_TASK_RETCODE_EXCEPTION_KILL -1025
@@ -64,6 +65,8 @@ typedef int64_t rx_status_t;
 #define RX_OBJ_TYPE_PROCESS   1
 #define RX_OBJ_TYPE_THREAD    2
 #define RX_OBJ_TYPE_VMO       3
+#define RX_OBJ_TYPE_INTERRUPT 9
+#define RX_OBJ_TYPE_RESOURCE  15
 #define RX_OBJ_TYPE_CHANNEL   4
 #define RX_OBJ_TYPE_JOB       17
 #define RX_OBJ_TYPE_VMAR      18
@@ -87,6 +90,9 @@ typedef int64_t rx_status_t;
 #define RX_PA_THREAD_SELF 0x02
 #define RX_PA_JOB_DEFAULT 0x03
 #define RX_PA_VMAR_ROOT   0x04
+#define RX_PA_ROOT_RESOURCE 0x20  // Rustux: root resource (init, drivers)
+#define RX_PA_KERNEL_INPUT  0x21  // Rustux: kernel input channel (init)
+#define RX_PA_USER0       0xF0    // handles a parent passes to a child
 
 #define RX_INFO_PROCESS 3
 typedef struct {
@@ -185,6 +191,29 @@ static inline rx_status_t rx_object_get_info(rx_handle_t h, uint32_t topic, void
 static inline rx_status_t rx_job_create(rx_handle_t parent, uint32_t options, rx_handle_t *out) { return RX_SYS(0x30, parent, options, out, 0); }
 static inline rx_status_t rx_handle_replace(rx_handle_t h, uint32_t rights, rx_handle_t *out) { return RX_SYS(0x32, h, rights, out, 0); }
 
+// Drivers (need the root resource)
+static inline rx_status_t rx_interrupt_create(rx_handle_t resource, uint32_t irq, uint32_t options, rx_handle_t *out) {
+    return RX_SYS(0x80, resource, irq, options, out);
+}
+static inline rx_status_t rx_interrupt_wait(rx_handle_t h, uint64_t *timestamp) { return RX_SYS(0x81, h, timestamp, 0, 0); }
+static inline rx_status_t rx_interrupt_ack(rx_handle_t h) { return RX_SYS(0x82, h, 0, 0, 0); }
+static inline rx_status_t rx_interrupt_destroy(rx_handle_t h) { return RX_SYS(0x83, h, 0, 0, 0); }
+static inline rx_status_t rx_ioports_request(rx_handle_t resource, uint16_t port, uint32_t len) { return RX_SYS(0x84, resource, port, len, 0); }
+static inline rx_status_t rx_ioports_release(rx_handle_t resource, uint16_t port, uint32_t len) { return RX_SYS(0x85, resource, port, len, 0); }
+static inline uint8_t rx_inb(uint16_t port) {
+    uint8_t v;
+    __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+static inline void rx_outb(uint16_t port, uint8_t v) { __asm__ volatile("outb %0, %1" : : "a"(v), "Nd"(port)); }
+
+// Start /bin/<name> from the ramdisk; `handles` (moved, may be NULL) go
+// into the child's bootstrap message with the given tags
+static inline int64_t rx_spawn_process(const char *path, rx_handle_t *proc_out,
+                                       const rx_handle_t *handles, const uint32_t *tags, uint32_t count) {
+    return RX_SYS6(0x0B, path, proc_out, handles, tags, count, 0);
+}
+
 static inline uint64_t rx_clock_get_monotonic(void) { return (uint64_t)RX_SYS(0x40, 0, 0, 0, 0); }
 static inline rx_status_t rx_timer_create(uint32_t options, uint32_t clock_id, rx_handle_t *out) { return RX_SYS(0x41, options, clock_id, out, 0); }
 static inline rx_status_t rx_timer_set(rx_handle_t h, uint64_t deadline, uint64_t slack) { return RX_SYS(0x42, h, deadline, slack, 0); }
@@ -198,23 +227,46 @@ static inline void rx_exit(int64_t code) { RX_SYS(0x06, code, 0, 0, 0); for (;;)
 // the first argument of _start. rx_startup() reads its one message and
 // fills these in.
 static rx_handle_t rx_proc_self, rx_thread_self, rx_job_default, rx_vmar_root;
+// Other handles in the bootstrap message, taken with rx_take_startup_handle
+static rx_handle_t rx_extra_handles[8];
+static uint32_t rx_extra_tags[8];
 
 static inline void rx_startup(rx_handle_t bootstrap) {
-    uint32_t tags[8];
-    rx_handle_t handles[8];
+    uint32_t tags[16];
+    rx_handle_t handles[16];
     uint32_t nb = 0, nh = 0;
-    if (rx_channel_read(bootstrap, 0, tags, handles, sizeof tags, 8, &nb, &nh) == RX_OK) {
+    if (rx_channel_read(bootstrap, 0, tags, handles, sizeof tags, 16, &nb, &nh) == RX_OK) {
         for (uint32_t i = 0; i < nh && i < nb / 4; i++) {
             switch (tags[i]) {
             case RX_PA_PROC_SELF: rx_proc_self = handles[i]; break;
             case RX_PA_THREAD_SELF: rx_thread_self = handles[i]; break;
             case RX_PA_JOB_DEFAULT: rx_job_default = handles[i]; break;
             case RX_PA_VMAR_ROOT: rx_vmar_root = handles[i]; break;
-            default: rx_handle_close(handles[i]); break;
+            default:
+                for (int k = 0; k < 8; k++) {
+                    if (!rx_extra_handles[k]) {
+                        rx_extra_handles[k] = handles[i];
+                        rx_extra_tags[k] = tags[i];
+                        break;
+                    }
+                }
+                break;
             }
         }
     }
     rx_handle_close(bootstrap);
+}
+
+// The startup handle with `tag` (0 if none); each can be taken once
+static inline rx_handle_t rx_take_startup_handle(uint32_t tag) {
+    for (int k = 0; k < 8; k++) {
+        if (rx_extra_handles[k] && rx_extra_tags[k] == tag) {
+            rx_handle_t h = rx_extra_handles[k];
+            rx_extra_handles[k] = 0;
+            return h;
+        }
+    }
+    return 0;
 }
 
 // --- tiny output helpers ---

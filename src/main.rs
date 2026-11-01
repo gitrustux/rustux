@@ -306,8 +306,17 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
         // Load /bin/init from the ramdisk into a new process in the root job
         // and hand the CPU to the scheduler; init runs first. The boot
         // context is never resumed.
-        match rustux::process::launch::spawn_elf("bin/init", &rustux::kobj::task::Job::root()) {
+        // init gets the root resource (to start drivers) and the kernel's
+        // input channel (USB keystrokes) besides the usual bootstrap handles
+        use rustux::kobj::{KObject, Rights};
+        use rustux::process::launch::pa;
+        let extra = alloc::vec![
+            (pa::ROOT_RESOURCE, KObject::Resource(rustux::kobj::interrupt::Resource::root()), Rights(Rights::RESOURCE)),
+            (pa::KERNEL_INPUT, KObject::Channel(rustux::drivers::keyboard::take_input_channel()), Rights(Rights::CHANNEL)),
+        ];
+        match rustux::process::launch::spawn_elf("bin/init", &rustux::kobj::task::Job::root(), extra) {
             Ok((_, tid)) => {
+                rustux::drivers::keyboard::start_polling();
                 debug_print("[INIT] init started\n");
                 debug_print("╔══════════════════════════════════════════════════════════╗\n");
                 debug_print("║  Jumping to Init Process (Userspace)                   ║\n");
@@ -350,8 +359,10 @@ pub extern "x86-interrupt" fn keyboard_handler(_sf: idt::X86Iframe) {
     use rustux::drivers::keyboard;
 
     unsafe {
-        // Use the new keyboard driver module to handle the IRQ
-        keyboard::handle_irq();
+        // The PS/2 keyboard belongs to the userspace driver (/bin/ps2kbd):
+        // just tell its interrupt object. With no driver bound the byte stays
+        // in the 8042 until one starts and reads it.
+        rustux::kobj::interrupt::Interrupt::dispatch(1);
 
         // Debug: show we received an interrupt
         // debug_print("[K]\n");
@@ -507,6 +518,8 @@ pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
         let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
         write_volatile((lapic + 0xB0) as *mut u32, 0);
     }
+    // USB keyboards (polled) -> kernel input channel
+    rustux::drivers::keyboard::tick();
     // Preempt only user mode: kernel code may hold spin locks that the next
     // process would need.
     if frame.cs & 3 == 3 {

@@ -33,6 +33,12 @@ pub mod pa {
     pub const THREAD_SELF: u32 = 0x02;
     pub const JOB_DEFAULT: u32 = 0x03;
     pub const VMAR_ROOT: u32 = 0x04;
+    /// Rustux: the root resource (given to init, passed on to drivers)
+    pub const ROOT_RESOURCE: u32 = 0x20;
+    /// Rustux: the kernel's input channel (USB keystrokes; given to init)
+    pub const KERNEL_INPUT: u32 = 0x21;
+    /// First tag for handles a parent passes to a child (Fuchsia PA_USER0)
+    pub const USER0: u32 = 0xF0;
 }
 
 fn alloc_table_page() -> Option<u64> {
@@ -196,8 +202,8 @@ pub fn map_stack(process: &Process) -> Result<u64, RxStatus> {
 /// Load `/bin/...` from the ramdisk and start it as a new process in
 /// `job`. The program gets a bootstrap channel in RDI holding one message:
 /// a u32 tag per handle (see [`pa`]), with handles to itself, its first
-/// thread, its job and its root VMAR.
-pub fn spawn_elf(path: &str, job: &Arc<Job>) -> Result<(Arc<Process>, u32), RxStatus> {
+/// thread, its job and its root VMAR, followed by `extra`.
+pub fn spawn_elf(path: &str, job: &Arc<Job>, extra: Vec<(u32, KObject, Rights)>) -> Result<(Arc<Process>, u32), RxStatus> {
     let ramdisk = crate::fs::ramdisk::get_ramdisk().map_err(|_| RxStatus::ERR_NOT_FOUND)?;
     let file = ramdisk.find_file(path).ok_or(RxStatus::ERR_NOT_FOUND)?;
     let elf = unsafe {
@@ -215,13 +221,17 @@ pub fn spawn_elf(path: &str, job: &Arc<Job>) -> Result<(Arc<Process>, u32), RxSt
     let thread = Thread::new(&process)?;
 
     let (ours, theirs) = Channel::new_pair();
-    let tags = [pa::PROC_SELF, pa::THREAD_SELF, pa::JOB_DEFAULT, pa::VMAR_ROOT];
-    let handles = alloc::vec![
+    let mut tags = alloc::vec![pa::PROC_SELF, pa::THREAD_SELF, pa::JOB_DEFAULT, pa::VMAR_ROOT];
+    let mut handles = alloc::vec![
         (KObject::Process(process.clone()), Rights(Rights::PROCESS)),
         (KObject::Thread(thread.clone()), Rights(Rights::THREAD)),
         (KObject::Job(job.clone()), Rights(Rights::JOB)),
         (KObject::Vmar(Vmar::root(process.aspace.clone())), Rights(Rights::VMAR)),
     ];
+    for (tag, obj, rights) in extra {
+        tags.push(tag);
+        handles.push((obj, rights));
+    }
     let data = tags.iter().flat_map(|t| t.to_le_bytes()).collect();
     ours.write(crate::kobj::channel::Message { data, handles }).map_err(|(e, _)| e)?;
     drop(ours);
