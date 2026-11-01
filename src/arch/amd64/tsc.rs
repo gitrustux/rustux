@@ -97,13 +97,78 @@ pub unsafe fn x86_set_tsc_frequency(freq: u64) {
 /// The calibrated TSC frequency in Hz, or the default frequency if
 /// calibration fails.
 pub fn x86_calibrate_tsc() -> u64 {
-    // TODO: Implement proper TSC calibration using PIT/HPET/ACPI
-    // For now, return a default frequency
-    let default_freq = DEFAULT_TSC_FREQUENCY;
+    // Measure the TSC over 10 ms of PIT channel 2 (the PC speaker timer,
+    // free on every PC): gate on, speaker off, mode 0 counts down once and
+    // raises OUT2 (port 0x61 bit 5) when it reaches zero.
+    const PIT_HZ: u64 = 1_193_182;
+    const MS: u64 = 10;
     unsafe {
-        x86_set_tsc_frequency(default_freq);
+        let inb = |port: u16| -> u8 {
+            let v: u8;
+            core::arch::asm!("in al, dx", in("dx") port, out("al") v, options(nomem, nostack, preserves_flags));
+            v
+        };
+        let outb = |port: u16, v: u8| {
+            core::arch::asm!("out dx, al", in("dx") port, in("al") v, options(nomem, nostack, preserves_flags));
+        };
+        let port61 = inb(0x61);
+        outb(0x61, (port61 & !0x02) | 0x01);
+        outb(0x43, 0xB0); // channel 2, lobyte/hibyte, mode 0
+        let count = (PIT_HZ * MS / 1000) as u16;
+        outb(0x42, count as u8);
+        outb(0x42, (count >> 8) as u8);
+
+        let start = rdtsc();
+        let mut spins: u64 = 0;
+        let mut ok = true;
+        while inb(0x61) & 0x20 == 0 {
+            spins += 1;
+            if spins > 50_000_000 {
+                ok = false; // no working PIT
+                break;
+            }
+        }
+        let end = rdtsc();
+        outb(0x61, port61);
+
+        let freq = (end - start) * (1000 / MS);
+        let freq = if ok && freq > 100_000_000 { freq } else { DEFAULT_TSC_FREQUENCY };
+        x86_set_tsc_frequency(freq);
+        freq
     }
-    default_freq
+}
+
+/// TSC ticks per microsecond
+fn ticks_per_us() -> u64 {
+    core::cmp::max(x86_tsc_frequency() / 1_000_000, 1)
+}
+
+/// Busy-wait for `us` microseconds (uses the calibrated TSC)
+pub fn delay_us(us: u64) {
+    let end = unsafe { rdtsc() } + us * ticks_per_us();
+    while unsafe { rdtsc() } < end {
+        core::hint::spin_loop();
+    }
+}
+
+/// Busy-wait for `ms` milliseconds
+pub fn delay_ms(ms: u64) {
+    delay_us(ms * 1000);
+}
+
+/// A point in time for timeouts
+#[derive(Clone, Copy)]
+pub struct Deadline(u64);
+
+impl Deadline {
+    /// `ms` milliseconds from now
+    pub fn after_ms(ms: u64) -> Self {
+        Deadline(unsafe { rdtsc() } + ms * 1000 * ticks_per_us())
+    }
+
+    pub fn expired(&self) -> bool {
+        (unsafe { rdtsc() }) >= self.0
+    }
 }
 
 /// Store the TSC adjustment for suspend/resume

@@ -18,6 +18,9 @@ pub mod keyboard;
 /// Display drivers (framebuffer, console)
 pub mod display;
 
+/// USB host (xHCI), hubs and HID boot keyboards
+pub mod usb;
+
 // Re-exports
 pub use uart::{Uart16550, COM1_PORT, COM2_PORT, COM3_PORT, COM4_PORT, init_com1, com1};
 pub use keyboard::{KeyEvent, ModifierState, SpecialKey};

@@ -305,8 +305,8 @@ void _start(void) {
     static char *argv[MAX_ARGS];
     int argc;
 
-    // Clear screen and show welcome
-    cmd_clear();
+    // Show welcome below the boot log (the kernel clears the screen when
+    // its console starts; the USB/PS/2 messages stay visible)
     show_welcome();
 
     // Main shell loop

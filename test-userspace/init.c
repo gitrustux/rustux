@@ -62,7 +62,7 @@ static inline void print(const char *str) {
 }
 
 void _start(void) {
-    print("\033[2J\033[H");  // Clear screen
+    // No screen clear: keep the kernel boot log (USB, PS/2) visible
     print("Init process (PID 1) starting...\n");
     print("Spawning shell...\n\n");
 

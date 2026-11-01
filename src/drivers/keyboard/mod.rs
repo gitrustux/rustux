@@ -251,7 +251,22 @@ pub fn read_char() -> Option<char> {
             return Some(b as char);
         }
         poll();
+        crate::drivers::usb::poll();
         INPUT_BUFFER.read().map(|b| b as char)
+    }
+}
+
+/// Add a character from another keyboard (USB) to the input buffer.
+/// Interrupts are disabled around the write: the IRQ1 handler writes the
+/// same buffer.
+pub fn push_input(c: u8) {
+    unsafe {
+        let flags: u64;
+        core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem));
+        INPUT_BUFFER.write(c);
+        if flags & 0x200 != 0 {
+            core::arch::asm!("sti", options(nomem, nostack));
+        }
     }
 }
 

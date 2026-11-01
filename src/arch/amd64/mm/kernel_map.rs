@@ -37,6 +37,16 @@ pub const PTE_WRITABLE: u64 = 1 << 1;
 pub const PTE_USER: u64 = 1 << 2;
 const PTE_HUGE: u64 = 1 << 7;
 pub const PTE_NO_EXECUTE: u64 = 1 << 63;
+/// Page-level write-through / cache-disable (uncached when both set)
+pub const PTE_PWT: u64 = 1 << 3;
+pub const PTE_PCD: u64 = 1 << 4;
+
+/// Device register (MMIO) window: PML4 entry 257. Its PDPT is created by
+/// [`init`], so every address space (which copies PML4 256-511 when it is
+/// created) shares the mappings added later by [`map_mmio`].
+pub const MMIO_BASE: u64 = 0xffff_8080_0000_0000;
+const MMIO_SIZE: u64 = 1 << 39;
+static MMIO_NEXT: AtomicU64 = AtomicU64::new(MMIO_BASE);
 const PTE_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 
 static HHDM_READY: AtomicBool = AtomicBool::new(false);
@@ -165,6 +175,11 @@ pub unsafe fn init(alloc: AllocFn) -> Result<(), &'static str> {
     *pml4_t.add(0) = pdpt | flags;
     *pml4_t.add(256) = pdpt | flags;
 
+    // Empty PDPT for the device register window (see MMIO_BASE)
+    let mmio_pdpt = alloc().ok_or("kernel_map: out of pages (MMIO PDPT)")?;
+    zero_page(mmio_pdpt);
+    *pml4_t.add(257) = mmio_pdpt | flags;
+
     core::arch::asm!("mov cr3, {}", in(reg) pml4, options(nostack));
     KERNEL_PML4.store(pml4, Ordering::Release);
     HHDM_READY.store(true, Ordering::Release);
@@ -251,6 +266,48 @@ pub unsafe fn map_4k(pml4: u64, vaddr: u64, paddr: u64, flags: u64, alloc: Alloc
     }
     *t.add(pt_idx) = paddr | PTE_PRESENT | (flags & (PTE_WRITABLE | PTE_USER | PTE_NO_EXECUTE));
     Ok(())
+}
+
+/// Map `size` bytes of device registers at physical `paddr` uncached
+/// (PCD|PWT, no execute) into the MMIO window and return the kernel virtual
+/// address of `paddr`. Mappings are never removed.
+///
+/// # Safety
+/// [`init`] must have run. `paddr` must be device memory, not RAM.
+pub unsafe fn map_mmio(paddr: u64, size: u64, alloc: AllocFn) -> Result<u64, &'static str> {
+    let kernel = kernel_pml4();
+    if kernel == 0 {
+        return Err("kernel_map: not initialised");
+    }
+    let first = paddr & !(PAGE_SIZE - 1);
+    let last = (paddr + size.max(1) + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let pages = (last - first) / PAGE_SIZE;
+    let va_base = MMIO_NEXT.fetch_add(pages * PAGE_SIZE, Ordering::AcqRel);
+    if va_base + pages * PAGE_SIZE > MMIO_BASE + MMIO_SIZE {
+        return Err("kernel_map: MMIO window full");
+    }
+    let flags = PTE_PRESENT | PTE_WRITABLE | PTE_PCD | PTE_PWT | PTE_NO_EXECUTE;
+    for i in 0..pages {
+        let vaddr = va_base + i * PAGE_SIZE;
+        // PML4[257] exists (init); walk/create PDPT -> PD -> PT
+        let mut t = table(*table(kernel).add(257) & PTE_ADDR_MASK);
+        for shift in [30u64, 21] {
+            let idx = ((vaddr >> shift) & 0x1ff) as usize;
+            let entry = *t.add(idx);
+            let next = if entry & PTE_PRESENT == 0 {
+                let p = alloc().ok_or("kernel_map: out of pages (MMIO table)")?;
+                zero_page(p);
+                *t.add(idx) = p | PTE_PRESENT | PTE_WRITABLE;
+                p
+            } else {
+                entry & PTE_ADDR_MASK
+            };
+            t = table(next);
+        }
+        *t.add(((vaddr >> 12) & 0x1ff) as usize) = (first + i * PAGE_SIZE) | flags;
+        core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack));
+    }
+    Ok(va_base + (paddr - first))
 }
 
 /// Translate a lower-half address through `pml4` (debugging aid).

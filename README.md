@@ -26,10 +26,11 @@ UEFI Firmware → BOOTX64.EFI (rustux.efi) → Kernel → Init (PID 1) → Shell
 
 ### Known Issues
 
+- **USB is keyboards only** (xHCI, USB 2.0 hubs, HID boot keyboards; polled). Root-port hot-plug works (KVM switching); a device unplugged from a hub's own port is not noticed, and a keyboard endpoint that halts is not recovered. See `src/drivers/usb/`.
+
 - **No `wait`.** The shell starts a program and immediately shows its prompt, so program output can appear after the next prompt.
 - **Boot services memory is not reclaimed.** The PMM uses only the free (`EfiConventionalMemory`) regions of the UEFI memory map; memory the firmware used during boot (`EfiBootServicesCode/Data`) stays unused.
 - **The kernel image still runs at the address UEFI loaded it to** and is mapped (supervisor-only) into each process's lower half. User programs must not overlap it.
-- **No USB keyboard support.** Only PS/2 is implemented, so most modern hardware has no keyboard input. USB HID (xHCI) is the next driver; see [`docs/usb-keyboard.md`](docs/usb-keyboard.md).
 - **Local APIC register struct** in `src/arch/amd64/apic.rs` does not match the Intel layout (the EOI and TPR writes the kernel uses are correct). See [`docs/README.md`](docs/README.md#known-issues).
 
 ## Building

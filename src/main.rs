@@ -206,6 +206,14 @@ fn kernel_main_on_new_stack() -> ! {
     }
     debug_print("      ✓ Display console initialized\n\n");
 
+    // USB keyboards (xHCI, hubs), after the console so the log is visible.
+    // Timeouts need a calibrated TSC.
+    let tsc_hz = rustux::arch::amd64::tsc::x86_calibrate_tsc();
+    debug_print("[TSC] ");
+    print_hex(tsc_hz);
+    debug_print(" Hz\n");
+    rustux::drivers::usb::init();
+
     // Initialize ramdisk (Phase 5C)
     debug_print("╔══════════════════════════════════════════════════════════╗\n");
     debug_print("║  PHASE 5C: Initializing Ramdisk                          ║\n");

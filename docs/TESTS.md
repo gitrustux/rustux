@@ -48,6 +48,16 @@ gcc $F -T userspace/c-progs/linker.ld -o userspace/c-progs/counter.elf userspace
 ./test-qemu.sh          # builds rustux.img, boots it, checks the log for [TICK]
 ```
 
+USB keyboards: add a controller and devices, e.g. a keyboard behind a hub, and turn off PS/2 so typing can only come through USB:
+
+```bash
+qemu-system-x86_64 -machine q35,i8042=off ... \
+  -device qemu-xhci,id=x -device usb-hub,bus=x.0,port=1 \
+  -device usb-tablet,bus=x.0,port=1.1 -device usb-kbd,bus=x.0,port=1.2
+```
+
+The monitor commands `device_del` / `device_add` on the hub simulate a KVM switching away and back. The boot log lists each device (`[USB] Port 5: ...`, `keyboard 0627:0001 ready`).
+
 Try different memory sizes too: the PMM is built from the firmware's memory map, so `-m 128M`, `-m 512M` and `-m 6G` (memory above 4 GiB) exercise different layouts.
 
 Manually:
