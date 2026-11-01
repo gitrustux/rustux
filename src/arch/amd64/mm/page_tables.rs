@@ -151,6 +151,22 @@ pub enum RxStatus {
     ERR_INTERNAL = 8,
     /// Not supported
     ERR_NOT_SUPPORTED = 9,
+    /// Handle does not name an object in this process
+    ERR_BAD_HANDLE = 10,
+    /// Handle names an object of the wrong type
+    ERR_WRONG_TYPE = 11,
+    /// Deadline passed
+    ERR_TIMED_OUT = 12,
+    /// Nothing available yet (e.g. channel empty)
+    ERR_SHOULD_WAIT = 13,
+    /// The other end was closed
+    ERR_PEER_CLOSED = 14,
+    /// Buffer too small for the result
+    ERR_BUFFER_TOO_SMALL = 15,
+    /// Argument out of range
+    ERR_OUT_OF_RANGE = 16,
+    /// Operation not valid in the object's current state
+    ERR_BAD_STATE = 17,
 }
 
 /// Result type using RxStatus

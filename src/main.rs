@@ -9,7 +9,7 @@ extern crate rustux;
 
 use uefi::prelude::*;
 use core::arch::asm;
-use core::ptr::write_volatile;
+use core::ptr::{read_volatile, write_volatile};
 
 use rustux::arch::amd64::{descriptor, idt, apic};
 use rustux::drivers::keyboard;
@@ -234,11 +234,29 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
 
     // Configure timer
     debug_print("[5/5] Configuring timer...\n");
+    // Calibrate the TSC (PIT), then measure the LAPIC timer against it and
+    // program a 10 ms periodic tick. The tick drives preemption and wakes
+    // processes whose wait deadlines have passed.
+    let tsc_hz = rustux::arch::amd64::tsc::x86_calibrate_tsc();
+    debug_print("[TSC] ");
+    print_hex(tsc_hz);
+    debug_print(" Hz\n");
     unsafe {
         let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
-        write_volatile((lapic + 0x3E0) as *mut u32, 0x03);
-        write_volatile((lapic + 0x320) as *mut u32, 32 | (1 << 17));
-        write_volatile((lapic + 0x380) as *mut u32, 10_000_000);
+        write_volatile((lapic + 0x3E0) as *mut u32, 0x03); // divide by 16
+        write_volatile((lapic + 0x320) as *mut u32, 32 | (1 << 16)); // one-shot, masked
+        write_volatile((lapic + 0x380) as *mut u32, u32::MAX);
+        rustux::arch::amd64::tsc::delay_ms(10);
+        let left = read_volatile((lapic + 0x390) as *const u32);
+        let per_10ms = match u32::MAX - left {
+            0 => 10_000_000, // timer did not count: old fixed value
+            n => n,
+        };
+        write_volatile((lapic + 0x320) as *mut u32, 32 | (1 << 17)); // periodic
+        write_volatile((lapic + 0x380) as *mut u32, per_10ms);
+        debug_print("[TIMER] 10 ms tick = ");
+        print_hex(per_10ms as u64);
+        debug_print(" LAPIC counts\n");
     }
     debug_print("      ✓ Timer configured\n\n");
 
@@ -252,11 +270,7 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     debug_print("      ✓ Display console initialized\n\n");
 
     // USB keyboards (xHCI, hubs), after the console so the log is visible.
-    // Timeouts need a calibrated TSC.
-    let tsc_hz = rustux::arch::amd64::tsc::x86_calibrate_tsc();
-    debug_print("[TSC] ");
-    print_hex(tsc_hz);
-    debug_print(" Hz\n");
+    // (The TSC was calibrated with the timer.)
     rustux::drivers::usb::init();
 
     // Initialize ramdisk (Phase 5C)
@@ -560,9 +574,14 @@ unsafe fn install_exception_handlers() {
 #[no_mangle]
 pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
     unsafe {
-        let msg = b"[TICK]\n";
-        for &b in msg {
-            asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack, preserves_flags));
+        // Report the first tick only (test-qemu.sh looks for it); a line per
+        // tick at 100 Hz just floods the debug port
+        static mut TICKS: u64 = 0;
+        TICKS += 1;
+        if TICKS == 1 {
+            for &b in b"[TICK]\n" {
+                asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack, preserves_flags));
+            }
         }
         let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
         write_volatile((lapic + 0xB0) as *mut u32, 0);

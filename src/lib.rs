@@ -116,6 +116,9 @@ pub mod exec;
 // Kernel objects (capability-based security)
 pub mod object;
 
+/// Kernel objects reached through handles (events, timers, channels, ...)
+pub mod kobj;
+
 // Re-export commonly used types
 pub use traits::{
     InterruptController,

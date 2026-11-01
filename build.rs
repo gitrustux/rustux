@@ -114,6 +114,7 @@ fn main() {
     let potential_elf_files: Vec<(&[&'static str], &'static str)> = vec![
         (&["target/hello.elf", "userspace/c-progs/hello.elf"], "bin/hello"),
         (&["target/counter.elf", "userspace/c-progs/counter.elf"], "bin/counter"),
+        (&["target/objtest.elf", "userspace/c-progs/objtest.elf"], "bin/objtest"),
         (&["target/init.elf", "test-userspace/init.elf"], "bin/init"),
         (&["target/shell.elf", "test-userspace/shell/shell.elf"], "bin/shell"),
     ];

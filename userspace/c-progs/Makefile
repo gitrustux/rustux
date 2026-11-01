@@ -8,7 +8,7 @@ CFLAGS = -ffreestanding -nostdlib -fno-stack-protector -fno-pic -O2 -Wall -Wextr
 LDFLAGS = -nostdlib -T linker.ld
 
 # Default target
-all: hello.elf counter.elf init.elf
+all: hello.elf counter.elf init.elf objtest.elf
 
 # Build hello.elf
 hello.elf: hello.o
@@ -29,6 +29,13 @@ init.elf: init.o
 	$(LD) $(LDFLAGS) -o $@ $<
 
 init.o: init.c syscall.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Build objtest.elf (object syscall tests)
+objtest.elf: objtest.o
+	$(LD) $(LDFLAGS) -o $@ $<
+
+objtest.o: objtest.c rx.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Copy binaries to expected locations

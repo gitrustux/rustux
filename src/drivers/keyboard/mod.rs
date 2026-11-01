@@ -141,6 +141,24 @@ pub unsafe fn handle_irq() {
         }
         process_scancode(byte);
     }
+    if INPUT_BUFFER.has_data() {
+        wake_waiter();
+    }
+}
+
+/// Process waiting for keyboard input (0 = none); woken by IRQ1
+static WAITER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Register the process to wake when a key arrives
+pub fn set_waiter(pid: u32) {
+    WAITER.store(pid, Ordering::Release);
+}
+
+fn wake_waiter() {
+    let pid = WAITER.load(Ordering::Acquire);
+    if pid != 0 {
+        crate::process::run::wake(pid);
+    }
 }
 
 /// Polling fallback for when IRQ1 is not delivered (e.g. a firmware

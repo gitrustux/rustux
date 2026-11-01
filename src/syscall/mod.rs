@@ -32,6 +32,8 @@
 //! ```
 
 pub mod fd;
+pub mod object;
+pub mod user;
 
 use crate::arch::amd64::mm::RxStatus;
 
@@ -315,22 +317,24 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x20 => sys_channel_create(args),
         0x21 => sys_channel_write(args),
         0x22 => sys_channel_read(args),
-        0x23 => sys_event_create(args),
-        0x24 => sys_eventpair_create(args),
-        0x25 => sys_object_signal(args),
-        0x26 => sys_object_wait_one(args),
-        0x27 => sys_object_wait_many(args),
+        0x23 => object::sys_event_create(args),
+        0x24 => object::sys_eventpair_create(args),
+        0x25 => object::sys_object_signal(args),
+        0x26 => object::sys_object_wait_one(args),
+        0x27 => object::sys_object_wait_many(args),
+        0x28 => object::sys_object_signal_peer(args),
+        0x29 => object::sys_object_get_type(args),
 
         // Jobs & Handles (0x30-0x3F)
         0x30 => sys_job_create(args),
-        0x31 => sys_handle_duplicate(args),
+        0x31 => object::sys_handle_duplicate(args),
         0x32 => sys_handle_transfer(args),
 
         // Time (0x40-0x4F)
         0x40 => sys_clock_get(args),
-        0x41 => sys_timer_create(args),
-        0x42 => sys_timer_set(args),
-        0x43 => sys_timer_cancel(args),
+        0x41 => object::sys_timer_create(args),
+        0x42 => object::sys_timer_set(args),
+        0x43 => object::sys_timer_cancel(args),
 
         // Debug (0x50-0x5F)
         0x50 => sys_debug_write(args),
@@ -742,10 +746,7 @@ fn sys_process_exit(args: SyscallArgs) -> SyscallRet {
 }
 
 fn sys_handle_close(args: SyscallArgs) -> SyscallRet {
-    let handle = args.arg_u32(0);
-    // TODO: Implement handle close
-    let _ = handle;
-    ok_to_ret(0)
+    object::sys_handle_close(args)
 }
 
 // Memory / VMO syscalls
@@ -761,15 +762,9 @@ syscall_stub!(sys_vmar_protect);
 syscall_stub!(sys_channel_create);
 syscall_stub!(sys_channel_write);
 syscall_stub!(sys_channel_read);
-syscall_stub!(sys_event_create);
-syscall_stub!(sys_eventpair_create);
-syscall_stub!(sys_object_signal);
-syscall_stub!(sys_object_wait_one);
-syscall_stub!(sys_object_wait_many);
 
 // Jobs & Handles syscalls
 syscall_stub!(sys_job_create);
-syscall_stub!(sys_handle_duplicate);
 syscall_stub!(sys_handle_transfer);
 
 // Time syscalls
@@ -782,9 +777,6 @@ fn sys_clock_get(args: SyscallArgs) -> SyscallRet {
     ok_to_ret_isize(time_ns as isize)
 }
 
-syscall_stub!(sys_timer_create);
-syscall_stub!(sys_timer_set);
-syscall_stub!(sys_timer_cancel);
 
 // Debug syscalls
 /// Debug write syscall - writes a string to the debug console
@@ -925,12 +917,16 @@ fn sys_read(args: SyscallArgs) -> SyscallRet {
                 drop(table);
 
                 // Block until character available from keyboard
+                // Sleep between checks: a PS/2 key wakes us at once (IRQ1);
+                // USB keyboards are polled, so wake every 10 ms anyway.
                 let ch = loop {
                     if let Some(ch) = crate::drivers::keyboard::read_char() {
                         break ch;
                     }
-                    // Yield to other processes while waiting
-                    let _ = crate::sched::round_robin::yield_cpu();
+                    if let Some(pid) = crate::process::table::PROCESS_TABLE.lock().current_pid() {
+                        crate::drivers::keyboard::set_waiter(pid);
+                    }
+                    crate::process::run::block_current(crate::kobj::now_ns() + 10_000_000);
                 };
 
                 // Write the character to userspace buffer

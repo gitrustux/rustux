@@ -196,6 +196,9 @@ pub struct Process {
 
     /// Process name (for debugging)
     pub name: Option<alloc::string::String>,
+
+    /// Handles to kernel objects
+    pub handles: crate::kobj::HandleTable,
 }
 
 impl Process {
@@ -239,6 +242,7 @@ impl Process {
             cpu_time: 0,
             sched_time: 0,
             name: None,
+            handles: crate::kobj::HandleTable::new(),
         }
     }
 

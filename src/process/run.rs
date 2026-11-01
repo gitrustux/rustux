@@ -15,11 +15,89 @@
 //! (inside a syscall, an interrupt handler, or, for a new process, a
 //! trampoline that enters user mode with `iretq`).
 //!
-//! Switches happen on `yield`, on `exit`, and on timer interrupts taken in
-//! user mode. Kernel code is never preempted, so spin locks held in the
-//! kernel cannot be contended by another process on this single CPU.
+//! Switches happen on `yield`, on `exit`, when a process blocks, and on
+//! timer interrupts taken in user mode. Kernel code is never preempted, so
+//! spin locks held in the kernel cannot be contended by another process on
+//! this single CPU.
+//!
+//! Blocking: [`block_current`] marks the process `Blocked` with an optional
+//! deadline. [`wake`] only sets an atomic flag, so it is safe from any
+//! context, interrupt handlers included. The scheduler treats a blocked
+//! process as runnable once its flag is set or its deadline has passed. When
+//! nothing can run, the CPU halts until the next interrupt (timer tick,
+//! keyboard) and looks again.
 
 use crate::process::table::{ProcessState, PROCESS_TABLE};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Process ids are below this (the process table size)
+const MAX_PIDS: usize = 256;
+
+#[allow(clippy::declare_interior_mutable_const)]
+const WAKE_INIT: AtomicBool = AtomicBool::new(false);
+#[allow(clippy::declare_interior_mutable_const)]
+const DEADLINE_INIT: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Set by [`wake`]; consumed when the process is scheduled
+static WAKE: [AtomicBool; MAX_PIDS] = [WAKE_INIT; MAX_PIDS];
+/// Monotonic ns at which a blocked process becomes runnable anyway
+static DEADLINE: [AtomicU64; MAX_PIDS] = [DEADLINE_INIT; MAX_PIDS];
+
+/// Make `pid` runnable if it is blocked (or make its next block return at
+/// once). Safe from interrupt handlers.
+pub fn wake(pid: u32) {
+    if (pid as usize) < MAX_PIDS {
+        WAKE[pid as usize].store(true, Ordering::Release);
+    }
+}
+
+/// Block the current process until [`wake`] is called for it or the
+/// monotonic clock reaches `deadline` (ns; `u64::MAX` = no deadline).
+/// Returns at once if a wake-up is already pending. Callers re-check their
+/// condition afterwards: wake-ups can be spurious.
+pub fn block_current(deadline: u64) {
+    let flags = save_and_disable_interrupts();
+    let cur = PROCESS_TABLE.lock().current_pid();
+    if let Some(cur) = cur {
+        let i = cur as usize;
+        if i < MAX_PIDS && !WAKE[i].swap(false, Ordering::AcqRel) {
+            DEADLINE[i].store(deadline, Ordering::Release);
+            switch_away(ProcessState::Blocked);
+            WAKE[i].store(false, Ordering::Release);
+            DEADLINE[i].store(u64::MAX, Ordering::Release);
+        }
+    }
+    restore_interrupts(flags);
+}
+
+/// Next process to run after `cur` (round robin), `cur` itself last.
+/// Blocked processes whose wake flag is set or deadline passed become Ready.
+fn pick_next(table: &mut crate::process::table::ProcessTable, cur: u32) -> Option<u32> {
+    let mut now: Option<u64> = None;
+    for k in 1..=MAX_PIDS as u32 {
+        let pid = (cur + k) % MAX_PIDS as u32;
+        let p = match table.get_mut(pid) {
+            Some(p) => p,
+            None => continue,
+        };
+        match p.state {
+            ProcessState::Ready | ProcessState::Running => return Some(pid),
+            ProcessState::Blocked => {
+                let i = pid as usize;
+                let deadline = DEADLINE[i].load(Ordering::Acquire);
+                let expired = deadline != u64::MAX && {
+                    let n = *now.get_or_insert_with(crate::kobj::now_ns);
+                    n >= deadline
+                };
+                if WAKE[i].load(Ordering::Acquire) || expired {
+                    p.state = ProcessState::Ready;
+                    return Some(pid);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
 
 core::arch::global_asm!(
     // rustux_switch_stacks(save_rsp: *mut u64, new_rsp: u64, new_cr3: u64)  [sysv64]
@@ -146,25 +224,32 @@ pub fn yield_now() {
 }
 
 /// End the current process and run the next one. Never returns.
+/// Its handles are closed first (peers see PEER_CLOSED, waiters wake).
 pub fn exit_current() -> ! {
-    switch_away(ProcessState::Zombie);
-    // No other process can run: idle in the kernel's own address space.
-    unsafe {
-        let pml4 = crate::arch::amd64::mm::kernel_map::kernel_pml4();
-        core::arch::asm!("mov cr3, {}", in(reg) pml4, options(nostack));
-        loop {
-            core::arch::asm!("sti", "hlt", options(nomem, nostack));
+    let objects = {
+        let mut table = PROCESS_TABLE.lock();
+        match table.current_pid().and_then(|c| table.get_mut(c)) {
+            Some(p) => p.handles.take_all(),
+            None => alloc::vec::Vec::new(),
         }
+    };
+    drop(objects);
+    switch_away(ProcessState::Zombie);
+    // Not reached: switch_away idles until another process can run, and a
+    // zombie is never scheduled again.
+    loop {
+        unsafe { core::arch::asm!("cli", "hlt", options(nomem, nostack)) };
     }
 }
 
 /// Switch to the next runnable process, leaving the current one in `state`.
-/// Returns when the current process is scheduled again (or immediately if
-/// nothing else can run and the current process is still runnable). For
-/// non-runnable states it returns only if no other process exists.
+/// Returns when the current process is scheduled again (at once if it is
+/// still runnable and nothing else is). If nothing at all can run, halts
+/// until an interrupt and looks again.
 fn switch_away(state: ProcessState) {
     let flags = save_and_disable_interrupts();
-    let switch = {
+    let mut first = true;
+    loop {
         let mut table = PROCESS_TABLE.lock();
         let cur = match table.current_pid() {
             Some(c) => c,
@@ -174,10 +259,13 @@ fn switch_away(state: ProcessState) {
                 return;
             }
         };
-        if let Some(p) = table.get_mut(cur) {
-            p.state = state;
+        if first {
+            if let Some(p) = table.get_mut(cur) {
+                p.state = state;
+            }
+            first = false;
         }
-        match table.find_next_runnable(Some(cur)) {
+        match pick_next(&mut table, cur) {
             Some(next) if next != cur => {
                 let save: *mut u64 = match table.get_mut(cur) {
                     Some(p) => core::ptr::addr_of_mut!(p.kernel_rsp),
@@ -185,25 +273,33 @@ fn switch_away(state: ProcessState) {
                 };
                 let n = table.get_mut(next).expect("runnable process vanished");
                 n.state = ProcessState::Running;
-                let v = (save, n.kernel_rsp, n.page_table, n.kernel_stack);
+                let (rsp, cr3, kstack) = (n.kernel_rsp, n.page_table, n.kernel_stack);
                 table.set_current(next);
-                Some(v)
-            }
-            _ => {
-                if state == ProcessState::Ready {
-                    if let Some(p) = table.get_mut(cur) {
-                        p.state = ProcessState::Running;
-                    }
+                drop(table);
+                unsafe {
+                    crate::arch::amd64::descriptor::set_tss_rsp0(kstack);
+                    rustux_switch_stacks(save, rsp, cr3);
                 }
-                None
+                // Scheduled again
+                restore_interrupts(flags);
+                return;
             }
-        }
-    };
-    if let Some((save, rsp, cr3, kstack)) = switch {
-        unsafe {
-            crate::arch::amd64::descriptor::set_tss_rsp0(kstack);
-            rustux_switch_stacks(save, rsp, cr3);
+            Some(_) => {
+                // The current process itself is runnable (yield with nothing
+                // else ready, or woken while looking)
+                if let Some(p) = table.get_mut(cur) {
+                    p.state = ProcessState::Running;
+                }
+                drop(table);
+                restore_interrupts(flags);
+                return;
+            }
+            None => {
+                // Nothing can run: wait for an interrupt (timer tick,
+                // keyboard) that may wake someone or pass a deadline
+                drop(table);
+                unsafe { core::arch::asm!("sti", "hlt", "cli", options(nomem, nostack)) };
+            }
         }
     }
-    restore_interrupts(flags);
 }

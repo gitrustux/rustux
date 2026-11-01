@@ -1,8 +1,8 @@
 # Rustux Kernel - System Call Reference
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 **ABI Version:** Stable v1
-**Date:** 2025-01-18
+**Date:** 2026-11-01
 
 ---
 
@@ -115,18 +115,30 @@ Failure: Return negative error code
 
 ### Error Codes
 
+Errors are returned as the negative of these values (`-10` = `ERR_BAD_HANDLE`).
+The C header `userspace/c-progs/rx.h` defines them as `RX_ERR_*`.
+
 | Error Code | Value | Description |
 |------------|-------|-------------|
-| `ERR_NOT_SUPPORTED` | -1 | Syscall not implemented |
-| `ERR_NO_MEMORY` | -2 | Out of memory |
-| `ERR_INVALID_ARGS` | -3 | Invalid arguments |
-| `ERR_BAD_HANDLE` | -4 | Invalid handle |
-| `ERR_ACCESS_DENIED` | -5 | Insufficient rights |
-| `ERR_IO` | -6 | I/O error |
-| `ERR_TIMED_OUT` | -7 | Operation timed out |
-| `ERR_INTERRUPTED` | -8 | Operation interrupted |
-| `ERR_NOT_FOUND` | -9 | Resource not found |
-| `ERR_ALREADY_EXISTS` | -10 | Resource already exists |
+| `ERR_INVALID_ARGS` | 1 | Invalid argument, or a user pointer that is unmapped, read-only when written, or not in the lower half |
+| `ERR_NO_MEMORY` | 2 | Out of memory, or the handle table is full (1024 handles) |
+| `ERR_NOT_IMPLEMENTED` | 3 | Syscall is still a stub |
+| `ERR_ACCESS_DENIED` | 4 | The handle lacks a required right |
+| `ERR_NOT_FOUND` | 5 | Resource not found |
+| `ERR_BUSY` | 6 | Resource busy |
+| `ERR_IO` | 7 | I/O error |
+| `ERR_INTERNAL` | 8 | Internal kernel error |
+| `ERR_NOT_SUPPORTED` | 9 | Operation not supported (unknown options or clock) |
+| `ERR_BAD_HANDLE` | 10 | Handle is not valid in this process (never existed, closed, or stale) |
+| `ERR_WRONG_TYPE` | 11 | Handle refers to an object of the wrong type |
+| `ERR_TIMED_OUT` | 12 | Deadline passed before the signals were seen |
+| `ERR_SHOULD_WAIT` | 13 | Operation would block |
+| `ERR_PEER_CLOSED` | 14 | The other end of a pair was closed |
+| `ERR_BUFFER_TOO_SMALL` | 15 | Output buffer too small |
+| `ERR_OUT_OF_RANGE` | 16 | Value out of range |
+| `ERR_BAD_STATE` | 17 | Object or process in the wrong state |
+
+Checks happen in this order: handle valid (`BAD_HANDLE`), object type (`WRONG_TYPE`), rights (`ACCESS_DENIED`), then arguments.
 
 ### Checking for Errors (C)
 
@@ -226,16 +238,16 @@ Exit the current process and all its threads.
 **Returns:**
 - Does not return (process terminates)
 
-#### HANDLE_CLOSE (0x07)
+#### HANDLE_CLOSE (0x07) ✅
 
-Close a handle, releasing the reference to the kernel object.
+Close a handle. The object is destroyed when its last handle is closed
+(closing one end of an event pair sets `PEER_CLOSED` on the other end).
+All handles of a process are closed when it exits.
 
 **Arguments:**
-- `arg0`: Handle to close
+- `arg0`: Handle to close (`0` is accepted and does nothing)
 
-**Returns:**
-- Success: 0
-- Failure: Negative error code
+**Returns:** 0, or `ERR_BAD_HANDLE`
 
 ---
 
@@ -289,67 +301,131 @@ Map a VMO into the current process's address space.
 
 ---
 
+### Handles, Rights and Signals
+
+Every kernel object is reached through a **handle**, a 32-bit value that is
+only meaningful in the process that owns it. A handle carries **rights**;
+closing a handle never affects other handles to the same object. Handle
+values encode a slot and a generation, so a closed handle value is not
+reused straight away and stale values fail with `ERR_BAD_HANDLE`.
+
+**Rights** (Zircon values):
+
+| Right | Bit | Allows |
+|-------|-----|--------|
+| `DUPLICATE` | 0 | `handle_duplicate` |
+| `TRANSFER` | 1 | Sending the handle over a channel (planned) |
+| `READ` | 2 | Reading state or data |
+| `WRITE` | 3 | Changing state (e.g. `timer_set`) |
+| `SIGNAL` | 12 | `object_signal` |
+| `SIGNAL_PEER` | 13 | `object_signal_peer` |
+| `WAIT` | 14 | `object_wait_one` / `object_wait_many` |
+| `INSPECT` | 15 | Querying information |
+| `SAME_RIGHTS` | 31 | In `handle_duplicate`: keep the original rights |
+
+Default rights: event = BASIC + SIGNAL; event pair = BASIC + SIGNAL + SIGNAL_PEER;
+timer = BASIC + WRITE + SIGNAL, where BASIC = DUPLICATE + TRANSFER + WAIT + INSPECT.
+
+**Signals** are 32 bits of state on every object. Bits 24–31 are user signals
+that any holder with `SIGNAL` may set or clear; the lower bits belong to the
+kernel:
+
+| Signal | Bit | Meaning |
+|--------|-----|---------|
+| `CHANNEL_READABLE` | 0 | A message is waiting (channels, planned) |
+| `CHANNEL_WRITABLE` | 1 | The channel can accept a message (planned) |
+| `PEER_CLOSED` | 2 | The other end of a pair was closed |
+| `EVENT_SIGNALED` / `TIMER_SIGNALED` | 3 | Event set by a user, or timer deadline reached |
+| `USER_SIGNAL_0..7` | 24–31 | Free for programs |
+
+### Waiting
+
+A wait blocks the calling process until any of the requested signals is set
+on the object, or the **deadline** passes. Deadlines are absolute times in
+nanoseconds on the monotonic clock (`clock_get(0)`); `0` means poll and
+`UINT64_MAX` means wait forever. While a process is blocked it uses no CPU;
+the scheduler runs other processes or halts the CPU until the next interrupt.
+Deadline resolution is the 10 ms scheduler tick.
+
+---
+
 ### IPC & Sync (0x20-0x2F)
 
 | Syscall | Number | Description | Status |
 |---------|--------|-------------|--------|
-| `CHANNEL_CREATE` | 0x20 | Create an IPC channel | 🔶 Stub |
-| `CHANNEL_WRITE` | 0x21 | Write to a channel | 🔶 Stub |
-| `CHANNEL_READ` | 0x22 | Read from a channel | 🔶 Stub |
-| `EVENT_CREATE` | 0x23 | Create an event object | 🔶 Stub |
-| `EVENTPAIR_CREATE` | 0x24 | Create an event pair | 🔶 Stub |
-| `OBJECT_SIGNAL` | 0x25 | Signal an object | 🔶 Stub |
-| `OBJECT_WAIT_ONE` | 0x26 | Wait on one object | 🔶 Stub |
-| `OBJECT_WAIT_MANY` | 0x27 | Wait on multiple objects | 🔶 Stub |
+| `CHANNEL_CREATE` | 0x20 | Create an IPC channel | 🔶 Stub (next) |
+| `CHANNEL_WRITE` | 0x21 | Write to a channel | 🔶 Stub (next) |
+| `CHANNEL_READ` | 0x22 | Read from a channel | 🔶 Stub (next) |
+| `EVENT_CREATE` | 0x23 | Create an event | ✅ |
+| `EVENTPAIR_CREATE` | 0x24 | Create an event pair | ✅ |
+| `OBJECT_SIGNAL` | 0x25 | Set/clear signals on an object | ✅ |
+| `OBJECT_WAIT_ONE` | 0x26 | Wait on one object | ✅ |
+| `OBJECT_WAIT_MANY` | 0x27 | Wait on up to 64 objects | ✅ |
+| `OBJECT_SIGNAL_PEER` | 0x28 | Set/clear signals on the peer of a pair | ✅ |
+| `OBJECT_GET_TYPE` | 0x29 | Object type of a handle | ✅ |
 
-#### CHANNEL_CREATE (0x20)
+#### EVENT_CREATE (0x23)
 
-Create a bidirectional IPC channel for message passing between processes.
+`event_create(uint32_t options, rx_handle_t *out)`
 
-**Arguments:**
-- `arg0`: Channel options (reserved, set to 0)
+- `options` must be 0 (`ERR_INVALID_ARGS` otherwise)
+- Writes the new handle to `*out`. Returns 0.
 
-**Returns:**
-- Success: Handle to the new channel
-- Failure: Negative error code
+#### EVENTPAIR_CREATE (0x24)
 
-**Example:**
+`eventpair_create(uint32_t options, rx_handle_t *out0, rx_handle_t *out1)`
+
+Creates two linked events. Each end can signal the other with
+`object_signal_peer`; closing one end sets `PEER_CLOSED` on the other.
+
+#### OBJECT_SIGNAL (0x25)
+
+`object_signal(rx_handle_t h, uint32_t clear_mask, uint32_t set_mask)`
+
+Clears then sets signals on the object. Needs `SIGNAL`. Only user signals
+and `EVENT_SIGNALED` (on events and event pairs) may be changed; any other
+bit gives `ERR_INVALID_ARGS`. Waiters are woken if the signals change.
+
+#### OBJECT_SIGNAL_PEER (0x28)
+
+`object_signal_peer(rx_handle_t h, uint32_t clear_mask, uint32_t set_mask)`
+
+Same as `object_signal`, applied to the other end of an event pair. Needs
+`SIGNAL_PEER`. `ERR_WRONG_TYPE` on anything but an event pair,
+`ERR_PEER_CLOSED` if the other end is gone.
+
+#### OBJECT_WAIT_ONE (0x26)
+
+`object_wait_one(rx_handle_t h, uint32_t signals, uint64_t deadline, uint32_t *observed)`
+
+Needs `WAIT`. Returns 0 when any bit of `signals` is set, or
+`ERR_TIMED_OUT` when the deadline passes. In both cases the object's
+current signals are written to `*observed` (which may be NULL).
+
+#### OBJECT_WAIT_MANY (0x27)
+
+`object_wait_many(rx_wait_item_t *items, uint64_t count, uint64_t deadline)`
+
 ```c
-handle_t channel = syscall(SYS_CHANNEL_CREATE, 0);
-if (channel < 0) {
-    perror("Failed to create channel");
-}
+typedef struct {
+    rx_handle_t handle;   // in
+    uint32_t waitfor;     // in: signals to wait for
+    uint32_t pending;     // out: the object's signals
+} rx_wait_item_t;
 ```
 
-#### CHANNEL_WRITE (0x21)
+Waits until any item has one of its `waitfor` signals. `count` is 1–64.
+Every item's `pending` is filled in on return (including on `ERR_TIMED_OUT`).
 
-Write a message to a channel.
+#### OBJECT_GET_TYPE (0x29)
 
-**Arguments:**
-- `arg0`: Channel handle
-- `arg1`: Message buffer pointer
-- `arg2`: Message size
-- `arg3`: Handle array pointer (optional)
-- `arg4`: Handle count
+`object_get_type(rx_handle_t h)` returns the object type: 5 = event,
+16 = event pair, 22 = timer (Zircon values). Needs no rights.
 
-**Returns:**
-- Success: Number of bytes written
-- Failure: Negative error code
+#### CHANNEL_CREATE / WRITE / READ (0x20-0x22) — planned
 
-#### CHANNEL_READ (0x22)
-
-Read a message from a channel.
-
-**Arguments:**
-- `arg0`: Channel handle
-- `arg1`: Buffer pointer
-- `arg2`: Buffer size
-- `arg3`: Handle array pointer (optional)
-- `arg4`: Handle array capacity
-
-**Returns:**
-- Success: Number of bytes read
-- Failure: Negative error code
+Bidirectional message pipes that carry bytes and handles. Being implemented
+next; see the checklist.
 
 ---
 
@@ -358,20 +434,17 @@ Read a message from a channel.
 | Syscall | Number | Description | Status |
 |---------|--------|-------------|--------|
 | `JOB_CREATE` | 0x30 | Create a job object | 🔶 Stub |
-| `HANDLE_DUPLICATE` | 0x31 | Duplicate a handle | 🔶 Stub |
+| `HANDLE_DUPLICATE` | 0x31 | Duplicate a handle | ✅ |
 | `HANDLE_TRANSFER` | 0x32 | Transfer a handle | 🔶 Stub |
 
 #### HANDLE_DUPLICATE (0x31)
 
-Duplicate a handle, potentially with reduced rights.
+`handle_duplicate(rx_handle_t h, uint32_t rights, rx_handle_t *out)`
 
-**Arguments:**
-- `arg0`: Handle to duplicate
-- `arg1`: Rights mask (optional, 0 for same rights)
-
-**Returns:**
-- Success: New handle
-- Failure: Negative error code
+Creates a second handle to the same object. Needs `DUPLICATE`. `rights` is
+`SAME_RIGHTS` or a subset of the original rights; asking for a right the
+original lacks gives `ERR_INVALID_ARGS`. Use this to hand out a weaker
+handle, e.g. one that can only wait.
 
 ---
 
@@ -379,34 +452,34 @@ Duplicate a handle, potentially with reduced rights.
 
 | Syscall | Number | Description | Status |
 |---------|--------|-------------|--------|
-| `CLOCK_GET` | 0x40 | Get current time | ✅ Working |
-| `TIMER_CREATE` | 0x41 | Create a timer object | 🔶 Stub |
-| `TIMER_SET` | 0x42 | Set a timer | 🔶 Stub |
-| `TIMER_CANCEL` | 0x43 | Cancel a timer | 🔶 Stub |
+| `CLOCK_GET` | 0x40 | Get current time | ✅ |
+| `TIMER_CREATE` | 0x41 | Create a timer object | ✅ |
+| `TIMER_SET` | 0x42 | Arm a timer | ✅ |
+| `TIMER_CANCEL` | 0x43 | Disarm a timer | ✅ |
 
 #### CLOCK_GET (0x40)
 
-Get the current time from the specified clock.
+`clock_get(uint32_t clock_id)` returns nanoseconds. Clock 0 is monotonic
+(from the calibrated TSC); it is the clock used for all deadlines.
 
-**Arguments:**
-- `arg0`: Clock ID (0=MONOTONIC, 1=UTC, 2=THREAD_TIME)
+#### TIMER_CREATE (0x41)
 
-**Returns:**
-- Success: Time in nanoseconds
-- Failure: Negative error code
+`timer_create(uint32_t options, uint32_t clock_id, rx_handle_t *out)`
 
-**Example:**
-```c
-// Get monotonic time (always increases, not affected by system time changes)
-int64_t time_ns = syscall(SYS_CLOCK_GET, 0);
-if (time_ns < 0) {
-    perror("Failed to get time");
-} else {
-    printf("Current time: %lld ns\n", time_ns);
-}
-```
+`options` must be 0 and `clock_id` 0 (monotonic).
 
-**Implementation Note:** Currently uses TSC (Time Stamp Counter) converted to nanoseconds.
+#### TIMER_SET (0x42)
+
+`timer_set(rx_handle_t h, uint64_t deadline, uint64_t slack)`
+
+Needs `WRITE`. Clears `TIMER_SIGNALED` and arms the timer;
+`TIMER_SIGNALED` is set once the monotonic clock reaches `deadline`.
+`slack` is accepted and ignored. Setting an armed timer re-arms it.
+
+#### TIMER_CANCEL (0x43)
+
+`timer_cancel(rx_handle_t h)` — needs `WRITE`. Disarms the timer;
+`TIMER_SIGNALED` is left as it was.
 
 ---
 
@@ -416,12 +489,15 @@ if (time_ns < 0) {
 
 | Category | Total | Implemented | Stub |
 |----------|-------|-------------|------|
-| Process & Thread | 7 | 0 | 7 |
+| Process & Thread | 7 | 3 (spawn, process_exit, handle_close) | 4 |
 | Memory / VMO | 7 | 0 | 7 |
-| IPC & Sync | 8 | 0 | 8 |
-| Jobs & Handles | 3 | 0 | 3 |
-| Time | 4 | 1 | 3 |
-| **Total** | **29** | **1** | **28** |
+| IPC & Sync | 10 | 7 | 3 (channels) |
+| Jobs & Handles | 3 | 1 | 2 |
+| Time | 4 | 4 | 0 |
+
+The test program `objtest` (in the ramdisk as `/bin/objtest`, source in
+`userspace/c-progs/objtest.c`) exercises everything above; run it from the
+shell and it prints one line per check.
 
 ### Priority Implementation Order
 

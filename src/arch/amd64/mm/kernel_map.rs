@@ -429,6 +429,30 @@ pub unsafe fn drop_identity_map() {
     core::arch::asm!("mov {0}, cr3", "mov cr3, {0}", out(reg) _, options(nostack));
 }
 
+/// True if user code could access `vaddr` through `pml4`: present and
+/// user-accessible at every level, and writable at every level when
+/// `write` is set.
+///
+/// # Safety
+/// `pml4` must be a valid page table root.
+pub unsafe fn user_access_ok(pml4: u64, vaddr: u64, write: bool) -> bool {
+    if vaddr >= 0x0000_8000_0000_0000 {
+        return false;
+    }
+    let mut t = table(pml4);
+    for (level, shift) in [39u64, 30, 21, 12].iter().enumerate() {
+        let e = *t.add(((vaddr >> shift) & 0x1ff) as usize);
+        if e & PTE_PRESENT == 0 || e & PTE_USER == 0 || (write && e & PTE_WRITABLE == 0) {
+            return false;
+        }
+        if level == 3 || e & PTE_HUGE != 0 {
+            return true;
+        }
+        t = table(e & PTE_ADDR_MASK);
+    }
+    false
+}
+
 /// Translate a lower-half address through `pml4` (debugging aid).
 pub unsafe fn translate(pml4: u64, vaddr: u64) -> Option<u64> {
     let mut t = table(pml4);
