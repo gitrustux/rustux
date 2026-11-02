@@ -81,14 +81,14 @@ impl SlotMem {
 }
 
 const NO_SLOT: Option<SlotMem> = None;
-static mut SLOT_MEM: [Option<SlotMem>; MAX_SLOTS + 1] = [NO_SLOT; MAX_SLOTS + 1];
+static SLOT_MEM: super::UsbGlobal<[Option<SlotMem>; MAX_SLOTS + 1]> = super::UsbGlobal::new([NO_SLOT; MAX_SLOTS + 1]);
 
 /// Root port of every slot that stays configured (hubs and keyboards);
 /// 0 = not kept. Used to release everything behind a disconnected port.
-static mut KEPT_ROOT_PORT: [u8; MAX_SLOTS + 1] = [0; MAX_SLOTS + 1];
+static KEPT_ROOT_PORT: super::UsbGlobal<[u8; MAX_SLOTS + 1]> = super::UsbGlobal::new([0; MAX_SLOTS + 1]);
 
 unsafe fn slot_mem(slot: u8) -> Result<&'static mut SlotMem> {
-    let entry = &mut (*core::ptr::addr_of_mut!(SLOT_MEM))[slot as usize];
+    let entry = &mut SLOT_MEM.get()[slot as usize];
     match entry {
         Some(m) => {
             m.clear_input();
@@ -120,10 +120,10 @@ struct Keyboard {
 }
 
 const NO_KEYBOARD: Option<Keyboard> = None;
-static mut KEYBOARDS: [Option<Keyboard>; MAX_KEYBOARDS] = [NO_KEYBOARD; MAX_KEYBOARDS];
+static KEYBOARDS: super::UsbGlobal<[Option<Keyboard>; MAX_KEYBOARDS]> = super::UsbGlobal::new([NO_KEYBOARD; MAX_KEYBOARDS]);
 
 fn keyboards() -> &'static mut [Option<Keyboard>; MAX_KEYBOARDS] {
-    unsafe { &mut *core::ptr::addr_of_mut!(KEYBOARDS) }
+    unsafe { KEYBOARDS.get() }
 }
 
 /// Number of USB keyboards ready
@@ -249,7 +249,7 @@ unsafe fn root_port_changed(port: usize) {
 unsafe fn release_root_port(port: u8) -> usize {
     let mut n = 0;
     for slot in 1..=MAX_SLOTS {
-        if KEPT_ROOT_PORT[slot] != port {
+        if KEPT_ROOT_PORT.get()[slot] != port {
             continue;
         }
         for k in keyboards().iter_mut() {
@@ -268,7 +268,7 @@ unsafe fn release_slot(slot: u8) {
         let _ = c.disable_slot(slot);
         c.set_dcbaa(slot, 0);
     }
-    KEPT_ROOT_PORT[slot as usize] = 0;
+    KEPT_ROOT_PORT.get()[slot as usize] = 0;
 }
 
 // ============================================================
@@ -363,7 +363,7 @@ unsafe fn attach(loc: Location) -> Result<Kind> {
             Ok(Kind::Other)
         }
         Ok(kind) => {
-            KEPT_ROOT_PORT[slot as usize] = loc.root_port;
+            KEPT_ROOT_PORT.get()[slot as usize] = loc.root_port;
             Ok(kind)
         }
         Err(e) => {

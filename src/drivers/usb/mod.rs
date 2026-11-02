@@ -76,10 +76,38 @@ pub(crate) fn log_dec(mut v: u64) {
     log(unsafe { core::str::from_utf8_unchecked(&buf[i..]) });
 }
 
+/// Serialises the whole USB driver. It is entered only through [`init`]
+/// (boot) and [`poll`] (timer tick), which take this lock; the driver's
+/// globals are [`UsbGlobal`]s, usable only while it is held. Interrupts
+/// stay off while it is held, so the tick cannot interrupt a holder.
+pub(crate) static USB_LOCK: crate::sync::IrqMutex<()> = crate::sync::IrqMutex::new(());
+
+/// A USB driver global (see [`USB_LOCK`])
+pub(crate) struct UsbGlobal<T>(core::cell::UnsafeCell<T>);
+
+// Only accessed while USB_LOCK is held
+unsafe impl<T> Sync for UsbGlobal<T> {}
+
+impl<T> UsbGlobal<T> {
+    pub(crate) const fn new(v: T) -> Self {
+        Self(core::cell::UnsafeCell::new(v))
+    }
+
+    /// # Safety
+    /// USB_LOCK must be held (checked), and the returned reference must not
+    /// outlive that or overlap another one to the same global.
+    #[allow(clippy::mut_from_ref)]
+    pub(crate) unsafe fn get(&self) -> &mut T {
+        assert!(USB_LOCK.is_locked(), "USB global used without USB_LOCK");
+        &mut *self.0.get()
+    }
+}
+
 /// Find and start the USB controller and enumerate its devices.
 /// Returns the number of keyboards found. Safe to call once at boot after
 /// the PMM, heap and TSC calibration.
 pub fn init() -> usize {
+    let _usb = USB_LOCK.lock();
     log("[USB] Scanning PCI for xHCI controllers...\n");
     let found = match pci::find_xhci() {
         Some(f) => f,
@@ -109,11 +137,13 @@ pub fn init() -> usize {
 /// Service the USB keyboards and port changes (call often while waiting
 /// for input). Decoded keys go to the keyboard input buffer.
 pub fn poll() {
+    let _usb = USB_LOCK.lock();
     unsafe { device::poll() }
 }
 
 /// True if a controller is running
 pub fn active() -> bool {
+    let _usb = USB_LOCK.lock();
     unsafe { xhci::controller().map_or(false, |c| !c.is_dead()) }
 }
 

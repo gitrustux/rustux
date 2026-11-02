@@ -204,7 +204,7 @@ impl Uart16550 {
 /// Global COM1 UART instance
 ///
 /// This is initialized during kernel startup and used for console I/O.
-static mut COM1: Option<Uart16550> = None;
+static COM1: crate::sync::IrqMutex<Option<Uart16550>> = crate::sync::IrqMutex::new(None);
 
 /// Initialize the global COM1 UART
 ///
@@ -212,19 +212,16 @@ static mut COM1: Option<Uart16550> = None;
 ///
 /// Should only be called once during kernel initialization.
 pub unsafe fn init_com1() {
-    COM1 = Some(Uart16550::new(COM1_PORT));
-    if let Some(ref uart) = COM1 {
+    let mut c = COM1.lock();
+    *c = Some(Uart16550::new(COM1_PORT));
+    if let Some(ref uart) = *c {
         uart.init();
     }
 }
 
-/// Get a reference to the global COM1 UART
-///
-/// # Safety
-///
-/// Returns a mutable reference to global state.
-pub unsafe fn com1() -> Option<&'static mut Uart16550> {
-    COM1.as_mut()
+/// Run `f` with the global COM1 UART (None if it was not initialised)
+pub fn with_com1<R>(f: impl FnOnce(&mut Uart16550) -> R) -> Option<R> {
+    COM1.lock().as_mut().map(f)
 }
 
 // ============================================================================

@@ -282,7 +282,6 @@ fn restore_interrupts(flags: u64) {
 
 /// Where the boot context's stack pointer goes when the first process starts.
 /// The boot context is never resumed.
-static mut BOOT_RSP: u64 = 0;
 
 /// Start running process `pid` from the boot context. Never returns.
 pub fn start(pid: u32) -> ! {
@@ -298,7 +297,7 @@ pub fn start(pid: u32) -> ! {
     };
     unsafe {
         crate::arch::amd64::descriptor::set_tss_rsp0(kstack);
-        rustux_switch_stacks(core::ptr::addr_of_mut!(BOOT_RSP), rsp, cr3);
+        rustux_switch_stacks(crate::arch::amd64::percpu::this().boot_rsp(), rsp, cr3);
     }
     unreachable!("boot context resumed");
 }
@@ -388,7 +387,7 @@ fn switch_away(state: ProcessState) {
             Some(next) if next != cur => {
                 let save: *mut u64 = match table.get_mut(cur) {
                     Some(p) => core::ptr::addr_of_mut!(p.kernel_rsp),
-                    None => core::ptr::addr_of_mut!(BOOT_RSP),
+                    None => crate::arch::amd64::percpu::this().boot_rsp(),
                 };
                 let n = table.get_mut(next).expect("runnable process vanished");
                 n.state = ProcessState::Running;

@@ -14,7 +14,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Cached TSC frequency in Hz
-static mut TSC_FREQUENCY: AtomicU64 = AtomicU64::new(0);
+static TSC_FREQUENCY: AtomicU64 = AtomicU64::new(0);
 
 /// Default TSC frequency (2 GHz) when not calibrated
 const DEFAULT_TSC_FREQUENCY: u64 = 2_000_000_000;

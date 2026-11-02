@@ -62,6 +62,9 @@
 
 #![no_std]
 #![feature(abi_x86_interrupt)]
+// No `static mut`: globals are locked, per-CPU, boot-once or atomic (see
+// sync::irq). build.rs also rejects new `static mut` declarations.
+#![deny(static_mut_refs)]
 
 // Alloc crate for heap allocations
 extern crate alloc;
@@ -215,7 +218,7 @@ pub use sync::{
 
 // Re-export driver types
 pub use drivers::{
-    Uart16550, COM1_PORT, COM2_PORT, COM3_PORT, COM4_PORT, init_com1, com1,
+    Uart16550, COM1_PORT, COM2_PORT, COM3_PORT, COM4_PORT, init_com1, with_com1,
 };
 
 // Integration tests (only compiled in test mode)

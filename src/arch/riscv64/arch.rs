@@ -93,36 +93,24 @@ impl HartInfo {
 }
 
 /// Hart information array
-static mut HART_INFO: [HartInfo; RISCV_MAX_HARTS] = [HartInfo::new(0, 0, false); RISCV_MAX_HARTS];
+static HART_INFO: crate::sync::IrqMutex<[HartInfo; RISCV_MAX_HARTS]> =
+    crate::sync::IrqMutex::new([HartInfo::new(0, 0, false); RISCV_MAX_HARTS]);
 
-/// Get hart information
-///
-/// # Safety
-///
-/// The hart_id must be valid.
-pub unsafe fn get_hart_info(hart_id: usize) -> &'static mut HartInfo {
-    &mut HART_INFO[hart_id]
+/// Get hart information (None if `hart_id` is out of range)
+pub fn get_hart_info(hart_id: usize) -> Option<HartInfo> {
+    HART_INFO.lock().get(hart_id).copied()
 }
 
-/// Set hart information
-///
-/// # Safety
-///
-/// The hart_id must be valid.
-pub unsafe fn set_hart_info(hart_id: usize, info: HartInfo) {
-    HART_INFO[hart_id] = info;
+/// Set hart information (ignored if `hart_id` is out of range)
+pub fn set_hart_info(hart_id: usize, info: HartInfo) {
+    if let Some(h) = HART_INFO.lock().get_mut(hart_id) {
+        *h = info;
+    }
 }
 
 /// Get bootstrap hart ID
 pub fn get_bootstrap_hart() -> usize {
-    unsafe {
-        for i in 0..RISCV_MAX_HARTS {
-            if HART_INFO[i].is_bootstrap {
-                return HART_INFO[i].hart_id;
-            }
-        }
-    }
-    0 // Default to hart 0
+    HART_INFO.lock().iter().find(|h| h.is_bootstrap).map_or(0, |h| h.hart_id)
 }
 
 // ============================================================================

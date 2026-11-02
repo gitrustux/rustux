@@ -401,26 +401,65 @@ impl Arena {
     }
 }
 
-/// Global arena array
-static mut ARENAS: [Arena; MAX_ARENAS] = [const { Arena::empty() }; MAX_ARENAS];
-
-/// Number of arenas currently in use
-static mut NUM_ARENAS: usize = 0;
-
-/// Arenas in allocation order: memory above 4 GiB first, so that low
-/// memory is left for devices that can only address 32 bits.
-fn arenas_in_order() -> impl Iterator<Item = &'static mut Arena> {
-    let n = unsafe { NUM_ARENAS };
-    let high = (0..n).filter(|&i| unsafe { ARENAS[i].info.flags & ARENA_FLAG_HIGH_MEM != 0 });
-    let low = (0..n).filter(|&i| unsafe { ARENAS[i].info.flags & ARENA_FLAG_HIGH_MEM == 0 });
-    high.chain(low).map(|i| unsafe { &mut *core::ptr::addr_of_mut!(ARENAS[i]) })
+/// All PMM state, behind one lock taken with interrupts off (pages are
+/// allocated and freed from interrupt handlers too, e.g. USB hot-plug on
+/// the timer tick, and from several CPUs).
+struct PmmState {
+    arenas: [Arena; MAX_ARENAS],
+    num_arenas: usize,
+    /// Free regions from the firmware memory map (before the arenas exist)
+    regions: [Region; MAX_REGIONS],
+    region_count: usize,
+    regions_dropped: usize,
+    /// Set once the arenas were built from the firmware memory map
+    from_memory_map: bool,
+    /// Allocator for page records before the heap exists (fallback path)
+    boot_alloc: Option<BootAllocFn>,
 }
 
-fn arena_for(paddr: PAddr) -> Option<&'static mut Arena> {
-    let n = unsafe { NUM_ARENAS };
-    (0..n)
-        .map(|i| unsafe { &mut *core::ptr::addr_of_mut!(ARENAS[i]) })
-        .find(|a| a.address_in_arena(paddr))
+// The page-record pointers inside the arenas point at memory owned by the
+// PMM; access goes through the lock
+unsafe impl Send for PmmState {}
+
+static PMM: crate::sync::IrqMutex<PmmState> = crate::sync::IrqMutex::new(PmmState {
+    arenas: [const { Arena::empty() }; MAX_ARENAS],
+    num_arenas: 0,
+    regions: [Region { base: 0, end: 0 }; MAX_REGIONS],
+    region_count: 0,
+    regions_dropped: 0,
+    from_memory_map: false,
+    boot_alloc: None,
+});
+
+impl PmmState {
+    /// Arena indices in allocation order: memory above 4 GiB first, so
+    /// that low memory is left for devices that can only address 32 bits
+    fn order(&self) -> ([usize; MAX_ARENAS], usize) {
+        let mut idx = [0usize; MAX_ARENAS];
+        let mut n = 0;
+        for high in [true, false] {
+            for i in 0..self.num_arenas {
+                if (self.arenas[i].info.flags & ARENA_FLAG_HIGH_MEM != 0) == high {
+                    idx[n] = i;
+                    n += 1;
+                }
+            }
+        }
+        (idx, n)
+    }
+
+    fn arena_for(&mut self, paddr: PAddr) -> Option<&mut Arena> {
+        let n = self.num_arenas;
+        self.arenas[..n].iter_mut().find(|a| a.address_in_arena(paddr))
+    }
+
+    fn free_pages(&self) -> u64 {
+        self.arenas[..self.num_arenas].iter().map(|a| a.free_count).sum()
+    }
+
+    fn total_pages(&self) -> u64 {
+        self.arenas[..self.num_arenas].iter().map(|a| a.total_count).sum()
+    }
 }
 
 // ============================================================================
@@ -437,30 +476,26 @@ struct Region {
 /// Maximum regions recorded from the memory map
 const MAX_REGIONS: usize = 256;
 
-static mut REGIONS: [Region; MAX_REGIONS] = [Region { base: 0, end: 0 }; MAX_REGIONS];
-static mut REGION_COUNT: usize = 0;
-static mut REGIONS_DROPPED: usize = 0;
-
-/// Set once the arenas were built from the firmware memory map
-static mut FROM_MEMORY_MAP: bool = false;
 
 /// True if the PMM was built from the firmware memory map (as opposed to
 /// the fixed fallback zones)
 pub fn pmm_from_memory_map() -> bool {
-    unsafe { FROM_MEMORY_MAP }
+    PMM.lock().from_memory_map
 }
 
 /// Record a free region of physical memory (call for every
 /// `EfiConventionalMemory` descriptor after ExitBootServices, before
 /// [`pmm_init_from_memory_map`]).
 pub fn note_usable_memory(base: PAddr, page_count: u64) {
-    unsafe {
-        if REGION_COUNT >= MAX_REGIONS {
-            REGIONS_DROPPED += 1;
+    let mut g = PMM.lock();
+    let st = &mut *g;
+    {
+        if st.region_count >= MAX_REGIONS {
+            st.regions_dropped += 1;
             return;
         }
-        REGIONS[REGION_COUNT] = Region { base, end: base + page_count * PAGE_SIZE as PAddr };
-        REGION_COUNT += 1;
+        st.regions[st.region_count] = Region { base, end: base + page_count * PAGE_SIZE as PAddr };
+        st.region_count += 1;
     }
 }
 
@@ -520,7 +555,9 @@ fn dbg_dec(v: u64) {
 /// Call once, before any allocation, while all physical memory is
 /// reachable at `phys_to_virt` (UEFI identity map or the direct map).
 pub unsafe fn pmm_init_from_memory_map() -> bool {
-    let count = REGION_COUNT;
+    let mut g = PMM.lock();
+    let st = &mut *g;
+    let count = st.region_count;
     if count == 0 {
         return false;
     }
@@ -528,7 +565,7 @@ pub unsafe fn pmm_init_from_memory_map() -> bool {
     // Copy, page-align, clip the first 1 MiB
     let mut regions = [Region { base: 0, end: 0 }; MAX_REGIONS];
     let mut n = 0;
-    for r in &REGIONS[..count] {
+    for r in &st.regions[..count] {
         let base = core::cmp::max(align_up(r.base), MIN_USABLE);
         let end = align_down(r.end);
         if end > base {
@@ -617,7 +654,7 @@ pub unsafe fn pmm_init_from_memory_map() -> bool {
             continue;
         }
         let page_count = size / PAGE_SIZE;
-        let idx = NUM_ARENAS;
+        let idx = st.num_arenas;
         let flags = ARENA_FLAG_KERNEL
             | ARENA_FLAG_USER
             | if r.end <= FOUR_GIB { ARENA_FLAG_LOW_MEM } else { ARENA_FLAG_HIGH_MEM };
@@ -631,27 +668,27 @@ pub unsafe fn pmm_init_from_memory_map() -> bool {
             core::ptr::write(p, Page::new(r.base + (i * PAGE_SIZE) as PAddr, idx as u8, i as u32));
         }
 
-        let arena = &mut ARENAS[idx];
+        let arena = &mut st.arenas[idx];
         arena.info = ArenaInfo::new(name, flags, idx as u32, r.base, size);
         arena.pages_phys = meta_next;
         arena.pages_ptr = core::ptr::null_mut();
         arena.total_count = page_count as u64;
         arena.free_count = page_count as u64;
         arena.next_free = 0;
-        NUM_ARENAS += 1;
+        st.num_arenas += 1;
 
         meta_next += (page_count * core::mem::size_of::<Page>()) as u64;
     }
 
-    FROM_MEMORY_MAP = true;
+    st.from_memory_map = true;
 
     // Report
     dbg("[PMM] UEFI memory map: ");
     dbg_dec(count as u64);
     dbg(" free regions -> ");
-    dbg_dec(NUM_ARENAS as u64);
+    dbg_dec(st.num_arenas as u64);
     dbg(" arenas\n");
-    for a in &ARENAS[..NUM_ARENAS] {
+    for a in &st.arenas[..st.num_arenas] {
         dbg("[PMM]   ");
         dbg_hex(a.info.base);
         dbg(" - ");
@@ -661,15 +698,15 @@ pub unsafe fn pmm_init_from_memory_map() -> bool {
         dbg(" MiB\n");
     }
     dbg("[PMM] Usable: ");
-    dbg_dec(pmm_count_total_bytes() / (1024 * 1024));
+    dbg_dec((st.total_pages() * PAGE_SIZE as u64) / (1024 * 1024));
     dbg(" MiB, page records: ");
     dbg_dec(meta_pages * PAGE_SIZE as u64 / 1024);
     dbg(" KiB at ");
     dbg_hex(meta_base);
     dbg("\n");
-    if REGIONS_DROPPED > 0 || dropped_bytes > 0 {
+    if st.regions_dropped > 0 || dropped_bytes > 0 {
         dbg("[PMM] WARNING: ignored ");
-        dbg_dec(REGIONS_DROPPED as u64);
+        dbg_dec(st.regions_dropped as u64);
         dbg(" map entries and ");
         dbg_dec(dropped_bytes / 1024);
         dbg(" KiB in small regions (arena limit)\n");
@@ -712,7 +749,9 @@ pub unsafe fn pmm_init_early(
 ///
 /// `RxStatus::OK` on success, or an error code
 pub unsafe fn pmm_add_arena(info: ArenaInfo) -> RxStatus {
-    if NUM_ARENAS >= MAX_ARENAS {
+    let mut g = PMM.lock();
+    let st = &mut *g;
+    if st.num_arenas >= MAX_ARENAS {
         return RxStatus::ERR_NO_MEMORY;
     }
 
@@ -722,7 +761,7 @@ pub unsafe fn pmm_add_arena(info: ArenaInfo) -> RxStatus {
     }
 
     let pages_layout = core::alloc::Layout::array::<Page>(page_count).unwrap();
-    let pages_ptr = if let Some(boot_alloc) = BOOT_ALLOC {
+    let pages_ptr = if let Some(boot_alloc) = st.boot_alloc {
         boot_alloc(pages_layout.size(), pages_layout.align())
     } else {
         crate::mm::allocator::allocate(pages_layout.size(), pages_layout.align())
@@ -733,10 +772,10 @@ pub unsafe fn pmm_add_arena(info: ArenaInfo) -> RxStatus {
 
     let pages = core::slice::from_raw_parts_mut(pages_ptr as *mut Page, page_count);
     for (i, p) in pages.iter_mut().enumerate() {
-        core::ptr::write(p, Page::new(info.base + (i * PAGE_SIZE) as PAddr, NUM_ARENAS as u8, i as u32));
+        core::ptr::write(p, Page::new(info.base + (i * PAGE_SIZE) as PAddr, st.num_arenas as u8, i as u32));
     }
 
-    let arena = &mut ARENAS[NUM_ARENAS];
+    let arena = &mut st.arenas[st.num_arenas];
     arena.info = info;
     arena.pages_phys = 0;
     arena.pages_ptr = pages_ptr as *mut Page;
@@ -744,15 +783,12 @@ pub unsafe fn pmm_add_arena(info: ArenaInfo) -> RxStatus {
     arena.free_count = page_count as u64;
     arena.next_free = 0;
 
-    NUM_ARENAS += 1;
+    st.num_arenas += 1;
     RxStatus::OK
 }
 
 /// Boot allocator function type
 type BootAllocFn = unsafe extern "C" fn(size: usize, align: usize) -> *mut u8;
-
-/// Global boot allocator function pointer
-static mut BOOT_ALLOC: Option<BootAllocFn> = None;
 
 /// Set the boot allocator used by [`pmm_add_arena`] for page records
 ///
@@ -760,10 +796,10 @@ static mut BOOT_ALLOC: Option<BootAllocFn> = None;
 ///
 /// Must be called before pmm_add_arena.
 pub unsafe fn set_boot_allocator(alloc: BootAllocFn) {
-    BOOT_ALLOC = Some(alloc);
+    PMM.lock().boot_alloc = Some(alloc);
 }
 
-fn report_exhausted(what: &str, count: usize, flags: u32) {
+fn report_exhausted(st: &PmmState, what: &str, count: usize, flags: u32) {
     let call = ALLOC_CALL_COUNT.load(Ordering::Relaxed);
     dbg("[PMM] OUT OF MEMORY: ");
     dbg(what);
@@ -774,7 +810,7 @@ fn report_exhausted(what: &str, count: usize, flags: u32) {
     dbg(" after ");
     dbg_dec(call as u64);
     dbg(" allocations, free pages=");
-    dbg_dec(pmm_count_free_pages());
+    dbg_dec(st.free_pages());
     dbg("\n");
 }
 
@@ -784,7 +820,10 @@ fn report_exhausted(what: &str, count: usize, flags: u32) {
 /// KERNEL/USER select arenas with those flags (all map arenas have both).
 pub fn pmm_alloc_page(flags: u32) -> RxResult<PAddr> {
     ALLOC_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-    for arena in arenas_in_order() {
+    let mut g = PMM.lock();
+    let (order, n) = g.order();
+    for &i in &order[..n] {
+        let arena = &mut g.arenas[i];
         if !arena.matches(flags) {
             continue;
         }
@@ -792,7 +831,7 @@ pub fn pmm_alloc_page(flags: u32) -> RxResult<PAddr> {
             return Ok(paddr);
         }
     }
-    report_exhausted("page", 1, flags);
+    report_exhausted(&g, "page", 1, flags);
     Err(RxStatus::ERR_NO_MEMORY)
 }
 
@@ -823,7 +862,10 @@ pub fn pmm_alloc_contiguous(count: usize, flags: u32, align_log2: u8) -> RxResul
         return pmm_alloc_page(flags);
     }
     ALLOC_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
-    for arena in arenas_in_order() {
+    let mut g = PMM.lock();
+    let (order, n) = g.order();
+    for &i in &order[..n] {
+        let arena = &mut g.arenas[i];
         if !arena.matches(flags) {
             continue;
         }
@@ -831,13 +873,13 @@ pub fn pmm_alloc_contiguous(count: usize, flags: u32, align_log2: u8) -> RxResul
             return Ok(paddr);
         }
     }
-    report_exhausted("contiguous", count, flags);
+    report_exhausted(&g, "contiguous", count, flags);
     Err(RxStatus::ERR_NO_MEMORY)
 }
 
 /// Free a single physical page
 pub fn pmm_free_page(paddr: PAddr) -> RxStatus {
-    match arena_for(paddr) {
+    match PMM.lock().arena_for(paddr) {
         Some(arena) => arena.free_page(paddr),
         None => RxStatus::ERR_INVALID_ARGS,
     }
@@ -849,7 +891,8 @@ pub fn pmm_free_contiguous(paddr: PAddr, count: usize) -> RxStatus {
         return RxStatus::ERR_INVALID_ARGS;
     }
     let end_addr = paddr + (count * PAGE_SIZE) as PAddr;
-    match arena_for(paddr) {
+    let mut g = PMM.lock();
+    match g.arena_for(paddr) {
         Some(arena) if arena.address_in_arena(end_addr - 1) => {
             for i in 0..count {
                 let _ = arena.free_page(paddr + (i * PAGE_SIZE) as PAddr);
@@ -862,8 +905,7 @@ pub fn pmm_free_contiguous(paddr: PAddr, count: usize) -> RxStatus {
 
 /// Count free pages across all arenas
 pub fn pmm_count_free_pages() -> u64 {
-    let n = unsafe { NUM_ARENAS };
-    (0..n).map(|i| unsafe { ARENAS[i].free_count }).sum()
+    PMM.lock().free_pages()
 }
 
 /// Mark pages as reserved so they are never allocated.
@@ -872,9 +914,10 @@ pub fn pmm_reserve_pages(paddr: PAddr, count: usize) -> RxStatus {
     if count == 0 {
         return RxStatus::ERR_INVALID_ARGS;
     }
+    let mut g = PMM.lock();
     for i in 0..count {
         let page = paddr + (i * PAGE_SIZE) as PAddr;
-        if let Some(arena) = arena_for(page) {
+        if let Some(arena) = g.arena_for(page) {
             arena.reserve_page(page);
         }
     }
@@ -883,8 +926,7 @@ pub fn pmm_reserve_pages(paddr: PAddr, count: usize) -> RxStatus {
 
 /// Count total pages across all arenas
 pub fn pmm_count_total_pages() -> u64 {
-    let n = unsafe { NUM_ARENAS };
-    (0..n).map(|i| unsafe { ARENAS[i].total_count }).sum()
+    PMM.lock().total_pages()
 }
 
 /// Total bytes managed by the PMM
@@ -894,12 +936,12 @@ pub fn pmm_count_total_bytes() -> u64 {
 
 /// Number of arenas (0 before the PMM is initialised)
 pub fn pmm_arena_count() -> usize {
-    unsafe { NUM_ARENAS }
+    PMM.lock().num_arenas
 }
 
 /// Page record for a physical address, or null if the PMM does not manage it
 pub fn paddr_to_page(paddr: PAddr) -> *mut Page {
-    match arena_for(paddr) {
+    match PMM.lock().arena_for(paddr) {
         Some(arena) => match arena.index_of(paddr) {
             Some(i) => &mut arena.pages()[i] as *mut Page,
             None => core::ptr::null_mut(),

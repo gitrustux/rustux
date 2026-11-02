@@ -3,6 +3,7 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![deny(static_mut_refs)]
 
 extern crate alloc;
 extern crate rustux;
@@ -17,8 +18,6 @@ use rustux::drivers::keyboard;
 // Note: Global allocator is now in src/mm/allocator.rs (LinkedListAllocator)
 // The UEFI allocator is no longer used as the global allocator after exit_boot_services()
 
-// Simple keyboard scancode counter (legacy, for compatibility)
-static mut KEYBOARD_COUNT: u32 = 0;
 
 /// Initialize the 8042 Keyboard Controller
 ///
@@ -69,7 +68,7 @@ fn main() -> Status {
     fb_green();
 
     // SILENT BOOT PHASE ENDS: Now safe to enable debug output
-    unsafe { DEBUG_ENABLED = true; }
+    DEBUG_ENABLED.store(true, core::sync::atomic::Ordering::Relaxed);
 
     kernel_main();
 }
@@ -406,7 +405,7 @@ fn handle_exception(vector: u64, code: Option<u64>, frame: &InterruptFrame) {
     let pid = rustux::process::table::PROCESS_TABLE.lock().current_pid().unwrap_or(0);
 
     // Debug port: full detail
-    unsafe { DEBUG_ENABLED = true; }
+    DEBUG_ENABLED.store(true, core::sync::atomic::Ordering::Relaxed);
     debug_print("\n[FAULT] ");
     debug_print(name);
     debug_print(" (vector 0x");
@@ -508,9 +507,8 @@ pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
     unsafe {
         // Report the first tick only (test-qemu.sh looks for it); a line per
         // tick at 100 Hz just floods the debug port
-        static mut TICKS: u64 = 0;
-        TICKS += 1;
-        if TICKS == 1 {
+        static TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        if TICKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) == 0 {
             for &b in b"[TICK]\n" {
                 asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack, preserves_flags));
             }
@@ -627,13 +625,20 @@ fn find_acpi_rsdp() -> Option<u64> {
 }
 
 /// Framebuffer information saved from GOP before ExitBootServices
-static mut FRAMEBUFFER_ADDR: u64 = 0;
-static mut FRAMEBUFFER_SIZE: u64 = 0; // bytes
-static mut FRAMEBUFFER_WIDTH: usize = 0; // visible pixels
-static mut FRAMEBUFFER_HEIGHT: usize = 0;
-static mut FRAMEBUFFER_STRIDE: usize = 0; // pixels per scan line (>= width)
-/// true when byte 0 of a pixel is blue (UEFI PixelBlueGreenRedReserved)
-static mut FRAMEBUFFER_BLUE_FIRST: bool = true;
+struct FbInfo {
+    addr: u64,
+    size: u64,      // bytes
+    width: usize,   // visible pixels
+    height: usize,
+    stride: usize,  // pixels per scan line (>= width)
+    /// true when byte 0 of a pixel is blue (UEFI PixelBlueGreenRedReserved)
+    blue_first: bool,
+}
+
+/// Set once while boot services run; read-only afterwards
+static FB: rustux::sync::BootCell<FbInfo> = rustux::sync::BootCell::new(FbInfo {
+    addr: 0, size: 0, width: 0, height: 0, stride: 0, blue_first: true,
+});
 
 /// Query GOP once, while boot services are active, and save the
 /// framebuffer address, geometry and pixel layout.
@@ -656,13 +661,16 @@ fn capture_framebuffer() {
     };
     let (width, height) = mode.resolution();
     let mut fb = gop.frame_buffer();
+    // Boot, one CPU
     unsafe {
-        FRAMEBUFFER_ADDR = fb.as_mut_ptr() as u64;
-        FRAMEBUFFER_SIZE = fb.size() as u64;
-        FRAMEBUFFER_WIDTH = width;
-        FRAMEBUFFER_HEIGHT = height;
-        FRAMEBUFFER_STRIDE = mode.stride();
-        FRAMEBUFFER_BLUE_FIRST = blue_first;
+        *FB.boot_mut() = FbInfo {
+            addr: fb.as_mut_ptr() as u64,
+            size: fb.size() as u64,
+            width,
+            height,
+            stride: mode.stride(),
+            blue_first,
+        };
     }
 }
 
@@ -695,8 +703,8 @@ fn record_phys_limit(map: &impl uefi::mem::memory_map::MemoryMap) {
         }
     }
     unsafe {
-        if FRAMEBUFFER_ADDR != 0 {
-            note_phys_limit(FRAMEBUFFER_ADDR + FRAMEBUFFER_SIZE);
+        if FB.get().addr != 0 {
+            note_phys_limit(FB.get().addr + FB.get().size);
         }
     }
 }
@@ -705,19 +713,19 @@ fn record_phys_limit(map: &impl uefi::mem::memory_map::MemoryMap) {
 /// Works before and after ExitBootServices; does nothing without a framebuffer.
 fn fill_screen(r: u8, g: u8, b: u8) {
     unsafe {
-        if FRAMEBUFFER_ADDR == 0 {
+        if FB.get().addr == 0 {
             return;
         }
-        let pixel: u32 = if FRAMEBUFFER_BLUE_FIRST {
+        let pixel: u32 = if FB.get().blue_first {
             (b as u32) | ((g as u32) << 8) | ((r as u32) << 16)
         } else {
             (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
         };
-        let base = rustux::arch::amd64::mm::kernel_map::phys_to_virt(FRAMEBUFFER_ADDR) as *mut u32;
-        let limit = FRAMEBUFFER_SIZE as usize / 4;
-        for y in 0..FRAMEBUFFER_HEIGHT {
-            for x in 0..FRAMEBUFFER_WIDTH {
-                let i = y * FRAMEBUFFER_STRIDE + x;
+        let base = rustux::arch::amd64::mm::kernel_map::phys_to_virt(FB.get().addr) as *mut u32;
+        let limit = FB.get().size as usize / 4;
+        for y in 0..FB.get().height {
+            for x in 0..FB.get().width {
+                let i = y * FB.get().stride + x;
                 if i < limit {
                     write_volatile(base.add(i), pixel);
                 }
@@ -744,22 +752,22 @@ pub extern "C" fn fb_blue() {
 
 /// Get framebuffer address (for use after ExitBootServices)
 pub fn get_framebuffer_addr() -> u64 {
-    unsafe { FRAMEBUFFER_ADDR }
+    unsafe { FB.get().addr }
 }
 
 /// Get the framebuffer size (for passing to userspace)
 pub fn get_framebuffer_size() -> u64 {
-    unsafe { FRAMEBUFFER_SIZE }
+    unsafe { FB.get().size }
 }
 
 /// Get the framebuffer width (for display console)
 pub fn get_framebuffer_width() -> usize {
-    unsafe { FRAMEBUFFER_WIDTH }
+    unsafe { FB.get().width }
 }
 
 /// Get the framebuffer height (for display console)
 pub fn get_framebuffer_height() -> usize {
-    unsafe { FRAMEBUFFER_HEIGHT }
+    unsafe { FB.get().height }
 }
 
 /// Initialize the display console
@@ -769,7 +777,7 @@ pub fn get_framebuffer_height() -> usize {
 pub unsafe fn init_display_console() {
     use rustux::drivers::display::{Framebuffer, PixelFormat, init as display_init};
 
-    if FRAMEBUFFER_ADDR == 0 {
+    if FB.get().addr == 0 {
         debug_print("[DISPLAY] No framebuffer available, skipping console init\n");
         return;
     }
@@ -777,15 +785,15 @@ pub unsafe fn init_display_console() {
     // GOP framebuffers are 32 bits per pixel; rows are `stride` pixels apart.
     // The display driver's PixelFormat::RGB stores blue in byte 0 (UEFI Bgr).
     let bpp = 32;
-    let pitch = FRAMEBUFFER_STRIDE * 4;
-    let format = if FRAMEBUFFER_BLUE_FIRST { PixelFormat::RGB } else { PixelFormat::BGR };
+    let pitch = FB.get().stride * 4;
+    let format = if FB.get().blue_first { PixelFormat::RGB } else { PixelFormat::BGR };
 
     // Draw through the direct map so the console also works while a user
     // address space is active (e.g. during sys_write).
     let framebuffer = Framebuffer::new(
-        rustux::arch::amd64::mm::kernel_map::phys_to_virt(FRAMEBUFFER_ADDR),
-        FRAMEBUFFER_WIDTH,
-        FRAMEBUFFER_HEIGHT,
+        rustux::arch::amd64::mm::kernel_map::phys_to_virt(FB.get().addr),
+        FB.get().width,
+        FB.get().height,
         pitch,
         bpp,
         format,
@@ -795,9 +803,9 @@ pub unsafe fn init_display_console() {
 
     debug_print("[DISPLAY] Text console initialized\n");
     debug_print("[DISPLAY] Resolution: ");
-    print_hex(FRAMEBUFFER_WIDTH as u64);
+    print_hex(FB.get().width as u64);
     debug_print("x");
-    print_hex(FRAMEBUFFER_HEIGHT as u64);
+    print_hex(FB.get().height as u64);
     debug_print("\n");
 }
 
@@ -816,14 +824,12 @@ fn qemu_debugcon_write_byte(b: u8) {
 }
 
 // UEFI-safe debug functions (no-op before exit_boot_services)
-static mut DEBUG_ENABLED: bool = false;
+static DEBUG_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 #[inline(always)]
 fn debug_print(s: &str) {
-    unsafe {
-        if !DEBUG_ENABLED {
-            return;
-        }
+    if !DEBUG_ENABLED.load(core::sync::atomic::Ordering::Relaxed) {
+        return;
     }
     for &b in s.as_bytes() {
         unsafe { asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack)); }
@@ -832,10 +838,8 @@ fn debug_print(s: &str) {
 
 #[inline(always)]
 fn print_hex(n: u64) {
-    unsafe {
-        if !DEBUG_ENABLED {
-            return;
-        }
+    if !DEBUG_ENABLED.load(core::sync::atomic::Ordering::Relaxed) {
+        return;
     }
     let mut digits = [0u8; 16];
     let mut i = 0;
@@ -861,9 +865,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     impl core::fmt::Write for Out {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
             rustux::kobj::debugcon(s);
-            if rustux::drivers::display::is_initialized() {
-                rustux::drivers::display::write_str(s);
-            }
+            // Never wait for the console lock here: this CPU may hold it
+            rustux::drivers::display::try_write_str(s);
             Ok(())
         }
     }

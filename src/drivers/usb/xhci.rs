@@ -131,14 +131,18 @@ pub struct Controller {
     dead: bool,
 }
 
-static mut CONTROLLER: Option<Controller> = None;
+static CONTROLLER: super::UsbGlobal<Option<Controller>> = super::UsbGlobal::new(None);
 
+/// # Safety
+/// USB_LOCK must be held.
 pub unsafe fn set_controller(c: Controller) {
-    CONTROLLER = Some(c);
+    *CONTROLLER.get() = Some(c);
 }
 
+/// # Safety
+/// USB_LOCK must be held.
 pub unsafe fn controller() -> Option<&'static mut Controller> {
-    (*core::ptr::addr_of_mut!(CONTROLLER)).as_mut()
+    CONTROLLER.get().as_mut()
 }
 
 fn alloc_table_page() -> Option<u64> {

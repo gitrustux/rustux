@@ -14,7 +14,9 @@ use crate::drivers::display::font::SimpleVgaFont;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Global text console instance
-static mut CONSOLE: Option<TextConsole> = None;
+/// The console; writers come from syscalls and from the fault and panic
+/// paths, so it is locked with interrupts off
+static CONSOLE: crate::sync::IrqMutex<Option<TextConsole>> = crate::sync::IrqMutex::new(None);
 static CONSOLE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Text console with framebuffer backing
@@ -351,7 +353,7 @@ impl TextConsole {
 pub unsafe fn init(framebuffer: Framebuffer) {
     let mut console = TextConsole::new(framebuffer);
     console.clear();
-    CONSOLE = Some(console);
+    *CONSOLE.lock() = Some(console);
     CONSOLE_INITIALIZED.store(true, Ordering::Release);
 }
 
@@ -362,8 +364,16 @@ pub fn is_initialized() -> bool {
 
 /// Write a string to the console
 pub fn write_str(s: &str) {
-    unsafe {
-        if let Some(ref mut console) = CONSOLE {
+    if let Some(console) = CONSOLE.lock().as_mut() {
+        console.write_str(s);
+    }
+}
+
+/// Write a string unless the console is busy (for the panic path, which
+/// may have interrupted this CPU in the middle of a console write)
+pub fn try_write_str(s: &str) {
+    if let Some(mut c) = CONSOLE.try_lock() {
+        if let Some(console) = c.as_mut() {
             console.write_str(s);
         }
     }
@@ -371,39 +381,30 @@ pub fn write_str(s: &str) {
 
 /// Write a single character to the console
 pub fn put_char(ch: u8) {
-    unsafe {
-        if let Some(ref mut console) = CONSOLE {
-            console.put_char(ch);
-        }
+    if let Some(console) = CONSOLE.lock().as_mut() {
+        console.put_char(ch);
     }
 }
 
 /// Clear the console
 pub fn clear() {
-    unsafe {
-        if let Some(ref mut console) = CONSOLE {
-            console.clear();
-        }
+    if let Some(console) = CONSOLE.lock().as_mut() {
+        console.clear();
     }
 }
 
 /// Set the console colors
 pub fn set_color(fg: Color, bg: Color) {
-    unsafe {
-        if let Some(ref mut console) = CONSOLE {
-            console.set_color(fg, bg);
-        }
+    if let Some(console) = CONSOLE.lock().as_mut() {
+        console.set_color(fg, bg);
     }
 }
 
 /// Get the console colors
 pub fn get_color() -> (Color, Color) {
-    unsafe {
-        if let Some(ref console) = CONSOLE {
-            (console.fg_color(), console.bg_color())
-        } else {
-            (DRACULA_FG, DRACULA_BG)
-        }
+    match CONSOLE.lock().as_ref() {
+        Some(console) => (console.fg_color(), console.bg_color()),
+        None => (DRACULA_FG, DRACULA_BG),
     }
 }
 

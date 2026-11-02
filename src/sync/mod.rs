@@ -22,10 +22,12 @@
 //! proper integration for future scheduler integration.
 
 pub mod spinlock;
+pub mod irq;
 pub mod event;
 pub mod wait_queue;
 
 // Re-exports
 pub use spinlock::{SpinMutex, SpinMutexGuard, SpinLock, SpinLockGuard};
+pub use irq::{BootCell, IrqMutex, IrqMutexGuard, irq_restore, irq_save};
 pub use event::{Event as SyncEvent, EventFlags as SyncEventFlags};
 pub use wait_queue::{WaitQueue, WaitQueueEntry, WaiterId, WaitStatus, WAIT_OK, WAIT_TIMED_OUT};

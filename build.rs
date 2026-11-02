@@ -16,7 +16,31 @@ use std::fs;
 use std::path::PathBuf;
 use std::io::Write;
 
+/// Fail the build if a `static mut` declaration appears under src/ (see
+/// sync::irq for what to use instead)
+fn forbid_static_mut(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.is_dir() {
+            forbid_static_mut(&path);
+        } else if path.extension().map_or(false, |x| x == "rs") {
+            println!("cargo:rerun-if-changed={}", path.display());
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            for (n, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                // A declaration, not a `&'static mut T` type
+                let declared = code.match_indices("static mut ").any(|(i, _)| !code[..i].ends_with('\''));
+                if declared {
+                    panic!("{}:{}: `static mut` is not allowed; use IrqMutex, SpinMutex, BootCell, an atomic or per-CPU data", path.display(), n + 1);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
+    forbid_static_mut(std::path::Path::new("src"));
     // Tell cargo to rerun this script if source files change
     println!("cargo:rerun-if-changed=src/arch/amd64/switch.S");
     println!("cargo:rerun-if-changed=test-userspace/");

@@ -181,16 +181,19 @@ impl Arm64SpInfo {
 }
 
 /// Stack information for all CPUs
-static mut SECONDARY_SP_LIST: [Arm64SpInfo; ARM64_MAX_CPUS] =
-    [Arm64SpInfo::new(); ARM64_MAX_CPUS];
+static SECONDARY_SP_LIST: crate::sync::IrqMutex<[Arm64SpInfo; ARM64_MAX_CPUS]> =
+    crate::sync::IrqMutex::new([Arm64SpInfo::new(); ARM64_MAX_CPUS]);
 
-/// Get stack info for a CPU
-///
-/// # Safety
-///
-/// The CPU index must be valid.
-pub unsafe fn get_secondary_sp(cpu_num: usize) -> &'static mut Arm64SpInfo {
-    &mut SECONDARY_SP_LIST[cpu_num]
+/// Get stack info for a CPU (None if `cpu_num` is out of range)
+pub fn get_secondary_sp(cpu_num: usize) -> Option<Arm64SpInfo> {
+    SECONDARY_SP_LIST.lock().get(cpu_num).copied()
+}
+
+/// Set stack info for a CPU (ignored if `cpu_num` is out of range)
+pub fn set_secondary_sp(cpu_num: usize, info: Arm64SpInfo) {
+    if let Some(s) = SECONDARY_SP_LIST.lock().get_mut(cpu_num) {
+        *s = info;
+    }
 }
 
 // ============================================================================

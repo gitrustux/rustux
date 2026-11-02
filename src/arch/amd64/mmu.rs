@@ -27,7 +27,8 @@ pub const IA32_MTRR_DEF_TYPE_MSR: u32 = 0x2FF;
 pub const PAT_DEFAULT_VALUE: u64 = 0x0007010600070106;
 
 // Global page table state (simplified - in real kernel would be per-address space)
-static mut BOOT_PML4: Option<PAddr> = None;
+/// CR3 found at boot (0 = not recorded)
+static BOOT_PML4: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Kernel physical offset for direct-mapped physical memory
 ///
@@ -51,7 +52,7 @@ pub fn x86_mmu_early_init() {
         // The bootloader has already set up basic page tables
         // We preserve them for now and will create proper page tables later
         let current_cr3 = read_cr3();
-        BOOT_PML4 = Some(current_cr3);
+        BOOT_PML4.store(current_cr3, core::sync::atomic::Ordering::Release);
 
         // Set up direct mapping of physical memory
         // This maps [KERNEL_PHYS_OFFSET .. KERNEL_PHYS_OFFSET + MAX_PHYS_MEMORY]
@@ -399,9 +400,9 @@ pub unsafe fn x86_tlb_invalidate_page(vaddr: VAddr) {
 /// Returns the physical address of the kernel page table.
 pub fn x86_kernel_cr3() -> PAddr {
     unsafe {
-        match BOOT_PML4 {
-            Some(cr3) => cr3,
-            None => read_cr3(),
+        match BOOT_PML4.load(core::sync::atomic::Ordering::Acquire) {
+            0 => read_cr3(),
+            cr3 => cr3,
         }
     }
 }

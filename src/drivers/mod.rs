@@ -22,6 +22,6 @@ pub mod display;
 pub mod usb;
 
 // Re-exports
-pub use uart::{Uart16550, COM1_PORT, COM2_PORT, COM3_PORT, COM4_PORT, init_com1, com1};
+pub use uart::{Uart16550, COM1_PORT, COM2_PORT, COM3_PORT, COM4_PORT, init_com1, with_com1};
 pub use keyboard::{KeyEvent, ModifierState, SpecialKey};
 pub use display::{Framebuffer, Color, PixelFormat, init as display_init, write_str as display_write};

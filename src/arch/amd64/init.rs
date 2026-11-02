@@ -214,7 +214,7 @@ const KERNEL_STACK_SIZE: usize = 256 * 1024; // 256 KB
 
 /// Allocated kernel stack (physical address)
 /// Allocated early in boot before PMM is available
-static mut KERNEL_STACK: Option<(u64, usize)> = None; // (physical_address, size)
+static KERNEL_STACK: crate::sync::BootCell<Option<(u64, usize)>> = crate::sync::BootCell::new(None); // (physical_address, size)
 
 /// Initialize a larger kernel stack and jump to continuation
 ///
@@ -238,7 +238,7 @@ pub unsafe fn init_kernel_stack(continuation: usize) -> ! {
     let stack_size = STACK_PAGES * 4096;
 
     // Store the stack info for debugging
-    KERNEL_STACK = Some((stack_paddr, stack_size));
+    *KERNEL_STACK.boot_mut() = Some((stack_paddr, stack_size));
 
     // CRITICAL: Switch to the new kernel stack
     // This must be done before any deep call chains (ELF loading, VMO ops, etc.)
@@ -317,7 +317,7 @@ unsafe fn switch_to_kernel_stack(stack_vaddr: usize, stack_size: usize, continua
 
 /// Get the kernel stack information (for debugging)
 pub fn get_kernel_stack_info() -> Option<(u64, usize)> {
-    unsafe { KERNEL_STACK }
+    *KERNEL_STACK.get()
 }
 
 // Export the iframe for use by other modules

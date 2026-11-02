@@ -176,23 +176,23 @@ impl SyscallStats {
     }
 }
 
-/// Per-syscall statistics
-static mut SYSCALL_STATS: [SyscallStats; 1000] = [SyscallStats::new(); 1000];
+/// Per-syscall call counts
+static SYSCALL_COUNTS: [core::sync::atomic::AtomicU64; 256] = [const { core::sync::atomic::AtomicU64::new(0) }; 256];
 
 /// Record a syscall invocation
+#[allow(dead_code)]
 fn record_syscall(num: u32) {
-    unsafe {
-        SYSCALL_STATS[num as usize].count += 1;
+    if let Some(c) = SYSCALL_COUNTS.get(num as usize) {
+        c.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
-/// Get syscall statistics for a syscall
-pub unsafe fn get_syscall_stats(syscall_num: u32) -> Option<&'static SyscallStats> {
-    if (syscall_num as usize) < SYSCALL_STATS.len() {
-        Some(&SYSCALL_STATS[syscall_num as usize])
-    } else {
-        None
-    }
+/// Statistics for a syscall (only the count is recorded so far)
+pub fn get_syscall_stats(syscall_num: u32) -> Option<SyscallStats> {
+    SYSCALL_COUNTS.get(syscall_num as usize).map(|c| SyscallStats {
+        count: c.load(core::sync::atomic::Ordering::Relaxed),
+        ..SyscallStats::new()
+    })
 }
 
 // Syscall numbers (Stable v1)

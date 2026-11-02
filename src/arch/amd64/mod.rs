@@ -16,6 +16,7 @@ pub mod controller;
 // Descriptor tables (GDT, IDT)
 pub mod idt;
 pub mod descriptor;
+pub mod percpu;
 
 // Memory management
 pub mod mm;

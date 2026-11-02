@@ -116,5 +116,5 @@ pub unsafe fn idt_set_gate(vector: u8, handler: u64, selector: u16, type_attr: u
         return;
     }
 
-    IDT[vector as usize] = DescriptorIdtEntry::set_gate(handler, selector, type_attr, 0);
+    IDT.boot_mut()[vector as usize] = DescriptorIdtEntry::set_gate(handler, selector, type_attr, 0);
 }

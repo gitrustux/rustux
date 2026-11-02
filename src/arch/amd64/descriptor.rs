@@ -84,14 +84,33 @@ pub const ACC_DPL3: u8 = 0x60;
 pub const FLAG_GRANULARITY_4K: u8 = 0x80;
 pub const FLAG_SIZE_64BIT: u8 = 0x20;
 
-// Global GDT storage
-static mut GDT: [GdtEntry; GDT_ENTRIES] = [GdtEntry::null(); GDT_ENTRIES];
-static mut GDT_POINTER: GdtPointer = GdtPointer { limit: 0, base: 0 };
-static mut TSS: TssWithIoMap = TssWithIoMap {
-    tss: TaskStateSegment::null(),
-    io_map: [0xFF; IO_MAP_BYTES],
-    io_map_end: 0xFF,
-};
+/// One CPU's GDT and TSS (each CPU needs its own TSS: it holds that CPU's
+/// kernel stack pointer and I/O bitmap, and a TSS descriptor is marked busy
+/// while loaded). Stored in `percpu`.
+#[repr(C)]
+pub struct CpuTables {
+    gdt: [GdtEntry; GDT_ENTRIES],
+    gdt_ptr: GdtPointer,
+    tss: TssWithIoMap,
+    /// Koid of the process whose bitmap is in the TSS (0 = all denied)
+    io_map_owner: u64,
+}
+
+impl CpuTables {
+    pub const fn new() -> Self {
+        Self {
+            gdt: [GdtEntry::null(); GDT_ENTRIES],
+            gdt_ptr: GdtPointer { limit: 0, base: 0 },
+            tss: TssWithIoMap { tss: TaskStateSegment::null(), io_map: [0xFF; IO_MAP_BYTES], io_map_end: 0xFF },
+            io_map_owner: 0,
+        }
+    }
+}
+
+/// This CPU's tables
+fn my_tables() -> *mut CpuTables {
+    super::percpu::this().tables()
+}
 
 /// One bit per I/O port (65536 ports); a set bit denies user access
 pub const IO_MAP_BYTES: usize = 8192;
@@ -107,9 +126,6 @@ struct TssWithIoMap {
     io_map_end: u8,
 }
 
-/// Koid of the process whose bitmap is in the TSS (0 = all ports denied)
-static mut IO_MAP_OWNER: u64 = 0;
-
 /// Load a process's I/O permission bitmap into the TSS (`None` = deny all).
 /// `owner` identifies the bitmap so switching between threads of the same
 /// process does not copy 8 KiB each time; pass `force` after a change.
@@ -117,16 +133,17 @@ static mut IO_MAP_OWNER: u64 = 0;
 /// # Safety
 /// Interrupts must be disabled (single CPU, no concurrent TSS writes).
 pub unsafe fn load_io_map(owner: u64, map: Option<&[u8; IO_MAP_BYTES]>, force: bool) {
+    let t = my_tables();
     let owner = if map.is_some() { owner } else { 0 };
-    if owner == IO_MAP_OWNER && !force {
+    if owner == (*t).io_map_owner && !force {
         return;
     }
-    let dst = core::ptr::addr_of_mut!(TSS.io_map) as *mut u8;
+    let dst = core::ptr::addr_of_mut!((*t).tss.io_map) as *mut u8;
     match map {
         Some(m) => core::ptr::copy_nonoverlapping(m.as_ptr(), dst, IO_MAP_BYTES),
         None => core::ptr::write_bytes(dst, 0xFF, IO_MAP_BYTES),
     }
-    IO_MAP_OWNER = owner;
+    (*t).io_map_owner = owner;
 }
 
 /// Set the ring-0 stack the CPU switches to on an interrupt, exception or
@@ -137,7 +154,7 @@ pub unsafe fn load_io_map(owner: u64, map: Option<&[u8; IO_MAP_BYTES]>, force: b
 /// that can run in ring 3.
 pub unsafe fn set_tss_rsp0(rsp0: u64) {
     // TSS is packed; write through a raw pointer to avoid an unaligned reference
-    core::ptr::addr_of_mut!(TSS.tss.rsp0).write_unaligned(rsp0);
+    core::ptr::addr_of_mut!((*my_tables()).tss.tss.rsp0).write_unaligned(rsp0);
 }
 
 impl GdtEntry {
@@ -214,66 +231,39 @@ impl TaskStateSegment {
     }
 }
 
-/// Setup the GDT (Global Descriptor Table)
+/// Set up and load this CPU's GDT and TSS
 pub fn gdt_setup() {
-    unsafe {
-        // Null descriptor (required)
-        GDT[GDT_NULL] = GdtEntry::null();
+    unsafe { load_cpu_tables(my_tables()) }
+}
 
-        // Kernel code segment (64-bit)
-        GDT[GDT_KERNEL_CODE] = GdtEntry::set_gate(
-            0,                      // Base (ignored in long mode)
-            0xFFFFF,                // Limit (ignored in long mode)
-            ACC_PRESENT | ACC_CODE_DATA | ACC_CODE | ACC_DPL0, // Present, Code, DPL0
-            FLAG_GRANULARITY_4K | FLAG_SIZE_64BIT,               // 4KB pages, 64-bit
-        );
+/// Fill in a CPU's GDT and TSS and load them on the CPU executing this
+///
+/// # Safety
+/// `t` must be the executing CPU's own tables.
+pub unsafe fn load_cpu_tables(t: *mut CpuTables) {
+    let gdt = &mut (*t).gdt;
+    gdt[GDT_NULL] = GdtEntry::null();
+    gdt[GDT_KERNEL_CODE] = GdtEntry::set_gate(0, 0xFFFFF,
+        ACC_PRESENT | ACC_CODE_DATA | ACC_CODE | ACC_DPL0, FLAG_GRANULARITY_4K | FLAG_SIZE_64BIT);
+    gdt[GDT_KERNEL_DATA] = GdtEntry::set_gate(0, 0xFFFFF,
+        ACC_PRESENT | ACC_CODE_DATA | ACC_DATA | ACC_DPL0, FLAG_GRANULARITY_4K);
+    gdt[GDT_USER_CODE] = GdtEntry::set_gate(0, 0xFFFFF,
+        ACC_PRESENT | ACC_CODE_DATA | ACC_CODE | ACC_DPL3, FLAG_GRANULARITY_4K | FLAG_SIZE_64BIT);
+    gdt[GDT_USER_DATA] = GdtEntry::set_gate(0, 0xFFFFF,
+        ACC_PRESENT | ACC_CODE_DATA | ACC_DATA | ACC_DPL3, FLAG_GRANULARITY_4K);
 
-        // Kernel data segment
-        GDT[GDT_KERNEL_DATA] = GdtEntry::set_gate(
-            0,                      // Base (ignored in long mode)
-            0xFFFFF,                // Limit (ignored in long mode)
-            ACC_PRESENT | ACC_CODE_DATA | ACC_DATA | ACC_DPL0, // Present, Data, DPL0
-            FLAG_GRANULARITY_4K,                                      // 4KB pages
-        );
+    // TSS (two entries); the I/O bitmap follows the 104-byte TSS
+    core::ptr::addr_of_mut!((*t).tss.tss.iomap_base)
+        .write_unaligned(core::mem::size_of::<TaskStateSegment>() as u16);
+    let tss_base = core::ptr::addr_of!((*t).tss) as u64;
+    let tss_limit = core::mem::size_of::<TssWithIoMap>() as u32 - 1;
+    gdt[GDT_TSS_LOW] = GdtEntry::set_tss_low(tss_base, tss_limit, ACC_PRESENT | 0x09);
+    gdt[GDT_TSS_HIGH] = GdtEntry::set_tss_high(tss_base);
 
-        // User code segment (64-bit)
-        GDT[GDT_USER_CODE] = GdtEntry::set_gate(
-            0,                      // Base (ignored in long mode)
-            0xFFFFF,                // Limit (ignored in long mode)
-            ACC_PRESENT | ACC_CODE_DATA | ACC_CODE | ACC_DPL3, // Present, Code, DPL3
-            FLAG_GRANULARITY_4K | FLAG_SIZE_64BIT,               // 4KB pages, 64-bit
-        );
-
-        // User data segment
-        GDT[GDT_USER_DATA] = GdtEntry::set_gate(
-            0,                      // Base (ignored in long mode)
-            0xFFFFF,                // Limit (ignored in long mode)
-            ACC_PRESENT | ACC_CODE_DATA | ACC_DATA | ACC_DPL3, // Present, Data, DPL3
-            FLAG_GRANULARITY_4K,                                      // 4KB pages
-        );
-
-        // TSS entry (needs two entries)
-        // The I/O bitmap follows the 104-byte TSS
-        core::ptr::addr_of_mut!(TSS.tss.iomap_base)
-            .write_unaligned(core::mem::size_of::<TaskStateSegment>() as u16);
-        let tss_base = core::ptr::addr_of!(TSS) as u64;
-        let tss_limit = core::mem::size_of::<TssWithIoMap>() as u32 - 1;
-        let tss_access = ACC_PRESENT | 0x09; // Present, TSS, DPL0
-
-        GDT[GDT_TSS_LOW] = GdtEntry::set_tss_low(tss_base, tss_limit, tss_access);
-        GDT[GDT_TSS_HIGH] = GdtEntry::set_tss_high(tss_base);
-
-        // Setup GDT pointer
-        GDT_POINTER.limit = ((core::mem::size_of::<GdtEntry>() * GDT_ENTRIES) - 1) as u16;
-        GDT_POINTER.base = &GDT as *const GdtEntry as u64;
-
-        // Load GDT
-        gdt_load(&GDT_POINTER);
-
-        // Load TSS
-        let tss_selector = (GDT_TSS_LOW * 8) as u16;
-        tss_load(tss_selector);
-    }
+    (*t).gdt_ptr.limit = ((core::mem::size_of::<GdtEntry>() * GDT_ENTRIES) - 1) as u16;
+    (*t).gdt_ptr.base = gdt.as_ptr() as u64;
+    gdt_load(&(*t).gdt_ptr);
+    tss_load((GDT_TSS_LOW * 8) as u16);
 }
 
 /// Setup the IDT (Interrupt Descriptor Table)
@@ -287,8 +277,9 @@ pub fn idt_setup_readonly() {
 
         // Initialize IDT entries with a default handler (all zeros = points to null)
         // The caller should use idt_set_gate to install actual handlers
+        let idt = IDT.boot_mut();
         for i in 0..IDT_ENTRIES {
-            IDT[i] = IdtEntry {
+            idt[i] = IdtEntry {
                 offset_low: 0,
                 selector: KERNEL_CS,
                 ist: 0,  // IST0 (no special stack)
@@ -299,12 +290,10 @@ pub fn idt_setup_readonly() {
             };
         }
 
-        // Setup IDT pointer
-        IDT_POINTER.limit = ((core::mem::size_of::<IdtEntry>() * IDT_ENTRIES) - 1) as u16;
-        IDT_POINTER.base = &IDT as *const IdtEntry as u64;
-
-        // Load IDT
-        idt_load(&IDT_POINTER);
+        let p = IDT_POINTER.boot_mut();
+        p.limit = ((core::mem::size_of::<IdtEntry>() * IDT_ENTRIES) - 1) as u16;
+        p.base = IDT.as_ptr() as u64;
+        idt_load(IDT_POINTER.get());
     }
 }
 
@@ -393,9 +382,14 @@ pub const X86_INT_APIC_ERROR: u8 = 0x21;
 
 pub const IDT_ENTRIES: usize = 256;
 
-// Global IDT storage
-pub static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::null(); IDT_ENTRIES];
-pub static mut IDT_POINTER: IdtPointer = IdtPointer { limit: 0, base: 0 };
+// The IDT, shared by all CPUs: filled in during boot, read-only afterwards
+pub static IDT: crate::sync::BootCell<[IdtEntry; IDT_ENTRIES]> = crate::sync::BootCell::new([IdtEntry::null(); IDT_ENTRIES]);
+pub static IDT_POINTER: crate::sync::BootCell<IdtPointer> = crate::sync::BootCell::new(IdtPointer { limit: 0, base: 0 });
+
+/// Load the shared IDT on the CPU executing this (other CPUs at start-up)
+pub fn idt_load_shared() {
+    unsafe { idt_load(IDT_POINTER.get()) }
+}
 
 impl IdtEntry {
     pub const fn null() -> Self {
@@ -463,5 +457,5 @@ pub unsafe fn tss_load(selector: u16) {
 ///
 /// Caller must ensure TSS has been initialized
 pub unsafe fn get_tss() -> &'static mut TaskStateSegment {
-    &mut *core::ptr::addr_of_mut!(TSS.tss)
+    &mut *core::ptr::addr_of_mut!((*my_tables()).tss.tss)
 }

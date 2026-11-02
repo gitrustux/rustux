@@ -117,7 +117,7 @@ impl BootAllocator {
 /// Static boot allocator buffer
 /// 2MB for PMM page structures (Vec<Page> with ~32 bytes per page)
 /// For 126MB of memory: 32,256 pages * 32 bytes = ~1MB, use 2MB for safety
-static mut BOOT_ALLOC_BUFFER: [u8; 2 * 1024 * 1024] = [0; 2 * 1024 * 1024];
+static BOOT_ALLOC_BUFFER: crate::sync::BootCell<[u8; 2 * 1024 * 1024]> = crate::sync::BootCell::new([0; 2 * 1024 * 1024]);
 
 static BOOT_ALLOCATOR: BootAllocator = BootAllocator::new(2 * 1024 * 1024);
 
@@ -172,7 +172,7 @@ pub enum InitState {
 }
 
 /// Current initialization state
-static mut INIT_STATE: InitState = InitState::NotStarted;
+static INIT_STATE: crate::sync::BootCell<InitState> = crate::sync::BootCell::new(InitState::NotStarted);
 
 /// ============================================================================
 /// Public API
@@ -188,10 +188,10 @@ static mut INIT_STATE: InitState = InitState::NotStarted;
 /// Must be called exactly once during kernel boot.
 pub fn kernel_init() {
     unsafe {
-        if INIT_STATE != InitState::NotStarted {
+        if *INIT_STATE.get() != InitState::NotStarted {
             panic!("kernel_init called multiple times");
         }
-        INIT_STATE = InitState::Early;
+        *INIT_STATE.boot_mut() = InitState::Early;
     }
 
     // Initialize subsystems in order
@@ -202,7 +202,7 @@ pub fn kernel_init() {
     init_late();
 
     unsafe {
-        INIT_STATE = InitState::Complete;
+        *INIT_STATE.boot_mut() = InitState::Complete;
     }
 }
 
@@ -216,10 +216,10 @@ pub fn kernel_init() {
 /// Must be called exactly once during kernel boot, before kernel_init_rest().
 pub fn pmm_init() {
     unsafe {
-        if INIT_STATE != InitState::NotStarted {
+        if *INIT_STATE.get() != InitState::NotStarted {
             panic!("pmm_init called multiple times or after init started");
         }
-        INIT_STATE = InitState::Early;
+        *INIT_STATE.boot_mut() = InitState::Early;
     }
     init_early();
 }
@@ -239,7 +239,7 @@ pub fn kernel_init_rest() {
     init_late();
 
     unsafe {
-        INIT_STATE = InitState::Complete;
+        *INIT_STATE.boot_mut() = InitState::Complete;
     }
 }
 
@@ -247,14 +247,14 @@ pub fn kernel_init_rest() {
 /// the upper half (they pointed into the old load address).
 pub fn after_relocation() {
     unsafe {
-        BOOT_ALLOCATOR.init(core::ptr::addr_of!(BOOT_ALLOC_BUFFER) as usize);
+        BOOT_ALLOCATOR.init(BOOT_ALLOC_BUFFER.as_ptr() as usize);
         crate::mm::pmm::set_boot_allocator(boot_alloc_callback);
     }
 }
 
 /// Get the current initialization state
 pub fn init_state() -> InitState {
-    unsafe { INIT_STATE }
+    *INIT_STATE.get()
 }
 
 /// ============================================================================
@@ -312,7 +312,7 @@ fn init_early() {
             core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
         }
 
-        INIT_STATE = InitState::Early;
+        *INIT_STATE.boot_mut() = InitState::Early;
     }
 }
 
@@ -363,7 +363,7 @@ fn init_arch() {
     }
 
     unsafe {
-        INIT_STATE = InitState::Arch;
+        *INIT_STATE.boot_mut() = InitState::Arch;
     }
 }
 
@@ -433,7 +433,7 @@ fn init_memory() {
 
             crate::mm::dma::dma_self_test();
 
-            INIT_STATE = InitState::VM;
+            *INIT_STATE.boot_mut() = InitState::VM;
         }
     }
 
@@ -441,7 +441,7 @@ fn init_memory() {
     {
         // TODO: Implement for other architectures
         unsafe {
-            INIT_STATE = InitState::VM;
+            *INIT_STATE.boot_mut() = InitState::VM;
         }
     }
 }
@@ -454,7 +454,7 @@ fn init_threads() {
     // TODO: Initialize scheduler
 
     unsafe {
-        INIT_STATE = InitState::Scheduler;
+        *INIT_STATE.boot_mut() = InitState::Scheduler;
     }
 }
 
@@ -497,7 +497,7 @@ fn init_late() {
     }
 
     unsafe {
-        INIT_STATE = InitState::Complete;
+        *INIT_STATE.boot_mut() = InitState::Complete;
     }
 }
 
@@ -506,7 +506,7 @@ fn init_late() {
 /// Called after all initialization is complete.
 pub fn kernel_running() {
     unsafe {
-        INIT_STATE = InitState::Running;
+        *INIT_STATE.boot_mut() = InitState::Running;
     }
 
     // TODO: Create idle thread for CPU 0

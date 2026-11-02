@@ -4,38 +4,20 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-//! PS/2 Keyboard Driver
+//! Keyboard support left in the kernel.
 //!
-//! This module provides a complete PS/2 keyboard driver with:
-//! - Controller and device initialization
-//! - Scancode to ASCII conversion
-//! - Modifier key tracking (Shift, Ctrl, Alt, Caps Lock)
-//! - Special key support (arrows, home, end, etc.)
-//! - Circular buffer for keyboard events
+//! Since step 4 the PS/2 keyboard is driven by a userspace program
+//! (`/bin/ps2kbd`); the kernel only sets up the 8042 controller at boot.
+//! The USB keyboard driver is still in the kernel: it is polled on the
+//! timer tick, its characters collect in a buffer here, and they go out
+//! over the kernel input channel, whose other end belongs to `init`.
+//! The scancode tables in `layout` are kept for reference and tests.
 //!
 //! ## Hardware
 //! - Data port: 0x60
 //! - Command/status port: 0x64
 //! - IRQ: IRQ1 (interrupt 33)
 //!
-//! ## Usage
-//! ```rust
-//! use rustux::drivers::keyboard;
-//!
-//! // Initialize keyboard (call from kernel init)
-//! keyboard::init();
-//!
-//! // Read a character (blocking - returns None if no data)
-//! if let Some(ch) = keyboard::read_char() {
-//!     // Process character
-//! }
-//!
-//! // Check for available data
-//! if keyboard::has_data() {
-//!     let ch = keyboard::read_char().unwrap();
-//! }
-//! ```
-
 pub mod ps2;
 pub mod layout;
 
@@ -52,21 +34,24 @@ pub use ps2::{
     controller_status, read_data_port,
 };
 
-/// Global input buffer for keyboard events
-static mut INPUT_BUFFER: CircularBuffer<u8, INPUT_BUFFER_SIZE> = CircularBuffer::new();
+/// USB keystrokes waiting to be sent, and the kernel's end of the input
+/// channel. Locked with interrupts off: the timer tick uses it.
+struct Input {
+    buffer: CircularBuffer<u8, INPUT_BUFFER_SIZE>,
+    channel: Option<alloc::sync::Arc<crate::kobj::Channel>>,
+}
 
-/// Current modifier state
-static mut MODIFIER_STATE: ModifierState = ModifierState::new();
-
-/// Extended scancode flag (0xE0 prefix)
-static mut EXTENDED_SCANCODE: bool = false;
+static INPUT: crate::sync::IrqMutex<Input> =
+    crate::sync::IrqMutex::new(Input { buffer: CircularBuffer::new(), channel: None });
 
 /// Flag to track if keyboard has been initialized
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// An 8042 controller was found and set up (polling must not touch the
-/// ports otherwise: a missing controller reads as 0xFF, "data waiting")
+/// An 8042 controller was found and set up
 static PRESENT: AtomicBool = AtomicBool::new(false);
+
+/// Set once the scheduler runs: from then on the timer tick polls USB
+static POLLING: AtomicBool = AtomicBool::new(false);
 
 /// Initialize the PS/2 keyboard driver
 ///
@@ -97,9 +82,7 @@ pub unsafe fn init() {
     crate::drivers::display::write_str("[PS/2] ");
 
     // Reset state
-    INPUT_BUFFER = CircularBuffer::new();
-    MODIFIER_STATE = ModifierState::new();
-    EXTENDED_SCANCODE = false;
+    INPUT.lock().buffer = CircularBuffer::new();
 
     // Set up the 8042 and the keyboard (prints a diagnostic line)
     ps2::ps2_controller_init();
@@ -119,159 +102,10 @@ pub unsafe fn init() {
     INITIALIZED.store(true, Ordering::Release);
 }
 
-/// Handle a keyboard interrupt (IRQ1)
-///
-/// This function is called from the IRQ1 interrupt handler.
-/// It reads the scancode from the keyboard, converts it to ASCII,
-/// and updates the modifier state.
-///
-/// # Safety
-/// This function must only be called from an interrupt handler.
-pub unsafe fn handle_irq() {
-    // Read every byte waiting: the controller raises IRQ1 again only once
-    // its output buffer has been emptied
-    for _ in 0..64 {
-        let status = controller_status();
-        if status & ps2::STATUS_OBF == 0 {
-            break;
-        }
-        let byte = read_data_port();
-        if status & (ps2::STATUS_AUXDATA | ps2::STATUS_ERRORS) != 0 {
-            continue; // mouse data or a transmission error
-        }
-        process_scancode(byte);
-    }
-    if INPUT_BUFFER.has_data() {
-        wake_waiter();
-    }
-}
-
-/// Process waiting for keyboard input (0 = none); woken by IRQ1
-static WAITER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-
-/// Register the process to wake when a key arrives
-pub fn set_waiter(pid: u32) {
-    WAITER.store(pid, Ordering::Release);
-}
-
-fn wake_waiter() {
-    let pid = WAITER.load(Ordering::Acquire);
-    if pid != 0 {
-        crate::process::run::wake(pid);
-    }
-}
-
-/// Polling fallback for when IRQ1 is not delivered (e.g. a firmware
-/// routing the kernel does not handle): decode pending bytes directly.
-pub fn poll() {
-    unsafe {
-        if !PRESENT.load(Ordering::Acquire) || controller_status() & ps2::STATUS_OBF == 0 {
-            return;
-        }
-        let flags: u64;
-        core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem));
-        handle_irq();
-        if flags & 0x200 != 0 {
-            core::arch::asm!("sti", options(nomem, nostack));
-        }
-    }
-}
-
-/// Decode one scancode (set 1, as delivered with translation on)
-unsafe fn process_scancode(scancode: u8) {
-    // Check for 0xE0 prefix (extended scancode)
-    if scancode == 0xE0 {
-        EXTENDED_SCANCODE = true;
-        return;
-    }
-
-    let extended = EXTENDED_SCANCODE;
-    EXTENDED_SCANCODE = false;
-
-    // Process the scancode
-    let keyevent = scancode_to_keyevent(scancode, &MODIFIER_STATE, extended);
-
-    // Update modifier state and write to buffer
-    match keyevent {
-        KeyEvent::Ascii(ascii) => {
-            // Regular ASCII character - write to buffer
-            INPUT_BUFFER.write(ascii);
-        }
-        KeyEvent::Special(special) => {
-            match special {
-                // Modifier keys - update state
-                SpecialKey::LeftShift => MODIFIER_STATE.left_shift = true,
-                SpecialKey::RightShift => MODIFIER_STATE.right_shift = true,
-                SpecialKey::LeftCtrl => MODIFIER_STATE.left_ctrl = true,
-                SpecialKey::RightCtrl => MODIFIER_STATE.right_ctrl = true,
-                SpecialKey::LeftAlt => MODIFIER_STATE.left_alt = true,
-                SpecialKey::RightAlt => MODIFIER_STATE.right_alt = true,
-                SpecialKey::CapsLock => {
-                    MODIFIER_STATE.caps_lock = !MODIFIER_STATE.caps_lock;
-                }
-                // Backspace - write as control character
-                SpecialKey::Backspace => {
-                    INPUT_BUFFER.write(0x08);
-                }
-                // Enter - write as newline
-                SpecialKey::Enter => {
-                    INPUT_BUFFER.write(b'\n');
-                }
-                // Tab - write as tab character
-                SpecialKey::Tab => {
-                    INPUT_BUFFER.write(b'\t');
-                }
-                // Other special keys - for future use (arrows, etc.)
-                _ => {
-                    // Arrow keys and other special keys could be handled here
-                    // For now, we ignore them or could write special escape sequences
-                }
-            }
-        }
-        KeyEvent::Release(code) => {
-            // Key release - update modifier state
-            match code {
-                0x2A => MODIFIER_STATE.left_shift = false,
-                0x36 => MODIFIER_STATE.right_shift = false,
-                0x1D => {
-                    // Need to distinguish left/right ctrl based on extended flag
-                    if extended {
-                        MODIFIER_STATE.right_ctrl = false;
-                    } else {
-                        MODIFIER_STATE.left_ctrl = false;
-                    }
-                }
-                0x38 => {
-                    // Need to distinguish left/right alt based on extended flag
-                    if extended {
-                        MODIFIER_STATE.right_alt = false;
-                    } else {
-                        MODIFIER_STATE.left_alt = false;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------
-// Kernel input channel
-//
-// Since step 4 the PS/2 keyboard is driven by a userspace program
-// (`/bin/ps2kbd`). The USB keyboard driver still runs in the kernel: it is
-// polled on the timer tick and its characters go out over a channel whose
-// other end belongs to `init`, which forwards them to the shell.
-// ---------------------------------------------------------------------
-
-static KERNEL_INPUT: crate::sync::SpinMutex<Option<alloc::sync::Arc<crate::kobj::Channel>>> =
-    crate::sync::SpinMutex::new(None);
-static POLLING: AtomicBool = AtomicBool::new(false);
-
 /// Create the kernel input channel and return the end for `init`
 pub fn take_input_channel() -> alloc::sync::Arc<crate::kobj::Channel> {
     let (ours, theirs) = crate::kobj::Channel::new_pair();
-    *KERNEL_INPUT.lock() = Some(ours);
+    INPUT.lock().channel = Some(ours);
     theirs
 }
 
@@ -288,93 +122,32 @@ pub fn tick() {
         return;
     }
     crate::drivers::usb::poll();
+    let mut input = INPUT.lock();
     let mut data = alloc::vec::Vec::new();
-    unsafe {
-        while let Some(b) = INPUT_BUFFER.read() {
-            data.push(b);
-        }
+    while let Some(b) = input.buffer.read() {
+        data.push(b);
     }
     if data.is_empty() {
         return;
     }
-    if let Some(ch) = KERNEL_INPUT.lock().as_ref() {
+    if let Some(ch) = input.channel.as_ref() {
         let _ = ch.write(crate::kobj::channel::Message { data, handles: alloc::vec::Vec::new() });
     }
 }
 
-/// Read a single character from the keyboard buffer
-///
-/// # Returns
-/// * `Some(char)` - Character if available
-/// * `None` - No character available
-///
-/// # Note
-/// This function is non-blocking. Returns immediately if no data is available.
-pub fn read_char() -> Option<char> {
-    unsafe {
-        INPUT_BUFFER.read().map(|b| b as char)
-    }
-}
-
-/// Add a character from another keyboard (USB) to the input buffer.
-/// Interrupts are disabled around the write: the IRQ1 handler writes the
-/// same buffer.
+/// Add a character from a USB keyboard
 pub fn push_input(c: u8) {
-    unsafe {
-        let flags: u64;
-        core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem));
-        INPUT_BUFFER.write(c);
-        if flags & 0x200 != 0 {
-            core::arch::asm!("sti", options(nomem, nostack));
-        }
-    }
-}
-
-/// Check if keyboard data is available
-///
-/// # Returns
-/// * `true` - At least one character is available
-/// * `false` - Buffer is empty
-pub fn has_data() -> bool {
-    unsafe {
-        INPUT_BUFFER.has_data()
-    }
-}
-
-/// Get the current modifier state
-///
-/// # Returns
-/// Current modifier state (shift, ctrl, alt, caps lock)
-pub fn get_modifiers() -> ModifierState {
-    unsafe {
-        MODIFIER_STATE
-    }
-}
-
-/// Flush the input buffer (discard all pending characters)
-pub fn flush() {
-    unsafe {
-        while INPUT_BUFFER.read().is_some() {}
-    }
-}
-
-/// Get the number of characters available in the buffer
-pub fn available() -> usize {
-    unsafe {
-        INPUT_BUFFER.available()
-    }
-}
-
-/// Check if the buffer is full
-pub fn is_full() -> bool {
-    unsafe {
-        INPUT_BUFFER.is_full()
-    }
+    INPUT.lock().buffer.write(c);
 }
 
 /// Check if keyboard driver has been initialized
 pub fn is_initialized() -> bool {
     INITIALIZED.load(Ordering::Acquire)
+}
+
+/// Whether an 8042 controller was found at boot
+pub fn ps2_present() -> bool {
+    PRESENT.load(Ordering::Acquire)
 }
 
 #[cfg(test)]
@@ -384,14 +157,5 @@ mod tests {
     #[test]
     fn test_initialized_flag() {
         assert!(!is_initialized());
-    }
-
-    #[test]
-    fn test_modifiers_initial_state() {
-        unsafe {
-            assert!(!MODIFIER_STATE.shift());
-            assert!(!MODIFIER_STATE.ctrl());
-            assert!(!MODIFIER_STATE.alt());
-        }
     }
 }
