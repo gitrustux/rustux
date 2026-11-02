@@ -16,31 +16,52 @@ use std::fs;
 use std::path::PathBuf;
 use std::io::Write;
 
-/// Fail the build if a `static mut` declaration appears under src/ (see
-/// sync::irq for what to use instead)
-fn forbid_static_mut(dir: &std::path::Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for e in entries.flatten() {
-        let path = e.path();
-        if path.is_dir() {
-            forbid_static_mut(&path);
-        } else if path.extension().map_or(false, |x| x == "rs") {
-            println!("cargo:rerun-if-changed={}", path.display());
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
-            for (n, line) in text.lines().enumerate() {
-                let code = line.split("//").next().unwrap_or("");
-                // A declaration, not a `&'static mut T` type
-                let declared = code.match_indices("static mut ").any(|(i, _)| !code[..i].ends_with('\''));
-                if declared {
-                    panic!("{}:{}: `static mut` is not allowed; use IrqMutex, SpinMutex, BootCell, an atomic or per-CPU data", path.display(), n + 1);
-                }
+/// Fail the build if a `static mut` declaration appears in the kernel
+/// sources (see sync::irq for what to use instead). Only files git tracks
+/// are checked, so stray copies (e.g. old files a sync tool brought back)
+/// cannot break the build; without git, every .rs file under src/ is.
+fn forbid_static_mut() {
+    let tracked = std::process::Command::new("git")
+        .args(["ls-files", "--", "src"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(std::path::PathBuf::from).collect::<Vec<_>>());
+    let files = match tracked {
+        Some(f) if !f.is_empty() => f,
+        _ => {
+            let mut all = Vec::new();
+            walk(std::path::Path::new("src"), &mut all);
+            all
+        }
+    };
+    for path in files.iter().filter(|p| p.extension().map_or(false, |x| x == "rs")) {
+        println!("cargo:rerun-if-changed={}", path.display());
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        for (n, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            // A declaration, not a `&'static mut T` type
+            if code.match_indices("static mut ").any(|(i, _)| !code[..i].ends_with('\'')) {
+                panic!("{}:{}: `static mut` is not allowed; use IrqMutex, SpinMutex, BootCell, an atomic or per-CPU data", path.display(), n + 1);
             }
         }
     }
 }
 
+fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.is_dir() {
+            walk(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
+}
+
 fn main() {
-    forbid_static_mut(std::path::Path::new("src"));
+    forbid_static_mut();
     // Tell cargo to rerun this script if source files change
     println!("cargo:rerun-if-changed=src/arch/amd64/switch.S");
     println!("cargo:rerun-if-changed=test-userspace/");
