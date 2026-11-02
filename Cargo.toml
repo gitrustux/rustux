@@ -36,6 +36,8 @@ kernel_test = []
 uefi_kernel = ["uefi", "standalone"]
 # Defines the kernel global allocator (src/mm/allocator.rs)
 standalone = []
+# Do not start the other CPU cores (escape hatch for bring-up problems)
+no_smp = []
 # Enable userspace test (embeds userspace binary and tests mexec)
 userspace_test = []
 

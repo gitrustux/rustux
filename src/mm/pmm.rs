@@ -477,6 +477,30 @@ struct Region {
 const MAX_REGIONS: usize = 256;
 
 
+/// Take `count` contiguous pages below 1 MiB (not page 0) out of the
+/// recorded free regions, for the SMP start-up trampoline. Call after the
+/// memory map was recorded and before the PMM is built from it; the pages
+/// are then never handed out.
+pub fn take_low_pages(count: usize) -> Option<PAddr> {
+    const ONE_MIB: PAddr = 0x10_0000;
+    let need = (count * PAGE_SIZE) as PAddr;
+    let mut g = PMM.lock();
+    let st = &mut *g;
+    for r in st.regions[..st.region_count].iter_mut() {
+        let start = r.base.max(PAGE_SIZE as PAddr);
+        if start + need <= r.end.min(ONE_MIB) {
+            if start == r.base {
+                r.base += need;
+            } else {
+                // Region starts at page 0: keep page 0 out, use what follows
+                r.base = start + need;
+            }
+            return Some(start);
+        }
+    }
+    None
+}
+
 /// True if the PMM was built from the firmware memory map (as opposed to
 /// the fixed fallback zones)
 pub fn pmm_from_memory_map() -> bool {

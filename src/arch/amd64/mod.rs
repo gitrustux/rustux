@@ -17,6 +17,7 @@ pub mod controller;
 pub mod idt;
 pub mod descriptor;
 pub mod percpu;
+pub mod smp;
 
 // Memory management
 pub mod mm;

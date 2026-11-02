@@ -52,7 +52,9 @@ fn main() -> Status {
     // PROGRESS MARKER: Entry point reached (RED framebuffer)
     fb_red();
 
-    let _acpi_rsdp = find_acpi_rsdp();
+    if let Some(rsdp) = find_acpi_rsdp() {
+        rustux::arch::amd64::smp::set_rsdp(rsdp);
+    }
     record_kernel_image();
     let memory_map = unsafe { uefi::boot::exit_boot_services(None) };
     record_phys_limit(&memory_map);
@@ -305,6 +307,24 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
         // Load /bin/init from the ramdisk into a new process in the root job
         // and hand the CPU to the scheduler; init runs first. The boot
         // context is never resumed.
+        // Start the other CPU cores (they park until the scheduler can use
+        // them)
+        let aps = rustux::arch::amd64::smp::start_aps();
+        debug_print("[SMP] ");
+        print_hex(1 + aps as u64);
+        debug_print(" CPU(s) online\n");
+        {
+            let mut b = [0u8; 40];
+            let n = aps + 1;
+            let msg = b"[SMP] CPUs online: ";
+            b[..msg.len()].copy_from_slice(msg);
+            let mut i = msg.len();
+            if n >= 10 { b[i] = b'0' + (n / 10) as u8; i += 1; }
+            b[i] = b'0' + (n % 10) as u8;
+            b[i + 1] = b'\n';
+            rustux::drivers::display::write_str(core::str::from_utf8_unchecked(&b[..i + 2]));
+        }
+
         // init gets the root resource (to start drivers) and the kernel's
         // input channel (USB keystrokes) besides the usual bootstrap handles
         use rustux::kobj::{KObject, Rights};
@@ -702,6 +722,9 @@ fn record_phys_limit(map: &impl uefi::mem::memory_map::MemoryMap) {
             rustux::mm::pmm::note_usable_memory(desc.phys_start, desc.page_count);
         }
     }
+    // Two pages below 1 MiB for starting the other CPUs, before the PMM
+    // hands memory out
+    rustux::arch::amd64::smp::reserve_low_memory();
     unsafe {
         if FB.get().addr != 0 {
             note_phys_limit(FB.get().addr + FB.get().size);
