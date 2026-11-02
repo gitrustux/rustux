@@ -263,6 +263,22 @@ pub unsafe fn load_cpu_tables(t: *mut CpuTables) {
     (*t).gdt_ptr.limit = ((core::mem::size_of::<GdtEntry>() * GDT_ENTRIES) - 1) as u16;
     (*t).gdt_ptr.base = gdt.as_ptr() as u64;
     gdt_load(&(*t).gdt_ptr);
+    // Switch to this GDT's kernel code and data selectors. The CPU may
+    // still hold the firmware's (UEFI uses 0x38, beyond this GDT) or the
+    // AP trampoline's (0x18, this GDT's user code): an IRETQ to a context
+    // running with such a CS faults.
+    core::arch::asm!(
+        "push 0x08",
+        "lea {tmp}, [rip + 2f]",
+        "push {tmp}",
+        "retfq",
+        "2:",
+        "mov {tmp:e}, 0x10",
+        "mov ss, {tmp:e}",
+        "mov ds, {tmp:e}",
+        "mov es, {tmp:e}",
+        tmp = out(reg) _,
+    );
     tss_load((GDT_TSS_LOW * 8) as u16);
 }
 

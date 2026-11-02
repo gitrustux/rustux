@@ -214,6 +214,11 @@ static inline int64_t rx_spawn_process(const char *path, rx_handle_t *proc_out,
     return RX_SYS6(0x0B, path, proc_out, handles, tags, count, 0);
 }
 
+// Debugging / tests
+static inline int64_t rx_debug_cpu(void) { return RX_SYS(0x51, 0, 0, 0, 0); }
+static inline int64_t rx_debug_cpu_count(void) { return RX_SYS(0x52, 0, 0, 0, 0); }
+static inline void rx_yield(void) { RX_SYS(0x72, 0, 0, 0, 0); }
+
 static inline uint64_t rx_clock_get_monotonic(void) { return (uint64_t)RX_SYS(0x40, 0, 0, 0, 0); }
 static inline rx_status_t rx_timer_create(uint32_t options, uint32_t clock_id, rx_handle_t *out) { return RX_SYS(0x41, options, clock_id, out, 0); }
 static inline rx_status_t rx_timer_set(rx_handle_t h, uint64_t deadline, uint64_t slack) { return RX_SYS(0x42, h, deadline, slack, 0); }

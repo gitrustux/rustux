@@ -8,7 +8,7 @@ CFLAGS = -ffreestanding -nostdlib -fno-stack-protector -fno-pic -O2 -Wall -Wextr
 LDFLAGS = -nostdlib -T linker.ld
 
 # Default target
-all: hello.elf counter.elf init.elf objtest.elf ipctest.elf spawntest.elf true.elf ps2kbd.elf drvtest.elf
+all: hello.elf counter.elf init.elf objtest.elf ipctest.elf spawntest.elf true.elf ps2kbd.elf drvtest.elf smptest.elf
 
 # Build hello.elf
 hello.elf: hello.o
@@ -69,6 +69,13 @@ drvtest.elf: drvtest.o
 	$(LD) $(LDFLAGS) -o $@ $<
 
 drvtest.o: drvtest.c rx.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Build smptest.elf (threads on several CPUs)
+smptest.elf: smptest.o
+	$(LD) $(LDFLAGS) -o $@ $<
+
+smptest.o: smptest.c rx.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Copy binaries to expected locations

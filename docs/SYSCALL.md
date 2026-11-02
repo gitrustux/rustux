@@ -730,9 +730,16 @@ in the ramdisk, run from the shell:
 | `ipctest` | processes, threads, jobs, `task_kill`, two processes exchanging a message and a handle over a channel | 31 |
 | `spawntest` | starts `/bin/true` 300 times; process clean-up | 1 |
 | `drvtest` | driver calls refused without the root resource; a direct port read kills the program (exit code -1025 expected) | 5 |
+| `smptest` | threads on several CPUs: speed-up, SSE registers across migrations, TLB shootdown, cross-CPU wake-ups | 6 |
 
 Sources are in `userspace/c-progs/`; `rx.h` there has C wrappers for every
 call above with Zircon-style signatures.
+
+### Debugging (tests only)
+
+`debug_cpu()` (0x51) returns the index of the CPU running the caller;
+`debug_cpu_count()` (0x52) the number of CPUs running the scheduler. Used
+by `smptest`.
 
 ### Keyboard input
 

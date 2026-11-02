@@ -155,6 +155,10 @@ impl Aspace {
             }
             removed.push(m);
         }
+        drop(inner);
+        // Other CPUs running this address space must stop using the old
+        // translations before the caller frees the pages
+        crate::arch::amd64::smp::tlb_shootdown(self.pml4);
         Ok(removed)
     }
 
@@ -205,6 +209,7 @@ impl Aspace {
             }
         }
         drop(inner);
+        crate::arch::amd64::smp::tlb_shootdown(pml4);
         // Pages of a mapping that had no access were never put in the page
         // tables; they were committed when it was mapped
         for (va, vmo, off) in remap {

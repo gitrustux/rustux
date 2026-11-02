@@ -271,8 +271,7 @@ pub struct ProcessTable {
     /// Process array (indexed by PID)
     processes: [Option<Process>; MAX_PROCESSES],
 
-    /// Current running process
-    current: Option<u32>,
+    // (The thread running on each CPU is kept in percpu)
 
     /// Next PID to allocate
     next_pid: u32,
@@ -284,19 +283,18 @@ impl ProcessTable {
         const NONE: Option<Process> = None;
         Self {
             processes: [NONE; MAX_PROCESSES],
-            current: None,
             next_pid: 1, // PID 0 is kernel
         }
     }
 
-    /// Get the current process
+    /// Get the current process (the thread running on this CPU)
     pub fn current(&self) -> Option<&Process> {
-        self.current.and_then(|pid| self.processes.get(pid as usize)?.as_ref())
+        self.current_pid().and_then(|pid| self.processes.get(pid as usize)?.as_ref())
     }
 
     /// Get the current process (mutable)
     pub fn current_mut(&mut self) -> Option<&mut Process> {
-        let pid = self.current?;
+        let pid = self.current_pid()?;
         self.processes.get_mut(pid as usize)?.as_mut()
     }
 
@@ -328,10 +326,11 @@ impl ProcessTable {
     /// stack is in use) and return them; the caller frees their kernel
     /// stacks and drops them
     pub fn reap_zombies(&mut self) -> alloc::vec::Vec<Process> {
-        let cur = self.current;
         let mut out = alloc::vec::Vec::new();
         for (pid, slot) in self.processes.iter_mut().enumerate() {
-            if Some(pid as u32) != cur && matches!(slot, Some(p) if p.state == ProcessState::Zombie) {
+            // A zombie may still be on the stack of the CPU switching away
+            // from it until that CPU has switched
+            if !crate::process::run::on_cpu(pid as u32) && matches!(slot, Some(p) if p.state == ProcessState::Zombie) {
                 out.push(slot.take().unwrap());
             }
         }
@@ -354,14 +353,14 @@ impl ProcessTable {
         self.processes[pid as usize] = Some(process);
     }
 
-    /// Set the current running process
+    /// Set the thread running on this CPU
     pub fn set_current(&mut self, pid: u32) {
-        self.current = Some(pid);
+        crate::arch::amd64::percpu::this().set_current(Some(pid));
     }
 
-    /// Get the current PID
+    /// The thread running on this CPU
     pub fn current_pid(&self) -> Option<u32> {
-        self.current
+        crate::arch::amd64::percpu::this().current()
     }
 
     /// Remove a process from the table
@@ -371,8 +370,8 @@ impl ProcessTable {
         }
 
         // If this is the current process, clear current
-        if self.current == Some(pid) {
-            self.current = None;
+        if self.current_pid() == Some(pid) {
+            crate::arch::amd64::percpu::this().set_current(None);
         }
 
         self.processes[pid as usize].take()
@@ -463,7 +462,7 @@ where
     F: FnOnce(&mut Process) -> R,
 {
     let mut table = PROCESS_TABLE.lock();
-    let current = table.current?;
+    let current = table.current_pid()?;
     let process = table.get_mut(current)?;
     Some(f(process))
 }

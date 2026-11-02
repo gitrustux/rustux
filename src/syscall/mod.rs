@@ -347,6 +347,10 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
 
         // Debug (0x50-0x5F)
         0x50 => sys_debug_write(args),
+        // debug_cpu(): index of the CPU running the caller (tests)
+        0x51 => ok_to_ret(crate::arch::amd64::percpu::this().index),
+        // debug_cpu_count(): CPUs running the scheduler
+        0x52 => ok_to_ret(crate::arch::amd64::percpu::online_count()),
 
         // I/O (0x60-0x6F) - Phase 5A
         0x60 => sys_write(args),

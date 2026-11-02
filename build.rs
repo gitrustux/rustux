@@ -165,6 +165,7 @@ fn main() {
         (&["target/true.elf", "userspace/c-progs/true.elf"], "bin/true"),
         (&["target/ps2kbd.elf", "userspace/c-progs/ps2kbd.elf"], "bin/ps2kbd"),
         (&["target/drvtest.elf", "userspace/c-progs/drvtest.elf"], "bin/drvtest"),
+        (&["target/smptest.elf", "userspace/c-progs/smptest.elf"], "bin/smptest"),
         (&["target/init.elf", "test-userspace/init.elf"], "bin/init"),
         (&["target/shell.elf", "test-userspace/shell/shell.elf"], "bin/shell"),
     ];

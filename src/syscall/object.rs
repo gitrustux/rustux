@@ -184,17 +184,31 @@ fn wait_on(objects: &[KObject], masks: &[u32], deadline: u64) -> (R<()>, Vec<u32
         Ok(p) => p,
         Err(e) => return (Err(e), Vec::new()),
     };
+    let unregister = || {
+        for o in objects {
+            o.signal_state().remove_waiter(pid);
+        }
+    };
     loop {
+        // Register first, then look: a signal raised on another CPU after
+        // the look still finds us in the waiter list and wakes us
+        for o in objects {
+            o.signal_state().add_waiter(pid);
+        }
         let observed: Vec<u32> = objects.iter().map(|o| o.signals()).collect();
-        if run::is_killed() {
+        let done = if run::is_killed() {
             // The thread is being killed: give up so it can exit
-            return (Err(RxStatus::ERR_BAD_STATE), observed);
-        }
-        if observed.iter().zip(masks).any(|(s, m)| s & m != 0) {
-            return (Ok(()), observed);
-        }
-        if deadline != kobj::INFINITE && kobj::now_ns() >= deadline {
-            return (Err(RxStatus::ERR_TIMED_OUT), observed);
+            Some(Err(RxStatus::ERR_BAD_STATE))
+        } else if observed.iter().zip(masks).any(|(s, m)| s & m != 0) {
+            Some(Ok(()))
+        } else if deadline != kobj::INFINITE && kobj::now_ns() >= deadline {
+            Some(Err(RxStatus::ERR_TIMED_OUT))
+        } else {
+            None
+        };
+        if let Some(r) = done {
+            unregister();
+            return (r, observed);
         }
         // Wake for the earliest of our deadline and any object's own
         // (timers)
@@ -204,13 +218,8 @@ fn wait_on(objects: &[KObject], masks: &[u32], deadline: u64) -> (R<()>, Vec<u32
                 wake_at = wake_at.min(d);
             }
         }
-        for o in objects {
-            o.signal_state().add_waiter(pid);
-        }
         run::block_current(wake_at);
-        for o in objects {
-            o.signal_state().remove_waiter(pid);
-        }
+        unregister();
     }
 }
 

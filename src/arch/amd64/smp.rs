@@ -18,8 +18,12 @@
 //!    for it to report in.
 //! 4. Each AP copies the boot CPU's CR0/CR4/EFER settings (SSE, NX, ...),
 //!    loads the kernel page tables, its own GDT and TSS and the shared IDT,
-//!    enables its local APIC and parks with interrupts off. Scheduling
-//!    threads on the APs is the next step.
+//!    enables its local APIC, starts its timer and enters the scheduler's
+//!    idle loop.
+//!
+//! Also here: inter-processor interrupts to wake idle CPUs, and TLB
+//! shootdowns when a mapping changes in an address space another CPU is
+//! using.
 
 use super::mm::kernel_map;
 use super::percpu;
@@ -29,6 +33,18 @@ use core::sync::atomic::{AtomicU64, Ordering};
 static RSDP: AtomicU64 = AtomicU64::new(0);
 /// Two pages below 1 MiB: trampoline code, then the temporary PML4
 static LOW_PAGES: AtomicU64 = AtomicU64::new(0);
+/// LAPIC timer initial count for a 10 ms tick (calibrated on the boot CPU)
+static TIMER_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// IPI vector that only wakes a halted CPU
+pub const WAKE_VECTOR: u8 = 0xF0;
+/// IPI vector asking a CPU to flush its TLB
+pub const FLUSH_VECTOR: u8 = 0xF1;
+
+/// Record the boot CPU's timer calibration for the other CPUs
+pub fn set_timer_count(count: u32) {
+    TIMER_COUNT.store(count, Ordering::Release);
+}
 
 /// Record the RSDP address (before ExitBootServices)
 pub fn set_rsdp(paddr: u64) {
@@ -378,6 +394,75 @@ pub fn start_aps() -> usize {
     }
 }
 
+/// Send the wake IPI to the CPUs whose bits are set in `mask` (by index)
+pub fn wake_cpus(mask: u32) {
+    let me = percpu::this().index;
+    for cpu in percpu::all() {
+        if mask & (1 << cpu.index) != 0 && cpu.index != me && cpu.is_online() {
+            unsafe { send_ipi(cpu.apic_id(), WAKE_VECTOR as u32) };
+        }
+    }
+}
+
+/// Flush this CPU's TLB if another CPU asked (IPI handler, and CPUs waiting
+/// for their own shootdown)
+pub fn service_flush() {
+    let cpu = percpu::this();
+    let req = cpu.flush_req.load(Ordering::Acquire);
+    if cpu.flush_ack.load(Ordering::Acquire) < req {
+        unsafe {
+            let cr3: u64;
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+            core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack));
+        }
+        cpu.flush_ack.store(req, Ordering::Release);
+    }
+}
+
+/// After page table entries of `pml4` were removed or restricted: make
+/// every other CPU using those page tables flush its TLB, and wait until
+/// they have. Must be called with no locks held (a CPU we wait for may
+/// need them first).
+pub fn tlb_shootdown(pml4: u64) {
+    if percpu::online_count() <= 1 {
+        return;
+    }
+    let me = percpu::this().index;
+    // The PTE changes are visible before we look at who uses the tables
+    core::sync::atomic::fence(Ordering::SeqCst);
+    let mut wait = [0u64; percpu::MAX_CPUS];
+    let mut any = false;
+    for cpu in percpu::all() {
+        if cpu.index != me && cpu.is_online() && cpu.cr3.load(Ordering::SeqCst) == pml4 {
+            wait[cpu.index] = cpu.flush_req.fetch_add(1, Ordering::AcqRel) + 1;
+            unsafe { send_ipi(cpu.apic_id(), FLUSH_VECTOR as u32) };
+            any = true;
+        }
+    }
+    if !any {
+        return;
+    }
+    for cpu in percpu::all() {
+        let want = wait[cpu.index];
+        while want != 0 && cpu.flush_ack.load(Ordering::Acquire) < want {
+            // Another CPU may be waiting for us at the same time
+            service_flush();
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Program this CPU's LAPIC timer: 10 ms periodic, vector 32
+unsafe fn start_timer() {
+    let count = TIMER_COUNT.load(Ordering::Acquire);
+    if count == 0 {
+        return;
+    }
+    lapic_write(0x3E0, 0x03); // divide by 16, as on the boot CPU
+    lapic_write(0x320, 32 | (1 << 17)); // periodic
+    lapic_write(0x380, count);
+}
+
 /// Where an AP arrives in 64-bit mode, on its own stack, with the
 /// temporary page tables
 extern "sysv64" fn ap_entry(index: u64) -> ! {
@@ -385,15 +470,15 @@ extern "sysv64" fn ap_entry(index: u64) -> ! {
         core::arch::asm!("mov cr3, {}", in(reg) kernel_map::kernel_pml4(), options(nostack));
         let cpu = percpu::get(index as usize).expect("bad CPU index");
         super::descriptor::load_cpu_tables(cpu.tables());
+        // (load_cpu_tables also reloads CS: the trampoline's 0x18 is the
+        // kernel GDT's user code segment)
         super::descriptor::idt_load_shared();
         // Enable this CPU's local APIC (spurious vector 0xFF); accept all
         // interrupt priorities
         lapic_write(0xF0, lapic_read(0xF0) | 0x1FF);
         lapic_write(0x80, 0);
+        start_timer();
         percpu::mark_online(cpu);
-        // Parked until the scheduler can use more than one CPU
-        loop {
-            core::arch::asm!("cli", "hlt", options(nomem, nostack));
-        }
     }
+    crate::process::run::idle_loop()
 }

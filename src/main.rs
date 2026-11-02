@@ -223,6 +223,8 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     // 64-bit interrupt gate: DPL 3 lets ring-3 code execute `int 0x80`.
     debug_print("[3.6/5] Installing syscall handler...\n");
     unsafe { idt::idt_set_gate(0x80, rustux_int80_entry as u64, 0x08, 0xEE); }
+    unsafe { idt::idt_set_gate(rustux::arch::amd64::smp::WAKE_VECTOR, wake_ipi_handler as u64, 0x08, 0x8E); }
+    unsafe { idt::idt_set_gate(rustux::arch::amd64::smp::FLUSH_VECTOR, flush_ipi_handler as u64, 0x08, 0x8E); }
     debug_print("      ✓ Syscall handler at vector 0x80\n");
 
     // Initialize APIC
@@ -262,6 +264,7 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
         };
         write_volatile((lapic + 0x320) as *mut u32, 32 | (1 << 17)); // periodic
         write_volatile((lapic + 0x380) as *mut u32, per_10ms);
+        rustux::arch::amd64::smp::set_timer_count(per_10ms);
         debug_print("[TIMER] 10 ms tick = ");
         print_hex(per_10ms as u64);
         debug_print(" LAPIC counts\n");
@@ -340,7 +343,8 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
                 debug_print("╔══════════════════════════════════════════════════════════╗\n");
                 debug_print("║  Jumping to Init Process (Userspace)                   ║\n");
                 debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
-                rustux::process::run::start(tid);
+                let _ = tid;
+                rustux::process::run::idle_loop();
             }
             Err(_) => {
                 debug_print("[INIT] could not start /bin/init\n");
@@ -370,6 +374,23 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
 
     // Never reached
     loop { unsafe { asm!("hlt"); } }
+}
+
+/// Wake IPI: only makes a halted CPU look for work
+pub extern "x86-interrupt" fn wake_ipi_handler(_frame: InterruptFrame) {
+    unsafe {
+        let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
+        write_volatile((lapic + 0xB0) as *mut u32, 0);
+    }
+}
+
+/// TLB shootdown IPI
+pub extern "x86-interrupt" fn flush_ipi_handler(_frame: InterruptFrame) {
+    rustux::arch::amd64::smp::service_flush();
+    unsafe {
+        let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
+        write_volatile((lapic + 0xB0) as *mut u32, 0);
+    }
 }
 
 // Keyboard handler (IRQ1 = Vector 33)
@@ -524,6 +545,15 @@ unsafe fn install_exception_handlers() {
 // Timer handler (Vector 32)
 #[no_mangle]
 pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
+    // From user mode the thread may be switched out (and resumed on another
+    // CPU): keep its FPU/SSE registers on its own kernel stack meanwhile
+    #[repr(C, align(16))]
+    struct FxArea([u8; 512]);
+    let from_user = frame.cs & 3 == 3;
+    let mut fx = FxArea([0; 512]);
+    if from_user {
+        unsafe { asm!("fxsave64 [{}]", in(reg) fx.0.as_mut_ptr(), options(nostack)) };
+    }
     unsafe {
         // Report the first tick only (test-qemu.sh looks for it); a line per
         // tick at 100 Hz just floods the debug port
@@ -536,8 +566,10 @@ pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
         let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
         write_volatile((lapic + 0xB0) as *mut u32, 0);
     }
-    // USB keyboards (polled) -> kernel input channel
-    rustux::drivers::keyboard::tick();
+    // USB keyboards (polled) -> kernel input channel; CPU 0 only
+    if rustux::arch::amd64::percpu::this().index == 0 {
+        rustux::drivers::keyboard::tick();
+    }
     // Preempt only user mode: kernel code may hold spin locks that the next
     // process would need.
     if frame.cs & 3 == 3 {
@@ -545,6 +577,9 @@ pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
         // A thread killed while it was preempted exits instead of
         // returning to user mode
         rustux::process::run::exit_if_killed();
+    }
+    if from_user {
+        unsafe { asm!("fxrstor64 [{}]", in(reg) fx.0.as_ptr(), options(nostack)) };
     }
 }
 
@@ -576,11 +611,16 @@ core::arch::global_asm!(
     "push r14",
     "push r15",
     "cld",
-    // 5 CPU-pushed + 15 saved qwords keep RSP 16-byte aligned for the call
+    // 5 CPU-pushed + 15 saved qwords keep RSP 16-byte aligned. The user's
+    // FPU/SSE registers are saved below them: kernel code uses SSE too, and
+    // the thread may be switched out and resumed on another CPU.
     "mov rdi, rsp",
-    "sti",
+    "sub rsp, 512",
+    "fxsave64 [rsp]",
+    // Interrupts stay disabled in the kernel (see process::run)
     "call rustux_int80_dispatch",
-    "cli",
+    "fxrstor64 [rsp]",
+    "add rsp, 512",
     "pop r15",
     "pop r14",
     "pop r13",

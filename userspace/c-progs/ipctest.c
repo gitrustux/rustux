@@ -124,11 +124,13 @@ static void two_processes(void) {
     rx_puts("two processes over a channel:\n");
 
     rx_channel_create(0, &c0, &c1);
+    // Timed from before the child exists: on several CPUs it starts (and
+    // its 50 ms sleep begins) while we are still returning from the call
+    uint64_t t0 = rx_clock_get_monotonic();
     r = make_child(rx_job_default, "talker", child_talker, c1, &proc, &thread);
     check("process_create + process_start (child gets one channel end)", r == RX_OK, r);
     check("  our end of the moved handle is gone", rx_object_get_type(c1) == RX_ERR_BAD_HANDLE, 0);
 
-    uint64_t t0 = rx_clock_get_monotonic();
     r = rx_object_wait_one(c0, RX_CHANNEL_READABLE, RX_TIME_INFINITE, &observed);
     uint64_t waited = (rx_clock_get_monotonic() - t0) / MS;
     check("wait_one blocks until the child writes", r == RX_OK && (observed & RX_CHANNEL_READABLE), r);

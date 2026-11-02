@@ -20,7 +20,7 @@
 use super::SignalState;
 use crate::arch::amd64::mm::RxStatus;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// The capability to use hardware (I/O ports, interrupts)
 pub struct Resource {
@@ -41,10 +41,10 @@ pub const BINDABLE_IRQS: &[u32] = &[1];
 
 const ISA_IRQS: usize = 16;
 
-#[allow(clippy::declare_interior_mutable_const)]
-const NO_BINDING: AtomicPtr<Interrupt> = AtomicPtr::new(core::ptr::null_mut());
-/// Interrupt object bound to each ISA IRQ (not owning: cleared by Drop)
-static BOUND: [AtomicPtr<Interrupt>; ISA_IRQS] = [NO_BINDING; ISA_IRQS];
+/// Interrupt object bound to each ISA IRQ, as an address (not owning:
+/// cleared by Drop). Locked so that the handler on one CPU and Drop on
+/// another cannot overlap.
+static BOUND: crate::sync::IrqMutex<[usize; ISA_IRQS]> = crate::sync::IrqMutex::new([0; ISA_IRQS]);
 
 pub struct Interrupt {
     pub signals: SignalState,
@@ -72,29 +72,30 @@ impl Interrupt {
             waiter: AtomicU32::new(0),
             destroyed: AtomicBool::new(false),
         });
-        let ptr = Arc::as_ptr(&i) as *mut Interrupt;
-        BOUND[irq as usize]
-            .compare_exchange(core::ptr::null_mut(), ptr, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| RxStatus::ERR_ALREADY_EXISTS)?;
+        let mut bound = BOUND.lock();
+        if bound[irq as usize] != 0 {
+            return Err(RxStatus::ERR_ALREADY_EXISTS);
+        }
+        bound[irq as usize] = Arc::as_ptr(&i) as usize;
+        drop(bound);
         Ok(i)
     }
 
     /// Called from the IRQ handler. Returns false if nothing is bound
     /// (the kernel then leaves the device alone).
     pub fn dispatch(irq: u32) -> bool {
-        let p = match BOUND.get(irq as usize) {
-            Some(slot) => slot.load(Ordering::Acquire),
-            None => return false,
+        let bound = BOUND.lock();
+        let p = match bound.get(irq as usize) {
+            Some(&p) if p != 0 => p as *const Interrupt,
+            _ => return false,
         };
-        if p.is_null() {
-            return false;
-        }
-        // Safe: Drop clears the slot before the object goes away, and Drop
-        // runs in kernel code with interrupts disabled
+        // Safe: Drop clears the slot (under this lock) before the object
+        // goes away
         let i = unsafe { &*p };
         i.timestamp.store(super::now_ns(), Ordering::Release);
         i.triggered.store(true, Ordering::Release);
         let w = i.waiter.load(Ordering::Acquire);
+        drop(bound);
         if w != 0 {
             crate::process::run::wake(w);
         }
@@ -147,7 +148,10 @@ impl Interrupt {
 
 impl Drop for Interrupt {
     fn drop(&mut self) {
-        let me = self as *mut Interrupt;
-        let _ = BOUND[self.irq as usize].compare_exchange(me, core::ptr::null_mut(), Ordering::AcqRel, Ordering::Acquire);
+        let me = self as *mut Interrupt as usize;
+        let mut bound = BOUND.lock();
+        if bound[self.irq as usize] == me {
+            bound[self.irq as usize] = 0;
+        }
     }
 }

@@ -18,7 +18,7 @@
 
 use super::descriptor::CpuTables;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 pub const MAX_CPUS: usize = 16;
 const NO_APIC: u32 = u32::MAX;
@@ -29,6 +29,16 @@ pub struct Cpu {
     online: AtomicBool,
     tables: UnsafeCell<CpuTables>,
     boot_rsp: UnsafeCell<u64>,
+    /// Thread running here (0 = the CPU's idle context)
+    current: AtomicU32,
+    /// Thread this CPU just switched away from; whatever runs next clears
+    /// its on-CPU flag once the old stack is no longer in use (0 = none)
+    pub prev: AtomicU32,
+    /// Page tables loaded here (for TLB shootdowns)
+    pub cr3: AtomicU64,
+    /// TLB flush requests from other CPUs, and how many were done
+    pub flush_req: AtomicU64,
+    pub flush_ack: AtomicU64,
 }
 
 // Each CPU only touches its own `tables` and `boot_rsp` (see module docs)
@@ -42,6 +52,11 @@ impl Cpu {
             online: AtomicBool::new(false),
             tables: UnsafeCell::new(CpuTables::new()),
             boot_rsp: UnsafeCell::new(0),
+            current: AtomicU32::new(0),
+            prev: AtomicU32::new(0),
+            cr3: AtomicU64::new(0),
+            flush_req: AtomicU64::new(0),
+            flush_ack: AtomicU64::new(0),
         }
     }
 
@@ -54,6 +69,18 @@ impl Cpu {
     /// Where the scheduler saves this CPU's boot-context stack pointer
     pub fn boot_rsp(&self) -> *mut u64 {
         self.boot_rsp.get()
+    }
+
+    /// Thread running on this CPU, if any
+    pub fn current(&self) -> Option<u32> {
+        match self.current.load(Ordering::Acquire) {
+            0 => None,
+            t => Some(t),
+        }
+    }
+
+    pub fn set_current(&self, tid: Option<u32>) {
+        self.current.store(tid.unwrap_or(0), Ordering::Release);
     }
 
     pub fn apic_id(&self) -> u32 {
@@ -115,6 +142,11 @@ pub fn reserve(apic_id: u32) -> Option<&'static Cpu> {
 pub fn mark_online(cpu: &Cpu) {
     cpu.online.store(true, Ordering::Release);
     ONLINE.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Every CPU slot (online or not)
+pub fn all() -> &'static [Cpu] {
+    &CPUS
 }
 
 pub fn online_count() -> usize {
