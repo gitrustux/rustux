@@ -35,9 +35,12 @@ The repository root holds the kernel crate (`Cargo.toml` defines the `rustux` li
 ├── docs/                    # This documentation
 ├── files/test.txt           # Ramdisk test file
 ├── test-hello/              # Minimal asm userspace binary
-├── test-userspace/          # C test programs + shell (shell/shell.c)
+├── test-userspace/          # Early C test programs (hello)
 ├── userspace/
-│   ├── c-progs/             # C userspace programs (init, hello, counter)
+│   ├── build.sh             # Builds the C library and programs into bin/
+│   ├── libc/                # The C library (docs/USERSPACE.md)
+│   ├── c-progs/             # Programs: init, shell, commands, tests
+│   ├── bin/                 # Built programs, embedded in the ramdisk
 │   └── test/                # Rust userspace test binary (x86_64-unknown-none)
 └── src/
     ├── lib.rs               # Library root and module declarations
@@ -170,7 +173,7 @@ docs/
 - Key presses generate [KEY:XX] scancode messages
 
 ### Phase 2B: Shell with Interrupt-Driven Input ✅ (Complete)
-- Shell source: `test-userspace/shell/shell.c`
+- Shell source: `userspace/c-progs/shell.c`
 - PS/2 keyboard driver: `src/drivers/keyboard/` (`ps2.rs`, `layout.rs`)
 
 ### Phase 2C: Kernel Component Migration ✅ (Complete)

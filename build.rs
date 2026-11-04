@@ -64,14 +64,8 @@ fn main() {
     forbid_static_mut();
     // Tell cargo to rerun this script if source files change
     println!("cargo:rerun-if-changed=src/arch/amd64/switch.S");
-    println!("cargo:rerun-if-changed=test-userspace/");
-    println!("cargo:rerun-if-changed=test-userspace/shell/");
-    println!("cargo:rerun-if-changed=userspace/c-progs/");
+    println!("cargo:rerun-if-changed=userspace/bin/");
     println!("cargo:rerun-if-changed=files/");
-    println!("cargo:rerun-if-changed=target/hello.elf");
-    println!("cargo:rerun-if-changed=target/counter.elf");
-    println!("cargo:rerun-if-changed=target/init.elf");
-    println!("cargo:rerun-if-changed=target/shell.elf");
 
     // Get the output directory
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -153,46 +147,21 @@ fn main() {
         ("files/test.txt", "test.txt"),
     ];
 
-    // ELF binaries to embed. A freshly compiled copy in target/ wins; otherwise
-    // fall back to the prebuilt binaries tracked in the repo (test-userspace/
-    // and userspace/c-progs/), so a clean checkout still boots to the shell.
-    let potential_elf_files: Vec<(&[&'static str], &'static str)> = vec![
-        (&["target/hello.elf", "userspace/c-progs/hello.elf"], "bin/hello"),
-        (&["target/counter.elf", "userspace/c-progs/counter.elf"], "bin/counter"),
-        (&["target/objtest.elf", "userspace/c-progs/objtest.elf"], "bin/objtest"),
-        (&["target/ipctest.elf", "userspace/c-progs/ipctest.elf"], "bin/ipctest"),
-        (&["target/spawntest.elf", "userspace/c-progs/spawntest.elf"], "bin/spawntest"),
-        (&["target/true.elf", "userspace/c-progs/true.elf"], "bin/true"),
-        (&["target/ps2kbd.elf", "userspace/c-progs/ps2kbd.elf"], "bin/ps2kbd"),
-        (&["target/drvtest.elf", "userspace/c-progs/drvtest.elf"], "bin/drvtest"),
-        (&["target/smptest.elf", "userspace/c-progs/smptest.elf"], "bin/smptest"),
-        (&["target/init.elf", "test-userspace/init.elf"], "bin/init"),
-        (&["target/shell.elf", "test-userspace/shell/shell.elf"], "bin/shell"),
-    ];
-
-    // Add the first existing candidate for each ELF
-    for (candidates, name) in potential_elf_files {
-        if let Some(src_path) = candidates.iter().find(|p| PathBuf::from(p).exists()) {
-            files_to_embed.push((src_path, name));
-            println!("cargo:warning=Embedding ELF: {} -> {}", src_path, name);
-        }
+    // Programs to embed: every file in userspace/bin/ (built by
+    // userspace/build.sh and committed) becomes /bin/<name>
+    let mut programs: Vec<(String, String)> = fs::read_dir("userspace/bin")
+        .expect("userspace/bin/ is missing (run userspace/build.sh)")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            (format!("userspace/bin/{}", name), format!("bin/{}", name))
+        })
+        .collect();
+    programs.sort();
+    for (src, name) in &programs {
+        files_to_embed.push((src.as_str(), name.as_str()));
     }
-
-    // Check which test userspace programs exist
-    let userspace_progs = vec![
-        "test-userspace/hello.c",
-        "test-userspace/counter.c",
-        "test-userspace/spinner.c",
-        "test-userspace/init.c",
-    ];
-
-    // Check for ELF binaries that were compiled
-    let elf_binaries = vec![
-        "test-userspace/hello.elf",
-        "test-userspace/counter.elf",
-        "test-userspace/spinner.elf",
-        "test-userspace/init.elf",
-    ];
 
     // Calculate offsets
     let superblock_size = std::mem::size_of::<RamdiskSuperblock>() as u32;

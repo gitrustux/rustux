@@ -298,8 +298,7 @@ static void pingpong(void) {
     rx_handle_close(c0);
 }
 
-void _start(rx_handle_t bootstrap) {
-    rx_startup(bootstrap);
+int main(void) {
     int cpus = (int)rx_debug_cpu_count();
     rx_puts("smptest: threads on several CPUs\n");
     parallel(cpus);

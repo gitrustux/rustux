@@ -233,8 +233,10 @@ impl Process {
     }
 
     /// Finish the process once no thread is left: close its handles, drop
-    /// its mappings, signal TERMINATED. The returned remains are dropped by
-    /// the caller with no locks held.
+    /// its mappings, signal TERMINATED. Call with no locks held. As in
+    /// Zircon, the handles are closed before TERMINATED is raised, so a
+    /// waiter that sees TERMINATED also sees PEER_CLOSED on the channels the
+    /// process held (`ipctest` caught this on 4 CPUs).
     pub fn finalize(&self) -> Option<Remains> {
         {
             let mut i = self.inner.lock();
@@ -245,8 +247,10 @@ impl Process {
         }
         let objects = self.handles.lock().take_all();
         let mappings = self.aspace.destroy();
+        drop(objects);
+        drop(mappings);
         self.signals.update(0, signals::TERMINATED);
-        Some(Remains { objects, mappings })
+        Some(Remains { objects: Vec::new(), mappings: Default::default() })
     }
 
     pub fn info(&self) -> InfoProcess {

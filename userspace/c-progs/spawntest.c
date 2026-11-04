@@ -16,8 +16,7 @@ static inline int64_t spawn_process(const char *path, rx_handle_t *proc) {
     return RX_SYS(0x0B, path, proc, 0, 0);
 }
 
-void _start(rx_handle_t bootstrap) {
-    rx_startup(bootstrap);
+int main(void) {
     int ok = 0;
     int64_t first_err = 0;
     for (int i = 0; i < RUNS; i++) {

@@ -379,6 +379,16 @@ pub fn try_write_str(s: &str) {
     }
 }
 
+/// Write raw bytes to the console (one lock for the whole buffer, so
+/// writes from different CPUs don't interleave mid-line)
+pub fn write_bytes(b: &[u8]) {
+    if let Some(console) = CONSOLE.lock().as_mut() {
+        for &c in b {
+            console.put_char(c);
+        }
+    }
+}
+
 /// Write a single character to the console
 pub fn put_char(ch: u8) {
     if let Some(console) = CONSOLE.lock().as_mut() {

@@ -115,7 +115,7 @@ Failure: Return negative error code
 ### Error Codes
 
 Errors are returned as the negative of these values (`-10` = `ERR_BAD_HANDLE`).
-The C header `userspace/c-progs/rx.h` defines them as `RX_ERR_*`.
+The C header `<rustux/syscalls.h>` (`userspace/libc/include/rustux/`) defines them as `RX_ERR_*`.
 
 | Error Code | Value | Description |
 |------------|-------|-------------|
@@ -199,7 +199,7 @@ if result < 0 {
 | `THREAD_CREATE` | 0x08 | Create a thread object in a process | ✅ |
 | `TASK_KILL` | 0x09 | Kill a job, process or thread | ✅ |
 | `OBJECT_GET_INFO` | 0x0A | Query an object (`ZX_INFO_PROCESS` only) | ✅ |
-| `SPAWN_PROCESS` | 0x0B | Like `SPAWN`, and return a process handle | ✅ |
+| `SPAWN_PROCESS` | 0x0B | Like `SPAWN`, with handles, arguments and environment; returns a process handle | ✅ |
 
 **Model** (Zircon): a **job** holds processes and child jobs. A **process**
 owns a handle table and an address space and starts with no threads;
@@ -218,14 +218,27 @@ MANAGE_JOB.
 
 **Program start.** A thread starts with its first two arguments in RDI and
 RSI and every other register zero. Programs started by the kernel (`init`,
-`spawn`) get a **bootstrap channel** in RDI holding one message: one u32
-tag per handle, with handles to the process itself (`PA_PROC_SELF` 1), its
-first thread (`PA_THREAD_SELF` 2), its job (`PA_JOB_DEFAULT` 3) and its
-root VMAR (`PA_VMAR_ROOT` 4), as in Fuchsia's processargs, followed by
-any handles the parent passed. `init` also gets the root resource
-(`PA_ROOT_RESOURCE` 0x20) and the kernel's input channel
-(`PA_KERNEL_INPUT` 0x21); these two tags are Rustux's own.
-`rx_startup()` in `rx.h` reads it. The kernel launcher's stack is 64 KiB
+`spawn`, `spawn_process`) get a **bootstrap channel** in RDI holding one
+message in Fuchsia's processargs format (`<rustux/processargs.h>`):
+
+| Offset | Contents |
+|--------|----------|
+| 0 | header: `protocol` 0x4150585d, `version` 0x00010000, `handle_info_off`, `args_off`, `args_num`, `environ_off`, `environ_num`, `names_off`, `names_num` (9 × u32) |
+| `handle_info_off` | one u32 info word per handle: type in bits 0-7, argument in bits 16-31 |
+| `args_off` | `args_num` NUL-terminated arguments (argv[0] first) |
+| `environ_off` | `environ_num` NUL-terminated `NAME=value` strings |
+
+The handles travel with the message in the same order as the info words:
+the process itself (`PA_PROC_SELF` 1), its first thread
+(`PA_THREAD_SELF` 2), its job (`PA_JOB_DEFAULT` 3) and its root VMAR
+(`PA_VMAR_ROOT` 4), then any the parent passed. Other types: `PA_FD` 0x30
+(a file descriptor; the argument is the fd number), `PA_ROOT_RESOURCE`
+0x3F (Fuchsia's `PA_RESOURCE`; `init` and drivers), `PA_KERNEL_INPUT` 0xE0
+(the kernel's input channel, `init` only; Rustux's own), `PA_USER0` 0xF0
+and up for a parent's own handles. (Before step 7 the message was only a
+u32 tag per handle, and the resource and input tags were 0x20 and 0x21.)
+The C library reads the message before `main` runs
+(`userspace/libc/src/start.c`). The kernel launcher's stack is 64 KiB
 ending at `0x7fff_ffff_f000`, and RSP starts 8 below a 16-byte boundary,
 as if `_start` had been called; pass a stack pointer aligned the same way
 to `process_start` and `thread_start`.
@@ -302,13 +315,26 @@ typedef struct {
 
 #### SPAWN (0x03) / SPAWN_PROCESS (0x0B)
 
-`spawn(const char *path)` and `spawn_process(const char *path, rx_handle_t *proc_out, const rx_handle_t *handles, const uint32_t *tags, uint32_t count)`
+`spawn(const char *path)` and `spawn_process(const char *path, rx_handle_t *proc_out, const rx_handle_t *handles, const uint32_t *info, uint32_t count, const rx_spawn_strings_t *strings)`
 
-If `handles` is not NULL, `count` (at most 8) handles are **moved** into
-the child's bootstrap message after the standard four, each with its tag
-(use `PA_USER0` = 0xF0 and up for your own); they need `TRANSFER` and leave
-the caller even on failure. `init` uses this to give the keyboard driver
-the root resource and a channel, and the shell its input channel.
+If `handles` is not NULL, `count` (at most 16) handles are **moved** into
+the child's bootstrap message after the standard four, each with its info
+word (use `PA_USER0` = 0xF0 and up for your own); they need `TRANSFER` and
+leave the caller even on failure. If `strings` is not NULL it points to
+
+```c
+typedef struct {
+    const char *args;  uint32_t args_len; uint32_t argc;  // NUL-terminated, back to back
+    const char *env;   uint32_t env_len;  uint32_t envc;
+} rx_spawn_strings_t;
+```
+
+and the arguments and environment go into the bootstrap message (at most
+32 KiB together, else `ERR_OUT_OF_RANGE`; a count that doesn't match the
+NULs gives `ERR_INVALID_ARGS`). Without it, argv is just `path` and the
+environment is empty. Programs use `rx_spawn()` from
+`<rustux/process.h>`, which builds both from `argv`/`envp` and can pass
+copies of fds 0-2.
 
 Kernel shortcut used by `init` and the shell until a userspace loader
 exists: loads `/bin/<name>` from the ramdisk into a new process in the
@@ -732,32 +758,49 @@ in the ramdisk, run from the shell:
 | `drvtest` | driver calls refused without the root resource; a direct port read kills the program (exit code -1025 expected) | 5 |
 | `smptest` | threads on several CPUs: speed-up, SSE registers across migrations, TLB shootdown, cross-CPU wake-ups | 6 |
 
-Sources are in `userspace/c-progs/`; `rx.h` there has C wrappers for every
-call above with Zircon-style signatures.
+`libctest` (50 checks) covers the C library. Sources are in
+`userspace/c-progs/`; `<rustux/syscalls.h>` has C wrappers for every call
+above with Zircon-style signatures (`docs/USERSPACE.md`).
 
-### Debugging (tests only)
+### Debugging
 
 `debug_cpu()` (0x51) returns the index of the CPU running the caller;
 `debug_cpu_count()` (0x52) the number of CPUs running the scheduler. Used
 by `smptest`.
 
-### Keyboard input
+`debuglog_create(rx_handle_t resource, uint32_t options, rx_handle_t *out)`
+(0x53) needs the root resource and returns a debug log handle (type `LOG`
+12; rights BASIC + READ + WRITE + SIGNAL). `debuglog_write(rx_handle_t h,
+uint32_t options, const void *buf, size_t len)` (0x54, needs `WRITE`,
+`len` at most 4096) prints the bytes on the kernel console and the debug
+port. `init`, the console service, prints everything the programs write
+through it. Reading the log back (`dmesg`) comes in step 9.
+
+### Console and keyboard input
 
 Since step 4 the kernel does not hand out keystrokes. The PS/2 keyboard is
 driven by `/bin/ps2kbd`; the USB keyboard driver is still in the kernel,
 polled on the timer tick, and sends characters over the kernel input
-channel. `init` forwards both to the shell over the shell's channel
-(`PA_USER0`). `read` on fd 0 returns `ERR_NOT_SUPPORTED`. The shell's
-`restart-kbd` command asks `init` to kill the driver, which `init` then
-restarts.
+channel. Since step 7 `init` is the **console service**: it edits the typed
+line (echo, Backspace, Ctrl+U), sends it to the program reading the console
+on Enter, and prints what programs write. A program's fds 0-2 are handles
+to the console channel; the protocol (`<rustux/console.h>`) is a 32-bit op
+per message: `WRITE` (1, program → console) and `INPUT` (2, console →
+program; one line per message, no bytes = end of input from Ctrl+D).
+Ctrl+C raises `USER_SIGNAL_0` on the programs' end of the channel; the
+shell then kills the program in the foreground and clears it. The shell's
+`restart-kbd` command asks `init` (over a control channel, `PA_USER0`) to
+kill the keyboard driver, which `init` then restarts.
 
-### Unix-style calls (frozen)
+### Unix-style calls (frozen, removed in step 8)
 
 `write` (0x60), `read` (0x61), `open` (0x62), `close` (0x63), `lseek`
-(0x64), `getpid` (0x70), `getppid` (0x71), `yield` (0x72), `spawn` (0x03)
-and `spawn_process` (0x0B) keep working for the existing programs (`init`,
-the shell) but get no new features. A userspace library will provide POSIX
-file descriptors on top of handles and channels, like Fuchsia's `fdio`.
+(0x64), `getpid` (0x70), `getppid` (0x71) and `spawn` (0x03) are no
+longer used by any program: the C library provides file descriptors on top
+of handles and channels, like Fuchsia's `fdio`. `yield` (0x72) stays (the
+C library waits with it when the console's queue is full). The others now
+check user pointers properly (`write`, `read` and `open` read and wrote user
+memory without checking it).
 
 ---
 
@@ -767,10 +810,9 @@ Abridged from `userspace/c-progs/ipctest.c`, which runs a copy of its own
 image in the child:
 
 ```c
-#include "rx.h"
+#include <rustux/process.h>             // rx_job_default, rx_vmar_root, ...
 
-void _start(rx_handle_t bootstrap) {
-    rx_startup(bootstrap);               // rx_job_default, rx_vmar_root, ...
+int main(void) {
 
     rx_handle_t proc, vmar, thread, c0, c1;
     rx_process_create(rx_job_default, "child", 5, 0, &proc, &vmar);

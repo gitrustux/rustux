@@ -81,8 +81,7 @@ static int drain(char *out, int max) {
     return n;
 }
 
-void _start(rx_handle_t bootstrap) {
-    rx_startup(bootstrap);
+int main(void) {
     rx_handle_t res = rx_take_startup_handle(RX_PA_ROOT_RESOURCE);
     rx_handle_t out = rx_take_startup_handle(RX_PA_USER0);
     rx_handle_t irq;

@@ -210,8 +210,7 @@ static void memory_tests(rx_handle_t root) {
     rx_handle_close(child);
 }
 
-void _start(rx_handle_t bootstrap) {
-    rx_startup(bootstrap);
+int main(void) {
     rx_handle_t root_vmar = rx_vmar_root;
     rx_handle_t ev = 0, dup = 0, tm = 0, p0 = 0, p1 = 0;
     uint32_t observed = 0;

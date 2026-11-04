@@ -227,8 +227,7 @@ static void jobs_and_kill(void) {
     rx_handle_close(job);
 }
 
-void _start(rx_handle_t bootstrap) {
-    rx_startup(bootstrap);
+int main(void) {
     rx_puts("ipctest: processes, threads, jobs, channels between processes\n");
     two_processes();
     threads();

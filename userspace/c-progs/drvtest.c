@@ -26,10 +26,9 @@ static void check(const char *name, int ok, int64_t got) {
     if (ok) passed++; else failed++;
 }
 
-void _start(rx_handle_t bootstrap) {
+int main(void) {
     rx_handle_t ev, irq;
     int64_t r;
-    rx_startup(bootstrap);
     rx_puts("drvtest: hardware access without the root resource\n");
     check("we were not given a resource", rx_take_startup_handle(RX_PA_ROOT_RESOURCE) == 0, 0);
     rx_event_create(0, &ev);

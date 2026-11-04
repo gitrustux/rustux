@@ -30,16 +30,12 @@ cargo build --release --bin rustux --features uefi_kernel --target x86_64-unknow
 
 The output is `target/x86_64-unknown-uefi/release/rustux.efi`. **Check its size:** a working kernel is about 1.8 MB. A file of a few KB means the compiler proved the entry path always panics and removed the kernel (this was the cause of the old "EFI OK" freeze).
 
-`build.rs` embeds a ramdisk with `bin/init`, `bin/shell`, `bin/hello` and `bin/counter`. It uses freshly built `target/*.elf` files when present, otherwise the prebuilt binaries in `test-userspace/` and `userspace/c-progs/`.
+`build.rs` embeds a ramdisk with every program in `userspace/bin/` as `/bin/<name>` (`init`, `shell`, the commands and the tests). The binaries are committed, so building the kernel needs no C compiler.
 
-Rebuilding the user programs (no C library; `-ffreestanding -fno-builtin` stops GCC from inserting `strlen`/`memcpy` calls):
+Rebuilding the user programs and the C library after changing C code (needs `gcc` and `ar`; details in `docs/USERSPACE.md`):
 
 ```bash
-F="-static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pie -no-pie -O2"
-gcc $F -o test-userspace/init.elf test-userspace/init.c
-gcc $F -o test-userspace/shell/shell.elf test-userspace/shell/shell.c
-gcc $F -T userspace/c-progs/linker.ld -o userspace/c-progs/hello.elf userspace/c-progs/hello.c
-gcc $F -T userspace/c-progs/linker.ld -o userspace/c-progs/counter.elf userspace/c-progs/counter.c
+userspace/build.sh
 ```
 
 ## Run in QEMU

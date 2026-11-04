@@ -336,7 +336,7 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
             (pa::ROOT_RESOURCE, KObject::Resource(rustux::kobj::interrupt::Resource::root()), Rights(Rights::RESOURCE)),
             (pa::KERNEL_INPUT, KObject::Channel(rustux::drivers::keyboard::take_input_channel()), Rights(Rights::CHANNEL)),
         ];
-        match rustux::process::launch::spawn_elf("bin/init", &rustux::kobj::task::Job::root(), extra) {
+        match rustux::process::launch::spawn_elf("/bin/init", &rustux::kobj::task::Job::root(), extra, Default::default()) {
             Ok((_, tid)) => {
                 rustux::drivers::keyboard::start_polling();
                 debug_print("[INIT] init started\n");
@@ -468,8 +468,11 @@ fn handle_exception(vector: u64, code: Option<u64>, frame: &InterruptFrame) {
     }
     debug_print("\n");
 
-    // Screen: one line for the user
-    if rustux::drivers::display::is_initialized() {
+    // Screen: one line, for kernel faults only. A crashed program is
+    // reported by the shell (its output is still queued in the console
+    // service, so a line from here would appear before it); the details
+    // above go to the debug port (readable with `dmesg` from step 9).
+    if !user && rustux::drivers::display::is_initialized() {
         rustux::drivers::display::write_str("\n[");
         rustux::drivers::display::write_str(name);
         rustux::drivers::display::write_str(if user { ": process killed]\n" } else { ": kernel halted]\n" });

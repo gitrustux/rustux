@@ -351,6 +351,8 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x51 => ok_to_ret(crate::arch::amd64::percpu::this().index),
         // debug_cpu_count(): CPUs running the scheduler
         0x52 => ok_to_ret(crate::arch::amd64::percpu::online_count()),
+        0x53 => driver::sys_debuglog_create(args),
+        0x54 => driver::sys_debuglog_write(args),
 
         // I/O (0x60-0x6F) - Phase 5A
         0x60 => sys_write(args),
@@ -424,25 +426,16 @@ fn sys_clock_get(args: SyscallArgs) -> SyscallRet {
 ///
 /// Returns: number of bytes written, or negative error code
 fn sys_debug_write(args: SyscallArgs) -> SyscallRet {
-    use crate::arch::amd64::uspace;
-    let ptr = args.arg_u64(0) as *const u8;
-    let len = args.arg(1);
-
-    // For now, just write to port 0xE9 (kernel-mediated)
-    // In the future, this could go to a proper logging system
-    unsafe {
-        for i in 0..len {
-            let c = *(ptr.add(i));
-            // Write to debug console
-            core::arch::asm!("out dx, al",
-                in("dx") 0xE9u16,
-                in("al") c,
-                options(nomem, nostack)
-            );
+    let (ptr, len) = (args.arg(0), args.arg(1));
+    match user::read_bytes(ptr, len.min(4096)) {
+        Ok(bytes) => {
+            for &c in &bytes {
+                unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack)) };
+            }
+            ok_to_ret_isize(bytes.len() as isize)
         }
+        Err(e) => err_to_ret(e),
     }
-
-    ok_to_ret_isize(len as isize)
 }
 
 // ============================================================================
@@ -464,35 +457,25 @@ fn sys_debug_write(args: SyscallArgs) -> SyscallRet {
 ///   fd 2: stderr (same as stdout)
 ///   fd 3+: reserved for files (Phase 5C)
 fn sys_write(args: SyscallArgs) -> SyscallRet {
-    let fd = args.arg(0) as u8;
-    let ptr = args.arg_u64(1) as *const u8;
-    let len = args.arg(2);
+    let fd = args.arg(0);
+    let (ptr, len) = (args.arg(1), args.arg(2));
 
-    use crate::drivers::display;
-
-    // Handle stdout/stderr via display console
+    // stdout/stderr: the kernel console. Programs built on the C library
+    // print through their stdout handle instead; this call goes away in
+    // step 8.
     if fd == 1 || fd == 2 {
-        // Check if display console is initialized
-        if display::is_initialized() {
-            // Write to framebuffer console
-            for i in 0..len {
-                let c = unsafe { *(ptr.add(i)) };
-                display::put_char(c);
-            }
+        let bytes = match user::read_bytes(ptr, len.min(65536)) {
+            Ok(b) => b,
+            Err(e) => return err_to_ret(e),
+        };
+        if crate::drivers::display::is_initialized() {
+            crate::drivers::display::write_bytes(&bytes);
         } else {
-            // Fallback to debug port if console not initialized
-            unsafe {
-                for i in 0..len {
-                    let c = *(ptr.add(i));
-                    core::arch::asm!("out dx, al",
-                        in("dx") 0xE9u16,
-                        in("al") c,
-                        options(nomem, nostack)
-                    );
-                }
+            for &c in &bytes {
+                unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack)) };
             }
         }
-        return ok_to_ret_isize(len as isize);
+        return ok_to_ret_isize(bytes.len() as isize);
     }
 
     // stdin - cannot write
@@ -604,8 +587,9 @@ fn sys_read(args: SyscallArgs) -> SyscallRet {
             ramdisk.data.as_ptr().add(data_offset)
         };
 
-        unsafe {
-            core::ptr::copy_nonoverlapping(data_ptr, ptr, to_read);
+        let data = unsafe { core::slice::from_raw_parts(data_ptr, to_read) };
+        if let Err(e) = user::write_bytes(ptr as usize, data) {
+            return err_to_ret(e);
         }
 
         // Update offset in fd_table
@@ -648,27 +632,11 @@ fn sys_open(args: SyscallArgs) -> SyscallRet {
     }
 
     // Read null-terminated path string from userspace (max 256 bytes)
-    let mut path_bytes = alloc::vec::Vec::new();
-    unsafe {
-        let mut i = 0;
-        loop {
-            if i >= 256 {
-                return err_to_ret(RxStatus::ERR_INVALID_ARGS); // Path too long
-            }
-            let c = *path_ptr.add(i);
-            if c == 0 {
-                break;
-            }
-            path_bytes.push(c);
-            i += 1;
-        }
-    }
-
-    // Convert to string
-    let path = match core::str::from_utf8(&path_bytes) {
-        Ok(s) => s,
-        Err(_) => return err_to_ret(RxStatus::ERR_INVALID_ARGS),
+    let path_string = match user::read_cstr(path_ptr as usize, 256) {
+        Ok(p) => p,
+        Err(e) => return err_to_ret(e),
     };
+    let path = path_string.as_str();
 
     // Look up file in ramdisk
     let ramdisk_file = {

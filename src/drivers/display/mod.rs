@@ -16,4 +16,4 @@ pub mod console;
 // Re-exports
 pub use framebuffer::{Framebuffer, Color, PixelFormat};
 pub use font::{Psf2Font, SimpleVgaFont};
-pub use console::{TextConsole, init, write_str, try_write_str, put_char, clear, set_color, get_color, is_initialized};
+pub use console::{TextConsole, init, write_str, try_write_str, write_bytes, put_char, clear, set_color, get_color, is_initialized};

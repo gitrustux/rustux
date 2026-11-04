@@ -27,18 +27,55 @@ pub const STACK_TOP: u64 = ROOT_END;
 /// Size of that stack
 pub const STACK_SIZE: u64 = 64 * 1024;
 
-/// Bootstrap message handle tags (Fuchsia PA_* values)
+/// Bootstrap message handle tags (Fuchsia PA_* values). A handle's info
+/// word is the type in bits 0-7 and an argument in bits 16-31 (`hnd`).
 pub mod pa {
     pub const PROC_SELF: u32 = 0x01;
     pub const THREAD_SELF: u32 = 0x02;
     pub const JOB_DEFAULT: u32 = 0x03;
     pub const VMAR_ROOT: u32 = 0x04;
-    /// Rustux: the root resource (given to init, passed on to drivers)
-    pub const ROOT_RESOURCE: u32 = 0x20;
+    /// A file descriptor; the argument is the fd number
+    pub const FD: u32 = 0x30;
+    /// The root resource (Fuchsia PA_RESOURCE; given to init, passed on
+    /// to drivers)
+    pub const ROOT_RESOURCE: u32 = 0x3F;
     /// Rustux: the kernel's input channel (USB keystrokes; given to init)
-    pub const KERNEL_INPUT: u32 = 0x21;
+    pub const KERNEL_INPUT: u32 = 0xE0;
     /// First tag for handles a parent passes to a child (Fuchsia PA_USER0)
     pub const USER0: u32 = 0xF0;
+
+    /// Info word for handle type `t` with argument `arg`
+    pub const fn hnd(t: u32, arg: u32) -> u32 {
+        (t & 0xFF) | ((arg & 0xFFFF) << 16)
+    }
+}
+
+/// Bootstrap message header (Fuchsia's `zx_proc_args_t`)
+pub mod procargs {
+    pub const PROTOCOL: u32 = 0x4150_585d;
+    pub const VERSION: u32 = 0x0001_0000;
+    /// Header size in bytes: 9 u32 fields
+    pub const HEADER_SIZE: usize = 36;
+    /// Most bytes of arguments and environment together
+    pub const MAX_STRINGS: usize = 32 * 1024;
+}
+
+/// Arguments and environment for a new program: NUL-terminated strings
+/// back to back, and how many there are
+#[derive(Default)]
+pub struct ProcArgs {
+    pub args: Vec<u8>,
+    pub argc: u32,
+    pub env: Vec<u8>,
+    pub envc: u32,
+}
+
+impl ProcArgs {
+    /// Check that `bytes` holds exactly `count` NUL-terminated strings
+    pub fn valid(bytes: &[u8], count: u32) -> bool {
+        let nuls = bytes.iter().filter(|&&b| b == 0).count();
+        nuls == count as usize && bytes.last().map_or(true, |&b| b == 0)
+    }
 }
 
 fn alloc_table_page() -> Option<u64> {
@@ -200,10 +237,12 @@ pub fn map_stack(process: &Process) -> Result<u64, RxStatus> {
 }
 
 /// Load `/bin/...` from the ramdisk and start it as a new process in
-/// `job`. The program gets a bootstrap channel in RDI holding one message:
-/// a u32 tag per handle (see [`pa`]), with handles to itself, its first
-/// thread, its job and its root VMAR, followed by `extra`.
-pub fn spawn_elf(path: &str, job: &Arc<Job>, extra: Vec<(u32, KObject, Rights)>) -> Result<(Arc<Process>, u32), RxStatus> {
+/// `job`. The program gets a bootstrap channel in RDI holding one message
+/// in Fuchsia's processargs format (`docs/SYSCALL.md`): a header, an info
+/// word per handle (see [`pa`]), then the arguments and the environment.
+/// The handles are to itself, its first thread, its job and its root
+/// VMAR, followed by `extra`. With no arguments, argv is just `path`.
+pub fn spawn_elf(path: &str, job: &Arc<Job>, extra: Vec<(u32, KObject, Rights)>, mut args: ProcArgs) -> Result<(Arc<Process>, u32), RxStatus> {
     let ramdisk = crate::fs::ramdisk::get_ramdisk().map_err(|_| RxStatus::ERR_NOT_FOUND)?;
     let file = ramdisk.find_file(path).ok_or(RxStatus::ERR_NOT_FOUND)?;
     let elf = unsafe {
@@ -232,7 +271,21 @@ pub fn spawn_elf(path: &str, job: &Arc<Job>, extra: Vec<(u32, KObject, Rights)>)
         tags.push(tag);
         handles.push((obj, rights));
     }
-    let data = tags.iter().flat_map(|t| t.to_le_bytes()).collect();
+    if args.argc == 0 {
+        args.args = path.as_bytes().to_vec();
+        args.args.push(0);
+        args.argc = 1;
+    }
+    let info_off = procargs::HEADER_SIZE;
+    let args_off = info_off + tags.len() * 4;
+    let env_off = args_off + args.args.len();
+    let header = [
+        procargs::PROTOCOL, procargs::VERSION, info_off as u32,
+        args_off as u32, args.argc, env_off as u32, args.envc, 0, 0,
+    ];
+    let mut data: Vec<u8> = header.iter().chain(tags.iter()).flat_map(|t| t.to_le_bytes()).collect();
+    data.extend_from_slice(&args.args);
+    data.extend_from_slice(&args.env);
     ours.write(crate::kobj::channel::Message { data, handles }).map_err(|(e, _)| e)?;
     drop(ours);
     let boot = process.handles.lock()

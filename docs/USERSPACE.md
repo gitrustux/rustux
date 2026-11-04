@@ -1,0 +1,113 @@
+# Rustux Userspace: C Library, Console and Programs
+
+How programs start, print, read input and start other programs (checklist
+step 7). System calls are in `SYSCALL.md`.
+
+## Layout
+
+| Path | Contents |
+|------|----------|
+| `userspace/libc/include/` | Headers: `stdio.h`, `stdlib.h`, `string.h`, `ctype.h`, `errno.h`, `unistd.h`, `limits.h`, `assert.h`, `sys/types.h`, and `rustux/` (system calls, processargs, console protocol, spawning) |
+| `userspace/libc/src/` | The library: startup, file descriptors, stdio, `printf`, `malloc`, environment, strings, numbers |
+| `userspace/libc/rustux.ld` | Linker script for programs (static, loaded at 1 MiB) |
+| `userspace/c-progs/` | One program per `.c` file: `init`, `shell`, commands, tests |
+| `userspace/bin/` | The built programs (committed); `build.rs` embeds each as `/bin/<name>` |
+| `userspace/build.sh` | Builds the library and every program into `bin/` |
+
+Build after changing C code: `userspace/build.sh` (needs any x86-64 `gcc`
+and `ar`), then rebuild the kernel. A new program is just a new `.c` file
+in `c-progs/` with a `main`.
+
+## Program start
+
+The kernel starts a program at `_start` (`libc/src/crt0.c`) with the
+bootstrap channel in RDI. The library reads the one message on it
+(processargs format, see `SYSCALL.md`), then:
+
+- keeps the standard handles in `rx_proc_self`, `rx_thread_self`,
+  `rx_job_default` and `rx_vmar_root` (`<rustux/process.h>`);
+- puts `PA_FD` handles behind their file descriptors;
+- keeps every other handle for `rx_take_startup_handle(info)`;
+- builds `argv` and `environ`, sets up stdio, calls
+  `main(argc, argv, envp)` and passes its return value to `exit()`.
+
+## File descriptors
+
+Each fd is a handle plus a kind (`libc/src/fd.c`):
+
+| Kind | Handle | `read` | `write` |
+|------|--------|--------|---------|
+| console | channel to the console service | one typed line at a time; 0 at end of input | `WRITE` messages of up to 4 KiB |
+| log | debug log (`init` only) | not supported | `debuglog_write` |
+
+`read`, `write`, `close`, `dup`, `dup2` and `isatty` work on both. Files,
+directories and pipes come in step 8 (filesystem service).
+
+## Console
+
+`init` is the console service. Programs' fds 0-2 are copies of one channel
+handle; `init` holds the other end.
+
+- **Output:** each `write` sends `[u32 op = 1][bytes]`; `init` prints it on
+  the screen.
+- **Input:** `init` edits the typed line: printable characters are echoed,
+  Backspace removes one character, Ctrl+U the whole line. Enter sends
+  `[u32 op = 2][line + '\n']` to whoever reads the console. Ctrl+D sends
+  the line without a newline, or an empty message (end of input) on an
+  empty line.
+- **Ctrl+C:** `init` drops the typed line and raises
+  `RX_CONSOLE_SIGNAL_INTERRUPT` (`USER_SIGNAL_0`) on the programs' end. The
+  shell, waiting for its program, kills it, clears the signal and throws
+  away unread input. Programs don't see the signal themselves (no Unix
+  signals).
+
+Raw mode (keys one at a time, for editors and line editing in the shell)
+and terminal escape sequences come in step 10.
+
+## Starting programs
+
+```c
+#include <rustux/process.h>
+
+char *argv[] = { "echo", "hello", 0 };
+rx_handle_t proc;
+if (rx_spawn("/bin/echo", argv, NULL /* our environment */, RX_SPAWN_CLONE_STDIO,
+             NULL, 0, &proc) == RX_OK) {
+    int64_t code = rx_wait_process(proc);
+}
+```
+
+`RX_SPAWN_CLONE_STDIO` gives the child copies of fds 0-2. Extra handles
+are passed as `rx_spawn_handle_t { info, handle }` (moved into the child).
+The kernel still loads the program from the ramdisk; step 8 moves loading
+into the library.
+
+## The shell
+
+`userspace/c-progs/shell.c`. Quoting (`'...'`, `"..."`, `\`), variables
+(`$NAME`, `${NAME}`, `$?`), `NAME=value` (shell variable), `export`,
+`unset`, `set`, `NAME=value command` (for one command), `$PATH` lookup.
+Exit codes below 0 (killed -1024, crashed -1025) are printed; Ctrl+C sets
+`$?` to 130. Pipes, redirection, `;`, `&&`, `||`, `cd` and `pwd` come in
+step 8.
+
+## Commands and tests in `/bin`
+
+| Program | What it does |
+|---------|--------------|
+| `echo [-n] [-e] ...` | print the arguments |
+| `cat` | copy standard input to standard output (files in step 8) |
+| `env [-i] [NAME=VALUE]... [COMMAND]` | print the environment or run a command with a changed one |
+| `true`, `false` | exit 0 / 1 |
+| `hello`, `counter [N]`, `args ...` | small examples (`args` shows how the shell split a line) |
+| `libctest` | 50 checks of the C library |
+| `spin` | loops forever (stop it with Ctrl+C) |
+| `objtest`, `ipctest`, `spawntest`, `drvtest`, `smptest` | kernel tests (`SYSCALL.md`) |
+
+## Limits for now
+
+- `printf` has no floating point (`%f` prints `?`; step 10).
+- `malloc` is not thread-safe; nothing else in the library is either
+  (threads come in step 10).
+- Up to 64 file descriptors; arguments and environment together up to
+  32 KiB.

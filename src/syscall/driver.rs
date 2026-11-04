@@ -16,7 +16,7 @@ use crate::kobj::{KObject, Rights};
 use alloc::sync::Arc;
 
 /// Check that `h` is a resource handle with WRITE
-fn require_resource(h: u32) -> R<()> {
+pub fn require_resource(h: u32) -> R<()> {
     let (obj, rights) = lookup(h, 0)?;
     if !matches!(obj, KObject::Resource(_)) {
         return Err(RxStatus::ERR_WRONG_TYPE);
@@ -34,6 +34,41 @@ fn interrupt_of(h: u32, right: u32) -> R<Arc<Interrupt>> {
         return Err(RxStatus::ERR_ACCESS_DENIED);
     }
     Ok(i)
+}
+
+/// debuglog_create(resource, options, *out) — a debug log handle (needs
+/// the root resource)
+pub fn sys_debuglog_create(args: SyscallArgs) -> SyscallRet {
+    let (res, options, out) = (args.arg_u32(0), args.arg(1), args.arg(2));
+    ret((|| {
+        require_resource(res)?;
+        if options != 0 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        user::check(out, 4, true)?;
+        let v = install(KObject::DebugLog(crate::kobj::debuglog::DebugLog::new()), Rights::LOG)?;
+        user::write_u32(out, v)?;
+        Ok(0)
+    })())
+}
+
+/// debuglog_write(handle, options, *buf, len) — print `len` bytes (at most
+/// 4096) on the kernel console
+pub fn sys_debuglog_write(args: SyscallArgs) -> SyscallRet {
+    let (h, options, buf, len) = (args.arg_u32(0), args.arg(1), args.arg(2), args.arg(3));
+    ret((|| {
+        let (obj, rights) = lookup(h, 0)?;
+        let KObject::DebugLog(log) = obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+        if !rights.has(Rights::WRITE) {
+            return Err(RxStatus::ERR_ACCESS_DENIED);
+        }
+        if options != 0 || len > crate::kobj::debuglog::MAX_WRITE {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        let bytes = user::read_bytes(buf, len)?;
+        log.write(&bytes);
+        Ok(0)
+    })())
 }
 
 /// interrupt_create(resource, irq, options, *out) — bind a legacy ISA IRQ

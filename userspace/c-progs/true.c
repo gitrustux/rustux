@@ -4,11 +4,8 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-// true: exit at once with code 0
+// true: exit with code 0
 
-#include "rx.h"
-
-void _start(rx_handle_t bootstrap) {
-    (void)bootstrap;
-    rx_exit(0);
+int main(void) {
+    return 0;
 }

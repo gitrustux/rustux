@@ -51,6 +51,7 @@ impl Rights {
     pub const JOB: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::PROPERTY | Self::ENUMERATE
         | Self::DESTROY | Self::SIGNAL | Self::MANAGE_JOB | Self::MANAGE_PROCESS | Self::MANAGE_THREAD;
     pub const RESOURCE: u32 = Self::DUPLICATE | Self::TRANSFER | Self::WRITE | Self::INSPECT;
+    pub const LOG: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL;
     pub const INTERRUPT: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL;
     pub const CHANNEL: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL | Self::SIGNAL_PEER;
 

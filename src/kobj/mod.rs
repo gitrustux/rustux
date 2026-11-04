@@ -20,6 +20,7 @@
 //! looked at, and waiters use the deadline to wake up in time.
 
 pub mod channel;
+pub mod debuglog;
 pub mod event;
 pub mod handle;
 pub mod interrupt;
@@ -64,6 +65,7 @@ pub enum ObjType {
     Vmo = 3,
     Channel = 4,
     Interrupt = 9,
+    Log = 12,
     Resource = 15,
     Event = 5,
     EventPair = 16,
@@ -133,6 +135,7 @@ pub enum KObject {
     Job(Arc<task::Job>),
     Resource(Arc<interrupt::Resource>),
     Interrupt(Arc<interrupt::Interrupt>),
+    DebugLog(Arc<debuglog::DebugLog>),
 }
 
 impl KObject {
@@ -149,6 +152,7 @@ impl KObject {
             KObject::Job(_) => ObjType::Job,
             KObject::Resource(_) => ObjType::Resource,
             KObject::Interrupt(_) => ObjType::Interrupt,
+            KObject::DebugLog(_) => ObjType::Log,
         }
     }
 
@@ -165,6 +169,7 @@ impl KObject {
             KObject::Job(o) => &o.signals,
             KObject::Resource(o) => &o.signals,
             KObject::Interrupt(o) => &o.signals,
+            KObject::DebugLog(o) => &o.signals,
         }
     }
 
