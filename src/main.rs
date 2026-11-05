@@ -284,30 +284,15 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     // (The TSC was calibrated with the timer.)
     rustux::drivers::usb::init();
 
-    // Initialize ramdisk (Phase 5C)
-    debug_print("╔══════════════════════════════════════════════════════════╗\n");
-    debug_print("║  PHASE 5C: Initializing Ramdisk                          ║\n");
-    debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
-    unsafe {
-        rustux::fs::ramdisk::init_ramdisk(include_bytes!(concat!(env!("OUT_DIR"), "/ramdisk.bin")));
-    }
-    debug_print("      ✓ Ramdisk initialized\n\n");
-
-    // Try to load and execute init.elf from ramdisk (Phase 5D)
-    debug_print("╔══════════════════════════════════════════════════════════╗\n");
-    debug_print("║  PHASE 5D: Loading Init Process                         ║\n");
-    debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
-
-    // Try to load and execute init.elf from ramdisk (Phase 5D)
+    // Start init from the boot image
     debug_print("╔══════════════════════════════════════════════════════════╗\n");
     debug_print("║  PHASE 5D: Loading Init Process                         ║\n");
     debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
 
     unsafe {
-        use rustux::fs::ramdisk;
         use rustux::process::table::{Process, PROCESS_TABLE};
 
-        // Load /bin/init from the ramdisk into a new process in the root job
+        // Load bin/init from the boot image into a new process in the root job
         // and hand the CPU to the scheduler; init runs first. The boot
         // context is never resumed.
         // Start the other CPU cores (they park until the scheduler can use
@@ -328,15 +313,22 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
             rustux::drivers::display::write_str(core::str::from_utf8_unchecked(&b[..i + 2]));
         }
 
-        // init gets the root resource (to start drivers) and the kernel's
-        // input channel (USB keystrokes) besides the usual bootstrap handles
+        // init gets the root resource (to start drivers), the kernel's
+        // input channel (USB keystrokes) and the boot image as a VMO (for
+        // the filesystem service) besides the usual bootstrap handles
         use rustux::kobj::{KObject, Rights};
-        use rustux::process::launch::pa;
+        use rustux::process::launch::{self, pa};
+        static BOOT_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bootfs.img"));
+        let bootfs = rustux::kobj::Vmo::new(BOOT_IMAGE.len() as u64).expect("boot image VMO");
+        bootfs.write_from(0, BOOT_IMAGE.as_ptr(), BOOT_IMAGE.len() as u64).expect("boot image VMO");
+        let read_only = Rights::BASIC | Rights::READ | Rights::MAP | Rights::GET_PROPERTY;
         let extra = alloc::vec![
             (pa::ROOT_RESOURCE, KObject::Resource(rustux::kobj::interrupt::Resource::root()), Rights(Rights::RESOURCE)),
             (pa::KERNEL_INPUT, KObject::Channel(rustux::drivers::keyboard::take_input_channel()), Rights(Rights::CHANNEL)),
+            (pa::VMO_BOOTFS, KObject::Vmo(bootfs), Rights(read_only)),
         ];
-        match rustux::process::launch::spawn_elf("/bin/init", &rustux::kobj::task::Job::root(), extra, Default::default()) {
+        let init_elf = launch::boot_image_find(BOOT_IMAGE, "bin/init").expect("bin/init missing from the boot image");
+        match launch::spawn_init("/bin/init", init_elf, &rustux::kobj::task::Job::root(), extra, Default::default()) {
             Ok((_, tid)) => {
                 rustux::drivers::keyboard::start_polling();
                 debug_print("[INIT] init started\n");

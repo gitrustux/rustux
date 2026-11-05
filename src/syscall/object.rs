@@ -159,6 +159,7 @@ pub fn sys_object_signal_peer(args: SyscallArgs) -> SyscallRet {
         let (peer, allowed) = match &obj {
             KObject::EventPair(e) => (e.peer().map(KObject::EventPair), signals::USER_ALL | signals::SIGNALED),
             KObject::Channel(c) => (c.peer().map(KObject::Channel), signals::USER_ALL),
+            KObject::Socket(s) => (s.peer().map(KObject::Socket), signals::USER_ALL),
             _ => return Err(RxStatus::ERR_WRONG_TYPE),
         };
         if !rights.has(Rights::SIGNAL_PEER) {
@@ -240,12 +241,16 @@ pub fn sys_object_wait_one(args: SyscallArgs) -> SyscallRet {
     })())
 }
 
+/// Most items in one object_wait_many (the filesystem service waits on
+/// every open connection)
+pub const MAX_WAIT_ITEMS: usize = 1024;
+
 /// object_wait_many(*items, count, deadline_ns) — items are
 /// `{ u32 handle; u32 waitfor; u32 pending; }`; `pending` is filled in
 pub fn sys_object_wait_many(args: SyscallArgs) -> SyscallRet {
     let (items, count, deadline) = (args.arg(0), args.arg(1), args.arg(2) as u64);
     ret((|| {
-        if count == 0 || count > 64 {
+        if count == 0 || count > MAX_WAIT_ITEMS {
             return Err(RxStatus::ERR_OUT_OF_RANGE);
         }
         user::check(items, count * 12, true)?;
@@ -330,6 +335,75 @@ pub fn sys_channel_create(args: SyscallArgs) -> SyscallRet {
         }
         let (a, b) = Channel::new_pair();
         install_pair(KObject::Channel(a), KObject::Channel(b), Rights::CHANNEL, out0, out1)
+    })())
+}
+
+// ---------------------------------------------------------------------
+// Sockets (byte streams; pipes)
+// ---------------------------------------------------------------------
+
+/// socket_create(options, *out0, *out1)
+pub fn sys_socket_create(args: SyscallArgs) -> SyscallRet {
+    let (opts, out0, out1) = (args.arg(0), args.arg(1), args.arg(2));
+    ret((|| {
+        if opts != 0 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        let (a, b) = crate::kobj::socket::Socket::new_pair();
+        install_pair(KObject::Socket(a), KObject::Socket(b), Rights::SOCKET, out0, out1)
+    })())
+}
+
+fn socket_of(h: u32, right: u32) -> R<alloc::sync::Arc<crate::kobj::socket::Socket>> {
+    let (obj, rights) = lookup(h, 0)?;
+    let KObject::Socket(s) = obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+    if !rights.has(right) {
+        return Err(RxStatus::ERR_ACCESS_DENIED);
+    }
+    Ok(s)
+}
+
+/// socket_write(handle, options, *buf, len, *actual) — writes as much as
+/// fits (at most 64 KiB wait in each direction); SHOULD_WAIT if none does
+pub fn sys_socket_write(args: SyscallArgs) -> SyscallRet {
+    let (h, opts, buf, len, actual) = (args.arg_u32(0), args.arg(1), args.arg(2), args.arg(3), args.arg(4));
+    ret((|| {
+        let s = socket_of(h, Rights::WRITE)?;
+        if opts != 0 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        if actual != 0 {
+            user::check(actual, 8, true)?;
+        }
+        let len = len.min(crate::kobj::socket::CAPACITY);
+        let data = user::read_bytes(buf, len)?;
+        let n = s.write(&data)?;
+        if actual != 0 {
+            user::write_u64(actual, n as u64)?;
+        }
+        Ok(0)
+    })())
+}
+
+/// socket_read(handle, options, *buf, len, *actual) — SHOULD_WAIT if
+/// nothing is there yet, PEER_CLOSED if nothing will come
+pub fn sys_socket_read(args: SyscallArgs) -> SyscallRet {
+    let (h, opts, buf, len, actual) = (args.arg_u32(0), args.arg(1), args.arg(2), args.arg(3), args.arg(4));
+    ret((|| {
+        let s = socket_of(h, Rights::READ)?;
+        if opts != 0 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        user::check(buf, len, true)?;
+        if actual != 0 {
+            user::check(actual, 8, true)?;
+        }
+        let data = s.read(len.min(crate::kobj::socket::CAPACITY))?;
+        user::write_bytes(buf, &data)?;
+        if actual != 0 {
+            user::write_u64(actual, data.len() as u64)?;
+        }
+        Ok(0)
     })())
 }
 

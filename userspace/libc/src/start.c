@@ -69,23 +69,27 @@ void __libc_start(rx_handle_t bootstrap) {
     rx_job_default = rx_take_startup_handle(RX_PA_JOB_DEFAULT);
     rx_vmar_root = rx_take_startup_handle(RX_PA_VMAR_ROOT);
 
-    // File descriptors: console channels for now
+    // File descriptors: the argument is the fd number and, in bits 12-15,
+    // its kind (0 = console, as before step 8)
     for (uint32_t i = 0; i < boot_count; i++) {
         if (boot_handles[i] && (boot_info[i] & 0xFF) == RX_PA_FD) {
-            int fd = boot_info[i] >> 16;
+            uint32_t arg = boot_info[i] >> 16;
+            int fd = (int)(arg & 0xFFF), kind = (int)(arg >> 12);
             if (fd < MAX_FDS && __fds[fd].kind == RX_FD_NONE) {
-                __fds[fd].kind = RX_FD_CONSOLE;
+                __fds[fd].kind = kind ? kind : RX_FD_CONSOLE;
                 __fds[fd].handle = boot_handles[i];
                 boot_handles[i] = 0;
             }
         }
     }
+    rx_ns_set_root(rx_take_startup_handle(RX_PA_NS_DIR));
 
     __malloc_init();
     char *end = boot_msg + nb;
     char **argv = split(boot_msg + pa->args_off, end, pa->args_num);
     char **envp = split(boot_msg + pa->environ_off, end, pa->environ_num);
     __env_init(envp);
+    __fs_init();
     __stdio_init();
     exit(main((int)pa->args_num, argv, environ));
 }

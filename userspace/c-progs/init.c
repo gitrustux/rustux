@@ -6,8 +6,10 @@
 
 //! Init Process (PID 1)
 //!
-//! The first userspace process. It starts the PS/2 keyboard driver and the
-//! shell, restarts either if it ends, and is the console service:
+//! The first userspace process. It starts the filesystem service (fsd)
+//! from the boot image, then the PS/2 keyboard driver and the shell,
+//! restarts the driver or the shell if either ends, and is the console
+//! service:
 //!
 //! - Keystrokes arrive from the driver and from the kernel (USB keyboards)
 //!   over channels. Init edits the typed line (echo, Backspace, Ctrl+U) and
@@ -32,6 +34,7 @@ static rx_handle_t con_server;   // console: our end
 static rx_handle_t con_client;   // console: the programs' end (copied to each)
 static rx_handle_t drv_proc, drv_chan; // keyboard driver
 static rx_handle_t sh_proc, sh_ctl;    // shell
+static rx_handle_t fsd_proc;           // filesystem service
 static int driver_failures;
 
 // ---- console ----
@@ -122,6 +125,44 @@ static rx_handle_t console_copy(void) {
 
 // ---- children ----
 
+static uint32_t rd32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+
+// Start fsd from the boot image and make it our namespace root. Everything
+// after this loads programs from /bin through it.
+static void start_fsd(rx_handle_t bootfs) {
+    uint64_t size = 0, addr = 0;
+    if (rx_vmo_get_size(bootfs, &size) != RX_OK ||
+        rx_vmar_map(rx_vmar_root, RX_VM_PERM_READ, 0, bootfs, 0, (size + 4095) & ~4095ull, &addr) != RX_OK) {
+        printf("init: cannot map the boot image\n");
+        return;
+    }
+    const unsigned char *img = (const unsigned char *)addr;
+    const void *elf = 0;
+    uint32_t len = 0, count = rd32(img + 4), table = rd32(img + 8);
+    for (uint32_t i = 0; i < count; i++) {
+        const unsigned char *e = img + table + 16 * i;
+        if (!strcmp((const char *)img + rd32(e), "bin/fsd")) {
+            elf = img + rd32(e + 4);
+            len = rd32(e + 8);
+        }
+    }
+    rx_handle_t client, server;
+    rx_channel_create(0, &client, &server);
+    rx_spawn_handle_t hs[] = {
+        { RX_PA_VMO_BOOTFS, bootfs },
+        { RX_PA_USER0, server },
+        { RX_PA_HND(RX_PA_FD, 1), console_copy() },
+        { RX_PA_HND(RX_PA_FD, 2), console_copy() },
+    };
+    char *argv[] = { "fsd", 0 };
+    if (!elf || rx_spawn_image(rx_job_default, "fsd", elf, len, argv, 0, 0, hs, 4, &fsd_proc) != RX_OK) {
+        printf("init: cannot start the filesystem service\n");
+        rx_handle_close(client);
+        return;
+    }
+    rx_ns_set_root(client);
+}
+
 static void start_driver(void) {
     rx_handle_t ours, theirs, res;
     if (!resource || driver_failures >= 5) return;
@@ -154,10 +195,10 @@ static void start_shell(void) {
         { RX_PA_USER0, theirs },
     };
     char *argv[] = { "shell", 0 };
-    char *envp[] = { "PATH=/bin", "HOME=/", "SHELL=/bin/shell", "USER=root", 0 };
+    char *envp[] = { "PATH=/bin", "HOME=/root", "PWD=/root", "SHELL=/bin/shell", "USER=root", 0 };
     // A fresh shell starts with no leftover interrupt
     rx_object_signal(con_client, RX_CONSOLE_SIGNAL_INTERRUPT, 0);
-    if (rx_spawn("/bin/shell", argv, envp, 0, hs, 4, &sh_proc) != RX_OK) {
+    if (rx_spawn("/bin/shell", argv, envp, RX_SPAWN_CLONE_NS, hs, 4, &sh_proc) != RX_OK) {
         printf("init: failed to spawn shell!\n");
         rx_exit(1);
     }
@@ -209,19 +250,22 @@ int main(void) {
     rx_channel_create(0, &con_server, &con_client);
 
     printf("Init process (PID 1) starting...\n");
+    rx_handle_t bootfs = rx_take_startup_handle(RX_PA_VMO_BOOTFS);
+    if (bootfs) start_fsd(bootfs);
     start_driver();
     printf("Spawning shell...\n\n");
     start_shell();
 
     for (;;) {
-        rx_wait_item_t items[6];
-        int n = 0, i_drv = -1, i_kin = -1, i_dproc = -1;
+        rx_wait_item_t items[7];
+        int n = 0, i_drv = -1, i_kin = -1, i_dproc = -1, i_fsd = -1;
         int i_out = n; items[n++] = (rx_wait_item_t){ con_server, RX_CHANNEL_READABLE, 0 };
         if (drv_chan) { i_drv = n; items[n++] = (rx_wait_item_t){ drv_chan, RX_CHANNEL_READABLE, 0 }; }
         if (kernel_input) { i_kin = n; items[n++] = (rx_wait_item_t){ kernel_input, RX_CHANNEL_READABLE, 0 }; }
         int i_sh = n; items[n++] = (rx_wait_item_t){ sh_ctl, RX_CHANNEL_READABLE, 0 };
         if (drv_proc) { i_dproc = n; items[n++] = (rx_wait_item_t){ drv_proc, RX_PROCESS_TERMINATED, 0 }; }
         int i_sproc = n; items[n++] = (rx_wait_item_t){ sh_proc, RX_PROCESS_TERMINATED, 0 };
+        if (fsd_proc) { i_fsd = n; items[n++] = (rx_wait_item_t){ fsd_proc, RX_PROCESS_TERMINATED, 0 }; }
 
         if (rx_object_wait_many(items, n, RX_TIME_INFINITE) != RX_OK) continue;
 
@@ -231,6 +275,11 @@ int main(void) {
         if (i_kin >= 0 && (items[i_kin].pending & RX_CHANNEL_READABLE)) keys_from(kernel_input);
         if (items[i_sh].pending & RX_CHANNEL_READABLE) command();
         if (i_dproc >= 0 && (items[i_dproc].pending & RX_PROCESS_TERMINATED)) driver_ended();
+        if (i_fsd >= 0 && (items[i_fsd].pending & RX_PROCESS_TERMINATED)) {
+            printf("init: the filesystem service ended (code %lld); files are gone until a reboot\n",
+                   (long long)rx_wait_process(fsd_proc));
+            fsd_proc = 0;
+        }
         if (items[i_sproc].pending & RX_PROCESS_TERMINATED) {
             console_output(); // its last words
             rx_handle_close(sh_proc);

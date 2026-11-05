@@ -30,7 +30,7 @@ cargo build --release --bin rustux --features uefi_kernel --target x86_64-unknow
 
 The output is `target/x86_64-unknown-uefi/release/rustux.efi`. **Check its size:** a working kernel is about 1.8 MB. A file of a few KB means the compiler proved the entry path always panics and removed the kernel (this was the cause of the old "EFI OK" freeze).
 
-`build.rs` embeds a ramdisk with every program in `userspace/bin/` as `/bin/<name>` (`init`, `shell`, the commands and the tests). The binaries are committed, so building the kernel needs no C compiler.
+`build.rs` builds a boot image (bootfs, `docs/FS.md`) with every program in `userspace/bin/` as `bin/<name>`; the kernel starts `bin/init` from it, and the filesystem service serves it as `/boot` and `/bin` (`init`, `shell`, the commands and the tests). The binaries are committed, so building the kernel needs no C compiler.
 
 Rebuilding the user programs and the C library after changing C code (needs `gcc` and `ar`; details in `docs/USERSPACE.md`):
 
@@ -101,16 +101,13 @@ EBS OK
 PS/2: test=55 cfg=77->65 port=00 kbd=FA
 [5/5] Configuring timer...
 [DISPLAY] Text console initialized
-[INIT] Found init.elf in ramdisk
-[INIT] Entry point: 0x401000
-[SPAWN] Loading process from ramdisk: /bin/shell
-[SPAWN] Created process PID=2 entry=0x401080
+[INIT] init started
 [TICK]
 ```
 
-The screen turns red at UEFI entry and green after ExitBootServices, then the console clears to the Dracula background and the shell prompt (`rustux >`) appears. Try `help`, `hello`, `counter`, `echo hi`, `ps`.
+The screen turns red at UEFI entry and green after ExitBootServices, then the console clears to the Dracula background and the shell prompt (`rustux >`) appears. Try `help`, `ls /bin`, `echo hi > /tmp/a`, `cat /tmp/a | upper`, `fstest`.
 
-A CPU exception in a user program prints `[<name>: process killed]` on screen and a `[FAULT] ...` line with RIP, error code and fault address on the debug port; the shell keeps running.
+A CPU exception in a user program makes the shell print `[crashed (CPU exception): -1025]`; the kernel prints a `[FAULT] ...` line with RIP, error code and fault address on the debug port; the shell keeps running.
 
 ## Debugging techniques
 
@@ -138,9 +135,9 @@ m "screendump /tmp/screen.ppm"   # capture the framebuffer
 |---------|--------------|
 | `rustux.efi` is a few KB | Something on the entry path always panics (e.g. `mem::zeroed()` of a reference, `uefi::system::with_stdout` after ExitBootServices); the optimizer removed the rest |
 | QEMU exits right after a step (with `-no-reboot`) | Triple fault; run with `-d int,cpu_reset` and look at the last exception |
-| `init.elf not found in ramdisk` | Ramdisk built without ELFs, or offsets wrong in `build.rs` |
+| `bin/init missing from the boot image` (kernel panic) | `userspace/bin/` is empty: run `userspace/build.sh` |
 | `[FAULT] ... in KERNEL mode` | Kernel bug; the line shows RIP and (for page faults) the address |
-| Fault in user mode right after `[SPAWN]` | Program built with the `syscall` instruction instead of `int 0x80` |
+| A program crashes at once | Built with the `syscall` instruction instead of `int 0x80`, or not with `userspace/build.sh` |
 | Triple fault on the first interrupt from user mode | TSS/IDT/GDT descriptor wrong for an upper-half address (the TSS descriptor once dropped bits 63:48 of its base) |
 | No `[TICK]` | LAPIC timer not configured, or interrupts not enabled |
 | `[PMM] OUT OF MEMORY` | The line shows what was asked for (pages, flags) and how many pages are still free |

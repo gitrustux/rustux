@@ -53,6 +53,7 @@ impl Rights {
     pub const RESOURCE: u32 = Self::DUPLICATE | Self::TRANSFER | Self::WRITE | Self::INSPECT;
     pub const LOG: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL;
     pub const INTERRUPT: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL;
+    pub const SOCKET: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL | Self::SIGNAL_PEER;
     pub const CHANNEL: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL | Self::SIGNAL_PEER;
 
     pub fn has(self, r: u32) -> bool {

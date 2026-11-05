@@ -7,7 +7,7 @@
 //! Task syscalls: jobs, processes, threads. Signatures are in
 //! docs/SYSCALL.md.
 
-use super::object::{current_process, install, lookup, ret, take, R};
+use super::object::{install, lookup, ret, take, R};
 use super::{user, SyscallArgs, SyscallRet};
 use crate::arch::amd64::mm::RxStatus;
 use crate::kobj::task::{self, Job, Process, Thread};
@@ -260,84 +260,3 @@ pub fn sys_handle_replace(args: SyscallArgs) -> SyscallRet {
     })())
 }
 
-/// spawn(*path) — start /bin/... from the ramdisk in the caller's job.
-/// Returns the new thread's id (shown as a pid).
-pub fn sys_spawn(args: SyscallArgs) -> SyscallRet {
-    spawn(args.arg(0), 0, 0, 0, 0, 0)
-}
-
-/// spawn_process(*path, *process_out, *handles, *tags, count) — like spawn,
-/// and writes a process handle to `process_out` (wait on it for
-/// TERMINATED). If `handles` is not NULL, `count` (at most 16) handles are
-/// moved into the child's bootstrap message with the given tags; they need
-/// TRANSFER and leave the caller even on failure. If `strings` is not
-/// NULL it points to `{ u64 args; u32 args_len; u32 argc; u64 env;
-/// u32 env_len; u32 envc; }`: arguments and environment as NUL-terminated
-/// strings back to back (at most 32 KiB together), copied into the child's
-/// bootstrap message.
-pub fn sys_spawn_process(args: SyscallArgs) -> SyscallRet {
-    match args.arg(1) {
-        0 => ret(Err(RxStatus::ERR_INVALID_ARGS)),
-        out => spawn(args.arg(0), out, args.arg(2), args.arg(3), args.arg(4), args.arg(5)),
-    }
-}
-
-/// Read the `strings` argument of spawn_process
-fn read_proc_args(ptr: usize) -> R<launch::ProcArgs> {
-    use launch::{procargs, ProcArgs};
-    let s = user::read_bytes(ptr, 32)?;
-    let u64_at = |o: usize| u64::from_le_bytes(s[o..o + 8].try_into().unwrap()) as usize;
-    let u32_at = |o: usize| u32::from_le_bytes(s[o..o + 4].try_into().unwrap());
-    let (aptr, alen, argc) = (u64_at(0), u32_at(8) as usize, u32_at(12));
-    let (eptr, elen, envc) = (u64_at(16), u32_at(24) as usize, u32_at(28));
-    if alen + elen > procargs::MAX_STRINGS {
-        return Err(RxStatus::ERR_OUT_OF_RANGE);
-    }
-    let a = if alen > 0 { user::read_bytes(aptr, alen)? } else { alloc::vec::Vec::new() };
-    let e = if elen > 0 { user::read_bytes(eptr, elen)? } else { alloc::vec::Vec::new() };
-    if !ProcArgs::valid(&a, argc) || !ProcArgs::valid(&e, envc) {
-        return Err(RxStatus::ERR_INVALID_ARGS);
-    }
-    Ok(ProcArgs { args: a, argc, env: e, envc })
-}
-
-const MAX_SPAWN_HANDLES: usize = 16;
-
-fn spawn(path: usize, out: usize, hptr: usize, tptr: usize, count: usize, strings: usize) -> SyscallRet {
-    ret((|| {
-        // Handles to pass on (consumed whatever happens next)
-        let mut extra = alloc::vec::Vec::new();
-        if hptr != 0 && count != 0 {
-            if count > MAX_SPAWN_HANDLES {
-                return Err(RxStatus::ERR_OUT_OF_RANGE);
-            }
-            let hs = user::read_bytes(hptr, count * 4)?;
-            let ts = user::read_bytes(tptr, count * 4)?;
-            let mut first_err = None;
-            for i in 0..count {
-                let h = u32::from_le_bytes(hs[i * 4..i * 4 + 4].try_into().unwrap());
-                let tag = u32::from_le_bytes(ts[i * 4..i * 4 + 4].try_into().unwrap());
-                match take(h) {
-                    Ok((obj, rights)) if rights.has(Rights::TRANSFER) => extra.push((tag, obj, rights)),
-                    Ok(_) => { first_err.get_or_insert(RxStatus::ERR_ACCESS_DENIED); }
-                    Err(e) => { first_err.get_or_insert(e); }
-                }
-            }
-            if let Some(e) = first_err {
-                return Err(e);
-            }
-        }
-        let path = user::read_cstr(path, 256)?;
-        let pargs = if strings != 0 { read_proc_args(strings)? } else { Default::default() };
-        if out != 0 {
-            user::check(out, 4, true)?;
-        }
-        let job = current_process()?.job.clone();
-        let (process, tid) = launch::spawn_elf(&path, &job, extra, pargs)?;
-        if out != 0 {
-            let v = install(KObject::Process(process), Rights::PROCESS)?;
-            user::write_u32(out, v)?;
-        }
-        Ok(tid as usize)
-    })())
-}

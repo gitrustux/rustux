@@ -8,13 +8,12 @@
 //!
 //! This build script:
 //! 1. Compiles assembly files (context switch)
-//! 2. Embeds files into the kernel as a ramdisk
-//! 3. Generates ramdisk.bin at build time
+//! 2. Builds the boot image (bootfs) embedded in the kernel, from
+//!    files/test.txt and the programs in userspace/bin/
 
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::io::Write;
 
 /// Fail the build if a `static mut` declaration appears in the kernel
 /// sources (see sync::irq for what to use instead). Only files git tracks
@@ -118,37 +117,20 @@ fn main() {
     }
 
     // ============================================================================
-    // Part 2: Create embedded ramdisk
+    // Part 2: Build the boot image (bootfs)
     // ============================================================================
+    //
+    // Layout (docs/FS.md): header { u32 magic 0x52555458 "RUTX", u32 count,
+    // u32 table offset (12) }, then `count` entries { u32 name offset,
+    // u32 data offset, u32 size, u32 0 }, then each file's NUL-terminated
+    // name followed by its data. The kernel only looks up bin/init in it;
+    // the filesystem service (fsd) serves it at /boot, with /bin = /boot/bin.
 
-    // Ramdisk structures (matching src/fs/ramdisk.rs)
-    #[repr(C)]
-    struct RamdiskFile {
-        name_offset: u32,
-        data_offset: u32,
-        size: u32,
-        _pad: u32,
-    }
+    let image_path = out_dir.join("bootfs.img");
 
-    #[repr(C)]
-    struct RamdiskSuperblock {
-        magic: u32,           // 0x52555458 ("RUTX")
-        num_files: u32,
-        files_offset: u32,
-    }
-
-    let ramdisk_output = out_dir.join("ramdisk.bin");
-    let mut ramdisk = fs::File::create(&ramdisk_output)
-        .expect("Failed to create ramdisk.bin");
-
-    // Collect files to embed
-    let mut files_to_embed = vec![
-        // Test files
-        ("files/test.txt", "test.txt"),
-    ];
-
-    // Programs to embed: every file in userspace/bin/ (built by
-    // userspace/build.sh and committed) becomes /bin/<name>
+    // Files: files/test.txt as /boot/test.txt, and every program in
+    // userspace/bin/ (built by userspace/build.sh and committed) as /bin/<name>
+    let mut files: Vec<(String, String)> = vec![("files/test.txt".into(), "test.txt".into())];
     let mut programs: Vec<(String, String)> = fs::read_dir("userspace/bin")
         .expect("userspace/bin/ is missing (run userspace/build.sh)")
         .filter_map(|e| e.ok())
@@ -159,97 +141,35 @@ fn main() {
         })
         .collect();
     programs.sort();
-    for (src, name) in &programs {
-        files_to_embed.push((src.as_str(), name.as_str()));
+    files.extend(programs);
+
+    let table = 12usize;
+    let mut next = table + 16 * files.len();
+    let mut entries = Vec::new();
+    let mut body = Vec::new();
+    for (src, name) in &files {
+        let contents = fs::read(src).unwrap_or_else(|e| panic!("cannot read {}: {}", src, e));
+        let name_off = next;
+        let data_off = name_off + name.len() + 1;
+        entries.push((name_off as u32, data_off as u32, contents.len() as u32));
+        body.extend_from_slice(name.as_bytes());
+        body.push(0);
+        body.extend_from_slice(&contents);
+        next = data_off + contents.len();
     }
-
-    // Calculate offsets
-    let superblock_size = std::mem::size_of::<RamdiskSuperblock>() as u32;
-    let file_entry_size = std::mem::size_of::<RamdiskFile>() as u32;
-
-    // Start offsets
-    let mut files_offset = superblock_size;
-    let mut names_offset = files_offset + file_entry_size * files_to_embed.len() as u32;
-    let mut data_offset = names_offset;
-    let mut file_entries = Vec::new();
-
-    // First pass: calculate all offsets
-    for (src_path, _name) in &files_to_embed {
-        let contents = fs::read(src_path)
-            .expect(&format!("Failed to read file: {}", src_path));
-
-        let name_bytes = _name.as_bytes();
-
-        // Calculate offsets
-        let name_len = name_bytes.len() as u32;
-        file_entries.push(RamdiskFile {
-            name_offset: data_offset,
-            data_offset: data_offset + name_len + 1, // +1 for null terminator
-            size: contents.len() as u32,
-            _pad: 0,
-        });
-
-        // Next entry starts after this name, its null terminator and its contents
-        // (matches the write order below: name, NUL, data)
-        data_offset = data_offset + name_len + 1 + contents.len() as u32;
+    let mut image = Vec::with_capacity(next);
+    for v in [0x5255_5458u32, files.len() as u32, table as u32] {
+        image.extend_from_slice(&v.to_le_bytes());
     }
-
-    // Second pass: write the ramdisk
-    // Write superblock
-    let superblock = RamdiskSuperblock {
-        magic: 0x52555458,
-        num_files: file_entries.len() as u32,
-        files_offset: files_offset,
-    };
-
-    unsafe {
-        let superblock_bytes = std::slice::from_raw_parts(
-            &superblock as *const _ as *const u8,
-            std::mem::size_of::<RamdiskSuperblock>(),
-        );
-        ramdisk.write_all(superblock_bytes).unwrap();
-    }
-
-    // Write file headers (at files_offset)
-    // First pad to files_offset
-    let mut current_size = superblock_size as usize;
-    while current_size < files_offset as usize {
-        ramdisk.write_all(&[0]).unwrap();
-        current_size += 1;
-    }
-
-    // Write file entries
-    for entry in &file_entries {
-        unsafe {
-            let entry_bytes = std::slice::from_raw_parts(
-                entry as *const _ as *const u8,
-                std::mem::size_of::<RamdiskFile>(),
-            );
-            ramdisk.write_all(entry_bytes).unwrap();
+    for (n, d, len) in &entries {
+        for v in [*n, *d, *len, 0] {
+            image.extend_from_slice(&v.to_le_bytes());
         }
     }
-
-    // Write names and data
-    for (src_path, _name) in &files_to_embed {
-        // Write name (with null terminator)
-        ramdisk.write_all(_name.as_bytes()).unwrap();
-        ramdisk.write_all(&[0u8]).unwrap(); // null terminator
-
-        // Write file contents
-        let contents = fs::read(src_path)
-            .expect(&format!("Failed to read file: {}", src_path));
-        ramdisk.write_all(&contents).unwrap();
-    }
-
-    // Tell cargo where to find the ramdisk
-    println!("cargo:rustc-env=RAMDISK_PATH={}", ramdisk_output.display());
-    println!("cargo:rerun-if-changed={}", ramdisk_output.display());
-
-    // Print ramdisk info for debugging
-    println!("cargo:warning=Ramdisk: {} files, {} bytes total",
-        file_entries.len(),
-        ramdisk.metadata().unwrap().len()
-    );
+    image.extend_from_slice(&body);
+    fs::write(&image_path, &image).expect("cannot write bootfs.img");
+    println!("cargo:rerun-if-changed=files/test.txt");
+    println!("cargo:warning=Boot image: {} files, {} bytes", files.len(), image.len());
 
     // ============================================================================
     // Part 3: Link search path

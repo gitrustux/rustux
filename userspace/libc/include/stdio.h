@@ -49,6 +49,21 @@ size_t fread(void *restrict p, size_t size, size_t n, FILE *restrict f);
 ssize_t getline(char **restrict line, size_t *restrict cap, FILE *restrict f);
 ssize_t getdelim(char **restrict line, size_t *restrict cap, int delim, FILE *restrict f);
 
+FILE *fopen(const char *restrict path, const char *restrict mode);
+FILE *fdopen(int fd, const char *mode);
+int fclose(FILE *f);
+int fseek(FILE *f, long offset, int whence);
+long ftell(FILE *f);
+void rewind(FILE *f);
+int remove(const char *path);
+int rename(const char *old, const char *new);
+
+#ifndef SEEK_SET
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+#endif
+
 int fflush(FILE *f);
 int setvbuf(FILE *restrict f, char *restrict buf, int mode, size_t size);
 int feof(FILE *f);

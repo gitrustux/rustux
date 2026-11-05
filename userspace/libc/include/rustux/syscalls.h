@@ -74,6 +74,7 @@ typedef int64_t rx_status_t;
 #define RX_OBJ_TYPE_EVENTPAIR 16
 #define RX_OBJ_TYPE_TIMER     22
 #define RX_OBJ_TYPE_LOG       12
+#define RX_OBJ_TYPE_SOCKET    14
 
 // vmar_map / vmar_protect options
 #define RX_VM_PERM_READ    (1u << 0)
@@ -92,7 +93,9 @@ typedef int64_t rx_status_t;
 #define RX_PA_THREAD_SELF 0x02
 #define RX_PA_JOB_DEFAULT 0x03
 #define RX_PA_VMAR_ROOT   0x04
-#define RX_PA_FD          0x30    // a file descriptor; argument = fd number
+#define RX_PA_VMO_BOOTFS  0x1B    // the boot image (init only)
+#define RX_PA_NS_DIR      0x20    // root directory of the namespace (filesystem)
+#define RX_PA_FD          0x30    // a file descriptor; argument = fd | kind << 12
 #define RX_PA_ROOT_RESOURCE 0x3F  // the root resource (init, drivers)
 #define RX_PA_KERNEL_INPUT  0xE0  // Rustux: kernel input channel (init)
 #define RX_PA_USER0       0xF0    // handles a parent passes to a child
@@ -157,6 +160,19 @@ static inline rx_status_t rx_channel_read(rx_handle_t h, uint32_t options, void 
     if (actual_handles) *actual_handles = actual[1];
     return r;
 }
+// Sockets: byte streams (pipes). Write takes as much as fits (64 KiB wait
+// in each direction); both return SHOULD_WAIT when they can't proceed and
+// PEER_CLOSED when the other end is gone (for read: and nothing is left).
+static inline rx_status_t rx_socket_create(uint32_t options, rx_handle_t *out0, rx_handle_t *out1) {
+    return RX_SYS(0x2A, options, out0, out1, 0);
+}
+static inline rx_status_t rx_socket_write(rx_handle_t h, uint32_t options, const void *buf, uint64_t len, uint64_t *actual) {
+    return RX_SYS6(0x2B, h, options, buf, len, actual, 0);
+}
+static inline rx_status_t rx_socket_read(rx_handle_t h, uint32_t options, void *buf, uint64_t len, uint64_t *actual) {
+    return RX_SYS6(0x2C, h, options, buf, len, actual, 0);
+}
+
 static inline rx_status_t rx_vmo_create(uint64_t size, uint32_t options, rx_handle_t *out) { return RX_SYS(0x10, size, options, out, 0); }
 static inline rx_status_t rx_vmo_read(rx_handle_t h, void *buf, uint64_t offset, uint64_t len) { return RX_SYS(0x11, h, buf, offset, len); }
 static inline rx_status_t rx_vmo_write(rx_handle_t h, const void *buf, uint64_t offset, uint64_t len) { return RX_SYS(0x12, h, buf, offset, len); }
@@ -212,26 +228,6 @@ static inline uint8_t rx_inb(uint16_t port) {
     return v;
 }
 static inline void rx_outb(uint16_t port, uint8_t v) { __asm__ volatile("outb %0, %1" : : "a"(v), "Nd"(port)); }
-
-// Arguments and environment for spawn_process: NUL-terminated strings
-// back to back (at most 32 KiB together)
-typedef struct {
-    const char *args;
-    uint32_t args_len;
-    uint32_t argc;
-    const char *env;
-    uint32_t env_len;
-    uint32_t envc;
-} rx_spawn_strings_t;
-
-// Start /bin/<name> from the ramdisk; `handles` (moved, may be NULL, at
-// most 16) go into the child's bootstrap message with the given info
-// words. Most programs use rx_spawn() from <rustux/process.h> instead.
-static inline int64_t rx_spawn_process(const char *path, rx_handle_t *proc_out,
-                                       const rx_handle_t *handles, const uint32_t *tags, uint32_t count,
-                                       const rx_spawn_strings_t *strings) {
-    return RX_SYS6(0x0B, path, proc_out, handles, tags, count, strings);
-}
 
 // Debugging / tests
 static inline int64_t rx_debug_cpu(void) { return RX_SYS(0x51, 0, 0, 0, 0); }

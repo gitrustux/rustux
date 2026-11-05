@@ -191,7 +191,7 @@ if result < 0 {
 |---------|--------|-------------|--------|
 | `PROCESS_CREATE` | 0x01 | Create an empty process in a job | ✅ |
 | `PROCESS_START` | 0x02 | Start a process's first thread | ✅ |
-| `SPAWN` | 0x03 | Start `/bin/<name>` from the ramdisk (legacy) | ✅ frozen |
+| ~~`SPAWN`~~ | 0x03 | Removed in step 8 (programs are loaded by the C library) | — |
 | `THREAD_START` | 0x04 | Start another thread in a running process | ✅ |
 | `THREAD_EXIT` | 0x05 | Exit the current thread | ✅ |
 | `PROCESS_EXIT` | 0x06 | Exit the current process | ✅ |
@@ -199,7 +199,7 @@ if result < 0 {
 | `THREAD_CREATE` | 0x08 | Create a thread object in a process | ✅ |
 | `TASK_KILL` | 0x09 | Kill a job, process or thread | ✅ |
 | `OBJECT_GET_INFO` | 0x0A | Query an object (`ZX_INFO_PROCESS` only) | ✅ |
-| `SPAWN_PROCESS` | 0x0B | Like `SPAWN`, with handles, arguments and environment; returns a process handle | ✅ |
+| ~~`SPAWN_PROCESS`~~ | 0x0B | Removed in step 8 | — |
 
 **Model** (Zircon): a **job** holds processes and child jobs. A **process**
 owns a handle table and an address space and starts with no threads;
@@ -217,9 +217,10 @@ PROPERTY + DESTROY + SIGNAL + MANAGE_THREAD; job = the process rights +
 MANAGE_JOB.
 
 **Program start.** A thread starts with its first two arguments in RDI and
-RSI and every other register zero. Programs started by the kernel (`init`,
-`spawn`, `spawn_process`) get a **bootstrap channel** in RDI holding one
-message in Fuchsia's processargs format (`<rustux/processargs.h>`):
+RSI and every other register zero. Every program (`init`, started by the
+kernel, and all others, started by the C library's loader) gets a
+**bootstrap channel** in RDI holding one message in Fuchsia's processargs
+format (`<rustux/processargs.h>`):
 
 | Offset | Contents |
 |--------|----------|
@@ -231,15 +232,20 @@ message in Fuchsia's processargs format (`<rustux/processargs.h>`):
 The handles travel with the message in the same order as the info words:
 the process itself (`PA_PROC_SELF` 1), its first thread
 (`PA_THREAD_SELF` 2), its job (`PA_JOB_DEFAULT` 3) and its root VMAR
-(`PA_VMAR_ROOT` 4), then any the parent passed. Other types: `PA_FD` 0x30
-(a file descriptor; the argument is the fd number), `PA_ROOT_RESOURCE`
-0x3F (Fuchsia's `PA_RESOURCE`; `init` and drivers), `PA_KERNEL_INPUT` 0xE0
-(the kernel's input channel, `init` only; Rustux's own), `PA_USER0` 0xF0
-and up for a parent's own handles. (Before step 7 the message was only a
-u32 tag per handle, and the resource and input tags were 0x20 and 0x21.)
-The C library reads the message before `main` runs
-(`userspace/libc/src/start.c`). The kernel launcher's stack is 64 KiB
-ending at `0x7fff_ffff_f000`, and RSP starts 8 below a 16-byte boundary,
+(`PA_VMAR_ROOT` 4), then any the parent passed. Other types:
+`PA_VMO_BOOTFS` 0x1B (the boot image, `init` only), `PA_NS_DIR` 0x20 (the
+namespace root: a connection to the filesystem service, `docs/FS.md`),
+`PA_FD` 0x30 (a file descriptor; the argument is the fd number in bits
+0-11 and its kind in bits 12-15: 1 console, 2 debug log, 3 file, 4 pipe),
+`PA_ROOT_RESOURCE` 0x3F (Fuchsia's `PA_RESOURCE`; `init` and drivers),
+`PA_KERNEL_INPUT` 0xE0 (the kernel's input channel, `init` only; Rustux's
+own), `PA_USER0` 0xF0 and up for a parent's own handles. (Before step 7 the
+message was only a u32 tag per handle, and the resource and input tags were
+0x20 and 0x21.) The C library reads the message before `main` runs
+(`userspace/libc/src/start.c`) and builds it when it starts a program
+(`spawn.c`). The kernel's launcher for init gives a 64 KiB stack (the C
+library 256 KiB), ending at `0x7fff_ffff_f000`; RSP starts 8 below a
+16-byte boundary,
 as if `_start` had been called; pass a stack pointer aligned the same way
 to `process_start` and `thread_start`.
 
@@ -313,34 +319,16 @@ typedef struct {
 
 `actual` and `avail` (may be NULL) are set to 1.
 
-#### SPAWN (0x03) / SPAWN_PROCESS (0x0B)
+#### SPAWN (0x03) / SPAWN_PROCESS (0x0B) — removed
 
-`spawn(const char *path)` and `spawn_process(const char *path, rx_handle_t *proc_out, const rx_handle_t *handles, const uint32_t *info, uint32_t count, const rx_spawn_strings_t *strings)`
-
-If `handles` is not NULL, `count` (at most 16) handles are **moved** into
-the child's bootstrap message after the standard four, each with its info
-word (use `PA_USER0` = 0xF0 and up for your own); they need `TRANSFER` and
-leave the caller even on failure. If `strings` is not NULL it points to
-
-```c
-typedef struct {
-    const char *args;  uint32_t args_len; uint32_t argc;  // NUL-terminated, back to back
-    const char *env;   uint32_t env_len;  uint32_t envc;
-} rx_spawn_strings_t;
-```
-
-and the arguments and environment go into the bootstrap message (at most
-32 KiB together, else `ERR_OUT_OF_RANGE`; a count that doesn't match the
-NULs gives `ERR_INVALID_ARGS`). Without it, argv is just `path` and the
-environment is empty. Programs use `rx_spawn()` from
-`<rustux/process.h>`, which builds both from `argv`/`envp` and can pass
-copies of fds 0-2.
-
-Kernel shortcut used by `init` and the shell until a userspace loader
-exists: loads `/bin/<name>` from the ramdisk into a new process in the
-caller's job and starts it with a bootstrap channel. Returns the new
-thread's id. `spawn_process` also returns a process handle, which the shell
-waits on for `PROCESS_TERMINATED`. **Frozen**: no new features.
+Until step 8 the kernel loaded `/bin/<name>` from its ramdisk for these
+calls. The kernel now holds no files: it starts only `init`, from the boot
+image built into it (`boot_image_find` in `src/process/launch.rs`, which
+looks up `bin/init`), and hands `init` the whole image as a VMO. Programs
+start others with `rx_spawn()` (`<rustux/process.h>`): the C library reads
+the ELF file through the filesystem service, loads it with
+`process_create`, `vmo_write`, `vmo_replace_as_executable` and `vmar_map`,
+and starts it with `process_start` and a processargs message.
 
 #### HANDLE_CLOSE (0x07) ✅
 
@@ -519,9 +507,12 @@ Deadline resolution is the 10 ms scheduler tick.
 | `EVENTPAIR_CREATE` | 0x24 | Create an event pair | ✅ |
 | `OBJECT_SIGNAL` | 0x25 | Set/clear signals on an object | ✅ |
 | `OBJECT_WAIT_ONE` | 0x26 | Wait on one object | ✅ |
-| `OBJECT_WAIT_MANY` | 0x27 | Wait on up to 64 objects | ✅ |
+| `OBJECT_WAIT_MANY` | 0x27 | Wait on up to 1024 objects | ✅ |
 | `OBJECT_SIGNAL_PEER` | 0x28 | Set/clear signals on the peer of a pair | ✅ |
 | `OBJECT_GET_TYPE` | 0x29 | Object type of a handle | ✅ |
+| `SOCKET_CREATE` | 0x2A | Create a socket (byte stream, two endpoints) | ✅ |
+| `SOCKET_WRITE` | 0x2B | Write bytes | ✅ |
+| `SOCKET_READ` | 0x2C | Read bytes | ✅ |
 
 #### EVENT_CREATE (0x23)
 
@@ -574,13 +565,31 @@ typedef struct {
 } rx_wait_item_t;
 ```
 
-Waits until any item has one of its `waitfor` signals. `count` is 1–64.
+Waits until any item has one of its `waitfor` signals. `count` is 1–1024
+(the filesystem service waits on every open connection at once).
 Every item's `pending` is filled in on return (including on `ERR_TIMED_OUT`).
 
 #### OBJECT_GET_TYPE (0x29)
 
 `object_get_type(rx_handle_t h)` returns the object type: 5 = event,
 16 = event pair, 22 = timer (Zircon values). Needs no rights.
+
+#### SOCKET_CREATE (0x2A) / SOCKET_WRITE (0x2B) / SOCKET_READ (0x2C)
+
+`socket_create(uint32_t options, rx_handle_t *out0, rx_handle_t *out1)`
+`socket_write(rx_handle_t h, uint32_t options, const void *buf, size_t len, size_t *actual)`
+`socket_read(rx_handle_t h, uint32_t options, void *buf, size_t len, size_t *actual)`
+
+A socket is a pair of endpoints carrying a byte stream each way (Zircon's
+stream sockets); pipes are sockets. Up to 64 KiB wait in each direction:
+`socket_write` writes as much as fits and reports it in `*actual`, or
+returns `ERR_SHOULD_WAIT` when nothing fits; `socket_read` returns up to
+`len` bytes, `ERR_SHOULD_WAIT` when none are there yet, `ERR_PEER_CLOSED`
+when none will come. Writing to a closed peer gives `ERR_PEER_CLOSED`.
+Signals: `READABLE` (bit 0), `WRITABLE` (bit 1, room in the peer's
+buffer), `PEER_CLOSED` (bit 2), user signals (also through
+`object_signal_peer`). Type 14; rights BASIC + READ + WRITE + SIGNAL +
+SIGNAL_PEER. `options` must be 0.
 
 #### CHANNEL_CREATE (0x20)
 
@@ -748,7 +757,7 @@ Needs `WRITE`. Clears `TIMER_SIGNALED` and arms the timer;
 ## Implementation Status
 
 All the object syscalls are implemented (checklist step 3). Test programs
-in the ramdisk, run from the shell:
+in `/bin`, run from the shell:
 
 | Program | Covers | Checks |
 |---------|--------|--------|
@@ -758,7 +767,8 @@ in the ramdisk, run from the shell:
 | `drvtest` | driver calls refused without the root resource; a direct port read kills the program (exit code -1025 expected) | 5 |
 | `smptest` | threads on several CPUs: speed-up, SSE registers across migrations, TLB shootdown, cross-CPU wake-ups | 6 |
 
-`libctest` (50 checks) covers the C library. Sources are in
+`libctest` (50 checks) covers the C library, `fstest` (64) the filesystem
+service, file descriptors and pipes. Sources are in
 `userspace/c-progs/`; `<rustux/syscalls.h>` has C wrappers for every call
 above with Zircon-style signatures (`docs/USERSPACE.md`).
 
@@ -792,15 +802,16 @@ shell then kills the program in the foreground and clears it. The shell's
 `restart-kbd` command asks `init` (over a control channel, `PA_USER0`) to
 kill the keyboard driver, which `init` then restarts.
 
-### Unix-style calls (frozen, removed in step 8)
+### Unix-style calls (removed in step 8)
 
 `write` (0x60), `read` (0x61), `open` (0x62), `close` (0x63), `lseek`
-(0x64), `getpid` (0x70), `getppid` (0x71) and `spawn` (0x03) are no
-longer used by any program: the C library provides file descriptors on top
-of handles and channels, like Fuchsia's `fdio`. `yield` (0x72) stays (the
-C library waits with it when the console's queue is full). The others now
-check user pointers properly (`write`, `read` and `open` read and wrote user
-memory without checking it).
+(0x64), `getpid` (0x70), `getppid` (0x71), `spawn` (0x03) and
+`spawn_process` (0x0B) are gone, with the kernel's ramdisk, its VFS and its
+per-process fd table: the C library provides file descriptors on top of
+handles (console channels, filesystem connections, sockets), like
+Fuchsia's `fdio`, and the filesystem service holds the files. `yield`
+(0x72) stays (tests, and the C library waits with it when the console's
+queue is full).
 
 ---
 

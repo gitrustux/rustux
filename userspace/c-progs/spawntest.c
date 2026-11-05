@@ -12,8 +12,10 @@
 
 #define RUNS 300
 
+// Programs are loaded by the C library (from /bin through the filesystem
+// service) since step 8
 static inline int64_t spawn_process(const char *path, rx_handle_t *proc) {
-    return RX_SYS(0x0B, path, proc, 0, 0);
+    return rx_spawn(path, 0, 0, RX_SPAWN_CLONE_NS, 0, 0, proc);
 }
 
 int main(void) {

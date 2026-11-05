@@ -10,6 +10,7 @@
 
 #include "libc.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,10 +26,12 @@ struct _FILE {
     size_t wlen;        // bytes waiting to be written
     size_t rpos, rlen;  // read buffer window
     char own[BUFSIZ];
+    struct _FILE *next;  // list of open streams (for fflush(NULL) and exit)
 };
 
 static FILE files[3];
 FILE *stdin = &files[0], *stdout = &files[1], *stderr = &files[2];
+static FILE *opened; // streams from fopen/fdopen
 
 void __stdio_init(void) {
     for (int i = 0; i < 3; i++) {
@@ -64,6 +67,79 @@ int fflush(FILE *f) {
 void __stdio_flush_all(void) {
     fflush(stdout);
     fflush(stderr);
+    for (FILE *f = opened; f; f = f->next) fflush(f);
+}
+
+static int parse_mode(const char *mode) {
+    int flags;
+    switch (mode[0]) {
+    case 'r': flags = O_RDONLY; break;
+    case 'w': flags = O_WRONLY | O_CREAT | O_TRUNC; break;
+    case 'a': flags = O_WRONLY | O_CREAT | O_APPEND; break;
+    default: return -1;
+    }
+    if (strchr(mode, '+')) flags = (flags & ~O_ACCMODE) | O_RDWR;
+    if (strchr(mode, 'x')) flags |= O_EXCL;
+    return flags;
+}
+
+FILE *fdopen(int fd, const char *mode) {
+    if (parse_mode(mode) < 0) { errno = EINVAL; return 0; }
+    FILE *f = calloc(1, sizeof *f);
+    if (!f) { errno = ENOMEM; return 0; }
+    f->fd = fd;
+    f->ungot = -1;
+    f->buf = f->own;
+    f->size = BUFSIZ;
+    f->mode = isatty(fd) ? _IOLBF : _IOFBF;
+    f->next = opened;
+    opened = f;
+    return f;
+}
+
+FILE *fopen(const char *restrict path, const char *restrict mode) {
+    int flags = parse_mode(mode);
+    if (flags < 0) { errno = EINVAL; return 0; }
+    int fd = open(path, flags, 0644);
+    if (fd < 0) return 0;
+    FILE *f = fdopen(fd, mode);
+    if (!f) close(fd);
+    return f;
+}
+
+int fclose(FILE *f) {
+    int r = fflush(f);
+    if (close(f->fd) < 0) r = EOF;
+    if (f >= files && f < files + 3) {
+        f->fd = -1;
+        return r;
+    }
+    for (FILE **p = &opened; *p; p = &(*p)->next) {
+        if (*p == f) { *p = f->next; break; }
+    }
+    free(f);
+    return r;
+}
+
+long ftell(FILE *f) {
+    off_t pos = lseek(f->fd, 0, SEEK_CUR);
+    if (pos < 0) return -1;
+    return (long)(pos - (off_t)(f->rlen - f->rpos) + (off_t)f->wlen - (f->ungot >= 0 ? 1 : 0));
+}
+
+int fseek(FILE *f, long offset, int whence) {
+    if (fflush(f)) return -1;
+    if (whence == SEEK_CUR) offset -= (long)(f->rlen - f->rpos) + (f->ungot >= 0 ? 1 : 0);
+    f->rpos = f->rlen = 0;
+    f->ungot = -1;
+    if (lseek(f->fd, offset, whence) < 0) return -1;
+    f->eof = 0;
+    return 0;
+}
+
+void rewind(FILE *f) {
+    fseek(f, 0, SEEK_SET);
+    f->err = 0;
 }
 
 int setvbuf(FILE *restrict f, char *restrict buf, int mode, size_t size) {
@@ -158,6 +234,7 @@ int fgetc(FILE *f) {
         if (f->eof) return EOF;
         // Reading from the console: flush pending output first (prompts)
         if (f == stdin) fflush(stdout);
+        if (f->wlen) fflush(f);
         ssize_t r = read(f->fd, f->buf, f->size);
         if (r <= 0) {
             if (r < 0) f->err = 1; else f->eof = 1;

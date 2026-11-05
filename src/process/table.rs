@@ -11,7 +11,6 @@
 //! management and context switching.
 
 use crate::arch::amd64::mm::page_tables::PAddr;
-use crate::syscall::fd::FileDescriptorTable;
 use crate::sync::SpinMutex;
 
 /// ============================================================================
@@ -187,9 +186,6 @@ pub struct Process {
     /// Syscall return value
     pub syscall_ret: u64,
 
-    /// File descriptor table
-    pub fd_table: FileDescriptorTable,
-
     /// Time accounting
     pub cpu_time: u64,
     pub sched_time: u64,
@@ -222,9 +218,6 @@ impl Process {
         entry: u64,
     ) -> Self {
         let page_table: PAddr = thread.process.pml4;
-        let mut fd_table = FileDescriptorTable::new();
-        fd_table.init();
-
         // First switch to this process enters user mode at `entry`
         let kernel_rsp = unsafe {
             crate::process::run::prepare_kernel_stack(kernel_stack, entry, user_stack)
@@ -240,7 +233,6 @@ impl Process {
             user_stack,
             saved_state: SavedState::for_userspace(entry, user_stack, page_table),
             syscall_ret: 0,
-            fd_table,
             cpu_time: 0,
             sched_time: 0,
             name: None,

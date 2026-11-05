@@ -23,6 +23,7 @@ pub mod channel;
 pub mod debuglog;
 pub mod event;
 pub mod handle;
+pub mod socket;
 pub mod interrupt;
 pub mod task;
 pub mod timer;
@@ -66,6 +67,7 @@ pub enum ObjType {
     Channel = 4,
     Interrupt = 9,
     Log = 12,
+    Socket = 14,
     Resource = 15,
     Event = 5,
     EventPair = 16,
@@ -136,6 +138,7 @@ pub enum KObject {
     Resource(Arc<interrupt::Resource>),
     Interrupt(Arc<interrupt::Interrupt>),
     DebugLog(Arc<debuglog::DebugLog>),
+    Socket(Arc<socket::Socket>),
 }
 
 impl KObject {
@@ -153,6 +156,7 @@ impl KObject {
             KObject::Resource(_) => ObjType::Resource,
             KObject::Interrupt(_) => ObjType::Interrupt,
             KObject::DebugLog(_) => ObjType::Log,
+            KObject::Socket(_) => ObjType::Socket,
         }
     }
 
@@ -170,6 +174,7 @@ impl KObject {
             KObject::Resource(o) => &o.signals,
             KObject::Interrupt(o) => &o.signals,
             KObject::DebugLog(o) => &o.signals,
+            KObject::Socket(o) => &o.signals,
         }
     }
 

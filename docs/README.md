@@ -33,14 +33,14 @@ The repository root holds the kernel crate (`Cargo.toml` defines the `rustux` li
 ├── scripts/
 │   └── create-bootable-image.sh
 ├── docs/                    # This documentation
-├── files/test.txt           # Ramdisk test file
+├── files/test.txt           # Test file in the boot image (/boot/test.txt)
 ├── test-hello/              # Minimal asm userspace binary
 ├── test-userspace/          # Early C test programs (hello)
 ├── userspace/
 │   ├── build.sh             # Builds the C library and programs into bin/
 │   ├── libc/                # The C library (docs/USERSPACE.md)
 │   ├── c-progs/             # Programs: init, shell, commands, tests
-│   ├── bin/                 # Built programs, embedded in the ramdisk
+│   ├── bin/                 # Built programs, put in the boot image as /bin
 │   └── test/                # Rust userspace test binary (x86_64-unknown-none)
 └── src/
     ├── lib.rs               # Library root and module declarations
@@ -66,7 +66,6 @@ The repository root holds the kernel crate (`Cargo.toml` defines the `rustux` li
     ├── object/              # Kernel objects and handles
     ├── syscall/             # Syscall dispatch, file descriptors
     ├── exec/                # ELF loader, process loader
-    ├── fs/                  # VFS and ramdisk
     ├── drivers/             # UART, PS/2 keyboard, framebuffer display
     ├── testing/             # Test harness, QEMU exit helpers
     └── tests/               # Syscall tests
@@ -229,8 +228,7 @@ docs/
 #### Executables & Filesystem
 - ✅ `exec/elf.rs` - ELF loader
 - ✅ `exec/process_loader.rs` - Process loader
-- ✅ `fs/vfs.rs` - Virtual filesystem
-- ✅ `fs/ramdisk.rs` - Embedded ramdisk
+- Files are served by the filesystem service in userspace since step 8 (`docs/FS.md`); the kernel only finds `bin/init` in the boot image
 
 #### Device Drivers (`src/drivers/`)
 - ✅ `uart.rs` - 16550 UART (COM1–COM4)
@@ -376,7 +374,6 @@ Should show:
 | `src/object/*.rs` | Kernel objects and handles |
 | `src/syscall/*.rs` | System calls |
 | `src/exec/*.rs` | ELF and process loading |
-| `src/fs/*.rs` | VFS and ramdisk |
 | `src/drivers/` | UART, keyboard, display |
 
 ### Documentation Files

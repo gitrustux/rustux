@@ -7,10 +7,10 @@
 //! Creating processes and starting threads.
 //!
 //! [`new_process`] and [`start_thread`] back the process_create,
-//! process_start and thread_start syscalls. [`spawn_elf`] is the kernel's
-//! own launcher (for `init` and the legacy `spawn` call): it loads an ELF
-//! from the ramdisk into a new process and starts it with a bootstrap
-//! channel, like Fuchsia's processargs.
+//! process_start and thread_start syscalls. [`spawn_init`] is the kernel's
+//! only launcher: it finds `bin/init` in the boot image, loads it into a
+//! new process and starts it with a bootstrap channel, like Zircon's
+//! userboot. Every other program is loaded by the C library from a file.
 
 use crate::arch::amd64::mm::{kernel_map, RxStatus};
 use crate::kobj::task::{Job, Process, Thread};
@@ -34,6 +34,10 @@ pub mod pa {
     pub const THREAD_SELF: u32 = 0x02;
     pub const JOB_DEFAULT: u32 = 0x03;
     pub const VMAR_ROOT: u32 = 0x04;
+    /// The boot image (bootfs) as a VMO; given to init
+    pub const VMO_BOOTFS: u32 = 0x1B;
+    /// The root directory of the namespace (a filesystem channel)
+    pub const NS_DIR: u32 = 0x20;
     /// A file descriptor; the argument is the fd number
     pub const FD: u32 = 0x30;
     /// The root resource (Fuchsia PA_RESOURCE; given to init, passed on
@@ -236,18 +240,34 @@ pub fn map_stack(process: &Process) -> Result<u64, RxStatus> {
     Ok(STACK_TOP - 8)
 }
 
-/// Load `/bin/...` from the ramdisk and start it as a new process in
-/// `job`. The program gets a bootstrap channel in RDI holding one message
-/// in Fuchsia's processargs format (`docs/SYSCALL.md`): a header, an info
-/// word per handle (see [`pa`]), then the arguments and the environment.
-/// The handles are to itself, its first thread, its job and its root
-/// VMAR, followed by `extra`. With no arguments, argv is just `path`.
-pub fn spawn_elf(path: &str, job: &Arc<Job>, extra: Vec<(u32, KObject, Rights)>, mut args: ProcArgs) -> Result<(Arc<Process>, u32), RxStatus> {
-    let ramdisk = crate::fs::ramdisk::get_ramdisk().map_err(|_| RxStatus::ERR_NOT_FOUND)?;
-    let file = ramdisk.find_file(path).ok_or(RxStatus::ERR_NOT_FOUND)?;
-    let elf = unsafe {
-        core::slice::from_raw_parts(ramdisk.data.as_ptr().add(file.data_offset as usize), file.size as usize)
-    };
+/// Find `name` in a boot image (the layout `build.rs` writes and
+/// `docs/FS.md` describes: a header, then 16-byte entries of name offset,
+/// data offset and size). The only file lookup left in the kernel, for
+/// starting init; the filesystem service serves the image from then on.
+pub fn boot_image_find<'a>(image: &'a [u8], name: &str) -> Option<&'a [u8]> {
+    if rd32(image, 0)? != 0x5255_5458 {
+        return None;
+    }
+    let count = rd32(image, 4)? as usize;
+    let table = rd32(image, 8)? as usize;
+    for i in 0..count {
+        let e = table + i * 16;
+        let (noff, doff, size) = (rd32(image, e)? as usize, rd32(image, e + 4)? as usize, rd32(image, e + 8)? as usize);
+        let end = image.get(noff..)?.iter().position(|&b| b == 0)?;
+        if &image[noff..noff + end] == name.as_bytes() {
+            return image.get(doff..doff.checked_add(size)?);
+        }
+    }
+    None
+}
+
+/// Start `elf` (named `path`) as a new process in `job`. The program gets
+/// a bootstrap channel in RDI holding one message in Fuchsia's processargs
+/// format (`docs/SYSCALL.md`): a header, an info word per handle (see
+/// [`pa`]), then the arguments and the environment. The handles are to
+/// itself, its first thread, its job and its root VMAR, followed by
+/// `extra`. With no arguments, argv is just `path`.
+pub fn spawn_init(path: &str, elf: &[u8], job: &Arc<Job>, extra: Vec<(u32, KObject, Rights)>, mut args: ProcArgs) -> Result<(Arc<Process>, u32), RxStatus> {
     let name = path.rsplit('/').next().unwrap_or(path);
     let process = new_process(job, name)?;
     let entry = load_elf(&process, elf).map_err(|e| {

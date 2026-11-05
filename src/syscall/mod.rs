@@ -31,7 +31,6 @@
 //! Failure: return negative error code
 //! ```
 
-pub mod fd;
 pub mod driver;
 pub mod memory;
 pub mod object;
@@ -301,7 +300,6 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         // Process & Thread (0x01-0x0F)
         0x01 => task::sys_process_create(args),
         0x02 => task::sys_process_start(args),
-        0x03 => task::sys_spawn(args),
         0x04 => task::sys_thread_start(args),
         0x05 => task::sys_thread_exit(args),
         0x06 => task::sys_process_exit(args),
@@ -309,7 +307,6 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x08 => task::sys_thread_create(args),
         0x09 => task::sys_task_kill(args),
         0x0A => task::sys_object_get_info(args),
-        0x0B => task::sys_spawn_process(args),
 
         // Memory / VMO (0x10-0x1F)
         0x10 => memory::sys_vmo_create(args),
@@ -333,6 +330,9 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x27 => object::sys_object_wait_many(args),
         0x28 => object::sys_object_signal_peer(args),
         0x29 => object::sys_object_get_type(args),
+        0x2A => object::sys_socket_create(args),
+        0x2B => object::sys_socket_write(args),
+        0x2C => object::sys_socket_read(args),
 
         // Jobs & Handles (0x30-0x3F)
         0x30 => task::sys_job_create(args),
@@ -354,14 +354,6 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x53 => driver::sys_debuglog_create(args),
         0x54 => driver::sys_debuglog_write(args),
 
-        // I/O (0x60-0x6F) - Phase 5A
-        0x60 => sys_write(args),
-        0x61 => sys_read(args),
-        0x62 => sys_open(args),
-        0x63 => sys_close(args),
-        0x64 => sys_lseek(args),
-
-        // Process Info (0x70-0x7F) - Phase 5A
         // Drivers (0x80-0x8F)
         0x80 => driver::sys_interrupt_create(args),
         0x81 => driver::sys_interrupt_wait(args),
@@ -370,8 +362,7 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x84 => driver::sys_ioports_request(args),
         0x85 => driver::sys_ioports_release(args),
 
-        0x70 => sys_getpid(args),
-        0x71 => sys_getppid(args),
+        // yield(): give up the CPU (tests, and waiting for a full console)
         0x72 => sys_yield(args),
 
         _ => {
@@ -439,454 +430,8 @@ fn sys_debug_write(args: SyscallArgs) -> SyscallRet {
 }
 
 // ============================================================================
-// I/O Syscalls (Phase 5A)
+// Yield
 // ============================================================================
-
-/// Write to file descriptor
-///
-/// Arguments:
-///   arg0: file descriptor (fd)
-///   arg1: pointer to buffer
-///   arg2: length to write
-///
-/// Returns: number of bytes written, or negative error code
-///
-/// File descriptor mapping:
-///   fd 0: stdin (write not allowed)
-///   fd 1: stdout (kernel debug console, port 0xE9)
-///   fd 2: stderr (same as stdout)
-///   fd 3+: reserved for files (Phase 5C)
-fn sys_write(args: SyscallArgs) -> SyscallRet {
-    let fd = args.arg(0);
-    let (ptr, len) = (args.arg(1), args.arg(2));
-
-    // stdout/stderr: the kernel console. Programs built on the C library
-    // print through their stdout handle instead; this call goes away in
-    // step 8.
-    if fd == 1 || fd == 2 {
-        let bytes = match user::read_bytes(ptr, len.min(65536)) {
-            Ok(b) => b,
-            Err(e) => return err_to_ret(e),
-        };
-        if crate::drivers::display::is_initialized() {
-            crate::drivers::display::write_bytes(&bytes);
-        } else {
-            for &c in &bytes {
-                unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack)) };
-            }
-        }
-        return ok_to_ret_isize(bytes.len() as isize);
-    }
-
-    // stdin - cannot write
-    if fd == 0 {
-        return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-    }
-
-    // For other file descriptors (fd 3+), return not implemented for now
-    // Future: Write to ramdisk files
-    ok_to_ret_isize(len as isize)
-}
-
-/// Read from file descriptor
-///
-/// Arguments:
-///   arg0: file descriptor (fd)
-///   arg1: pointer to buffer
-///   arg2: length to read
-///
-/// Returns: number of bytes read, or negative error code
-///
-/// Read from a file descriptor
-///
-/// For stdin (fd 0): Blocks waiting for keyboard input, returns one character at a time
-/// For files: Reads from ramdisk files
-/// For stdout/stderr: Returns error (not readable)
-fn sys_read(args: SyscallArgs) -> SyscallRet {
-    use crate::syscall::fd::{FdKind, FileDescriptor};
-    use crate::process::table::PROCESS_TABLE;
-
-    let fd = args.arg(0) as u8;
-    let ptr = args.arg_u64(1) as *mut u8;
-    let len = args.arg(2);
-
-    // Get the current process
-    let file_info = {
-        let mut table = PROCESS_TABLE.lock();
-        let current = match table.current_mut() {
-            Some(p) => p,
-            None => return err_to_ret(RxStatus::ERR_INVALID_ARGS),
-        };
-
-        // Get the file descriptor
-        let file_desc = match current.fd_table.get(fd) {
-            Some(f) => f,
-            None => return err_to_ret(RxStatus::ERR_INVALID_ARGS), // EBADF
-        };
-
-        match file_desc.kind {
-            FdKind::Stdin => {
-                // Keyboard input no longer comes through the kernel: the
-                // PS/2 driver is a userspace program, and init forwards its
-                // keys (and the kernel's USB keys) to the shell over a
-                // channel. There is no terminal behind fd 0.
-                let _ = (len, ptr);
-                return err_to_ret(RxStatus::ERR_NOT_SUPPORTED);
-            }
-            FdKind::File { inode, offset } => {
-                // Get the ramdisk file info
-                use crate::fs::ramdisk;
-                let ramdisk = match ramdisk::get_ramdisk() {
-                    Ok(r) => r,
-                    Err(_) => return err_to_ret(RxStatus::ERR_NOT_FOUND),
-                };
-
-                // Get file headers array
-                let files = unsafe {
-                    let base = ramdisk.data.as_ptr().add(ramdisk.superblock.files_offset as usize);
-                    let count = ramdisk.superblock.num_files as usize;
-                    core::slice::from_raw_parts(base as *const ramdisk::RamdiskFile, count)
-                };
-
-                // Find the file by inode (index)
-                let ramdisk_file = match files.get(inode as usize) {
-                    Some(&f) => f,
-                    None => return err_to_ret(RxStatus::ERR_INVALID_ARGS),
-                };
-
-                Some((ramdisk_file, offset, len, ptr))
-            }
-            _ => {
-                // Stdout/stderr not readable
-                return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-            }
-        }
-    };
-
-    if let Some((ramdisk_file, offset, len, ptr)) = file_info {
-        use crate::fs::ramdisk;
-        let ramdisk = ramdisk::get_ramdisk().unwrap();
-
-        // Calculate remaining bytes from current offset
-        let file_size = ramdisk_file.size as u64;
-        let remaining = if offset >= file_size {
-            0
-        } else {
-            file_size - offset
-        };
-
-        if remaining == 0 {
-            return ok_to_ret_isize(0); // EOF
-        }
-
-        let to_read = core::cmp::min(len as u64, remaining) as usize;
-
-        // Read from the file at current offset
-        let data_offset = ramdisk_file.data_offset as usize + offset as usize;
-        let data_ptr = unsafe {
-            ramdisk.data.as_ptr().add(data_offset)
-        };
-
-        let data = unsafe { core::slice::from_raw_parts(data_ptr, to_read) };
-        if let Err(e) = user::write_bytes(ptr as usize, data) {
-            return err_to_ret(e);
-        }
-
-        // Update offset in fd_table
-        let mut table = PROCESS_TABLE.lock();
-        if let Some(current) = table.current_mut() {
-            if let Some(fd_entry) = current.fd_table.get_mut(fd) {
-                if let FdKind::File { ref mut offset, .. } = fd_entry.kind {
-                    *offset += to_read as u64;
-                }
-            }
-        }
-
-        ok_to_ret_isize(to_read as isize)
-    } else {
-        ok_to_ret_isize(0)
-    }
-}
-
-/// Open a file from the ramdisk
-///
-/// Arguments:
-///   arg0: pointer to path string (null-terminated, userspace)
-///   arg1: flags (O_RDONLY, O_WRONLY, O_RDWR)
-///
-/// Returns: file descriptor number, or negative error code
-///
-/// Phase 5C: This opens files from the embedded ramdisk filesystem.
-/// The path must be a null-terminated string in userspace memory.
-fn sys_open(args: SyscallArgs) -> SyscallRet {
-    use crate::fs::ramdisk::{self, Errno};
-    use crate::syscall::fd::{FdKind, flags};
-    use crate::process::table::PROCESS_TABLE;
-
-    let path_ptr = args.arg_u64(0) as *const u8;
-    let flags_val = args.arg_u32(1);
-
-    // Validate path pointer
-    if path_ptr.is_null() {
-        return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-    }
-
-    // Read null-terminated path string from userspace (max 256 bytes)
-    let path_string = match user::read_cstr(path_ptr as usize, 256) {
-        Ok(p) => p,
-        Err(e) => return err_to_ret(e),
-    };
-    let path = path_string.as_str();
-
-    // Look up file in ramdisk
-    let ramdisk_file = {
-        let ramdisk = match ramdisk::get_ramdisk() {
-            Ok(r) => r,
-            Err(e) => {
-                // Convert Errno to RxStatus
-                return err_to_ret(match e {
-                    Errno::ENODEV => RxStatus::ERR_NOT_FOUND,
-                    _ => RxStatus::ERR_INVALID_ARGS,
-                });
-            }
-        };
-
-        match ramdisk.find_file(path) {
-            Some(f) => f,
-            None => return err_to_ret(RxStatus::ERR_NOT_FOUND), // ENOENT
-        }
-    };
-
-    // Get the current process and allocate fd
-    let fd_result = {
-        let mut table = PROCESS_TABLE.lock();
-        let current = match table.current_mut() {
-            Some(p) => p,
-            None => return err_to_ret(RxStatus::ERR_INVALID_ARGS),
-        };
-
-        // Find the inode (file index) for offset tracking
-        let inode = {
-            let ramdisk = match ramdisk::get_ramdisk() {
-                Ok(r) => r,
-                Err(_) => return err_to_ret(RxStatus::ERR_NOT_FOUND),
-            };
-
-            let files = unsafe {
-                let base = ramdisk.data.as_ptr().add(ramdisk.superblock.files_offset as usize);
-                let count = ramdisk.superblock.num_files as usize;
-                core::slice::from_raw_parts(base as *const ramdisk::RamdiskFile, count)
-            };
-
-            // Find the index of this file
-            files.iter().position(|&f| {
-                f.data_offset == ramdisk_file.data_offset &&
-                f.name_offset == ramdisk_file.name_offset
-            }).unwrap_or(0) as u32
-        };
-
-        // Allocate file descriptor
-        match current.fd_table.alloc(
-            FdKind::File {
-                inode,
-                offset: 0,
-            },
-            flags_val,
-        ) {
-            Some(fd) => fd as usize,
-            None => return err_to_ret(RxStatus::ERR_NO_MEMORY), // EMFILE
-        }
-    };
-
-    ok_to_ret(fd_result)
-}
-
-/// Close a file descriptor
-///
-/// Arguments:
-///   arg0: file descriptor (fd)
-///
-/// Returns: 0 on success, or negative error code
-///
-/// Phase 5C: This closes files and releases the file descriptor.
-/// stdin/stdout/stderr cannot be closed.
-fn sys_close(args: SyscallArgs) -> SyscallRet {
-    use crate::process::table::PROCESS_TABLE;
-
-    let fd = args.arg(0) as u8;
-
-    let mut table = PROCESS_TABLE.lock();
-    let current = match table.current_mut() {
-        Some(p) => p,
-        None => return err_to_ret(RxStatus::ERR_INVALID_ARGS),
-    };
-
-    match current.fd_table.close(fd) {
-        Some(_) => ok_to_ret(0),
-        None => err_to_ret(RxStatus::ERR_INVALID_ARGS), // EBADF
-    }
-}
-
-/// Seek to a position in a file
-///
-/// Arguments:
-///   arg0: file descriptor (fd)
-///   arg1: offset in bytes
-///   arg2: whence (0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END)
-///
-/// Returns: new file offset, or negative error code
-///
-/// Phase 5C: This changes the file offset for reads.
-fn sys_lseek(args: SyscallArgs) -> SyscallRet {
-    use crate::syscall::fd::FdKind;
-    use crate::fs::ramdisk;
-    use crate::process::table::PROCESS_TABLE;
-
-    let fd = args.arg(0) as u8;
-    let offset = args.arg_i64(1);
-    let whence = args.arg(2) as u32;
-
-    // Validate whence
-    if whence > 2 {
-        return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-    }
-
-    // Get current offset and file info
-    let (current_offset, file_size) = {
-        let table = PROCESS_TABLE.lock();
-        let current = match table.current() {
-            Some(p) => p,
-            None => return err_to_ret(RxStatus::ERR_INVALID_ARGS),
-        };
-
-        let file_desc = match current.fd_table.get(fd) {
-            Some(f) => f,
-            None => return err_to_ret(RxStatus::ERR_INVALID_ARGS), // EBADF
-        };
-
-        match file_desc.kind {
-            FdKind::File { inode, offset } => {
-                // Get file size from ramdisk
-                let ramdisk = match ramdisk::get_ramdisk() {
-                    Ok(r) => r,
-                    Err(_) => return err_to_ret(RxStatus::ERR_NOT_FOUND),
-                };
-
-                let files = unsafe {
-                    let base = ramdisk.data.as_ptr().add(ramdisk.superblock.files_offset as usize);
-                    let count = ramdisk.superblock.num_files as usize;
-                    core::slice::from_raw_parts(base as *const ramdisk::RamdiskFile, count)
-                };
-
-                let file = match files.get(inode as usize) {
-                    Some(&f) => f,
-                    None => return err_to_ret(RxStatus::ERR_INVALID_ARGS),
-                };
-
-                (offset, file.size as i64)
-            }
-            _ => {
-                // Cannot seek on stdin/stdout/stderr
-                return err_to_ret(RxStatus::ERR_INVALID_ARGS); // ESPIPE
-            }
-        }
-    };
-
-    // Calculate new offset
-    let new_offset = match whence {
-        0 => {
-            // SEEK_SET
-            if offset < 0 {
-                return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-            }
-            offset
-        }
-        1 => {
-            // SEEK_CUR
-            let cur = current_offset as i64;
-            let new = cur + offset;
-            if new < 0 {
-                return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-            }
-            new
-        }
-        2 => {
-            // SEEK_END
-            let new = file_size + offset;
-            if new < 0 {
-                return err_to_ret(RxStatus::ERR_INVALID_ARGS);
-            }
-            new
-        }
-        _ => return err_to_ret(RxStatus::ERR_INVALID_ARGS),
-    };
-
-    // Clamp to file size
-    let clamped_offset = if new_offset > file_size {
-        file_size as u64
-    } else {
-        new_offset as u64
-    };
-
-    // Update offset in fd_table
-    {
-        let mut table = PROCESS_TABLE.lock();
-        let current = match table.current_mut() {
-            Some(p) => p,
-            None => return err_to_ret(RxStatus::ERR_INVALID_ARGS),
-        };
-
-        if let Some(fd_entry) = current.fd_table.get_mut(fd) {
-            if let FdKind::File { ref mut offset, .. } = fd_entry.kind {
-                *offset = clamped_offset;
-            }
-        }
-    }
-
-    ok_to_ret_isize(clamped_offset as isize)
-}
-
-// ============================================================================
-// Process Info Syscalls (Phase 5A)
-// ============================================================================
-
-/// Get current process ID
-///
-/// Arguments: none
-///
-/// Returns: process ID (PID)
-///
-/// Returns the PID of the currently running process.
-fn sys_getpid(_args: SyscallArgs) -> SyscallRet {
-    use crate::sched::round_robin;
-
-    match round_robin::get_current_pid() {
-        Some(pid) => ok_to_ret(pid as usize),
-        None => {
-            // No current process - return kernel PID (0)
-            ok_to_ret(0)
-        }
-    }
-}
-
-/// Get parent process ID
-///
-/// Arguments: none
-///
-/// Returns: parent process ID (PPID)
-///
-/// Returns the PPID of the currently running process.
-fn sys_getppid(_args: SyscallArgs) -> SyscallRet {
-    use crate::sched::round_robin;
-
-    match round_robin::get_current_ppid() {
-        Some(ppid) => ok_to_ret(ppid as usize),
-        None => {
-            // No current process - return kernel PPID (0)
-            ok_to_ret(0)
-        }
-    }
-}
 
 /// Yield CPU to scheduler
 ///
@@ -944,7 +489,6 @@ pub mod number {
     /// Process & Thread (0x01-0x0F)
     pub const PROCESS_CREATE: u32 = 0x01;
     pub const PROCESS_START: u32 = 0x02;
-    pub const SPAWN: u32 = 0x03;  // Spawn process from ramdisk path
     pub const THREAD_START: u32 = 0x04;
     pub const THREAD_EXIT: u32 = 0x05;
     pub const PROCESS_EXIT: u32 = 0x06;
@@ -983,16 +527,11 @@ pub mod number {
     /// Debug (0x50-0x5F)
     pub const DEBUG_WRITE: u32 = 0x50;
 
-    /// I/O (0x60-0x6F) - Phase 5A
-    pub const WRITE: u32 = 0x60;
-    pub const READ: u32 = 0x61;
-    pub const OPEN: u32 = 0x62;
-    pub const CLOSE: u32 = 0x63;
-    pub const LSEEK: u32 = 0x64;
+    /// Sockets
+    pub const SOCKET_CREATE: u32 = 0x2A;
+    pub const SOCKET_WRITE: u32 = 0x2B;
+    pub const SOCKET_READ: u32 = 0x2C;
 
-    /// Process Info (0x70-0x7F) - Phase 5A
-    pub const GETPID: u32 = 0x70;
-    pub const GETPPID: u32 = 0x71;
     pub const YIELD: u32 = 0x72;
 
     /// Maximum defined syscall number
