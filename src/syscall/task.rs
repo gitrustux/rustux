@@ -349,6 +349,36 @@ pub fn sys_object_get_child(args: SyscallArgs) -> SyscallRet {
     })())
 }
 
+/// object_set_property(handle, property, *buf, len) — only REGISTER_FS
+/// (4) of a thread: its FS base, a u64 user address (thread-local storage)
+pub fn sys_object_set_property(args: SyscallArgs) -> SyscallRet {
+    let (h, prop, buf, len) = (args.arg_u32(0), args.arg_u32(1), args.arg(2), args.arg(3));
+    ret((|| {
+        const PROP_REGISTER_FS: u32 = 4;
+        let t = thread_of(h, Rights::SET_PROPERTY)?;
+        if prop != PROP_REGISTER_FS {
+            return Err(RxStatus::ERR_NOT_SUPPORTED);
+        }
+        if len != 8 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        let b = user::read_bytes(buf, 8)?;
+        let v = u64::from_le_bytes(b[..8].try_into().unwrap());
+        // A canonical user address (or 0)
+        if v >= crate::kobj::vmar::ROOT_END {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        t.fs_base.store(v, core::sync::atomic::Ordering::Relaxed);
+        // Our own thread: load it now (others load it when they next run)
+        if let Some((_, cur)) = run::current_thread() {
+            if Arc::ptr_eq(&cur, &t) {
+                run::set_fs_base(v);
+            }
+        }
+        Ok(0)
+    })())
+}
+
 /// object_get_property(handle, property, *buf, len) — only NAME (3), of a
 /// process (a thread's name is its process's)
 pub fn sys_object_get_property(args: SyscallArgs) -> SyscallRet {

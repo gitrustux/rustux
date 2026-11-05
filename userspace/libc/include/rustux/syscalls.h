@@ -249,6 +249,12 @@ static inline rx_status_t rx_object_get_child(rx_handle_t h, uint64_t koid, uint
 static inline rx_status_t rx_object_get_property(rx_handle_t h, uint32_t prop, void *buf, uint64_t len) {
     return RX_SYS(0x0D, h, prop, buf, len);
 }
+// RX_PROP_REGISTER_FS on a thread: its FS base (the thread pointer for
+// thread-local storage), a uint64_t
+#define RX_PROP_REGISTER_FS 4
+static inline rx_status_t rx_object_set_property(rx_handle_t h, uint32_t prop, const void *value, uint64_t len) {
+    return RX_SYS(0x0E, h, prop, value, len);
+}
 static inline rx_status_t rx_job_create(rx_handle_t parent, uint32_t options, rx_handle_t *out) { return RX_SYS(0x30, parent, options, out, 0); }
 static inline rx_status_t rx_handle_replace(rx_handle_t h, uint32_t rights, rx_handle_t *out) { return RX_SYS(0x32, h, rights, out, 0); }
 
@@ -303,6 +309,8 @@ typedef struct {
     uint64_t cpus;            // online
     uint64_t idle_time;       // ns all CPUs spent halted
     uint64_t threads;         // running threads
+    uint64_t console_cols;    // the screen console in characters (0 if none)
+    uint64_t console_rows;
 } rx_system_stats_t;
 static inline rx_status_t rx_system_get_version(char *buf, uint64_t len) { return RX_SYS(0x90, buf, len, 0, 0); }
 static inline rx_status_t rx_system_get_stats(rx_system_stats_t *s) { return RX_SYS(0x91, s, sizeof *s, 0, 0); }

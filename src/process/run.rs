@@ -206,6 +206,14 @@ fn pick_next(table: &mut crate::process::table::ProcessTable, cur: Option<u32>) 
     None
 }
 
+/// Load the user FS base (thread-local storage of the thread about to run)
+pub fn set_fs_base(v: u64) {
+    unsafe {
+        core::arch::asm!("wrmsr", in("ecx") 0xC000_0100u32, in("eax") v as u32, in("edx") (v >> 32) as u32,
+                         options(nomem, nostack, preserves_flags));
+    }
+}
+
 /// Make `next` this CPU's running thread (table locked); returns the stack
 /// pointer and page tables to switch to
 fn take_cpu(table: &mut crate::process::table::ProcessTable, next: u32) -> (u64, u64) {
@@ -215,6 +223,7 @@ fn take_cpu(table: &mut crate::process::table::ProcessTable, next: u32) -> (u64,
     n.state = ProcessState::Running;
     let (rsp, cr3, kstack) = (n.kernel_rsp, n.page_table, n.kernel_stack);
     load_ports(&n.thread.process);
+    set_fs_base(n.thread.fs_base.load(Ordering::Relaxed));
     cpu.run_start.store(crate::kobj::now_ns(), Ordering::Relaxed);
     cpu.set_current(Some(next));
     // Published before CR3 is loaded (TLB shootdowns rely on the order)

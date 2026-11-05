@@ -38,12 +38,33 @@ void __fs_init(void) {
     if (pwd && pwd[0] == '/' && strlen(pwd) < sizeof cwd) strcpy(cwd, pwd);
 }
 
+// One request at a time per process: the message buffer is shared, and a
+// reply must reach the thread that sent the request
+static volatile int fs_lock;
+
+static int fs_call(rx_handle_t ch, uint32_t op, const void *a, size_t alen, const void *b, size_t blen,
+                   rx_handle_t h, void *out, size_t cap, size_t *len);
+
 int __fs_call(rx_handle_t ch, uint32_t op, const void *a, size_t alen, const void *b, size_t blen,
               rx_handle_t h, void *out, size_t cap, size_t *len) {
+    __lock(&fs_lock);
+    int r = fs_call(ch, op, a, alen, b, blen, h, out, cap, len);
+    __unlock(&fs_lock);
+    return r;
+}
+
+static int fs_call(rx_handle_t ch, uint32_t op, const void *a, size_t alen, const void *b, size_t blen,
+                   rx_handle_t h, void *out, size_t cap, size_t *len) {
     static char msg[sizeof(rx_fs_hdr_t) + RX_FS_MAX_IO + PATH_MAX + 64];
     if (len) *len = 0;
-    if (!ch) return -ENOENT; // no filesystem (yet)
-    if (sizeof(rx_fs_hdr_t) + alen + blen > sizeof msg) return -E2BIG;
+    if (!ch) {
+        if (h) rx_handle_close(h);
+        return -ENOENT; // no filesystem (yet)
+    }
+    if (sizeof(rx_fs_hdr_t) + alen + blen > sizeof msg) {
+        if (h) rx_handle_close(h);
+        return -E2BIG;
+    }
     rx_fs_hdr_t hdr = { next_txid++, op };
     memcpy(msg, &hdr, sizeof hdr);
     if (alen) memcpy(msg + sizeof hdr, a, alen);
@@ -126,7 +147,8 @@ int open(const char *path, int flags, ...) {
     if (fd < 0) return -1;
     rx_handle_t c, s;
     if (rx_channel_create(0, &c, &s) != RX_OK) return fail(-ENOMEM);
-    uint32_t req[2] = { (uint32_t)flags, mode };
+    // Only these flags mean something to the filesystem service
+    uint32_t req[2] = { (uint32_t)flags & (O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_DIRECTORY), mode };
     uint32_t type = 0;
     r = __fs_call(ns_root, RX_FS_OP_OPEN, req, sizeof req, rel, strlen(rel), s, &type, sizeof type, 0);
     if (r < 0) {
@@ -135,6 +157,13 @@ int open(const char *path, int flags, ...) {
     }
     __fds[fd].kind = RX_FD_FILE;
     __fds[fd].handle = c;
+    __fds[fd].flags = flags & (O_ACCMODE | O_APPEND | O_NONBLOCK);
+    __fds[fd].cloexec = (flags & O_CLOEXEC) != 0;
+    __fds[fd].path = malloc(strlen(rel) + 2);
+    if (__fds[fd].path) {
+        __fds[fd].path[0] = '/';
+        strcpy(__fds[fd].path + 1, rel);
+    }
     return fd;
 }
 
@@ -145,13 +174,14 @@ int creat(const char *path, mode_t mode) {
 static void fill_stat(const rx_fs_attr_t *a, struct stat *st) {
     memset(st, 0, sizeof *st);
     st->st_ino = a->ino;
-    st->st_mode = (a->type == RX_FS_TYPE_DIR ? S_IFDIR : S_IFREG) | (a->mode & 07777);
+    st->st_mode = (a->type == RX_FS_TYPE_DIR ? S_IFDIR : a->type == RX_FS_TYPE_CHR ? S_IFCHR : S_IFREG) | (a->mode & 07777);
     st->st_nlink = a->nlink;
     st->st_size = (off_t)a->size;
     st->st_blksize = 4096;
     st->st_blocks = (blkcnt_t)((a->size + 511) / 512);
     st->st_mtim.tv_sec = a->mtime_ns / 1000000000;
     st->st_mtim.tv_nsec = a->mtime_ns % 1000000000;
+    st->st_atim = st->st_ctim = st->st_mtim;
 }
 
 static int stat_at(const char *path, rx_fs_attr_t *a) {
@@ -338,7 +368,9 @@ struct dirent *readdir(DIR *d) {
     memcpy(&ino, p, 8);
     uint8_t type = (uint8_t)p[8], nlen = (uint8_t)p[9];
     d->ent.d_ino = ino;
-    d->ent.d_type = type == RX_FS_TYPE_DIR ? DT_DIR : DT_REG;
+    d->ent.d_off = 0;
+    d->ent.d_reclen = sizeof d->ent;
+    d->ent.d_type = type == RX_FS_TYPE_DIR ? DT_DIR : type == RX_FS_TYPE_CHR ? DT_CHR : DT_REG;
     memcpy(d->ent.d_name, p + 10, nlen);
     d->ent.d_name[nlen] = 0;
     d->pos += 10u + nlen;
@@ -358,3 +390,119 @@ int closedir(DIR *d) {
 }
 
 int dirfd(DIR *d) { return d->fd; }
+
+DIR *fdopendir(int fd) {
+    struct stat st;
+    if (fstat(fd, &st) < 0) return 0;
+    if (!S_ISDIR(st.st_mode)) {
+        errno = ENOTDIR;
+        return 0;
+    }
+    DIR *d = calloc(1, sizeof *d);
+    if (!d) {
+        errno = ENOMEM;
+        return 0;
+    }
+    d->fd = fd;
+    return d;
+}
+
+// ---- *at() calls: a relative path is taken from the directory's path ----
+
+// `path` relative to `dirfd` as a path the calls above take; 0 or -1
+static int at_path(int dirfd, const char *path, char *out) {
+    if (!path) return fail(-EFAULT);
+    if (path[0] == '/' || dirfd == AT_FDCWD) {
+        if (strlen(path) >= PATH_MAX) return fail(-ENAMETOOLONG);
+        strcpy(out, path);
+        return 0;
+    }
+    struct fd *f = __fd_get(dirfd);
+    if (!f) return -1;
+    if (f->kind != RX_FD_FILE || !f->path) return fail(-ENOTDIR);
+    if (strlen(f->path) + 1 + strlen(path) >= PATH_MAX) return fail(-ENAMETOOLONG);
+    strcpy(out, f->path);
+    strcat(out, "/");
+    strcat(out, path);
+    return 0;
+}
+
+int openat(int dirfd, const char *path, int flags, ...) {
+    char p[PATH_MAX];
+    unsigned mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = va_arg(ap, unsigned int);
+        va_end(ap);
+    }
+    if (at_path(dirfd, path, p) < 0) return -1;
+    return open(p, flags, mode);
+}
+
+int fstatat(int dirfd, const char *restrict path, struct stat *restrict st, int flags) {
+    if ((flags & AT_EMPTY_PATH) && (!path || !*path)) return fstat(dirfd, st);
+    char p[PATH_MAX];
+    if (at_path(dirfd, path, p) < 0) return -1;
+    return stat(p, st);
+}
+
+int unlinkat(int dirfd, const char *path, int flags) {
+    char p[PATH_MAX];
+    if (at_path(dirfd, path, p) < 0) return -1;
+    return (flags & AT_REMOVEDIR) ? rmdir(p) : unlink(p);
+}
+
+int mkdirat(int dirfd, const char *path, mode_t mode) {
+    char p[PATH_MAX];
+    if (at_path(dirfd, path, p) < 0) return -1;
+    return mkdir(p, mode);
+}
+
+int renameat(int olddirfd, const char *old, int newdirfd, const char *new) {
+    char a[PATH_MAX], b[PATH_MAX];
+    if (at_path(olddirfd, old, a) < 0 || at_path(newdirfd, new, b) < 0) return -1;
+    return rename(a, b);
+}
+
+int fchdir(int fd) {
+    struct fd *f = __fd_get(fd);
+    if (!f) return -1;
+    if (f->kind != RX_FD_FILE || !f->path) return fail(-ENOTDIR);
+    return chdir(f->path);
+}
+
+char *realpath(const char *restrict path, char *restrict resolved) {
+    char rel[PATH_MAX];
+    int r = resolve(path, rel);
+    if (r < 0) { fail(r); return 0; }
+    struct stat st;
+    if (stat(path, &st) < 0) return 0;
+    if (strlen(rel) + 2 > PATH_MAX) { fail(-ENAMETOOLONG); return 0; }
+    if (!resolved && !(resolved = malloc(PATH_MAX))) { fail(-ENOMEM); return 0; }
+    resolved[0] = '/';
+    strcpy(resolved + 1, rel);
+    return resolved;
+}
+
+// No symbolic links yet
+ssize_t readlink(const char *restrict path, char *restrict buf, size_t size) {
+    (void)buf; (void)size;
+    struct stat st;
+    if (stat(path, &st) < 0) return -1;
+    return fail(-EINVAL);
+}
+int symlink(const char *target, const char *link) { (void)target; (void)link; return fail(-EPERM); }
+int link(const char *old, const char *new) { (void)old; (void)new; return fail(-EPERM); }
+
+// Permissions are not enforced (or changed) until users exist (step 17)
+int chmod(const char *path, mode_t mode) {
+    (void)mode;
+    struct stat st;
+    return stat(path, &st);
+}
+int fchmod(int fd, mode_t mode) {
+    (void)mode;
+    struct stat st;
+    return fstat(fd, &st);
+}

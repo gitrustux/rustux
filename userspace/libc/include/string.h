@@ -35,6 +35,11 @@ char *strtok_r(char *restrict s, const char *restrict delim, char **restrict sav
 char *strdup(const char *s);
 char *strndup(const char *s, size_t n);
 char *strerror(int errnum);
+int strerror_r(int errnum, char *buf, size_t len);
+int bcmp(const void *a, const void *b, size_t n);
+void *memrchr(const void *s, int c, size_t n);
+char *strsignal(int sig);
+char *stpcpy(char *restrict dst, const char *restrict src);
 size_t strlcpy(char *dst, const char *src, size_t size);
 
 #endif

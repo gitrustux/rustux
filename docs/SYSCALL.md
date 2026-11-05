@@ -202,6 +202,7 @@ if result < 0 {
 | ~~`SPAWN_PROCESS`~~ | 0x0B | Removed in step 8 | — |
 | `OBJECT_GET_CHILD` | 0x0C | A job's child job or process, or a process's thread, by koid | ✅ |
 | `OBJECT_GET_PROPERTY` | 0x0D | Read a property (only `NAME`) | ✅ |
+| `OBJECT_SET_PROPERTY` | 0x0E | Set a property (only a thread's `REGISTER_FS`) | ✅ |
 
 **Model** (Zircon): a **job** holds processes and child jobs. A **process**
 owns a handle table and an address space and starts with no threads;
@@ -340,6 +341,18 @@ if no such child. `ps` and `kill` walk the job tree with it.
 `object_get_property(rx_handle_t h, uint32_t property, void *buf, size_t len)`
 — needs `GET_PROPERTY`. Only `PROP_NAME` (3): a process's name (a thread
 gives its process's), NUL-terminated, at most 31 bytes.
+
+#### OBJECT_SET_PROPERTY (0x0E)
+
+`object_set_property(rx_handle_t h, uint32_t property, const void *value, size_t len)`
+— needs `SET_PROPERTY`. Only `PROP_REGISTER_FS` (4) on a thread, as in
+Zircon: `value` points to a `uint64_t`, the thread's FS base (`len` 8). The
+C library points it at the thread's control block, below which the
+thread's copy of the program's thread-local storage lies (x86-64 TLS
+variant II, `%fs:0` holding the block's own address). It must be a user
+address (below `0x7fff_ffff_f000`), else `ERR_INVALID_ARGS`. The kernel
+keeps it with the thread and loads it (`IA32_FS_BASE`) whenever the thread
+is scheduled; for the calling thread, at once. Threads start with 0.
 
 #### SPAWN (0x03) / SPAWN_PROCESS (0x0B) — removed
 
@@ -788,9 +801,12 @@ returns its length (`ERR_BUFFER_TOO_SMALL` if it does not fit).
 
 `system_get_stats(rx_system_stats_t *s)` writes `{ u64 total_bytes;
 u64 free_bytes; u64 boot_time; u64 uptime; u64 cpus; u64 idle_time;
-u64 threads; }`: memory the kernel manages and how much is free, the
-monotonic time the kernel started, ns since then, CPUs online, ns all CPUs
-spent halted, threads running. Needs no handle.
+u64 threads; u64 console_cols; u64 console_rows; }`: memory the kernel
+manages and how much is free, the monotonic time the kernel started, ns
+since then, CPUs online, ns all CPUs spent halted, threads running, and
+the size of the screen console in characters (0 without a screen; step
+10). Needs no handle. The second argument is the buffer's size: programs
+built before step 10 pass 56 bytes and get the first seven fields.
 
 `system_powerctl(rx_handle_t resource, uint32_t cmd)` — needs the root or
 the power resource. `cmd` 1 restarts: the FADT reset register, then the
@@ -863,17 +879,49 @@ what it printed for debugging) and `ERR_SHOULD_WAIT` when there are none
 
 Since step 4 the kernel does not hand out keystrokes. The PS/2 keyboard is
 driven by `/bin/ps2kbd`; the USB keyboard driver is still in the kernel,
-polled on the timer tick, and sends characters over the kernel input
-channel. Since step 7 `init` is the **console service**: it edits the typed
-line (echo, Backspace, Ctrl+U), sends it to the program reading the console
-on Enter, and prints what programs write. A program's fds 0-2 are handles
+polled on the timer tick. Since step 10 both send **key events**, not
+characters: 4 bytes each, `{ u8 usage; u8 modifiers; u8 flags; u8 0 }`
+with the HID usage (page 7, the same for every layout), the HID modifier
+byte (bit 0 left Ctrl, 1 left Shift, 2 left Alt, 3 left GUI, 4-7 the right
+ones), and flags bit 0 = pressed (else released), bit 1 = the device
+repeats held keys itself (PS/2 typematic). `ps2kbd` writes them to `init`
+over a channel; the kernel's USB driver over the kernel input channel
+(`PA_KERNEL_INPUT`). Modifier keys come as their own events (usages
+0xE0-0xE7) too.
+
+Since step 7 `init` is the **console service**. It turns key events into
+bytes with the keyboard layout (built-in US; others in
+`/usr/share/keymaps/NAME`, chosen by `/etc/keymap`, reloaded on request
+from the shell's `loadkeys`), as xterm does: UTF-8 characters, Ctrl codes,
+Alt as an ESC prefix, `ESC [ A`-`D` for the arrows, `ESC [ n ~` for
+Insert/Delete/PgUp/PgDn/F5-F12, `ESC O P`-`S` for F1-F4, xterm modifier
+parameters (`ESC [ 1 ; 5 C` for Ctrl+Right). It repeats held USB keys
+itself (after 500 ms, every 33 ms). Shift+PgUp/PgDn scroll the screen
+console's history (500 lines).
+
+In **cooked** mode (the default) `init` edits the typed line (echo,
+Backspace, Ctrl+U, Ctrl+W), sends it to the program reading the console on
+Enter, and prints what programs write. In **raw** mode the bytes of each
+key go to the program as they are typed. A program's fds 0-2 are handles
 to the console channel; the protocol (`<rustux/console.h>`) is a 32-bit op
-per message: `WRITE` (1, program → console) and `INPUT` (2, console →
-program; one line per message, no bytes = end of input from Ctrl+D).
-Ctrl+C raises `USER_SIGNAL_0` on the programs' end of the channel; the
-shell then kills the program in the foreground and clears it. The shell's
-`restart-kbd` command asks `init` (over a control channel, `PA_USER0`) to
-kill the keyboard driver, which `init` then restarts.
+per message: `WRITE` (1, program → console), `INPUT` (2, console →
+program; a line, or a key's bytes in raw mode; no bytes = end of input from
+Ctrl+D) and `SET_MODE` (3, program → console: `u32 lflag, u32 iflag` with
+the termios bits `ICANON`, `ECHO`, `ISIG` and `ICRNL`; `tcsetattr()` sends
+it). With `ISIG` Ctrl+C raises `USER_SIGNAL_0` on the programs' end of the
+channel; the shell then kills the program in the foreground and clears it.
+The shell's `restart-kbd` command asks `init` (over a control channel,
+`PA_USER0`) to kill the keyboard driver, which `init` then restarts.
+
+The screen console (`src/drivers/display/console.rs`) is a VT100/xterm
+terminal: cursor movement and positioning, erasing, insert/delete of
+characters and lines, scroll regions, 16, 256 and 24-bit colours, bold,
+underline and reverse, the alternate screen (`ESC [ ? 1049 h`), cursor
+visibility, autowrap, save/restore cursor, UTF-8 with box drawing, blocks,
+accented Latin letters and a few symbols. A line feed also returns to
+column 0 (newline mode, `ESC [ 20 l` turns it off), since there is no tty
+layer adding the carriage return. Programs ask for its size with
+`ioctl(TIOCGWINSZ)` (from `system_get_stats`).
 
 ### Unix-style calls (removed in step 8)
 

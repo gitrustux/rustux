@@ -116,7 +116,7 @@ struct Keyboard {
     report: DmaBuffer,
     active: bool,
     dead: bool,
-    prev: [u8; 6],
+    prev: [u8; 7],
 }
 
 const NO_KEYBOARD: Option<Keyboard> = None;
@@ -545,7 +545,7 @@ unsafe fn setup_device(slot: u8, loc: &Location) -> Result<Kind> {
         report,
         active: false,
         dead: false,
-        prev: [0; 6],
+        prev: [0; 7],
     });
     indent(loc.depth);
     log("keyboard ");

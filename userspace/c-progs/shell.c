@@ -16,8 +16,12 @@
 //! - pipelines `a | b | c`, redirection `<`, `>`, `>>`, `2>`, `2>>`, `2>&1`
 //! - lists: `a ; b`, `a && b` (b if a succeeded), `a || b` (b if a failed);
 //!   each part is expanded just before it runs
-//! - built-ins: cd, pwd, export, unset, set, help, clear, restart-kbd, exit
+//! - built-ins: cd, pwd, export, unset, set, help, clear, loadkeys,
+//!   restart-kbd, exit
 //! - programs are looked up in the directories of $PATH (/bin)
+//! - line editing, history and Tab completion (lineedit.h; step 10): the
+//!   console is in raw mode while a line is typed and back in cooked mode
+//!   while programs run
 //! - Ctrl+C ends the programs in the foreground; Ctrl+D at the prompt is
 //!   ignored (type `exit`)
 
@@ -32,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #define LINE_MAX_LEN 4096
 #define MAX_WORDS 128
@@ -41,6 +46,8 @@
 #define ANSI_GREEN   "\033[32m"
 #define ANSI_MAGENTA "\033[35m"
 #define ANSI_CYAN    "\033[36m"
+
+#include "lineedit.h"
 
 static rx_handle_t init_ctl; // control channel to init (restart-kbd)
 static rx_handle_t console;  // our console handle (for Ctrl+C and draining)
@@ -426,9 +433,12 @@ static int apply_redirs(struct stage *st) {
 
 static int builtin(int argc, char **argv, int *status);
 
+static const char *const builtin_names[] = { "help", "clear", "export", "unset", "set", "restart-kbd",
+                                             "loadkeys", "exit", "cd", "pwd", 0 };
+static const char *const *le_builtins(void) { return builtin_names; }
+
 static int is_builtin(const char *c) {
-    static const char *const names[] = { "help", "clear", "export", "unset", "set", "restart-kbd",
-                                         "exit", "cd", "pwd", 0 };
+    const char *const *names = builtin_names;
     for (int i = 0; names[i]; i++) if (!strcmp(c, names[i])) return 1;
     return 0;
 }
@@ -541,16 +551,21 @@ static void cmd_help(void) {
            "  unset NAME           remove a variable\n"
            "  set                  list all variables\n"
            "  clear                clear the screen\n"
+           "  loadkeys [LAYOUT]    keyboard layout (us, de, ...; none: list them)\n"
            "  restart-kbd          kill the keyboard driver (init starts a new one)\n"
            "  exit [CODE]          leave the shell (init starts a new one)\n"
            "\n" ANSI_CYAN "Programs in /bin:" ANSI_RESET "\n"
            "  ls, cat, echo, mkdir, rm, mv, upper, env, true, false, hello, counter, args\n"
            "  ps, kill, uptime, free, date, uname, hostname, dmesg, reboot, poweroff\n"
-           "  tests: systest, fstest, libctest, objtest, ipctest, spawntest, drvtest, smptest, spin\n"
+           "  termtest (a full-screen program), hello-std (Rust with std)\n"
+           "  tests: systest, fstest, libctest, threadtest, objtest, ipctest, spawntest, drvtest,\n"
+           "         smptest, spin\n"
            "\n" ANSI_CYAN "Shell:" ANSI_RESET "\n"
            "  a | b, < file, > file, >> file, 2> file, 2>&1, a ; b, a && b, a || b\n"
            "  'single' and \"double\" quotes, \\ escapes, $NAME, ${NAME}, $? (last exit code),\n"
-           "  NAME=value, NAME=value command. Ctrl+C stops a program, Ctrl+U clears the line.\n"
+           "  NAME=value, NAME=value command. Ctrl+C stops a program.\n"
+           "  Editing: arrows, Home/End, Ctrl+A/E/K/U/W/L, Up/Down for history, Tab completes.\n"
+           "  Shift+PgUp/PgDn scroll back through earlier output.\n"
            "  Files: / and /tmp are in memory (lost at reboot); /bin and /boot are read-only.\n\n");
 }
 
@@ -585,6 +600,49 @@ static int cmd_set(void) {
     return 0;
 }
 
+// loadkeys [LAYOUT]: choose the keyboard layout (/etc/keymap) and have
+// init load it; without LAYOUT, show the current one and the choices
+static int cmd_loadkeys(int argc, char **argv) {
+    char cur[32] = "us";
+    int fd = open("/etc/keymap", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t n = read(fd, cur, sizeof cur - 1);
+        close(fd);
+        cur[n > 0 ? n : 0] = 0;
+        cur[strcspn(cur, " \t\r\n")] = 0;
+        if (!cur[0]) strcpy(cur, "us");
+    }
+    if (argc < 2) {
+        printf("layout: %s\navailable: us", cur);
+        DIR *d = opendir("/usr/share/keymaps");
+        struct dirent *de;
+        while (d && (de = readdir(d))) printf(" %s", de->d_name);
+        if (d) closedir(d);
+        printf("\n");
+        return 0;
+    }
+    const char *name = argv[1];
+    char path[128];
+    snprintf(path, sizeof path, "/usr/share/keymaps/%s", name);
+    if (strcmp(name, "us") && (strchr(name, '/') || access(path, R_OK) < 0)) {
+        fprintf(stderr, "loadkeys: no layout named %s (see loadkeys without arguments)\n", name);
+        return 1;
+    }
+    fd = open("/etc/keymap", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0 || write(fd, name, strlen(name)) < 0 || write(fd, "\n", 1) < 0) {
+        fprintf(stderr, "loadkeys: /etc/keymap: %s\n", strerror(errno));
+        if (fd >= 0) close(fd);
+        return 1;
+    }
+    close(fd);
+    if (!init_ctl || rx_channel_write(init_ctl, 0, "reload-keymap", 13, 0, 0) != RX_OK) {
+        fprintf(stderr, "loadkeys: init is not listening\n");
+        return 1;
+    }
+    printf("keyboard layout: %s\n", name);
+    return 0;
+}
+
 // Returns 1 and sets *status if argv[0] is a built-in
 static int builtin(int argc, char **argv, int *status) {
     const char *c = argv[0];
@@ -600,6 +658,8 @@ static int builtin(int argc, char **argv, int *status) {
             fprintf(stderr, "restart-kbd: init is not listening\n");
             *status = 1;
         }
+    } else if (!strcmp(c, "loadkeys")) {
+        *status = cmd_loadkeys(argc, argv);
     } else if (!strcmp(c, "cd")) {
         const char *dir = argc > 1 ? argv[1] : get_var("HOME");
         char old[PATH_MAX];
@@ -698,6 +758,7 @@ static void show_welcome(void) {
 
 int main(void) {
     static char line[LINE_MAX_LEN];
+    static struct le editor;
     init_ctl = rx_take_startup_handle(RX_PA_USER0);
     power = rx_take_startup_handle(RX_PA_POWER_RESOURCE);
     if (!rx_fd_handle(0) || rx_handle_duplicate(rx_fd_handle(0), RX_RIGHT_SAME_RIGHTS, &console) != RX_OK) {
@@ -705,12 +766,21 @@ int main(void) {
         return 1;
     }
     show_welcome();
+    editor.console = console;
     for (;;) {
-        char cwd[PATH_MAX];
+        char cwd[PATH_MAX], prompt[PATH_MAX + 64];
         if (!getcwd(cwd, sizeof cwd)) strcpy(cwd, "?");
-        printf(ANSI_MAGENTA "rustux" ANSI_RESET ":" ANSI_CYAN "%s" ANSI_RESET " > ", cwd);
+        snprintf(prompt, sizeof prompt, ANSI_MAGENTA "rustux" ANSI_RESET ":" ANSI_CYAN "%s" ANSI_RESET " > ", cwd);
         fflush(stdout);
-        int n = read_line(line, sizeof line);
+        int n;
+        if (le_raw()) {
+            n = le_read(&editor, prompt, line, sizeof line);
+            le_cooked_mode();
+        } else {
+            fputs(prompt, stdout); // not a console: no editing
+            fflush(stdout);
+            n = read_line(line, sizeof line);
+        }
         if (n < 0) continue; // Ctrl+C: new prompt
         if (n == 0) {
             if (!(rx_object_wait_one(console, RX_PEER_CLOSED, 0, 0) == RX_OK)) {

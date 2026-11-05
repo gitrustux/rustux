@@ -17,6 +17,13 @@ void *malloc(size_t size);
 void *calloc(size_t n, size_t size);
 void *realloc(void *p, size_t size);
 void free(void *p);
+int posix_memalign(void **out, size_t align, size_t size);
+void *aligned_alloc(size_t align, size_t size);
+void *memalign(size_t align, size_t size);
+size_t malloc_usable_size(void *p);
+char *realpath(const char *restrict path, char *restrict resolved);
+double strtod(const char *restrict s, char **restrict end);
+double atof(const char *s);
 
 void exit(int status) __attribute__((noreturn));
 void abort(void) __attribute__((noreturn));

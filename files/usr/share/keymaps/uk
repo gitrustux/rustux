@@ -1,0 +1,10 @@
+# United Kingdom keyboard. Each line: HID usage (hex), the character
+# normally, with Shift, and with AltGr; - for none.
+1f 2 "
+20 3 £
+08 e E €
+34 ' @
+32 # ~
+31 # ~
+35 ` ¬ ¦
+64 \ |

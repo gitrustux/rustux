@@ -12,7 +12,12 @@
 //   RX_CONSOLE_OP_INPUT  console -> program: typed input; in the default
 //                        (cooked) mode one message per line, ending in
 //                        '\n'. A message with no bytes is end of input
-//                        (Ctrl+D on an empty line).
+//                        (Ctrl+D on an empty line). In raw mode, the bytes
+//                        of each key as it is pressed (escape sequences for
+//                        arrows and function keys, as xterm sends them).
+//   RX_CONSOLE_OP_SET_MODE program -> console: u32 lflag, u32 iflag with the
+//                        termios bits ICANON, ECHO, ISIG (lflag) and ICRNL
+//                        (iflag); tcsetattr() sends it.
 //
 // Ctrl+C clears the typed line and raises RX_CONSOLE_SIGNAL_INTERRUPT on
 // the program side of the channel; the shell watches for it, ends the
@@ -25,6 +30,7 @@
 
 #define RX_CONSOLE_OP_WRITE 1u
 #define RX_CONSOLE_OP_INPUT 2u
+#define RX_CONSOLE_OP_SET_MODE 3u
 
 // Most bytes in one message after the op
 #define RX_CONSOLE_MAX_DATA 4096u

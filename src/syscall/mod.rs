@@ -310,6 +310,7 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x0A => task::sys_object_get_info(args),
         0x0C => task::sys_object_get_child(args),
         0x0D => task::sys_object_get_property(args),
+        0x0E => task::sys_object_set_property(args),
 
         // Memory / VMO (0x10-0x1F)
         0x10 => memory::sys_vmo_create(args),

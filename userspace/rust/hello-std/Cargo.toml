@@ -1,0 +1,12 @@
+[package]
+name = "hello-std"
+version = "0.1.0"
+edition = "2021"
+description = "Rust's standard library on Rustux: files, threads, child processes"
+license = "MIT"
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+opt-level = "s"

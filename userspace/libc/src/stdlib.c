@@ -153,3 +153,58 @@ int rand(void) {
     rand_state = rand_state * 6364136223846793005ull + 1442695040888963407ull;
     return (int)((rand_state >> 33) & RAND_MAX);
 }
+
+// Decimal floating point ("1.5", "-2e10", "inf", "nan"); long double
+// arithmetic, so the last digit or so of a 17-digit input may be off
+double strtod(const char *restrict s, char **restrict end) {
+    const char *p = s;
+    while (isspace((unsigned char)*p)) p++;
+    int neg = 0;
+    if (*p == '+' || *p == '-') neg = *p++ == '-';
+    if (!strncasecmp(p, "inf", 3)) {
+        p += strncasecmp(p, "infinity", 8) ? 3 : 8;
+        if (end) *end = (char *)p;
+        return neg ? -__builtin_inf() : __builtin_inf();
+    }
+    if (!strncasecmp(p, "nan", 3)) {
+        if (end) *end = (char *)p + 3;
+        return __builtin_nan("");
+    }
+    unsigned long long mant = 0;
+    int digits = 0, exp = 0, any = 0;
+    for (; isdigit((unsigned char)*p); p++, any = 1) {
+        if (digits < 19) { mant = mant * 10 + (unsigned)(*p - '0'); if (mant) digits++; }
+        else exp++;
+    }
+    if (*p == '.') {
+        for (p++; isdigit((unsigned char)*p); p++, any = 1) {
+            if (digits < 19) { mant = mant * 10 + (unsigned)(*p - '0'); if (mant) digits++; exp--; }
+        }
+    }
+    if (!any) {
+        if (end) *end = (char *)s;
+        return 0;
+    }
+    if (*p == 'e' || *p == 'E') {
+        const char *q = p + 1;
+        int eneg = 0, e = 0;
+        if (*q == '+' || *q == '-') eneg = *q++ == '-';
+        if (isdigit((unsigned char)*q)) {
+            while (isdigit((unsigned char)*q)) { if (e < 100000) e = e * 10 + (*q - '0'); q++; }
+            exp += eneg ? -e : e;
+            p = q;
+        }
+    }
+    if (end) *end = (char *)p;
+    long double v = (long double)mant;
+    if (mant) {
+        long double scale = 1.0L, ten = 10.0L;
+        int e = exp < 0 ? -exp : exp;
+        for (; e; e >>= 1, ten *= ten) if (e & 1) scale *= ten; // 10^|exp|
+        v = exp < 0 ? v / scale : v * scale;
+        if (v > 1.7976931348623157e308L) errno = ERANGE;
+    }
+    return neg ? -(double)v : (double)v;
+}
+
+double atof(const char *s) { return strtod(s, 0); }

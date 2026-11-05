@@ -11,16 +11,23 @@
 //! restarts the driver or the shell if either ends, and is the console
 //! service:
 //!
-//! - Keystrokes arrive from the driver and from the kernel (USB keyboards)
-//!   over channels. Init edits the typed line (echo, Backspace, Ctrl+U) and
-//!   sends it to whoever reads the console when Enter is pressed. Ctrl+D
-//!   sends end of input; Ctrl+C clears the line and raises the interrupt
-//!   signal, which the shell uses to end the program in the foreground.
+//! - Key events (HID usages) arrive from the PS/2 driver and from the
+//!   kernel (USB keyboards) over channels. Init turns them into characters
+//!   and escape sequences with the keyboard layout (keymap.h, /etc/keymap)
+//!   and repeats held USB keys.
+//! - In cooked mode (the default) it edits the typed line (echo,
+//!   Backspace, Ctrl+U, Ctrl+W) and sends it to whoever reads the console
+//!   when Enter is pressed; Ctrl+D sends end of input. In raw mode (set
+//!   with tcsetattr) every key goes out as it is pressed.
+//! - Ctrl+C (with ISIG) clears the line and raises the interrupt signal,
+//!   which the shell uses to end the program in the foreground.
+//! - Shift+PgUp / Shift+PgDn scroll the screen back and forth.
 //! - Programs print by writing to the console channel; init prints what
 //!   they write on the screen through the kernel's debug log.
 //!
 //! The protocol is in <rustux/console.h>. The shell can ask for a driver
-//! restart by sending "restart-kbd" on its control channel.
+//! restart ("restart-kbd") or a new layout ("reload-keymap") on its
+//! control channel.
 
 #include <rustux/console.h>
 #include <rustux/process.h>
@@ -29,6 +36,8 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "keymap.h"
 
 static rx_handle_t resource;     // root resource, passed to the driver
 static rx_handle_t kernel_input; // USB keystrokes from the kernel
@@ -41,8 +50,16 @@ static int driver_failures;
 
 // ---- console ----
 
+// Terminal mode, set by programs with tcsetattr (termios bits)
+#define LF_ISIG   0000001u
+#define LF_ICANON 0000002u
+#define LF_ECHO   0000010u
+#define IF_ICRNL  0000400u
+static uint32_t lflag = LF_ISIG | LF_ICANON | LF_ECHO, iflag = IF_ICRNL;
+
 static char line[RX_CONSOLE_MAX_DATA - 96];
 static size_t line_len;
+static int scrolled; // the screen shows the scrollback
 
 static void echo(const char *s, size_t n) {
     write(1, s, n);
@@ -61,15 +78,32 @@ static void rubout(void) {
     if (!line_len) return;
     while (line_len > 1 && (line[line_len - 1] & 0xC0) == 0x80) line_len--;
     line_len--;
-    echo("\b \b", 3);
+    if (lflag & LF_ECHO) echo("\b \b", 3);
 }
 
-static void key(unsigned char c) {
+static void interrupt(void) {
+    if (lflag & LF_ECHO) echo("^C\n", 3);
+    line_len = 0;
+    rx_object_signal_peer(con_server, 0, RX_CONSOLE_SIGNAL_INTERRUPT);
+}
+
+// Cooked mode: edit the line, send it on Enter
+static void cooked(const char *s, int n) {
+    if (n > 1 && s[0] == 0x1B) return; // arrows, function keys: no line editing here
+    unsigned char c = (unsigned char)s[0];
+    if (n > 1 || c >= 0x80) { // a UTF-8 character
+        if (line_len + (size_t)n < sizeof line - 1) {
+            memcpy(line + line_len, s, (size_t)n);
+            line_len += (size_t)n;
+            if (lflag & LF_ECHO) echo(s, (size_t)n);
+        }
+        return;
+    }
     switch (c) {
     case '\r':
     case '\n':
         line[line_len++] = '\n';
-        echo("\n", 1);
+        if (lflag & LF_ECHO) echo("\n", 1);
         send_input(line, line_len);
         line_len = 0;
         break;
@@ -80,10 +114,12 @@ static void key(unsigned char c) {
     case 0x15: // Ctrl+U: erase the line
         while (line_len) rubout();
         break;
+    case 0x17: // Ctrl+W: erase a word
+        while (line_len && line[line_len - 1] == ' ') rubout();
+        while (line_len && line[line_len - 1] != ' ') rubout();
+        break;
     case 0x03: // Ctrl+C
-        echo("^C\n", 3);
-        line_len = 0;
-        rx_object_signal_peer(con_server, 0, RX_CONSOLE_SIGNAL_INTERRUPT);
+        if (lflag & LF_ISIG) interrupt();
         break;
     case 0x04: // Ctrl+D: end of input on an empty line, else send the line as is
         send_input(line, line_len);
@@ -92,29 +128,98 @@ static void key(unsigned char c) {
     default:
         if ((c >= 0x20 || c == '\t') && line_len < sizeof line - 1) {
             line[line_len++] = (char)c;
-            echo((char *)&c, 1);
+            if (lflag & LF_ECHO) echo((char *)&c, 1);
         }
         break;
     }
 }
 
-// Keystrokes from the driver or the kernel
+// The bytes of one key press, in the current mode
+static void key_bytes(char *s, int n) {
+    if (!(lflag & LF_ICANON)) {
+        if ((lflag & LF_ISIG) && n == 1 && s[0] == 0x03) {
+            interrupt();
+            return;
+        }
+        if (n == 1 && s[0] == '\r' && (iflag & IF_ICRNL)) s[0] = '\n';
+        if (lflag & LF_ECHO) echo(s, (size_t)n);
+        send_input(s, (size_t)n);
+        return;
+    }
+    cooked(s, n);
+}
+
+// Held keys repeat: the PS/2 keyboard does it itself; for USB keyboards
+// init does, 500 ms after the press, then 30 times a second
+static rx_handle_t repeat_timer;
+static uint8_t repeat_usage, repeat_mods;
+static int repeating;
+
+static void key_event(uint8_t usage, uint8_t mods, uint8_t flags) {
+    int pressed = flags & 1;
+    if (usage >= 0xE0) return; // modifiers: their state comes with every event
+    if (!pressed) {
+        if (usage == repeat_usage) repeating = 0;
+        return;
+    }
+    repeating = 0;
+    // Shift+PgUp / Shift+PgDn: the console's scrollback, not for programs
+    if ((mods & KM_SHIFT) && (usage == 0x4B || usage == 0x4E)) {
+        echo(usage == 0x4B ? "\033[1^" : "\033[2^", 4);
+        scrolled = 1;
+        return;
+    }
+    if (scrolled) {
+        echo("\033[0^", 4);
+        scrolled = 0;
+    }
+    char out[16];
+    int n = km_translate(usage, mods, !(iflag & IF_ICRNL), out);
+    if (n > 0) key_bytes(out, n);
+    if (!(flags & 2) && n > 0) {
+        repeating = 1;
+        repeat_usage = usage;
+        repeat_mods = mods;
+        rx_timer_set(repeat_timer, rx_clock_get_monotonic() + 500000000ull, 0);
+    }
+}
+
+static void repeat_fired(void) {
+    char out[16];
+    int n = km_translate(repeat_usage, repeat_mods, !(iflag & IF_ICRNL), out);
+    if (n > 0) key_bytes(out, n);
+    rx_timer_set(repeat_timer, rx_clock_get_monotonic() + 33000000ull, 0);
+}
+
+// Key events from the driver or the kernel: 4 bytes each
 static void keys_from(rx_handle_t from) {
     unsigned char buf[256];
     uint32_t n = 0;
     while (rx_channel_read(from, 0, buf, 0, sizeof buf, 0, &n, 0) == RX_OK) {
-        for (uint32_t i = 0; i < n; i++) key(buf[i]);
+        for (uint32_t i = 0; i + 4 <= n; i += 4) key_event(buf[i], buf[i + 1], buf[i + 2]);
     }
 }
 
-// Output from programs
+// Output and mode changes from programs
 static void console_output(void) {
     static char msg[4 + RX_CONSOLE_MAX_DATA];
     uint32_t n = 0;
     while (rx_channel_read(con_server, 0, msg, 0, sizeof msg, 0, &n, 0) == RX_OK) {
         uint32_t op = 0;
         if (n >= 4) memcpy(&op, msg, 4);
-        if (op == RX_CONSOLE_OP_WRITE && n > 4) write(1, msg + 4, n - 4);
+        if (op == RX_CONSOLE_OP_WRITE && n > 4) {
+            write(1, msg + 4, n - 4);
+            scrolled = 0;
+        } else if (op == RX_CONSOLE_OP_SET_MODE && n >= 12) {
+            uint32_t was = lflag;
+            memcpy(&lflag, msg + 4, 4);
+            memcpy(&iflag, msg + 8, 4);
+            // Switching to raw mode hands over what was typed so far
+            if ((was & LF_ICANON) && !(lflag & LF_ICANON) && line_len) {
+                send_input(line, line_len);
+                line_len = 0;
+            }
+        }
     }
 }
 
@@ -237,7 +342,9 @@ static void command(void) {
     uint32_t n = 0;
     while (rx_channel_read(sh_ctl, 0, buf, 0, sizeof buf - 1, 0, &n, 0) == RX_OK) {
         buf[n] = 0;
-        if (!strcmp(buf, "restart-kbd")) {
+        if (!strcmp(buf, "reload-keymap")) {
+            km_load(); // quietly: the shell has its prompt up already
+        } else if (!strcmp(buf, "restart-kbd")) {
             if (drv_proc) {
                 printf("init: killing the keyboard driver\n");
                 rx_task_kill(drv_proc);
@@ -279,13 +386,17 @@ int main(void) {
     rx_handle_t bootfs = rx_take_startup_handle(RX_PA_VMO_BOOTFS);
     if (bootfs) start_fsd(bootfs);
     adjust_clock();
+    rx_timer_create(0, 0, &repeat_timer);
+    km_load();
     start_driver();
     printf("Spawning shell...\n\n");
     start_shell();
 
     for (;;) {
-        rx_wait_item_t items[7];
+        rx_wait_item_t items[8];
         int n = 0, i_drv = -1, i_kin = -1, i_dproc = -1, i_fsd = -1;
+        int i_rep = -1;
+        if (repeating) { i_rep = n; items[n++] = (rx_wait_item_t){ repeat_timer, RX_TIMER_SIGNALED, 0 }; }
         int i_out = n; items[n++] = (rx_wait_item_t){ con_server, RX_CHANNEL_READABLE, 0 };
         if (drv_chan) { i_drv = n; items[n++] = (rx_wait_item_t){ drv_chan, RX_CHANNEL_READABLE, 0 }; }
         if (kernel_input) { i_kin = n; items[n++] = (rx_wait_item_t){ kernel_input, RX_CHANNEL_READABLE, 0 }; }
@@ -296,6 +407,7 @@ int main(void) {
 
         if (rx_object_wait_many(items, n, RX_TIME_INFINITE) != RX_OK) continue;
 
+        if (i_rep >= 0 && repeating && (items[i_rep].pending & RX_TIMER_SIGNALED)) repeat_fired();
         // Output first, so a prompt appears before the echo of what is typed
         if (items[i_out].pending & RX_CHANNEL_READABLE) console_output();
         if (i_drv >= 0 && (items[i_drv].pending & RX_CHANNEL_READABLE)) keys_from(drv_chan);

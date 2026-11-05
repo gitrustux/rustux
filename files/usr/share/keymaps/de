@@ -1,0 +1,31 @@
+# German keyboard (QWERTZ). Each line: HID usage (hex), the character
+# normally, with Shift, and with AltGr; - for none. Dead keys (^ ´ `)
+# type the accent itself.
+1c z Z
+1d y Y
+14 q Q @
+08 e E €
+10 m M µ
+1e 1 !
+1f 2 " ²
+20 3 § ³
+21 4 $
+22 5 %
+23 6 &
+24 7 / {
+25 8 ( [
+26 9 ) ]
+27 0 = }
+2d ß ? \
+2e ´ `
+2f ü Ü
+30 + * ~
+31 # '
+32 # '
+33 ö Ö
+34 ä Ä
+35 ^ °
+36 , ;
+37 . :
+38 - _
+64 < > |

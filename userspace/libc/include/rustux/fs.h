@@ -57,6 +57,7 @@ typedef struct { uint32_t txid; int32_t status; } rx_fs_reply_t;
 
 #define RX_FS_TYPE_FILE 1u
 #define RX_FS_TYPE_DIR  2u
+#define RX_FS_TYPE_CHR  3u   // a device (/dev/null, /dev/zero)
 
 // Most data in one READ or WRITE
 #define RX_FS_MAX_IO 32768u

@@ -56,6 +56,7 @@ rx_handle_t __fd_export(int fd) {
 static void release(struct fd *f) {
     if (f->handle) rx_handle_close(f->handle);
     free(f->rbuf);
+    free(f->path);
     memset(f, 0, sizeof *f);
 }
 
@@ -95,13 +96,21 @@ static ssize_t console_write(rx_handle_t h, const char *p, size_t n) {
 
 static ssize_t console_read(struct fd *f, char *p, size_t n) {
     if (n == 0) return 0;
+    // Raw mode with VMIN 0: wait at most VTIME tenths of a second
+    uint64_t deadline = RX_TIME_INFINITE;
+    if (!(__tty_lflag & 2) && __tty_vmin == 0)
+        deadline = rx_clock_get_monotonic() + (uint64_t)__tty_vtime * 100000000ull;
+    if (f->flags & 04000) deadline = 0; // O_NONBLOCK
     while (f->rpos >= f->rlen) {
         if (!f->rbuf && !(f->rbuf = malloc(4 + RX_CONSOLE_MAX_DATA))) {
             errno = ENOMEM;
             return -1;
         }
         uint32_t nb = 0, observed = 0;
-        rx_object_wait_one(f->handle, RX_CHANNEL_READABLE | RX_PEER_CLOSED, RX_TIME_INFINITE, &observed);
+        if (rx_object_wait_one(f->handle, RX_CHANNEL_READABLE | RX_PEER_CLOSED, deadline, &observed) == RX_ERR_TIMED_OUT) {
+            if (f->flags & 04000) { errno = EAGAIN; return -1; }
+            return 0;
+        }
         rx_status_t r = rx_channel_read(f->handle, 0, f->rbuf, 0, 4 + RX_CONSOLE_MAX_DATA, 0, &nb, 0);
         if (r == RX_ERR_SHOULD_WAIT) continue;           // another reader got it first
         if (r == RX_ERR_PEER_CLOSED) return 0;          // console gone: end of input
@@ -266,10 +275,13 @@ int dup2(int fd, int fd2) {
     rx_handle_t h = 0;
     rx_status_t r = rx_handle_duplicate(f->handle, RX_RIGHT_SAME_RIGHTS, &h);
     if (r != RX_OK) return __set_errno_status(r);
-    int kind = f->kind;
+    int kind = f->kind, flags = f->flags;
+    char *path = f->path ? strdup(f->path) : 0;
     release(&__fds[fd2]);
     __fds[fd2].kind = kind;
     __fds[fd2].handle = h;
+    __fds[fd2].flags = flags;
+    __fds[fd2].path = path;
     return fd2;
 }
 

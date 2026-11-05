@@ -4,8 +4,9 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-// Startup: read the bootstrap message, set up handles, file descriptors,
-// arguments, environment and stdio, then run main().
+// Startup: read the bootstrap message, set up handles, thread-local
+// storage, file descriptors, arguments, environment and stdio, run the
+// constructors (.init_array), then main().
 
 #include "libc.h"
 #include <rustux/processargs.h>
@@ -68,6 +69,7 @@ void __libc_start(rx_handle_t bootstrap) {
     rx_thread_self = rx_take_startup_handle(RX_PA_THREAD_SELF);
     rx_job_default = rx_take_startup_handle(RX_PA_JOB_DEFAULT);
     rx_vmar_root = rx_take_startup_handle(RX_PA_VMAR_ROOT);
+    __init_tls();
 
     // File descriptors: the argument is the fd number and, in bits 12-15,
     // its kind (0 = console, as before step 8)
@@ -91,5 +93,6 @@ void __libc_start(rx_handle_t bootstrap) {
     __env_init(envp);
     __fs_init();
     __stdio_init();
+    __run_init_array((int)pa->args_num, argv, environ);
     exit(main((int)pa->args_num, argv, environ));
 }

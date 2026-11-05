@@ -4,40 +4,18 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-//! HID boot-protocol keyboard reports to characters (US layout).
+//! HID boot-protocol keyboard reports to key events.
+//!
+//! Since step 10 the kernel no longer turns keys into characters: it sends
+//! key events to `init`, which applies the keyboard layout (the same for
+//! USB and PS/2). An event is 4 bytes: HID usage (page 0x07; modifiers are
+//! 0xE0-0xE7), the modifier byte after the event (HID bit order), flags
+//! (bit 0 pressed; bit 1 the device repeats keys itself, which USB boot
+//! keyboards don't), and 0.
 
-/// HID usage ID (Usage Tables 1.12, page 0x07) to ASCII: 0x04-0x1D a-z,
-/// 0x1E-0x27 1-9 0, 0x28 Enter, 0x29 Esc, 0x2A Backspace, 0x2B Tab,
-/// 0x2C space, 0x2D-0x38 punctuation, 0x54-0x63 keypad.
-const HID_TO_ASCII: [u8; 128] = [
-    0x00, 0x00, 0x00, 0x00, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C,
-    0x6D, 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x31, 0x32,
-    0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x30, 0x0A, 0x1B, 0x08, 0x09, 0x20, 0x2D, 0x3D, 0x5B,
-    0x5D, 0x5C, 0x5C, 0x3B, 0x27, 0x60, 0x2C, 0x2E, 0x2F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x2F, 0x2A, 0x2D, 0x2B, 0x0A, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
-    0x38, 0x39, 0x30, 0x2E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
-
-const MOD_SHIFT: u8 = 0x02 | 0x20;
-
-fn shifted(c: u8) -> u8 {
-    match c {
-        b'a'..=b'z' => c - 32,
-        b'1' => b'!', b'2' => b'@', b'3' => b'#', b'4' => b'$', b'5' => b'%',
-        b'6' => b'^', b'7' => b'&', b'8' => b'*', b'9' => b'(', b'0' => b')',
-        b'-' => b'_', b'=' => b'+', b'[' => b'{', b']' => b'}', b'\\' => b'|',
-        b';' => b':', b'\'' => b'"', b'`' => b'~', b',' => b'<', b'.' => b'>',
-        b'/' => b'?',
-        _ => c,
-    }
-}
-
-/// Decode one report. Keys in this report that were not in `prev` (the
-/// same keyboard's previous report) are new presses and go to the keyboard
-/// input buffer; `prev` is updated.
-pub fn process_report(report: &[u8], prev: &mut [u8; 6]) {
+/// Turn one report into press and release events. `prev` holds the same
+/// keyboard's previous report (modifier byte, then 6 keys) and is updated.
+pub fn process_report(report: &[u8], prev: &mut [u8; 7]) {
     if report.len() < 3 {
         return;
     }
@@ -49,16 +27,31 @@ pub fn process_report(report: &[u8], prev: &mut [u8; 6]) {
     if keys[0] == 1 {
         return; // rollover error: no information, keep the previous state
     }
-    for &k in keys.iter() {
-        if k > 1 && !prev.contains(&k) && (k as usize) < HID_TO_ASCII.len() {
-            let mut c = HID_TO_ASCII[k as usize];
-            if c != 0 && modifier & MOD_SHIFT != 0 && (k as usize) < 0x54 {
-                c = shifted(c);
-            }
-            if c != 0 {
-                crate::drivers::keyboard::push_input(c);
-            }
+    let old_mod = prev[0];
+    let old_keys: [u8; 6] = prev[1..7].try_into().unwrap();
+    // Modifier changes, as key events of usages 0xE0-0xE7
+    for bit in 0..8u8 {
+        let (was, is) = (old_mod & (1 << bit) != 0, modifier & (1 << bit) != 0);
+        if was != is {
+            push(0xE0 + bit, modifier, is);
         }
     }
-    *prev = keys;
+    for &k in old_keys.iter() {
+        if k > 3 && !keys.contains(&k) {
+            push(k, modifier, false);
+        }
+    }
+    for &k in keys.iter() {
+        if k > 3 && !old_keys.contains(&k) {
+            push(k, modifier, true);
+        }
+    }
+    prev[0] = modifier;
+    prev[1..7].copy_from_slice(&keys);
+}
+
+fn push(usage: u8, modifier: u8, pressed: bool) {
+    for b in [usage, modifier, pressed as u8, 0] {
+        crate::drivers::keyboard::push_input(b);
+    }
 }

@@ -32,7 +32,7 @@ $AR rcs "$OUT/libc.a" "${objs[@]}"
 for src in c-progs/*.c; do
     name=$(basename "${src%.c}")
     $CC $CFLAGS -Ic-progs -c "$src" -o "$OUT/$name.o"
-    $CC -static -nostdlib -no-pie -Wl,--build-id=none -T libc/rustux.ld \
+    $CC -static -nostdlib -no-pie -Wl,--build-id=none -Wl,-z,noseparate-code -T libc/rustux.ld \
         "$OUT/libc/crt0.o" "$OUT/$name.o" "$OUT/libc.a" "$LIBGCC" -o "bin/$name"
 done
 echo "built: $(ls bin | tr '\n' ' ')"

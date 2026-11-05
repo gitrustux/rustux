@@ -32,6 +32,47 @@ int truncate(const char *path, off_t length);
 int fsync(int fd);
 int gethostname(char *name, size_t len);
 pid_t getpid(void);
+pid_t getppid(void);
+pid_t gettid(void);
+uid_t getuid(void);
+uid_t geteuid(void);
+gid_t getgid(void);
+gid_t getegid(void);
+int setuid(uid_t u);
+int setgid(gid_t g);
+pid_t setsid(void);
+int setpgid(pid_t p, pid_t g);
+pid_t fork(void);
+int execve(const char *path, char *const argv[], char *const envp[]);
+int execv(const char *path, char *const argv[]);
+int execvp(const char *file, char *const argv[]);
+int pipe2(int fds[2], int flags);
+ssize_t pread(int fd, void *buf, size_t n, off_t off);
+ssize_t pwrite(int fd, const void *buf, size_t n, off_t off);
+ssize_t readlink(const char *restrict path, char *restrict buf, size_t size);
+int fdatasync(int fd);
+long sysconf(int name);
+int getpagesize(void);
+int chroot(const char *path);
+int pause(void);
+int sched_yield(void);
+int symlink(const char *target, const char *link);
+int link(const char *old, const char *new);
+int fchdir(int fd);
+unsigned int alarm(unsigned int seconds);
+
+extern char *optarg;
+extern int optind, opterr, optopt;
+int getopt(int argc, char *const argv[], const char *optstring);
+
+#define _SC_CLK_TCK 2
+#define _SC_OPEN_MAX 4
+#define _SC_PAGESIZE 30
+#define _SC_PAGE_SIZE 30
+#define _SC_GETPW_R_SIZE_MAX 70
+#define _SC_NPROCESSORS_CONF 83
+#define _SC_NPROCESSORS_ONLN 84
+#define _SC_PHYS_PAGES 85
 
 #define SEEK_SET 0
 #define SEEK_CUR 1

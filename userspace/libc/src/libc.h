@@ -18,10 +18,56 @@
 struct fd {
     int kind;             // RX_FD_*
     rx_handle_t handle;
+    int flags;            // open flags (O_ACCMODE, O_APPEND, O_NONBLOCK)
+    int cloexec;          // FD_CLOEXEC (recorded; spawned programs get only fds 0-2)
+    char *path;           // absolute path of a file or directory (for openat & co.)
     // Console input left over from the last message
     char *rbuf;
     uint32_t rlen, rpos;
 };
+
+// Threads. The thread pointer (FS base) points at the thread's control
+// block; its thread-local storage lies just below it (x86-64 variant II).
+#define RX_KEYS_MAX 128
+struct __pthread {
+    struct __pthread *self;     // must stay first: %fs:0
+    int err;                    // errno
+    volatile int detach_state;  // 0 joinable, 1 detached, 2 joined
+    rx_handle_t handle;         // the thread
+    rx_handle_t wake;           // event for futex waits (created when first needed)
+    uint64_t tid;               // the thread's koid
+    void *(*fn)(void *);
+    void *arg, *result;
+    void *map;                  // stack + TLS + this block (0: main thread)
+    size_t map_size;
+    char *stack;                // lowest address
+    size_t stack_size;
+    const void *tsd[RX_KEYS_MAX];
+    struct __pthread *next;     // on the list of ended detached threads
+    char name[32];
+};
+
+static inline struct __pthread *__self(void) {
+    struct __pthread *t;
+    __asm__("mov %%fs:0, %0" : "=r"(t));
+    return t;
+}
+
+// A spin lock for the library's internals (malloc, filesystem calls,
+// futex queues): spins briefly, then yields the CPU
+void __lock(volatile int *l);
+void __unlock(volatile int *l);
+// Futexes, emulated in the library: wait while *addr == val (deadline in
+// monotonic ns, RX_TIME_INFINITE for none); returns 0, -EAGAIN or -ETIMEDOUT
+int __futex_wait(volatile int *addr, int val, uint64_t deadline);
+int __futex_wake(volatile int *addr, int n);
+void __init_tls(void);
+void __run_init_array(int argc, char **argv, char **envp);
+// Monotonic deadline for an absolute time on `clock` (CLOCK_REALTIME or
+// CLOCK_MONOTONIC); RX_TIME_INFINITE for NULL
+uint64_t __deadline_abs(int clock, const void *ts);
+// The console's terminal modes (termios), for console reads
+extern unsigned __tty_lflag, __tty_vmin, __tty_vtime;
 
 extern struct fd __fds[MAX_FDS];
 extern char **environ;

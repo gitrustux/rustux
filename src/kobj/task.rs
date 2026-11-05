@@ -309,6 +309,8 @@ pub struct Thread {
     pub process: Arc<Process>,
     /// CPU time used, ns
     pub runtime_ns: AtomicU64,
+    /// User FS base (thread-local storage), loaded when the thread runs
+    pub fs_base: AtomicU64,
     inner: SpinMutex<(ThreadState, u32)>,
 }
 
@@ -322,6 +324,7 @@ impl Thread {
             koid: new_koid(),
             process: process.clone(),
             runtime_ns: AtomicU64::new(0),
+            fs_base: AtomicU64::new(0),
             inner: SpinMutex::new((ThreadState::New, 0)),
         }))
     }

@@ -15,6 +15,8 @@
 //   /boot      bootfs: the boot image, read-only
 //   /bin       bootfs's bin directory (mounted again)
 //   /usr       bootfs's usr directory (mounted again)
+//   /dev       devices: null (reads nothing, takes every write) and zero
+//              (reads zeros)
 //
 // init starts fsd with the boot image VMO (PA_VMO_BOOTFS) and the server
 // end of the first root connection (PA_USER0). Every open file or
@@ -34,7 +36,8 @@
 #define MAX_CONNS 1000
 
 struct node {
-    uint32_t type;          // RX_FS_TYPE_FILE or _DIR
+    uint32_t type;          // RX_FS_TYPE_FILE, _DIR or _CHR
+    int dev;                // devices: DEV_NULL or DEV_ZERO
     uint32_t mode;
     int read_only;          // bootfs
     char *name;
@@ -261,11 +264,19 @@ static int do_open(struct ofd *dir, const char *path, size_t plen, uint32_t flag
     return 0;
 }
 
+#define DEV_NULL 1
+#define DEV_ZERO 2
+
 static int do_read(struct ofd *o, uint32_t count, char *out, size_t *len) {
     struct node *n = o->node;
     if (n->type == RX_FS_TYPE_DIR) return -EISDIR;
     if ((o->flags & O_ACCMODE) == O_WRONLY) return -EBADF;
     if (count > RX_FS_MAX_IO) count = RX_FS_MAX_IO;
+    if (n->type == RX_FS_TYPE_CHR) {
+        *len = n->dev == DEV_ZERO ? count : 0;
+        memset(out, 0, *len);
+        return 0;
+    }
     uint64_t k = o->offset >= n->size ? 0 : n->size - o->offset;
     if (k > count) k = count;
     memcpy(out, (n->rodata ? n->rodata : n->data) + o->offset, k);
@@ -278,6 +289,10 @@ static int do_write(struct ofd *o, const char *data, size_t k, uint64_t *wrote) 
     struct node *n = o->node;
     if (n->type == RX_FS_TYPE_DIR) return -EISDIR;
     if ((o->flags & O_ACCMODE) == O_RDONLY) return -EBADF;
+    if (n->type == RX_FS_TYPE_CHR) { // both devices take everything
+        *wrote = k;
+        return 0;
+    }
     if (n->read_only) return -EROFS;
     if (o->flags & O_APPEND) o->offset = n->size;
     if (o->offset + k > n->size) {
@@ -476,6 +491,7 @@ static int serve(int i) {
         if (o->node->type == RX_FS_TYPE_DIR) st = -EISDIR;
         else if (o->node->read_only) st = -EROFS;
         else if ((o->flags & O_ACCMODE) == O_RDONLY) st = -EBADF;
+        else if (o->node->type == RX_FS_TYPE_CHR) st = 0;
         else st = set_size(o->node, len);
         break;
     }
@@ -601,6 +617,13 @@ int main(void) {
             if (c && set_size(c, f->size) == 0) memcpy(c->data, f->rodata, f->size);
         }
     }
+    struct node *dev = new_node(RX_FS_TYPE_DIR, "dev", root, 0755);
+    dev->read_only = 1; // no new files here
+    struct node *null = new_node(RX_FS_TYPE_CHR, "null", dev, 0666);
+    struct node *zero = new_node(RX_FS_TYPE_CHR, "zero", dev, 0666);
+    // Writable themselves (the directory stays read-only)
+    if (null) { null->dev = DEV_NULL; null->read_only = 0; }
+    if (zero) { zero->dev = DEV_ZERO; zero->read_only = 0; }
     add_conn(first, new_ofd(root, O_RDONLY | O_DIRECTORY));
 
     static rx_wait_item_t items[MAX_CONNS];

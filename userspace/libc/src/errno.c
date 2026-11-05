@@ -8,8 +8,6 @@
 #include <errno.h>
 #include <string.h>
 
-int errno;
-
 int rx_status_to_errno(rx_status_t s) {
     switch (s) {
     case RX_ERR_INVALID_ARGS: return EINVAL;
@@ -71,6 +69,36 @@ char *strerror(int e) {
     case ENOTSUP: return "Operation not supported";
     case ETIMEDOUT: return "Timed out";
     case ECANCELED: return "Canceled";
+    case EDEADLK: return "Resource deadlock avoided";
+    case ENOLCK: return "No locks available";
+    case ELOOP: return "Too many levels of symbolic links";
+    case EOVERFLOW: return "Value too large";
+    case ENOTSOCK: return "Not a socket";
+    case EAFNOSUPPORT: return "Address family not supported";
+    case EADDRINUSE: return "Address in use";
+    case ECONNREFUSED: return "Connection refused";
+    case EXDEV: return "Cross-device link";
+    case ENODEV: return "No such device";
+    case ENXIO: return "No such device or address";
+    case EFBIG: return "File too large";
+    case EMLINK: return "Too many links";
+    case ENFILE: return "Too many open files in system";
+    case ETXTBSY: return "Text file busy";
     default: return "Unknown error";
     }
 }
+
+int strerror_r(int e, char *buf, size_t len) {
+    const char *s = strerror(e);
+    size_t n = strlen(s);
+    if (!len) return ERANGE;
+    if (n >= len) {
+        memcpy(buf, s, len - 1);
+        buf[len - 1] = 0;
+        return ERANGE;
+    }
+    memcpy(buf, s, n + 1);
+    return 0;
+}
+
+int __xpg_strerror_r(int e, char *buf, size_t len) { return strerror_r(e, buf, len); }

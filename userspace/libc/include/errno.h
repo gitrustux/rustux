@@ -7,7 +7,9 @@
 #ifndef _ERRNO_H
 #define _ERRNO_H
 
-extern int errno;
+// Per thread
+int *__errno_location(void);
+#define errno (*__errno_location())
 
 #define EPERM    1
 #define ENOENT   2
@@ -34,6 +36,7 @@ extern int errno;
 #define ENFILE  23
 #define EMFILE  24
 #define ENOTTY  25
+#define ETXTBSY 26
 #define EFBIG   27
 #define ENOSPC  28
 #define ESPIPE  29
@@ -48,6 +51,14 @@ extern int errno;
 #define ENOTSUP 95
 #define EOPNOTSUPP ENOTSUP
 #define ETIMEDOUT 110
+#define ENOTSOCK 88
+#define EAFNOSUPPORT 97
+#define EADDRINUSE 98
+#define ECONNREFUSED 111
+#define ENOLCK 37
+#define ELOOP 40
+#define EOVERFLOW 75
+#define EDEADLK 35
 #define ECANCELED 125
 
 #endif

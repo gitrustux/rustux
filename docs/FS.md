@@ -11,10 +11,11 @@ library (`open`, `read`, `opendir`, ...; `docs/USERSPACE.md`).
 | `/` | tmpfs | in memory, writable; lost at reboot |
 | `/tmp` | tmpfs | |
 | `/root` | tmpfs | root's home (`$HOME`); the shell starts here |
-| `/etc` | tmpfs | settings (`hostname`, `timezone`, `adjtime`), copied from `/boot/etc` at start |
+| `/etc` | tmpfs | settings (`hostname`, `timezone`, `adjtime`, `keymap`), copied from `/boot/etc` at start |
 | `/boot` | bootfs | the boot image, read-only |
 | `/bin` | bootfs | `/boot/bin` mounted again: the programs |
-| `/usr` | bootfs | `/boot/usr` mounted again (`/usr/share/zoneinfo/zones`) |
+| `/usr` | bootfs | `/boot/usr` mounted again (`/usr/share/zoneinfo/zones`, `/usr/share/keymaps/`) |
+| `/dev` | devices | `null` (reads nothing, takes every write) and `zero` (reads zeros); no new files here |
 
 Writes, creates, renames and removals under `/boot`, `/bin` and `/usr` fail with
 `EROFS`. Files on disk come in phase B (FAT32 in step 14, ext2/ext4 in
@@ -77,6 +78,8 @@ the current directory; `fsd` rejects them with `EINVAL`).
 | `RENAME` 12 | directory | `u32 old_len`, old path, new path | — |
 | `SYNC` 13 | any | — | — |
 | `STAT_AT` 14 | directory | path | `rx_fs_attr_t` |
+
+Types: 1 file, 2 directory, 3 device (`/dev/null`, `/dev/zero`; step 10).
 
 `rx_fs_attr_t` is `{ u32 type; u32 mode; u64 size; u64 ino; u64 nlink;
 i64 mtime_ns; u32 read_only; u32 pad; }`. Times are from the monotonic

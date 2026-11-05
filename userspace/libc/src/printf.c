@@ -5,8 +5,9 @@
 // https://opensource.org/licenses/MIT
 
 // printf formatting: flags "-+ #0", width and precision (also "*"),
-// lengths hh h l ll z j t, conversions d i u o x X c s p %. Floating point
-// (%f %e %g) comes in step 10 and prints "?" for now.
+// lengths hh h l ll z j t L, conversions d i u o x X c s p % f F e E g G
+// (a and A print as e). Floating point is converted with long double
+// arithmetic: exact to about 18 significant digits, zeros after that.
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -15,6 +16,122 @@
 #include <unistd.h>
 
 typedef void (*sink_fn)(void *ctx, const char *s, size_t n);
+
+#define MAX_SIG 18
+
+// Decimal digits of v > 0: `n` significant digits, rounded, in d[] (n may
+// be 0: the result is then 0 or a carry to "1"). Returns the decimal
+// exponent of the first digit (v ~ d0.d1d2... x 10^exp); *n may grow by
+// one on a carry.
+static int digits(long double v, int *n, char *d) {
+    int e = 0;
+    while (v >= 1e32L) { v /= 1e32L; e += 32; }
+    while (v >= 10.0L) { v /= 10.0L; e++; }
+    while (v < 1e-32L) { v *= 1e32L; e -= 32; }
+    while (v < 1.0L) { v *= 10.0L; e--; }
+    int want = *n;
+    char round = '0';
+    for (int i = 0; i <= want; i++) {
+        int k = 0;
+        if (i < MAX_SIG) {
+            k = (int)v;
+            if (k > 9) k = 9;
+            v = (v - k) * 10.0L;
+        }
+        if (i < want) d[i] = (char)('0' + k);
+        else round = (char)('0' + k);
+    }
+    if (round >= '5') {
+        int i = want - 1;
+        while (i >= 0 && d[i] == '9') d[i--] = '0';
+        if (i >= 0) {
+            d[i]++;
+        } else { // all nines (or no digits): 1 followed by zeros, one place up
+            memmove(d + 1, d, (size_t)(want > 0 ? want : 0));
+            d[0] = '1';
+            e++;
+            if (want == 0) *n = 1;
+        }
+    }
+    return e;
+}
+
+// Format |v| for conversion f, e or g (lower case) into out; returns the length
+static int fmt_float(char *out, long double v, char conv, int prec, int alt) {
+    char d[600];
+    int n = 0, len = 0;
+    if (prec < 0) prec = 6;
+    if (prec > 300) prec = 300;
+    if (v != v) return (int)(strcpy(out, "nan"), 3);
+    if (v > 1.7e308L * 1e10L) return (int)(strcpy(out, "inf"), 3);
+    int strip = 0;
+    if (conv == 'g') {
+        int p = prec ? prec : 1;
+        int x = 0;
+        if (v != 0) {
+            n = p;
+            x = digits(v, &n, d);
+        }
+        if (x < p && x >= -4) {
+            conv = 'f';
+            prec = p - 1 - x;
+        } else {
+            conv = 'e';
+            prec = p - 1;
+        }
+        strip = !alt;
+    }
+    if (conv == 'e') {
+        int e = 0;
+        n = prec + 1;
+        if (v == 0) memset(d, '0', (size_t)n);
+        else e = digits(v, &n, d);
+        out[len++] = d[0];
+        if (prec || alt) out[len++] = '.';
+        memcpy(out + len, d + 1, (size_t)prec);
+        len += prec;
+        if (strip) {
+            while (out[len - 1] == '0') len--;
+            if (out[len - 1] == '.') len--;
+        }
+        out[len++] = 'e';
+        out[len++] = e < 0 ? '-' : '+';
+        if (e < 0) e = -e;
+        if (e >= 100) out[len++] = (char)('0' + e / 100);
+        out[len++] = (char)('0' + e / 10 % 10);
+        out[len++] = (char)('0' + e % 10);
+        return len;
+    }
+    // f: digits down to 10^-prec
+    int e = -1;
+    if (v != 0) {
+        int x = 0;
+        // first find the exponent, then ask for exactly the digits needed
+        long double t = v;
+        while (t >= 10.0L) { t /= 10.0L; x++; }
+        while (t < 1.0L) { t *= 10.0L; x--; }
+        n = x + 1 + prec;
+        if (n > 560) n = 560;
+        if (n >= 0) e = digits(v, &n, d);
+        else n = 0;
+    }
+    // integer part
+    if (e < 0) {
+        out[len++] = '0';
+    } else {
+        for (int i = 0; i <= e; i++) out[len++] = i < n ? d[i] : '0';
+    }
+    if (prec || alt) out[len++] = '.';
+    for (int k = 1; k <= prec; k++) {
+        int i = e + k; // index into d
+        out[len++] = i >= 0 && i < n ? d[i] : '0';
+    }
+    if (strip && prec) {
+        while (out[len - 1] == '0') len--;
+        if (out[len - 1] == '.') len--;
+    }
+    return len;
+}
 
 static void pad(sink_fn out, void *ctx, char c, int n) {
     char buf[32];
@@ -67,9 +184,10 @@ int __format(sink_fn out, void *ctx, const char *fmt, va_list ap) {
                 while (*fmt >= '0' && *fmt <= '9') prec = prec * 10 + (*fmt++ - '0');
             }
         }
-        int len = 0; // 1 h, 2 hh, 3 l, 4 ll/j/z/t
+        int len = 0, ldbl = 0; // 1 h, 2 hh, 3 l, 4 ll/j/z/t
         for (;; fmt++) {
-            if (*fmt == 'h') len = len == 1 ? 2 : 1;
+            if (*fmt == 'L') ldbl = 1;
+            else if (*fmt == 'h') len = len == 1 ? 2 : 1;
             else if (*fmt == 'l') len = len == 3 ? 4 : 3;
             else if (*fmt == 'z' || *fmt == 'j' || *fmt == 't') len = 4;
             else break;
@@ -78,7 +196,7 @@ int __format(sink_fn out, void *ctx, const char *fmt, va_list ap) {
         if (!conv) break;
         fmt++;
 
-        char num[72];
+        char num[640];
         const char *body = num;
         size_t blen = 0;
         const char *prefix = "";
@@ -138,11 +256,21 @@ int __format(sink_fn out, void *ctx, const char *fmt, va_list ap) {
             is_num = 1;
             break;
         }
-        case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A':
-            (void)va_arg(ap, double);
-            num[0] = '?';
-            blen = 1;
+        case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A': {
+            long double v = ldbl ? va_arg(ap, long double) : va_arg(ap, double);
+            int neg = v < 0 || (v == 0 && 1.0L / v < 0);
+            if (neg) v = -v;
+            char c = conv | 0x20;
+            if (c == 'a') c = 'e';
+            blen = (size_t)fmt_float(num, v, c, prec, alt);
+            if (conv >= 'A' && conv <= 'Z')
+                for (size_t i = 0; i < blen; i++) if (num[i] >= 'a' && num[i] <= 'z') num[i] -= 32;
+            prefix = neg ? "-" : plus ? "+" : space ? " " : "";
+            is_num = 1;
+            prec = -1; // the precision is used up; '0' pads with zeros
+            if (num[0] == 'n' || num[0] == 'i' || num[0] == 'N' || num[0] == 'I') zero = 0;
             break;
+        }
         default:
             // Unknown conversion: print it as written
             EMIT("%", 1);
