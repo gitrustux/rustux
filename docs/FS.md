@@ -11,10 +11,12 @@ library (`open`, `read`, `opendir`, ...; `docs/USERSPACE.md`).
 | `/` | tmpfs | in memory, writable; lost at reboot |
 | `/tmp` | tmpfs | |
 | `/root` | tmpfs | root's home (`$HOME`); the shell starts here |
+| `/etc` | tmpfs | settings (`hostname`, `timezone`, `adjtime`), copied from `/boot/etc` at start |
 | `/boot` | bootfs | the boot image, read-only |
 | `/bin` | bootfs | `/boot/bin` mounted again: the programs |
+| `/usr` | bootfs | `/boot/usr` mounted again (`/usr/share/zoneinfo/zones`) |
 
-Writes, creates, renames and removals under `/boot` and `/bin` fail with
+Writes, creates, renames and removals under `/boot`, `/bin` and `/usr` fail with
 `EROFS`. Files on disk come in phase B (FAT32 in step 14, ext2/ext4 in
 steps 15-16), mounted into this tree.
 
@@ -93,8 +95,8 @@ directory into itself), `EBADF` (reading a write-only connection),
 
 ## Boot image (bootfs) layout
 
-Built by `build.rs` from `files/test.txt` and every file in
-`userspace/bin/`. Little-endian:
+Built by `build.rs` from every file under `files/` (same path: `files/etc/hostname`
+is `etc/hostname`) and every file in `userspace/bin/` (as `bin/<name>`). Little-endian:
 
 ```
 offset 0   u32 magic 0x52555458 ("RUTX")

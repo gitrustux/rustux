@@ -37,12 +37,7 @@ const QEMU_DEBUGCON_PORT: u16 = 0xE9;
 /// Messages appear in the console when using `-debugcon` flag.
 fn qemu_debugcon_write_byte(b: u8) {
     unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") QEMU_DEBUGCON_PORT,
-            in("al") b,
-            options(nostack, nomem)
-        );
+        crate::klog::put(b);
     }
 }
 

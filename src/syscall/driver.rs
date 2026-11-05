@@ -15,16 +15,23 @@ use crate::kobj::interrupt::Interrupt;
 use crate::kobj::{KObject, Rights};
 use alloc::sync::Arc;
 
-/// Check that `h` is a resource handle with WRITE
-pub fn require_resource(h: u32) -> R<()> {
+/// Check that `h` is the root resource (or, with `also`, a resource of
+/// that kind) with WRITE
+pub fn require_resource_kind(h: u32, also: Option<u32>) -> R<()> {
     let (obj, rights) = lookup(h, 0)?;
-    if !matches!(obj, KObject::Resource(_)) {
-        return Err(RxStatus::ERR_WRONG_TYPE);
-    }
+    let KObject::Resource(r) = obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
     if !rights.has(Rights::WRITE) {
         return Err(RxStatus::ERR_ACCESS_DENIED);
     }
+    if r.kind != crate::kobj::interrupt::kind::ROOT && Some(r.kind) != also {
+        return Err(RxStatus::ERR_ACCESS_DENIED);
+    }
     Ok(())
+}
+
+/// Check that `h` is the root resource with WRITE
+pub fn require_resource(h: u32) -> R<()> {
+    require_resource_kind(h, None)
 }
 
 fn interrupt_of(h: u32, right: u32) -> R<Arc<Interrupt>> {
@@ -36,17 +43,26 @@ fn interrupt_of(h: u32, right: u32) -> R<Arc<Interrupt>> {
     Ok(i)
 }
 
-/// debuglog_create(resource, options, *out) — a debug log handle (needs
-/// the root resource)
+/// Option of debuglog_create: a read-only handle for the kernel log
+/// (needs no resource), as Zircon's ZX_LOG_FLAG_READABLE
+pub const LOG_FLAG_READABLE: usize = 0x4000_0000;
+
+/// debuglog_create(resource, options, *out) — a debug log handle: for
+/// writing (needs the root resource) or, with LOG_FLAG_READABLE, for
+/// reading the kernel log (anyone)
 pub fn sys_debuglog_create(args: SyscallArgs) -> SyscallRet {
     let (res, options, out) = (args.arg_u32(0), args.arg(1), args.arg(2));
     ret((|| {
-        require_resource(res)?;
-        if options != 0 {
-            return Err(RxStatus::ERR_INVALID_ARGS);
-        }
+        let rights = match options {
+            0 => {
+                require_resource(res)?;
+                Rights::LOG
+            }
+            LOG_FLAG_READABLE => Rights::BASIC | Rights::READ,
+            _ => return Err(RxStatus::ERR_INVALID_ARGS),
+        };
         user::check(out, 4, true)?;
-        let v = install(KObject::DebugLog(crate::kobj::debuglog::DebugLog::new()), Rights::LOG)?;
+        let v = install(KObject::DebugLog(crate::kobj::debuglog::DebugLog::new()), rights)?;
         user::write_u32(out, v)?;
         Ok(0)
     })())
@@ -67,6 +83,47 @@ pub fn sys_debuglog_write(args: SyscallArgs) -> SyscallRet {
         }
         let bytes = user::read_bytes(buf, len)?;
         log.write(&bytes);
+        Ok(0)
+    })())
+}
+
+/// debuglog_read(handle, options, *buf, len) — kernel log bytes not read
+/// yet through this handle (from the oldest kept, 64 KiB); SHOULD_WAIT when
+/// there are none. Returns the count.
+pub fn sys_debuglog_read(args: SyscallArgs) -> SyscallRet {
+    let (h, options, buf, len) = (args.arg_u32(0), args.arg(1), args.arg(2), args.arg(3));
+    ret((|| {
+        let (obj, rights) = lookup(h, 0)?;
+        let KObject::DebugLog(log) = obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+        if !rights.has(Rights::READ) {
+            return Err(RxStatus::ERR_ACCESS_DENIED);
+        }
+        if options != 0 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        user::check(buf, len, true)?;
+        let mut tmp = alloc::vec![0u8; len.min(crate::klog::RING)];
+        let n = log.read(&mut tmp);
+        if n == 0 {
+            return Err(RxStatus::ERR_SHOULD_WAIT);
+        }
+        user::write_bytes(buf, &tmp[..n])?;
+        Ok(n)
+    })())
+}
+
+/// resource_create(parent, kind, *out) — a narrower resource (only
+/// kind 1, POWER, so far) from the root resource
+pub fn sys_resource_create(args: SyscallArgs) -> SyscallRet {
+    let (parent, kind, out) = (args.arg_u32(0), args.arg_u32(1), args.arg(2));
+    ret((|| {
+        require_resource(parent)?;
+        if kind != crate::kobj::interrupt::kind::POWER {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        user::check(out, 4, true)?;
+        let v = install(KObject::Resource(crate::kobj::interrupt::Resource::new(kind)), Rights::RESOURCE)?;
+        user::write_u32(out, v)?;
         Ok(0)
     })())
 }

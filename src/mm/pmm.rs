@@ -529,7 +529,7 @@ const MIN_USABLE: PAddr = 0x10_0000;
 
 fn dbg(s: &str) {
     for &b in s.as_bytes() {
-        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack)) };
+        unsafe { crate::klog::put(b) };
     }
 }
 
@@ -549,7 +549,7 @@ fn dbg_hex(v: u64) {
     dbg("0x");
     while i > 0 {
         i -= 1;
-        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack)) };
+        unsafe { crate::klog::put(buf[i]) };
     }
 }
 
@@ -567,7 +567,7 @@ fn dbg_dec(v: u64) {
     }
     while i > 0 {
         i -= 1;
-        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack)) };
+        unsafe { crate::klog::put(buf[i]) };
     }
 }
 

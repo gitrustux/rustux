@@ -34,6 +34,7 @@
 pub mod driver;
 pub mod memory;
 pub mod object;
+pub mod system;
 pub mod task;
 pub mod user;
 
@@ -307,6 +308,8 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x08 => task::sys_thread_create(args),
         0x09 => task::sys_task_kill(args),
         0x0A => task::sys_object_get_info(args),
+        0x0C => task::sys_object_get_child(args),
+        0x0D => task::sys_object_get_property(args),
 
         // Memory / VMO (0x10-0x1F)
         0x10 => memory::sys_vmo_create(args),
@@ -340,10 +343,11 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x32 => task::sys_handle_replace(args),
 
         // Time (0x40-0x4F)
-        0x40 => sys_clock_get(args),
+        0x40 => system::sys_clock_get(args),
         0x41 => object::sys_timer_create(args),
         0x42 => object::sys_timer_set(args),
         0x43 => object::sys_timer_cancel(args),
+        0x44 => system::sys_clock_set_utc(args),
 
         // Debug (0x50-0x5F)
         0x50 => sys_debug_write(args),
@@ -353,6 +357,7 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x52 => ok_to_ret(crate::arch::amd64::percpu::online_count()),
         0x53 => driver::sys_debuglog_create(args),
         0x54 => driver::sys_debuglog_write(args),
+        0x55 => driver::sys_debuglog_read(args),
 
         // Drivers (0x80-0x8F)
         0x80 => driver::sys_interrupt_create(args),
@@ -361,6 +366,12 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x83 => driver::sys_interrupt_destroy(args),
         0x84 => driver::sys_ioports_request(args),
         0x85 => driver::sys_ioports_release(args),
+        0x86 => driver::sys_resource_create(args),
+
+        // System (0x90-0x9F)
+        0x90 => system::sys_system_get_version(args),
+        0x91 => system::sys_system_get_stats(args),
+        0x92 => system::sys_system_powerctl(args),
 
         // yield(): give up the CPU (tests, and waiting for a full console)
         0x72 => sys_yield(args),
@@ -397,15 +408,6 @@ fn sys_handle_close(args: SyscallArgs) -> SyscallRet {
 
 // Jobs & Handles syscalls
 
-// Time syscalls
-fn sys_clock_get(args: SyscallArgs) -> SyscallRet {
-    let _clock_id = args.arg_u32(0);
-    // Return current time in nanoseconds (placeholder)
-    // Use the TSC for now
-    use crate::arch::amd64::tsc;
-    let time_ns = tsc::tsc_to_ns(unsafe { tsc::rdtsc() });
-    ok_to_ret_isize(time_ns as isize)
-}
 
 
 // Debug syscalls
@@ -421,7 +423,7 @@ fn sys_debug_write(args: SyscallArgs) -> SyscallRet {
     match user::read_bytes(ptr, len.min(4096)) {
         Ok(bytes) => {
             for &c in &bytes {
-                unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") c, options(nomem, nostack)) };
+                unsafe { crate::klog::put(c) };
             }
             ok_to_ret_isize(bytes.len() as isize)
         }
@@ -451,18 +453,18 @@ fn sys_yield(_args: SyscallArgs) -> SyscallRet {
             let msg = b"[YIELD] Failed: ";
             for &b in msg {
                 unsafe {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+                    crate::klog::put(b);
                 }
             }
             for b in e.as_bytes() {
                 unsafe {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") *b, options(nomem, nostack));
+                    crate::klog::put(*b);
                 }
             }
             let msg = b"\n";
             for &b in msg {
                 unsafe {
-                    core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+                    crate::klog::put(b);
                 }
             }
             err_to_ret(RxStatus::ERR_INVALID_ARGS)

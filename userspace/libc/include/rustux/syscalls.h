@@ -98,12 +98,45 @@ typedef int64_t rx_status_t;
 #define RX_PA_FD          0x30    // a file descriptor; argument = fd | kind << 12
 #define RX_PA_ROOT_RESOURCE 0x3F  // the root resource (init, drivers)
 #define RX_PA_KERNEL_INPUT  0xE0  // Rustux: kernel input channel (init)
+#define RX_PA_POWER_RESOURCE 0xE1 // Rustux: the power resource (reboot, poweroff)
+#define RX_PA_JOB_SYSTEM    0xE2  // Rustux: the job holding the whole system (ps, kill)
 #define RX_PA_USER0       0xF0    // handles a parent passes to a child
 #define RX_PA_USER1       0xF1
 #define RX_PA_USER2       0xF2
 #define RX_PA_HND(type, arg) (((uint32_t)(type) & 0xFF) | (((uint32_t)(arg) & 0xFFFF) << 16))
 
-#define RX_INFO_PROCESS 3
+// object_get_info topics (Zircon values)
+#define RX_INFO_HANDLE_BASIC     2
+#define RX_INFO_PROCESS          3
+#define RX_INFO_PROCESS_THREADS  4   // u64 koids
+#define RX_INFO_JOB_CHILDREN     6   // u64 koids
+#define RX_INFO_JOB_PROCESSES    7   // u64 koids
+#define RX_INFO_TASK_STATS      11
+#define RX_INFO_TASK_RUNTIME    25
+
+typedef struct {
+    uint64_t koid;          // 0 for objects other than jobs, processes, threads
+    uint32_t rights;
+    uint32_t type;          // RX_OBJ_TYPE_*
+    uint64_t related_koid;  // a process's job, a thread's process, a job's parent
+} rx_info_handle_basic_t;
+
+typedef struct {
+    uint64_t mem_mapped_bytes;
+    uint64_t mem_private_bytes;   // memory committed in the VMOs it maps
+    uint64_t mem_shared_bytes;
+    uint64_t mem_scaled_shared_bytes;
+} rx_info_task_stats_t;
+
+typedef struct {
+    int64_t cpu_time;   // ns
+    int64_t queue_time;
+    int64_t page_fault_time;
+    int64_t lock_contention_time;
+} rx_info_task_runtime_t;
+
+#define RX_PROP_NAME 3
+#define RX_MAX_NAME_LEN 32
 typedef struct {
     int64_t return_code;
     int64_t start_time;
@@ -210,6 +243,12 @@ static inline rx_status_t rx_task_kill(rx_handle_t h) { return RX_SYS(0x09, h, 0
 static inline rx_status_t rx_object_get_info(rx_handle_t h, uint32_t topic, void *buf, uint64_t size, uint64_t *actual, uint64_t *avail) {
     return RX_SYS6(0x0A, h, topic, buf, size, actual, avail);
 }
+static inline rx_status_t rx_object_get_child(rx_handle_t h, uint64_t koid, uint32_t rights, rx_handle_t *out) {
+    return RX_SYS(0x0C, h, koid, rights, out);
+}
+static inline rx_status_t rx_object_get_property(rx_handle_t h, uint32_t prop, void *buf, uint64_t len) {
+    return RX_SYS(0x0D, h, prop, buf, len);
+}
 static inline rx_status_t rx_job_create(rx_handle_t parent, uint32_t options, rx_handle_t *out) { return RX_SYS(0x30, parent, options, out, 0); }
 static inline rx_status_t rx_handle_replace(rx_handle_t h, uint32_t rights, rx_handle_t *out) { return RX_SYS(0x32, h, rights, out, 0); }
 
@@ -241,8 +280,44 @@ static inline rx_status_t rx_debuglog_create(rx_handle_t resource, uint32_t opti
 static inline rx_status_t rx_debuglog_write(rx_handle_t h, uint32_t options, const void *buf, uint64_t len) {
     return RX_SYS(0x54, h, options, buf, len);
 }
+// With RX_LOG_FLAG_READABLE, debuglog_create needs no resource and the
+// handle reads the kernel log: debuglog_read returns the byte count, or
+// RX_ERR_SHOULD_WAIT when everything has been read
+#define RX_LOG_FLAG_READABLE 0x40000000u
+static inline rx_status_t rx_debuglog_read(rx_handle_t h, uint32_t options, void *buf, uint64_t len) {
+    return RX_SYS(0x55, h, options, buf, len);
+}
 
-static inline uint64_t rx_clock_get_monotonic(void) { return (uint64_t)RX_SYS(0x40, 0, 0, 0, 0); }
+// Resources: a narrower resource from the root resource
+#define RX_RSRC_KIND_POWER 1
+static inline rx_status_t rx_resource_create(rx_handle_t parent, uint32_t kind, rx_handle_t *out) {
+    return RX_SYS(0x86, parent, kind, out, 0);
+}
+
+// System information and power
+typedef struct {
+    uint64_t total_bytes;     // memory the kernel manages
+    uint64_t free_bytes;
+    uint64_t boot_time;       // monotonic ns when the kernel started its clock
+    uint64_t uptime;          // ns
+    uint64_t cpus;            // online
+    uint64_t idle_time;       // ns all CPUs spent halted
+    uint64_t threads;         // running threads
+} rx_system_stats_t;
+static inline rx_status_t rx_system_get_version(char *buf, uint64_t len) { return RX_SYS(0x90, buf, len, 0, 0); }
+static inline rx_status_t rx_system_get_stats(rx_system_stats_t *s) { return RX_SYS(0x91, s, sizeof *s, 0, 0); }
+#define RX_SYSTEM_POWERCTL_REBOOT   1u
+#define RX_SYSTEM_POWERCTL_POWEROFF 2u
+// Needs the root or the power resource; returns only on failure
+static inline rx_status_t rx_system_powerctl(rx_handle_t resource, uint32_t cmd) { return RX_SYS(0x92, resource, cmd, 0, 0); }
+
+#define RX_CLOCK_MONOTONIC 0
+#define RX_CLOCK_UTC       1
+static inline uint64_t rx_clock_get_monotonic(void) { return (uint64_t)RX_SYS(0x40, RX_CLOCK_MONOTONIC, 0, 0, 0); }
+// ns since 1970 (UTC), from the real-time clock at boot
+static inline int64_t rx_clock_get_utc(void) { return RX_SYS(0x40, RX_CLOCK_UTC, 0, 0, 0); }
+// Needs the root resource
+static inline rx_status_t rx_clock_set_utc(rx_handle_t resource, int64_t utc_ns) { return RX_SYS(0x44, resource, utc_ns, 0, 0); }
 static inline rx_status_t rx_timer_create(uint32_t options, uint32_t clock_id, rx_handle_t *out) { return RX_SYS(0x41, options, clock_id, out, 0); }
 static inline rx_status_t rx_timer_set(rx_handle_t h, uint64_t deadline, uint64_t slack) { return RX_SYS(0x42, h, deadline, slack, 0); }
 static inline rx_status_t rx_timer_cancel(rx_handle_t h) { return RX_SYS(0x43, h, 0, 0, 0); }

@@ -53,12 +53,7 @@ fn qemu_print(s: &str) {
     const QEMU_DEBUGCON_PORT: u16 = 0xE9;
     for byte in s.bytes() {
         unsafe {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") QEMU_DEBUGCON_PORT,
-                in("al") byte,
-                options(nostack, nomem)
-            );
+            crate::klog::put(byte);
         }
     }
 }

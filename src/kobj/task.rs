@@ -92,6 +92,12 @@ impl Job {
         Ok(())
     }
 
+    /// Live child jobs and processes
+    pub fn children(&self) -> (Vec<Arc<Job>>, Vec<Arc<Process>>) {
+        let c = self.children.lock();
+        (c.jobs.iter().filter_map(|w| w.upgrade()).collect(), c.processes.iter().filter_map(|w| w.upgrade()).collect())
+    }
+
     /// Mark this job and its child jobs killed (no new children) and return
     /// every live process in the tree
     pub fn kill_tree(&self) -> Vec<Arc<Process>> {
@@ -142,6 +148,8 @@ pub struct Process {
     pub name: alloc::string::String,
     /// I/O ports this process may use (`ioports_request`); None = none
     pub io_map: SpinMutex<Option<alloc::boxed::Box<[u8; crate::arch::amd64::descriptor::IO_MAP_BYTES]>>>,
+    /// CPU time used by all its threads, ns
+    pub runtime_ns: AtomicU64,
     inner: SpinMutex<ProcInner>,
 }
 
@@ -175,6 +183,7 @@ impl Process {
             handles: SpinMutex::new(HandleTable::new()),
             name: alloc::string::String::from(name),
             io_map: SpinMutex::new(None),
+            runtime_ns: AtomicU64::new(0),
             inner: SpinMutex::new(ProcInner { state: ProcState::Initial, threads: Vec::new(), return_code: 0, start_time: 0 }),
         });
         job.add_process(&p)?;
@@ -183,6 +192,11 @@ impl Process {
 
     pub fn state(&self) -> ProcState {
         self.inner.lock().state
+    }
+
+    /// Scheduler ids of its running threads
+    pub fn thread_ids(&self) -> Vec<u32> {
+        self.inner.lock().threads.clone()
     }
 
     /// Record a newly started thread. `first` is set by process_start,
@@ -293,6 +307,8 @@ pub struct Thread {
     pub signals: SignalState,
     pub koid: u64,
     pub process: Arc<Process>,
+    /// CPU time used, ns
+    pub runtime_ns: AtomicU64,
     inner: SpinMutex<(ThreadState, u32)>,
 }
 
@@ -305,6 +321,7 @@ impl Thread {
             signals: SignalState::new(0),
             koid: new_koid(),
             process: process.clone(),
+            runtime_ns: AtomicU64::new(0),
             inner: SpinMutex::new((ThreadState::New, 0)),
         }))
     }
@@ -326,6 +343,12 @@ impl Thread {
         }
         *i = (ThreadState::Running, tid);
         Ok(())
+    }
+
+    /// Add CPU time (scheduler)
+    pub fn charge(&self, ns: u64) {
+        self.runtime_ns.fetch_add(ns, Ordering::Relaxed);
+        self.process.runtime_ns.fetch_add(ns, Ordering::Relaxed);
     }
 
     /// The thread has stopped for good

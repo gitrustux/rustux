@@ -24,8 +24,10 @@
 
 #include <rustux/console.h>
 #include <rustux/process.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static rx_handle_t resource;     // root resource, passed to the driver
@@ -188,21 +190,45 @@ static void start_driver(void) {
 static void start_shell(void) {
     rx_handle_t ours, theirs;
     rx_channel_create(0, &ours, &theirs);
+    rx_handle_t power = 0;
+    if (resource) rx_resource_create(resource, RX_RSRC_KIND_POWER, &power);
     rx_spawn_handle_t hs[] = {
         { RX_PA_HND(RX_PA_FD, 0), console_copy() },
         { RX_PA_HND(RX_PA_FD, 1), console_copy() },
         { RX_PA_HND(RX_PA_FD, 2), console_copy() },
         { RX_PA_USER0, theirs },
+        { RX_PA_POWER_RESOURCE, power },
     };
     char *argv[] = { "shell", 0 };
     char *envp[] = { "PATH=/bin", "HOME=/root", "PWD=/root", "SHELL=/bin/shell", "USER=root", 0 };
     // A fresh shell starts with no leftover interrupt
     rx_object_signal(con_client, RX_CONSOLE_SIGNAL_INTERRUPT, 0);
-    if (rx_spawn("/bin/shell", argv, envp, RX_SPAWN_CLONE_NS, hs, 4, &sh_proc) != RX_OK) {
+    if (rx_spawn("/bin/shell", argv, envp, RX_SPAWN_CLONE_NS, hs, power ? 5 : 4, &sh_proc) != RX_OK) {
         printf("init: failed to spawn shell!\n");
         rx_exit(1);
     }
     sh_ctl = ours;
+}
+
+// The real-time clock holds local time when /etc/adjtime says LOCAL (as
+// Windows keeps it): the kernel read it as UTC, so correct the clock by
+// the offset of the zone in /etc/timezone
+static void adjust_clock(void) {
+    char buf[128] = "";
+    int fd = open("/etc/adjtime", O_RDONLY);
+    if (fd < 0) return;
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return;
+    buf[n] = 0;
+    if (!strstr(buf, "LOCAL")) return;
+    time_t wall = (time_t)(rx_clock_get_utc() / 1000000000); // actually local time
+    struct tm tm;
+    gmtime_r(&wall, &tm);
+    tm.tm_isdst = -1;
+    time_t utc = mktime(&tm);
+    rx_clock_set_utc(resource, (int64_t)utc * 1000000000 + rx_clock_get_utc() % 1000000000);
+    printf("init: the hardware clock keeps local time (/etc/adjtime); clock set to %s", ctime(&utc));
 }
 
 // A request from the shell
@@ -252,6 +278,7 @@ int main(void) {
     printf("Init process (PID 1) starting...\n");
     rx_handle_t bootfs = rx_take_startup_handle(RX_PA_VMO_BOOTFS);
     if (bootfs) start_fsd(bootfs);
+    adjust_clock();
     start_driver();
     printf("Spawning shell...\n\n");
     start_shell();

@@ -107,6 +107,9 @@ pub mod sync;
 // Process management
 pub mod process;
 
+/// Kernel log (debug port and ring buffer for dmesg)
+pub mod klog;
+
 // Filesystem
 
 // Device drivers

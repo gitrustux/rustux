@@ -213,7 +213,7 @@ pub fn now_ns() -> u64 {
 /// Write to the QEMU debug console (port 0xE9; ignored on hardware)
 pub fn debugcon(s: &str) {
     for b in s.bytes() {
-        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack, preserves_flags)) };
+        unsafe { crate::klog::put(b) };
     }
 }
 

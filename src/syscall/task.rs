@@ -135,7 +135,6 @@ pub fn sys_thread_exit(_args: SyscallArgs) -> SyscallRet {
 
 /// process_exit(return_code) — never returns
 pub fn sys_process_exit(args: SyscallArgs) -> SyscallRet {
-    crate::kobj::debugcon("[EXIT]\n");
     run::exit_current(args.arg_i64(0))
 }
 
@@ -194,32 +193,188 @@ pub fn sys_task_kill(args: SyscallArgs) -> SyscallRet {
 }
 
 /// object_get_info topics (Zircon values)
+// object_get_info topics (Zircon values)
+const INFO_HANDLE_BASIC: u32 = 2;
 const INFO_PROCESS: u32 = 3;
+const INFO_PROCESS_THREADS: u32 = 4;
+const INFO_JOB_CHILDREN: u32 = 6;
+const INFO_JOB_PROCESSES: u32 = 7;
+const INFO_TASK_STATS: u32 = 11;
+const INFO_TASK_RUNTIME: u32 = 25;
 
-/// object_get_info(handle, topic, *buffer, buffer_size, *actual, *avail)
-/// Only ZX_INFO_PROCESS (3) for now.
+/// The thread objects of a process that are running
+fn threads_of(p: &Process) -> alloc::vec::Vec<Arc<Thread>> {
+    let tids = p.thread_ids();
+    let table = crate::process::table::PROCESS_TABLE.lock();
+    tids.iter().filter_map(|&t| table.get(t).map(|e| e.thread.clone())).collect()
+}
+
+/// Koid of a task object (0 for other objects, which have none yet)
+fn koid_of(o: &KObject) -> (u64, u64) {
+    match o {
+        KObject::Job(j) => (j.koid, j.parent.as_ref().map_or(0, |p| p.koid)),
+        KObject::Process(p) => (p.koid, p.job.koid),
+        KObject::Thread(t) => (t.koid, t.process.koid),
+        _ => (0, 0),
+    }
+}
+
+/// object_get_info(handle, topic, *buf, size, *actual, *avail). Topics:
+/// HANDLE_BASIC (2), PROCESS (3), PROCESS_THREADS (4), JOB_CHILDREN (6),
+/// JOB_PROCESSES (7), TASK_STATS (11), TASK_RUNTIME (25). For the lists,
+/// `actual` is how many koids were written and `avail` how many exist.
 pub fn sys_object_get_info(args: SyscallArgs) -> SyscallRet {
     let (h, topic, buf, size) = (args.arg_u32(0), args.arg_u32(1), args.arg(2), args.arg(3));
     let (actual, avail) = (args.arg(4), args.arg(5));
     ret((|| {
+        let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let (mut n_actual, mut n_avail) = (1u64, 1u64);
+        let push = |out: &mut alloc::vec::Vec<u8>, v: u64| out.extend_from_slice(&v.to_le_bytes());
+        // A list of koids: as many as fit
+        let list = |out: &mut alloc::vec::Vec<u8>, koids: &[u64], na: &mut u64, nv: &mut u64| {
+            let fit = (size / 8).min(koids.len());
+            for k in &koids[..fit] {
+                out.extend_from_slice(&k.to_le_bytes());
+            }
+            *na = fit as u64;
+            *nv = koids.len() as u64;
+        };
         match topic {
+            INFO_HANDLE_BASIC => {
+                let (obj, rights) = lookup(h, 0)?;
+                let (koid, related) = koid_of(&obj);
+                push(&mut out, koid);
+                out.extend_from_slice(&rights.0.to_le_bytes());
+                out.extend_from_slice(&(obj.obj_type() as u32).to_le_bytes());
+                push(&mut out, related);
+            }
             INFO_PROCESS => {
                 let p = process_of(h, Rights::INSPECT)?;
                 let info = p.info();
                 let n = core::mem::size_of::<task::InfoProcess>();
-                if size < n {
-                    return Err(RxStatus::ERR_BUFFER_TOO_SMALL);
+                out.extend_from_slice(unsafe { core::slice::from_raw_parts(&info as *const _ as *const u8, n) });
+            }
+            INFO_PROCESS_THREADS => {
+                let p = process_of(h, Rights::ENUMERATE)?;
+                let koids: alloc::vec::Vec<u64> = threads_of(&p).iter().map(|t| t.koid).collect();
+                list(&mut out, &koids, &mut n_actual, &mut n_avail);
+            }
+            INFO_JOB_CHILDREN | INFO_JOB_PROCESSES => {
+                let j = job_of(h, Rights::ENUMERATE)?;
+                let (jobs, procs) = j.children();
+                let koids: alloc::vec::Vec<u64> = if topic == INFO_JOB_CHILDREN {
+                    jobs.iter().map(|c| c.koid).collect()
+                } else {
+                    procs.iter().filter(|p| p.state() != task::ProcState::Dead).map(|p| p.koid).collect()
+                };
+                list(&mut out, &koids, &mut n_actual, &mut n_avail);
+            }
+            INFO_TASK_STATS => {
+                // { mapped, private (committed), shared, scaled shared } bytes
+                let p = process_of(h, Rights::INSPECT)?;
+                let (mapped, committed) = p.aspace.stats();
+                for v in [mapped, committed, 0, 0] {
+                    push(&mut out, v);
                 }
-                let bytes = unsafe { core::slice::from_raw_parts(&info as *const _ as *const u8, n) };
-                user::write_bytes(buf, bytes)?;
+            }
+            INFO_TASK_RUNTIME => {
+                // { cpu_time, queue_time, page_fault_time, lock_contention_time } ns
+                let (obj, rights) = lookup(h, 0)?;
+                if !rights.has(Rights::INSPECT) {
+                    return Err(RxStatus::ERR_ACCESS_DENIED);
+                }
+                let cpu = match obj {
+                    KObject::Process(p) => p.runtime_ns.load(core::sync::atomic::Ordering::Relaxed),
+                    KObject::Thread(t) => t.runtime_ns.load(core::sync::atomic::Ordering::Relaxed),
+                    _ => return Err(RxStatus::ERR_WRONG_TYPE),
+                };
+                for v in [cpu, 0, 0, 0] {
+                    push(&mut out, v);
+                }
             }
             _ => return Err(RxStatus::ERR_NOT_SUPPORTED),
         }
-        for out in [actual, avail] {
-            if out != 0 {
-                user::write_u64(out, 1)?;
-            }
+        let is_list = matches!(topic, INFO_PROCESS_THREADS | INFO_JOB_CHILDREN | INFO_JOB_PROCESSES);
+        if !is_list && size < out.len() {
+            return Err(RxStatus::ERR_BUFFER_TOO_SMALL);
         }
+        if !out.is_empty() {
+            user::write_bytes(buf, &out)?;
+        }
+        if actual != 0 {
+            user::write_u64(actual, n_actual)?;
+        }
+        if avail != 0 {
+            user::write_u64(avail, n_avail)?;
+        }
+        Ok(0)
+    })())
+}
+
+/// object_get_child(handle, koid, rights, *out) — a job's child job or
+/// process, or a process's thread, by koid
+pub fn sys_object_get_child(args: SyscallArgs) -> SyscallRet {
+    let (h, koid, rights, out) = (args.arg_u32(0), args.arg(1) as u64, args.arg_u32(2), args.arg(3));
+    ret((|| {
+        user::check(out, 4, true)?;
+        let (obj, have) = lookup(h, 0)?;
+        if !have.has(Rights::ENUMERATE) {
+            return Err(RxStatus::ERR_ACCESS_DENIED);
+        }
+        let (child, base) = match obj {
+            KObject::Job(j) => {
+                let (jobs, procs) = j.children();
+                if let Some(c) = jobs.into_iter().find(|c| c.koid == koid) {
+                    (KObject::Job(c), Rights::JOB)
+                } else if let Some(p) = procs.into_iter().find(|p| p.koid == koid) {
+                    (KObject::Process(p), Rights::PROCESS)
+                } else {
+                    return Err(RxStatus::ERR_NOT_FOUND);
+                }
+            }
+            KObject::Process(p) => {
+                let t = threads_of(&p).into_iter().find(|t| t.koid == koid).ok_or(RxStatus::ERR_NOT_FOUND)?;
+                (KObject::Thread(t), Rights::THREAD)
+            }
+            _ => return Err(RxStatus::ERR_WRONG_TYPE),
+        };
+        // No more rights than the parent handle has
+        let want = if rights & Rights::SAME_RIGHTS != 0 { base } else { rights };
+        if want & !base != 0 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        let v = install(child, want)?;
+        user::write_u32(out, v)?;
+        Ok(0)
+    })())
+}
+
+/// object_get_property(handle, property, *buf, len) — only NAME (3), of a
+/// process (a thread's name is its process's)
+pub fn sys_object_get_property(args: SyscallArgs) -> SyscallRet {
+    let (h, prop, buf, len) = (args.arg_u32(0), args.arg_u32(1), args.arg(2), args.arg(3));
+    ret((|| {
+        const PROP_NAME: u32 = 3;
+        let (obj, rights) = lookup(h, 0)?;
+        if !rights.has(Rights::GET_PROPERTY) {
+            return Err(RxStatus::ERR_ACCESS_DENIED);
+        }
+        if prop != PROP_NAME {
+            return Err(RxStatus::ERR_NOT_SUPPORTED);
+        }
+        let name = match &obj {
+            KObject::Process(p) => p.name.clone(),
+            KObject::Thread(t) => t.process.name.clone(),
+            _ => alloc::string::String::new(),
+        };
+        // NUL-terminated, cut to fit (Zircon names are at most 31 bytes)
+        let mut bytes: alloc::vec::Vec<u8> = name.into_bytes();
+        bytes.truncate(len.saturating_sub(1).min(31));
+        bytes.push(0);
+        if len == 0 {
+            return Err(RxStatus::ERR_BUFFER_TOO_SMALL);
+        }
+        user::write_bytes(buf, &bytes)?;
         Ok(0)
     })())
 }

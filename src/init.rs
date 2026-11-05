@@ -36,7 +36,7 @@ const QEMU_DEBUGCON_PORT: u16 = 0xE9;
 
 fn qemu_debugcon_write_byte(b: u8) {
     unsafe {
-        core::arch::asm!("out dx, al", in("dx") QEMU_DEBUGCON_PORT, in("al") b, options(nostack, nomem));
+        crate::klog::put(b);
     }
 }
 
@@ -274,7 +274,7 @@ fn init_early() {
         // Debug print
         let msg = b"[INIT] Boot allocator initialized\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         // Set up the boot allocator for PMM
@@ -283,7 +283,7 @@ fn init_early() {
         // Debug print
         let msg = b"[INIT] Calling pmm_init_early...\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         // Build the PMM from the UEFI memory map recorded by main.rs. Only
@@ -292,7 +292,7 @@ fn init_early() {
         if !pmm::pmm_init_from_memory_map() {
             let msg = b"[INIT] No memory map recorded: using fixed zones (2-16 MB, 32-128 MB)\n";
             for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                crate::klog::put(byte);
             }
             init_fixed_zones();
         }
@@ -300,7 +300,7 @@ fn init_early() {
         // Debug print
         let msg = b"[INIT] PMM init complete, free pages: \n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         // Print number of free pages
@@ -309,7 +309,7 @@ fn init_early() {
 
         let msg = b"\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         *INIT_STATE.boot_mut() = InitState::Early;
@@ -383,12 +383,7 @@ fn init_memory() {
             // Debug print before heap init
             let msg = b"[INIT] Starting heap initialization...\n";
             for &byte in msg {
-                core::arch::asm!(
-                    "out dx, al",
-                    in("dx") 0xE9u16,
-                    in("al") byte,
-                    options(nomem, nostack)
-                );
+                crate::klog::put(byte);
             }
 
             // Kernel heap: 16 MB of physically contiguous memory from the
@@ -404,7 +399,7 @@ fn init_memory() {
                     Err(_) => {
                         let msg = b"[INIT] FATAL: no 16 MB contiguous block for the kernel heap\n";
                         for &byte in msg {
-                            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                            crate::klog::put(byte);
                         }
                         loop { core::arch::asm!("cli; hlt"); }
                     }
@@ -416,19 +411,19 @@ fn init_memory() {
 
             let msg = b"[INIT] Heap: 16 MB at physical 0x";
             for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                crate::klog::put(byte);
             }
             print_hex(heap_paddr);
             let msg = b"\n";
             for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                crate::klog::put(byte);
             }
 
             crate::mm::heap_init_aligned(heap_start_vaddr as usize, HEAP_SIZE);
 
             let msg = b"[INIT] Heap initialized successfully (16MB)\n";
             for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                crate::klog::put(byte);
             }
 
             crate::mm::dma::dma_self_test();
@@ -476,10 +471,7 @@ fn init_late() {
     unsafe {
         let msg = b"[INIT] Reached init_late()\n";
         for &b in msg {
-            core::arch::asm!("out dx, al",
-                in("dx") 0xE9u16,
-                in("al") b,
-                options(nomem, nostack));
+            crate::klog::put(b);
         }
     }
 
@@ -488,10 +480,7 @@ fn init_late() {
         unsafe {
             let msg = b"[INIT] userspace_test feature NOT enabled - skipping test\n";
             for &b in msg {
-                core::arch::asm!("out dx, al",
-                    in("dx") 0xE9u16,
-                    in("al") b,
-                    options(nomem, nostack));
+                crate::klog::put(b);
             }
         }
     }

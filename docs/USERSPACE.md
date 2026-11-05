@@ -130,11 +130,38 @@ Small C stand-ins until uutils (step 11):
 | `env [-i] [NAME=VALUE]... [COMMAND]` | print the environment or run a command with a changed one |
 | `true`, `false` | exit 0 / 1 |
 | `hello`, `counter [N]`, `args ...` | small examples (`args` shows how the shell split a line) |
+| `ps`, `kill PID...` | list processes (PID, job, threads, memory, CPU time, name); end one |
+| `uptime`, `free [-h]`, `date [-u] [+FORMAT]`, `uname [-a]`, `hostname [NAME]` | system information |
+| `dmesg` | the kernel log |
+| `reboot`, `poweroff` | restart or turn off (need the power resource the shell passes on) |
+| `systest` | 39 checks of process and system information, clocks and time zones |
 | `fstest` | 64 checks of files, directories, two processes on one file, pipes (with a slow reader) |
 | `libctest` | 50 checks of the C library |
 | `spin` | loops forever (stop it with Ctrl+C) |
 | `objtest`, `ipctest`, `spawntest`, `drvtest`, `smptest` | kernel tests (`SYSCALL.md`) |
 | `init`, `fsd`, `shell`, `ps2kbd` | the system itself |
+
+## Time
+
+`time`, `clock_gettime` (`CLOCK_REALTIME`, `CLOCK_MONOTONIC`),
+`gettimeofday`, `nanosleep`, `gmtime`/`localtime` (and `_r`), `mktime`,
+`timegm`, `strftime`, `ctime`/`asctime`, `clock` (CPU time).
+
+The wall clock comes from the hardware real-time clock at boot. The time
+zone is `$TZ`, else `/etc/timezone`: either a POSIX rule
+(`CST6CDT,M3.2.0,M11.1.0`) or a zone name looked up in
+`/usr/share/zoneinfo/zones` (about 70 common zones with today's rules; no
+history of past changes). Both files come from `files/` in the kernel
+repository (served under `/boot` and copied to `/etc` at start, so they can
+be changed until the next boot).
+
+**A computer that also runs Windows** keeps local time in its hardware
+clock. Put `LOCAL` on the third line of `files/etc/adjtime` and the zone
+in `files/etc/timezone` (for example `America/Chicago`), rebuild the
+image, and `init` corrects the clock at start.
+
+Other system calls in the library: `uname` (kernel version, host name from
+`/etc/hostname`), `gethostname`, `getpid` (the process koid).
 
 ## Limits for now
 

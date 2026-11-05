@@ -39,6 +39,11 @@ pub struct Cpu {
     /// TLB flush requests from other CPUs, and how many were done
     pub flush_req: AtomicU64,
     pub flush_ack: AtomicU64,
+    /// Monotonic ns when the current thread started running here (CPU
+    /// time accounting)
+    pub run_start: AtomicU64,
+    /// Monotonic ns this CPU spent idle (halted)
+    pub idle_ns: AtomicU64,
 }
 
 // Each CPU only touches its own `tables` and `boot_rsp` (see module docs)
@@ -57,6 +62,8 @@ impl Cpu {
             cr3: AtomicU64::new(0),
             flush_req: AtomicU64::new(0),
             flush_ack: AtomicU64::new(0),
+            run_start: AtomicU64::new(0),
+            idle_ns: AtomicU64::new(0),
         }
     }
 

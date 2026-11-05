@@ -10,8 +10,11 @@
 //   /          tmpfs (in memory, writable)
 //   /tmp       tmpfs
 //   /root      tmpfs (root's home)
+//   /etc       tmpfs, filled from the boot image's etc/ at start (so the
+//              settings can be changed until the next boot)
 //   /boot      bootfs: the boot image, read-only
 //   /bin       bootfs's bin directory (mounted again)
+//   /usr       bootfs's usr directory (mounted again)
 //
 // init starts fsd with the boot image VMO (PA_VMO_BOOTFS) and the server
 // end of the first root connection (PA_USER0). Every open file or
@@ -583,6 +586,19 @@ int main(void) {
         if (bin) {
             struct node *b = new_node(RX_FS_TYPE_DIR, "bin", root, 0555);
             b->mount = bin;
+        }
+        struct node *usr = child(boot_top, "usr", 3);
+        if (usr) {
+            struct node *u = new_node(RX_FS_TYPE_DIR, "usr", root, 0555);
+            u->mount = usr;
+        }
+        // /etc: a writable copy of the boot image's etc/
+        struct node *etc = new_node(RX_FS_TYPE_DIR, "etc", root, 0755);
+        struct node *src = child(boot_top, "etc", 3);
+        for (struct node *f = src ? src->first : 0; f; f = f->next) {
+            if (f->type != RX_FS_TYPE_FILE) continue;
+            struct node *c = new_node(RX_FS_TYPE_FILE, f->name, etc, 0644);
+            if (c && set_size(c, f->size) == 0) memcpy(c->data, f->rodata, f->size);
         }
     }
     add_conn(first, new_ofd(root, O_RDONLY | O_DIRECTORY));

@@ -48,12 +48,12 @@ pub unsafe fn execute_process(entry: u64, stack_top: u64, cr3: u64) -> ! {
     // Debug: trace execution
     let msg = b"[USPACE] Starting userspace transition\n";
     for &byte in msg {
-        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        crate::klog::put(byte);
     }
 
     let msg = b"[USPACE] About to load CR3\n";
     for &byte in msg {
-        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+        crate::klog::put(byte);
     }
 
     // CRITICAL: Canary reads BEFORE CR3 load to verify kernel mappings
@@ -74,7 +74,7 @@ pub unsafe fn execute_process(entry: u64, stack_top: u64, cr3: u64) -> ! {
         if kernel_text_value == 0 {
             let msg = b"[CANARY] FAIL: Kernel text not mapped!\n";
             for &byte in msg {
-                core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+                crate::klog::put(byte);
             }
             // Halt instead of loading CR3 - CR3 load would fault
             core::arch::asm!(
@@ -87,7 +87,7 @@ pub unsafe fn execute_process(entry: u64, stack_top: u64, cr3: u64) -> ! {
 
         let msg = b"[CANARY] PASS: Kernel text accessible\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         // Canary 2: Read from current stack (RSP)
@@ -109,12 +109,12 @@ pub unsafe fn execute_process(entry: u64, stack_top: u64, cr3: u64) -> ! {
 
         let msg = b"[CANARY] PASS: Kernel stack accessible\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         let msg = b"[CANARY] All verified - loading CR3\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         // Interrupts and `int 0x80` from ring 3 switch to TSS.RSP0. Use the
@@ -126,7 +126,7 @@ pub unsafe fn execute_process(entry: u64, stack_top: u64, cr3: u64) -> ! {
 
         let msg = b"[USPACE] Loading CR3 and entering ring 3\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         // Set up RFLAGS for userspace (interrupts enabled, IOPL 0)

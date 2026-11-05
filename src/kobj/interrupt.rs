@@ -22,16 +22,30 @@ use crate::arch::amd64::mm::RxStatus;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-/// The capability to use hardware (I/O ports, interrupts)
+/// A capability over the system. The root resource allows everything
+/// (hardware access, debug log, clock, power); `resource_create` makes
+/// narrower ones from it, such as the power resource the shell gets.
 pub struct Resource {
     pub signals: SignalState,
+    pub kind: u32,
+}
+
+/// Resource kinds
+pub mod kind {
+    pub const ROOT: u32 = 0;
+    /// Restart and power off (`system_powerctl`)
+    pub const POWER: u32 = 1;
 }
 
 static ROOT_RESOURCE: crate::sync::SpinMutex<Option<Arc<Resource>>> = crate::sync::SpinMutex::new(None);
 
 impl Resource {
     pub fn root() -> Arc<Resource> {
-        ROOT_RESOURCE.lock().get_or_insert_with(|| Arc::new(Resource { signals: SignalState::new(0) })).clone()
+        ROOT_RESOURCE.lock().get_or_insert_with(|| Arc::new(Resource { signals: SignalState::new(0), kind: kind::ROOT })).clone()
+    }
+
+    pub fn new(kind: u32) -> Arc<Resource> {
+        Arc::new(Resource { signals: SignalState::new(0), kind })
     }
 }
 

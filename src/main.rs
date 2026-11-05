@@ -297,6 +297,8 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
         // context is never resumed.
         // Start the other CPU cores (they park until the scheduler can use
         // them)
+        // Wall-clock time from the CMOS real-time clock
+        rustux::arch::amd64::platform::init_clock();
         let aps = rustux::arch::amd64::smp::start_aps();
         debug_print("[SMP] ");
         print_hex(1 + aps as u64);
@@ -555,7 +557,7 @@ pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
         static TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
         if TICKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) == 0 {
             for &b in b"[TICK]\n" {
-                asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack, preserves_flags));
+                rustux::klog::put(b);
             }
         }
         let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
@@ -877,7 +879,7 @@ const QEMU_DEBUGCON_PORT: u16 = 0xE9;
 
 fn qemu_debugcon_write_byte(b: u8) {
     unsafe {
-        asm!("out dx, al", in("dx") QEMU_DEBUGCON_PORT, in("al") b, options(nostack, nomem));
+        rustux::klog::put(b);
     }
 }
 
@@ -890,7 +892,7 @@ fn debug_print(s: &str) {
         return;
     }
     for &b in s.as_bytes() {
-        unsafe { asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack)); }
+        unsafe { rustux::klog::put(b); }
     }
 }
 
@@ -911,7 +913,7 @@ fn print_hex(n: u64) {
     }
     while i > 0 {
         i -= 1;
-        unsafe { asm!("out dx, al", in("dx") 0xE9u16, in("al") digits[i], options(nomem, nostack)); }
+        unsafe { rustux::klog::put(digits[i]); }
     }
 }
 

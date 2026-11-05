@@ -110,7 +110,7 @@ pub fn pic_disable() {
     unsafe {
         let msg = b"[PIC] Disabling 8259A PIC...\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         // Mask all IRQs on both PICs (write 0xFF to data ports)
@@ -119,7 +119,7 @@ pub fn pic_disable() {
 
         let msg = b"[PIC] All IRQs masked\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
     }
 }
@@ -279,7 +279,7 @@ fn ioapic_probe() {
         // Print IOAPIC info
         let msg = b"[IOAPIC] ID=";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
         let mut n = (id >> 24) & 0x0F;  // IOAPIC ID is in bits 24-27
         let mut buf = [0u8; 8];
@@ -292,12 +292,12 @@ fn ioapic_probe() {
         }
         while i > 0 {
             i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            crate::klog::put(buf[i]);
         }
 
         let msg = b" VER=";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
         let mut n = ver & 0xFF;  // Version is in low 8 bits
         let mut buf = [0u8; 8];
@@ -310,12 +310,12 @@ fn ioapic_probe() {
         }
         while i > 0 {
             i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            crate::klog::put(buf[i]);
         }
 
         let msg = b" MAX_REDIR=";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
         let mut n = ((ver >> 16) & 0xFF) + 1;  // Max redirection entry
         let mut buf = [0u8; 8];
@@ -328,12 +328,12 @@ fn ioapic_probe() {
         }
         while i > 0 {
             i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            crate::klog::put(buf[i]);
         }
 
         let msg = b"\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
     }
 }
@@ -363,7 +363,7 @@ pub fn apic_io_init(irq: u8, vector: u8) {
         // Debug: Print what we're about to write
         let msg = b"[IOAPIC] irq=";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
         let mut n = irq;
         let mut buf = [0u8; 8];
@@ -376,12 +376,12 @@ pub fn apic_io_init(irq: u8, vector: u8) {
         }
         while i > 0 {
             i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            crate::klog::put(buf[i]);
         }
 
         let msg = b" vector=";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
         let mut n = vector;
         let mut buf = [0u8; 8];
@@ -394,11 +394,11 @@ pub fn apic_io_init(irq: u8, vector: u8) {
         }
         while i > 0 {
             i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            crate::klog::put(buf[i]);
         }
         let msg = b"\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         let ioapic_sel = (ioapic_base + IOAPIC_IOREGSEL) as *mut u32;
@@ -424,7 +424,7 @@ pub fn apic_io_init(irq: u8, vector: u8) {
 
         let msg = b"[IOAPIC] readback: low=0x";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
         let mut n = read_low;
         let mut buf = [0u8; 16];
@@ -438,12 +438,12 @@ pub fn apic_io_init(irq: u8, vector: u8) {
         }
         while i > 0 {
             i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            crate::klog::put(buf[i]);
         }
 
         let msg = b" high=0x";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
         let mut n = read_high;
         let mut buf = [0u8; 16];
@@ -457,17 +457,17 @@ pub fn apic_io_init(irq: u8, vector: u8) {
         }
         while i > 0 {
             i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            crate::klog::put(buf[i]);
         }
 
         let msg = b"\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
 
         let msg = b"[IOAPIC] configured\n";
         for &byte in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") byte, options(nomem, nostack));
+            crate::klog::put(byte);
         }
     }
 }

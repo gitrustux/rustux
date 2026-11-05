@@ -227,7 +227,7 @@ pub unsafe fn ps2_controller_init() {
     }
     crate::drivers::display::write_str(core::str::from_utf8_unchecked(&line));
     for &b in line.iter() {
-        core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+        crate::klog::put(b);
     }
 }
 

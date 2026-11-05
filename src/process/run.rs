@@ -215,6 +215,7 @@ fn take_cpu(table: &mut crate::process::table::ProcessTable, next: u32) -> (u64,
     n.state = ProcessState::Running;
     let (rsp, cr3, kstack) = (n.kernel_rsp, n.page_table, n.kernel_stack);
     load_ports(&n.thread.process);
+    cpu.run_start.store(crate::kobj::now_ns(), Ordering::Relaxed);
     cpu.set_current(Some(next));
     // Published before CR3 is loaded (TLB shootdowns rely on the order)
     cpu.cr3.store(cr3, Ordering::SeqCst);
@@ -397,7 +398,9 @@ pub fn idle_loop() -> ! {
                 drop(table);
                 // `sti; hlt` takes a pending interrupt only after `hlt`
                 // has started, so a wake IPI cannot be missed
+                let t0 = crate::kobj::now_ns();
                 unsafe { core::arch::asm!("sti", "hlt", "cli", options(nomem, nostack)) };
+                cpu.idle_ns.fetch_add(crate::kobj::now_ns().saturating_sub(t0), Ordering::Relaxed);
                 IDLE_CPUS.fetch_and(!bit, Ordering::AcqRel);
             }
         }
@@ -487,7 +490,15 @@ fn switch_away(state: ProcessState) {
                 return;
             }
         };
-        match pick_next(&mut table, Some(cur)) {
+        let picked = pick_next(&mut table, Some(cur));
+        // Charge the time since it started running (or was last charged:
+        // the timer comes through here, so a thread that keeps the CPU is
+        // charged every tick)
+        if let Some(p) = table.get_mut(cur) {
+            let now = crate::kobj::now_ns();
+            p.thread.charge(now.saturating_sub(cpu.run_start.swap(now, Ordering::Relaxed)));
+        }
+        match picked {
             Some(next) if next == cur => {
                 // Still runnable and nothing else is waiting
                 if let Some(p) = table.get_mut(cur) {

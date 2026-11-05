@@ -30,6 +30,8 @@ int access(const char *path, int mode);
 int ftruncate(int fd, off_t length);
 int truncate(const char *path, off_t length);
 int fsync(int fd);
+int gethostname(char *name, size_t len);
+pid_t getpid(void);
 
 #define SEEK_SET 0
 #define SEEK_CUR 1

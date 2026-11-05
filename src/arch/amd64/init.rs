@@ -261,7 +261,7 @@ unsafe fn switch_to_kernel_stack(stack_vaddr: usize, stack_size: usize, continua
     {
         let msg = b"[STACK] Switching to kernel stack: vaddr=0x";
         for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+            crate::klog::put(b);
         }
         let mut n = stack_vaddr;
         let mut buf = [0u8; 16];
@@ -275,11 +275,11 @@ unsafe fn switch_to_kernel_stack(stack_vaddr: usize, stack_size: usize, continua
         }
         while i > 0 {
             i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            crate::klog::put(buf[i]);
         }
         let msg = b" size=0x";
         for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+            crate::klog::put(b);
         }
         let mut n = stack_size;
         let mut buf = [0u8; 16];
@@ -293,11 +293,11 @@ unsafe fn switch_to_kernel_stack(stack_vaddr: usize, stack_size: usize, continua
         }
         while i > 0 {
             i -= 1;
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") buf[i], options(nomem, nostack));
+            crate::klog::put(buf[i]);
         }
         let msg = b"\n";
         for &b in msg {
-            core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack));
+            crate::klog::put(b);
         }
     }
 

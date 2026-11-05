@@ -81,7 +81,7 @@ unsafe fn checksum_ok(p: u64, len: u32) -> bool {
 }
 
 /// Find a table by signature through the XSDT (or the RSDT)
-unsafe fn find_table(sig: &[u8; 4]) -> Option<u64> {
+pub(crate) unsafe fn find_table(sig: &[u8; 4]) -> Option<u64> {
     let rsdp = RSDP.load(Ordering::Acquire);
     if rsdp == 0 || core::slice::from_raw_parts(phys::<u8>(rsdp), 8) != b"RSD PTR " {
         return None;

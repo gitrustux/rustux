@@ -101,7 +101,7 @@ pub fn dma_free(buf: DmaBuffer) {
 pub fn dma_self_test() -> bool {
     fn out(s: &str) {
         for &b in s.as_bytes() {
-            unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack)) };
+            unsafe { crate::klog::put(b) };
         }
     }
     let free_before = pmm::pmm_count_free_pages();

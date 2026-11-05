@@ -48,7 +48,7 @@ pub type Result<T> = core::result::Result<T, UsbError>;
 pub(crate) fn log(s: &str) {
     crate::drivers::display::write_str(s);
     for &b in s.as_bytes() {
-        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack)) };
+        unsafe { crate::klog::put(b) };
     }
 }
 

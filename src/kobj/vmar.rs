@@ -229,6 +229,23 @@ impl Aspace {
         core::mem::take(&mut inner.maps)
     }
 
+    /// (bytes mapped, bytes of memory committed in the VMOs mapped, each
+    /// VMO counted once)
+    pub fn stats(&self) -> (u64, u64) {
+        let inner = self.inner.lock();
+        let mapped = inner.maps.values().map(|m| m.size).sum();
+        let mut seen: Vec<*const Vmo> = Vec::new();
+        let mut committed = 0u64;
+        for m in inner.maps.values() {
+            let p = Arc::as_ptr(&m.vmo);
+            if !seen.contains(&p) {
+                seen.push(p);
+                committed += m.vmo.committed() as u64 * PAGE;
+            }
+        }
+        (mapped, committed)
+    }
+
     pub fn mapping_count(&self) -> usize {
         self.inner.lock().maps.len()
     }

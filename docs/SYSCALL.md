@@ -198,8 +198,10 @@ if result < 0 {
 | `HANDLE_CLOSE` | 0x07 | Close a handle | ✅ |
 | `THREAD_CREATE` | 0x08 | Create a thread object in a process | ✅ |
 | `TASK_KILL` | 0x09 | Kill a job, process or thread | ✅ |
-| `OBJECT_GET_INFO` | 0x0A | Query an object (`ZX_INFO_PROCESS` only) | ✅ |
+| `OBJECT_GET_INFO` | 0x0A | Query an object (see topics below) | ✅ |
 | ~~`SPAWN_PROCESS`~~ | 0x0B | Removed in step 8 | — |
+| `OBJECT_GET_CHILD` | 0x0C | A job's child job or process, or a process's thread, by koid | ✅ |
+| `OBJECT_GET_PROPERTY` | 0x0D | Read a property (only `NAME`) | ✅ |
 
 **Model** (Zircon): a **job** holds processes and child jobs. A **process**
 owns a handle table and an address space and starts with no threads;
@@ -306,18 +308,38 @@ exception ends with `-1025`.
 
 `object_get_info(rx_handle_t h, uint32_t topic, void *buf, size_t size, size_t *actual, size_t *avail)`
 
-Only topic `ZX_INFO_PROCESS` (3) so far; needs `INSPECT`. Writes
+Topics (Zircon numbers; structs in `<rustux/syscalls.h>`):
 
-```c
-typedef struct {
-    int64_t return_code;
-    int64_t start_time;   // monotonic ns
-    uint32_t flags;       // 1 = STARTED, 2 = EXITED
-    uint32_t padding;
-} rx_info_process_t;
-```
+| Topic | On | Right | Writes |
+|-------|----|-------|--------|
+| `HANDLE_BASIC` 2 | any | — | `{ u64 koid; u32 rights; u32 type; u64 related_koid; }` (koid 0 for objects other than tasks; related: a process's job, a thread's process, a job's parent) |
+| `PROCESS` 3 | process | `INSPECT` | `{ i64 return_code; i64 start_time; u32 flags (1 STARTED, 2 EXITED); u32 pad; }` |
+| `PROCESS_THREADS` 4 | process | `ENUMERATE` | koids (u64) of its running threads |
+| `JOB_CHILDREN` 6 | job | `ENUMERATE` | koids of its child jobs |
+| `JOB_PROCESSES` 7 | job | `ENUMERATE` | koids of its processes that have not exited |
+| `TASK_STATS` 11 | process | `INSPECT` | `{ u64 mem_mapped_bytes; u64 mem_private_bytes; u64 shared; u64 scaled_shared; }` (private = memory committed in the VMOs it maps, each counted once) |
+| `TASK_RUNTIME` 25 | process, thread | `INSPECT` | `{ i64 cpu_time; i64 queue_time; i64 page_fault_time; i64 lock_contention_time; }` ns (only `cpu_time` is measured) |
 
-`actual` and `avail` (may be NULL) are set to 1.
+For the koid lists, as many koids as fit in `size` are written; `actual`
+gets how many, `avail` how many exist. For the others both are 1. A buffer
+smaller than the struct gives `ERR_BUFFER_TOO_SMALL`.
+
+CPU time is charged when a thread leaves the CPU and on every timer tick
+while it keeps it.
+
+#### OBJECT_GET_CHILD (0x0C)
+
+`object_get_child(rx_handle_t h, uint64_t koid, uint32_t rights, rx_handle_t *out)`
+— needs `ENUMERATE`. From a job: its child job or process with that koid;
+from a process: its thread. `rights` is `RX_RIGHT_SAME_RIGHTS` (the
+default rights of that object type) or a subset of them. `ERR_NOT_FOUND`
+if no such child. `ps` and `kill` walk the job tree with it.
+
+#### OBJECT_GET_PROPERTY (0x0D)
+
+`object_get_property(rx_handle_t h, uint32_t property, void *buf, size_t len)`
+— needs `GET_PROPERTY`. Only `PROP_NAME` (3): a process's name (a thread
+gives its process's), NUL-terminated, at most 31 bytes.
 
 #### SPAWN (0x03) / SPAWN_PROCESS (0x0B) — removed
 
@@ -664,7 +686,7 @@ handle, e.g. one that can only wait.
 
 ---
 
-### Drivers (0x80-0x8F)
+### Drivers and resources (0x80-0x8F)
 
 | Syscall | Number | Description | Status |
 |---------|--------|-------------|--------|
@@ -674,6 +696,7 @@ handle, e.g. one that can only wait.
 | `INTERRUPT_DESTROY` | 0x83 | Cancel waits on the interrupt | ✅ |
 | `IOPORTS_REQUEST` | 0x84 | Let the calling process use I/O ports | ✅ |
 | `IOPORTS_RELEASE` | 0x85 | Give the ports back | ✅ |
+| `RESOURCE_CREATE` | 0x86 | Make a narrower resource from the root resource | ✅ |
 
 Drivers run as ordinary processes. Both calls that reach hardware need the
 **root resource** (object type 15, rights DUPLICATE + TRANSFER + WRITE +
@@ -682,6 +705,13 @@ the drivers it starts. Without it, ports stay closed: a user `in`/`out` to a
 port the process was not granted raises #GP and the process is killed
 (exit code -1025). The first driver is the PS/2 keyboard (`/bin/ps2kbd`,
 source `userspace/c-progs/ps2kbd.c`).
+
+#### RESOURCE_CREATE (0x86)
+
+`resource_create(rx_handle_t parent, uint32_t kind, rx_handle_t *out)` —
+`parent` must be the root resource. Only kind 1, **power** (restart and
+power off with `system_powerctl`), so far. `init` makes one for the shell,
+which passes it on to the programs it runs (`PA_POWER_RESOURCE` 0xE1).
 
 #### INTERRUPT_CREATE (0x80)
 
@@ -727,11 +757,47 @@ the TSS when one of its threads runs.
 | `TIMER_CREATE` | 0x41 | Create a timer object | ✅ |
 | `TIMER_SET` | 0x42 | Arm a timer | ✅ |
 | `TIMER_CANCEL` | 0x43 | Disarm a timer | ✅ |
+| `CLOCK_SET_UTC` | 0x44 | Set the wall clock | ✅ |
 
 #### CLOCK_GET (0x40)
 
 `clock_get(uint32_t clock_id)` returns nanoseconds. Clock 0 is monotonic
-(from the calibrated TSC); it is the clock used for all deadlines.
+(from the calibrated TSC, counting from power-on); it is the clock used for
+all deadlines. Clock 1 is UTC: ns since 1970, set at boot from the CMOS
+real-time clock (read as UTC; the century from the FADT's century register
+when there is one).
+
+#### CLOCK_SET_UTC (0x44)
+
+`clock_set_utc(rx_handle_t resource, int64_t utc_ns)` — needs the root
+resource. `init` uses it when `/etc/adjtime` says the hardware clock keeps
+local time (as Windows does), correcting by the offset of the zone in
+`/etc/timezone`. The real-time clock itself is never written.
+
+### System (0x90-0x9F)
+
+| Syscall | Number | Description | Status |
+|---------|--------|-------------|--------|
+| `SYSTEM_GET_VERSION` | 0x90 | Kernel version string | ✅ |
+| `SYSTEM_GET_STATS` | 0x91 | Memory, CPUs, uptime | ✅ |
+| `SYSTEM_POWERCTL` | 0x92 | Restart or power off | ✅ |
+
+`system_get_version(char *buf, size_t len)` writes
+`Rustux <version> (git <hash>, built <date>) x86_64` with a NUL and
+returns its length (`ERR_BUFFER_TOO_SMALL` if it does not fit).
+
+`system_get_stats(rx_system_stats_t *s)` writes `{ u64 total_bytes;
+u64 free_bytes; u64 boot_time; u64 uptime; u64 cpus; u64 idle_time;
+u64 threads; }`: memory the kernel manages and how much is free, the
+monotonic time the kernel started, ns since then, CPUs online, ns all CPUs
+spent halted, threads running. Needs no handle.
+
+`system_powerctl(rx_handle_t resource, uint32_t cmd)` — needs the root or
+the power resource. `cmd` 1 restarts: the FADT reset register, then the
+8042 keyboard controller, then port 0xCF9, then a triple fault. `cmd` 2
+powers off through ACPI S5 (the `_S5_` values from the DSDT written with
+SLP_EN to the PM1 control registers); it returns `ERR_NOT_SUPPORTED` only
+if that did not work. Nothing is synced first (there are no disks yet).
 
 #### TIMER_CREATE (0x41)
 
@@ -768,7 +834,8 @@ in `/bin`, run from the shell:
 | `smptest` | threads on several CPUs: speed-up, SSE registers across migrations, TLB shootdown, cross-CPU wake-ups | 6 |
 
 `libctest` (50 checks) covers the C library, `fstest` (64) the filesystem
-service, file descriptors and pipes. Sources are in
+service, file descriptors and pipes, `systest` (39) process and system
+information, clocks and time zones. Sources are in
 `userspace/c-progs/`; `<rustux/syscalls.h>` has C wrappers for every call
 above with Zircon-style signatures (`docs/USERSPACE.md`).
 
@@ -779,12 +846,18 @@ above with Zircon-style signatures (`docs/USERSPACE.md`).
 by `smptest`.
 
 `debuglog_create(rx_handle_t resource, uint32_t options, rx_handle_t *out)`
-(0x53) needs the root resource and returns a debug log handle (type `LOG`
-12; rights BASIC + READ + WRITE + SIGNAL). `debuglog_write(rx_handle_t h,
-uint32_t options, const void *buf, size_t len)` (0x54, needs `WRITE`,
-`len` at most 4096) prints the bytes on the kernel console and the debug
-port. `init`, the console service, prints everything the programs write
-through it. Reading the log back (`dmesg`) comes in step 9.
+(0x53) returns a debug log handle (type `LOG` 12). With `options` 0 it
+needs the root resource and the handle writes (rights BASIC + READ + WRITE
++ SIGNAL): `debuglog_write(rx_handle_t h, uint32_t options, const void
+*buf, size_t len)` (0x54, needs `WRITE`, `len` at most 4096) prints the
+bytes on the kernel console and the debug port. `init`, the console
+service, prints everything the programs write through it. With
+`RX_LOG_FLAG_READABLE` (0x40000000) it needs no resource and the handle
+only reads the **kernel log**: `debuglog_read(rx_handle_t h, uint32_t
+options, void *buf, size_t len)` (0x55, needs `READ`) returns the next
+bytes not read through that handle (the kernel keeps the last 64 KiB of
+what it printed for debugging) and `ERR_SHOULD_WAIT` when there are none
+(`dmesg`).
 
 ### Console and keyboard input
 

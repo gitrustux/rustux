@@ -59,8 +59,36 @@ fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// "git <hash>, built <date>" for the kernel's version string
+fn build_info() -> String {
+    let git = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".into());
+    // Date from the clock, as YYYY-MM-DD (UTC)
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let z = secs / 86400 + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("git {}, built {:04}-{:02}-{:02}", git, y, m, d)
+}
+
 fn main() {
     forbid_static_mut();
+    println!("cargo:rustc-env=RUSTUX_BUILD_INFO={}", build_info());
+    println!("cargo:rerun-if-changed=.git/HEAD");
     // Tell cargo to rerun this script if source files change
     println!("cargo:rerun-if-changed=src/arch/amd64/switch.S");
     println!("cargo:rerun-if-changed=userspace/bin/");
@@ -128,9 +156,24 @@ fn main() {
 
     let image_path = out_dir.join("bootfs.img");
 
-    // Files: files/test.txt as /boot/test.txt, and every program in
+    // Files: everything under files/ at the same path (files/etc/hostname
+    // as /boot/etc/hostname, copied to /etc by fsd), and every program in
     // userspace/bin/ (built by userspace/build.sh and committed) as /bin/<name>
-    let mut files: Vec<(String, String)> = vec![("files/test.txt".into(), "test.txt".into())];
+    fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let mut entries: Vec<_> = fs::read_dir(dir).map(|r| r.filter_map(|e| e.ok()).collect()).unwrap_or_default();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, base, out);
+            } else {
+                let rel = p.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
+                out.push((p.to_string_lossy().into_owned(), rel));
+            }
+        }
+    }
+    let mut files: Vec<(String, String)> = Vec::new();
+    walk(std::path::Path::new("files"), std::path::Path::new("files"), &mut files);
     let mut programs: Vec<(String, String)> = fs::read_dir("userspace/bin")
         .expect("userspace/bin/ is missing (run userspace/build.sh)")
         .filter_map(|e| e.ok())
@@ -168,7 +211,7 @@ fn main() {
     }
     image.extend_from_slice(&body);
     fs::write(&image_path, &image).expect("cannot write bootfs.img");
-    println!("cargo:rerun-if-changed=files/test.txt");
+    println!("cargo:rerun-if-changed=files/");
     println!("cargo:warning=Boot image: {} files, {} bytes", files.len(), image.len());
 
     // ============================================================================

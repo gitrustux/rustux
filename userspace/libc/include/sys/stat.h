@@ -19,7 +19,10 @@
 #define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
 #define S_ISCHR(m)  (((m) & S_IFMT) == S_IFCHR)
 
+#ifndef _STRUCT_TIMESPEC
+#define _STRUCT_TIMESPEC
 struct timespec { time_t tv_sec; long tv_nsec; };
+#endif
 
 struct stat {
     ino_t st_ino;

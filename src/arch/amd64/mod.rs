@@ -18,6 +18,7 @@ pub mod idt;
 pub mod descriptor;
 pub mod percpu;
 pub mod smp;
+pub mod platform;
 
 // Memory management
 pub mod mm;

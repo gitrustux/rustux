@@ -44,6 +44,7 @@
 
 static rx_handle_t init_ctl; // control channel to init (restart-kbd)
 static rx_handle_t console;  // our console handle (for Ctrl+C and draining)
+static rx_handle_t power;    // power resource, passed on to programs (reboot, poweroff)
 static int last_status;
 
 // ---- shell variables (not exported) ----
@@ -495,7 +496,15 @@ static int run_pipeline(struct pipeline *pl) {
             st_status = find_program(argv[0], path, sizeof path);
             if (st_status == 0) {
                 char **env = child_env(st->w, nassign);
-                rx_status_t r = rx_spawn_etc(job ? job : rx_job_default, path, argv, env, RX_SPAWN_CLONE_ALL, 0, 0, &procs[i]);
+                // The power resource and the system job (for reboot,
+                // poweroff, ps and kill)
+                rx_spawn_handle_t extra[2];
+                uint32_t nextra = 0;
+                if (power && rx_handle_duplicate(power, RX_RIGHT_SAME_RIGHTS, &extra[nextra].handle) == RX_OK)
+                    extra[nextra++].info = RX_PA_POWER_RESOURCE;
+                if (rx_handle_duplicate(rx_job_default, RX_RIGHT_SAME_RIGHTS, &extra[nextra].handle) == RX_OK)
+                    extra[nextra++].info = RX_PA_JOB_SYSTEM;
+                rx_status_t r = rx_spawn_etc(job ? job : rx_job_default, path, argv, env, RX_SPAWN_CLONE_ALL, extra, nextra, &procs[i]);
                 free(env);
                 if (r != RX_OK) {
                     fprintf(stderr, "shell: cannot start %s: %s\n", argv[0], strerror(errno));
@@ -536,7 +545,8 @@ static void cmd_help(void) {
            "  exit [CODE]          leave the shell (init starts a new one)\n"
            "\n" ANSI_CYAN "Programs in /bin:" ANSI_RESET "\n"
            "  ls, cat, echo, mkdir, rm, mv, upper, env, true, false, hello, counter, args\n"
-           "  tests: fstest, libctest, objtest, ipctest, spawntest, drvtest, smptest, spin\n"
+           "  ps, kill, uptime, free, date, uname, hostname, dmesg, reboot, poweroff\n"
+           "  tests: systest, fstest, libctest, objtest, ipctest, spawntest, drvtest, smptest, spin\n"
            "\n" ANSI_CYAN "Shell:" ANSI_RESET "\n"
            "  a | b, < file, > file, >> file, 2> file, 2>&1, a ; b, a && b, a || b\n"
            "  'single' and \"double\" quotes, \\ escapes, $NAME, ${NAME}, $? (last exit code),\n"
@@ -689,6 +699,7 @@ static void show_welcome(void) {
 int main(void) {
     static char line[LINE_MAX_LEN];
     init_ctl = rx_take_startup_handle(RX_PA_USER0);
+    power = rx_take_startup_handle(RX_PA_POWER_RESOURCE);
     if (!rx_fd_handle(0) || rx_handle_duplicate(rx_fd_handle(0), RX_RIGHT_SAME_RIGHTS, &console) != RX_OK) {
         fprintf(stderr, "shell: no console\n");
         return 1;
