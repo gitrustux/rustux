@@ -270,6 +270,48 @@ impl TextConsole {
         }
         self.grid.copy_within((top + n) * cols..(bottom + 1) * cols, top * cols);
         self.erase((bottom + 1 - n) * cols, (bottom + 1) * cols);
+        if self.view == 0 && n <= bottom - top {
+            // Move the pixels up with the text instead of drawing every
+            // row again; rows still to be drawn move their marks along
+            self.move_pixels_up(top, bottom, n);
+            for r in top..=bottom - n {
+                self.dirty[r] = self.dirty[r + n];
+            }
+            for r in bottom + 1 - n..=bottom {
+                self.dirty[r] = true;
+            }
+            // The cursor drawn on screen moved too: clear it where it is now
+            if let Some(cr) = self.cursor_row_drawn {
+                if cr >= top + n && cr <= bottom {
+                    self.dirty[cr - n] = true;
+                }
+            }
+        } else {
+            for r in top..=bottom {
+                self.dirty[r] = true;
+            }
+        }
+    }
+
+    /// Copy the pixels of text rows top+n..=bottom to top..
+    fn move_pixels_up(&mut self, top: usize, bottom: usize, n: usize) {
+        let h = SimpleVgaFont::height();
+        let fb = &self.framebuffer;
+        let rows_px = (bottom + 1 - top - n) * h;
+        let src = (top + n) * h;
+        if (bottom + 1) * h > fb.height {
+            return self.mark_rows(top, bottom);
+        }
+        let line = core::cmp::min(fb.pitch, fb.width * fb.bpp.div_ceil(8));
+        for y in 0..rows_px {
+            unsafe {
+                let base = fb.base_addr as *mut u8;
+                core::ptr::copy(base.add((src + y) * fb.pitch), base.add((top * h + y) * fb.pitch), line);
+            }
+        }
+    }
+
+    fn mark_rows(&mut self, top: usize, bottom: usize) {
         for r in top..=bottom {
             self.dirty[r] = true;
         }
@@ -761,12 +803,19 @@ impl TextConsole {
             }
             let underline = cell.attr & ATTR_UNDERLINE != 0 && py == h - 2;
             let cursor_line = cursor && py >= h - 3;
+            let mut bits = glyph_row(cell.glyph, py);
+            if underline {
+                bits = 0xFF;
+            }
+            if cursor_line {
+                bits = !bits;
+            }
             for px in 0..w {
                 let x = x0 + px;
                 if x >= fb.width {
                     break;
                 }
-                let on = (underline || glyph_pixel(cell.glyph, px, py)) != cursor_line;
+                let on = bits & (0x80 >> px) != 0;
                 if fast {
                     unsafe {
                         let p = (fb.base_addr as *mut u8).add(y * fb.pitch + x * 4) as *mut u32;
@@ -973,6 +1022,20 @@ fn glyph_for(cp: u32) -> u16 {
         0x20AC => b'E' as u16,
         _ => GLYPH_UNKNOWN,
     }
+}
+
+/// One row of a glyph as bits (bit 7 = leftmost pixel)
+fn glyph_row(g: u16, y: usize) -> u8 {
+    if (0x20..0x7F).contains(&g) {
+        return SimpleVgaFont::row(g as u8, y);
+    }
+    let mut bits = 0u8;
+    for x in 0..8 {
+        if glyph_pixel(g, x, y) {
+            bits |= 0x80 >> x;
+        }
+    }
+    bits
 }
 
 fn glyph_pixel(g: u16, x: usize, y: usize) -> bool {

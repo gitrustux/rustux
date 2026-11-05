@@ -174,6 +174,15 @@ impl SimpleVgaFont {
         (font_data[y] & bit_mask) != 0
     }
 
+    /// One row of a printable ASCII character (bit 7 = leftmost pixel)
+    pub fn row(ch: u8, y: usize) -> u8 {
+        if (32..=126).contains(&ch) && y < 16 {
+            FONT_DATA[(ch as usize - 32) * 16 + y]
+        } else {
+            0
+        }
+    }
+
     /// Get the glyph data for a character (printable ASCII; a box otherwise)
     fn get_glyph_data(ch: u8) -> [u8; 16] {
         if (32..=126).contains(&ch) {
