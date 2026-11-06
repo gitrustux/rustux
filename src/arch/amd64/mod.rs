@@ -15,6 +15,7 @@ pub mod controller;
 
 // Descriptor tables (GDT, IDT)
 pub mod idt;
+pub mod msi;
 pub mod descriptor;
 pub mod percpu;
 pub mod smp;

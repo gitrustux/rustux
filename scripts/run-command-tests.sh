@@ -28,6 +28,7 @@ mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
 mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI
 qemu-system-x86_64 -machine q35 -m 512M -smp 2 -bios "$OVMF" -drive file="$W/boot.img",format=raw \
+    -device edu,dma_mask=0xffffffff \
     -display none -debugcon file:"$W/console.log" -no-reboot -monitor unix:"$W/mon",server,nowait \
     >/dev/null 2>&1 &
 Q=$!

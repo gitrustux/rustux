@@ -82,6 +82,26 @@ unsafe fn checksum_ok(p: u64, len: u32) -> bool {
 
 /// Find a table by signature through the XSDT (or the RSDT)
 pub(crate) unsafe fn find_table(sig: &[u8; 4]) -> Option<u64> {
+    find_table_nth(sig, 0)
+}
+
+/// The `index`th table with this signature (SSDTs come in several). The
+/// DSDT is not listed in the XSDT; it is found through the FADT.
+pub(crate) unsafe fn find_table_nth(sig: &[u8; 4], index: usize) -> Option<u64> {
+    if sig == b"DSDT" {
+        if index != 0 {
+            return None;
+        }
+        let fadt = find_table_nth(b"FACP", 0)?;
+        let len = rd32(fadt + 4);
+        let x = if len >= 148 { rd64(fadt + 140) } else { 0 };
+        let t = if x != 0 { x } else { rd32(fadt + 40) as u64 };
+        if t == 0 || core::slice::from_raw_parts(phys::<u8>(t), 4) != b"DSDT" {
+            return None;
+        }
+        return Some(t);
+    }
+    let mut seen = 0;
     let rsdp = RSDP.load(Ordering::Acquire);
     if rsdp == 0 || core::slice::from_raw_parts(phys::<u8>(rsdp), 8) != b"RSD PTR " {
         return None;
@@ -100,7 +120,10 @@ pub(crate) unsafe fn find_table(sig: &[u8; 4]) -> Option<u64> {
     while off + entry_size <= len as u64 {
         let t = if entry_size == 8 { rd64(root + off) } else { rd32(root + off) as u64 };
         if t != 0 && core::slice::from_raw_parts(phys::<u8>(t), 4) == sig && checksum_ok(t, rd32(t + 4)) {
-            return Some(t);
+            if seen == index {
+                return Some(t);
+            }
+            seen += 1;
         }
         off += entry_size;
     }

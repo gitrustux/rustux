@@ -9,7 +9,7 @@ programs in `RUST.md`, the commands in `/bin` in `COMMANDS.md`.
 
 | Path | Contents |
 |------|----------|
-| `userspace/libc/include/` | Headers: `stdio.h`, `stdlib.h`, `string.h`, `ctype.h`, `errno.h`, `unistd.h`, `fcntl.h`, `dirent.h`, `limits.h`, `assert.h`, `time.h`, `pthread.h`, `sched.h`, `signal.h`, `spawn.h`, `termios.h`, `poll.h`, `getopt.h`, `dlfcn.h`, `sys/` (`types`, `stat`, `time`, `utsname`, `wait`, `mman`, `ioctl`, `uio`, `random`, `syscall`), and `rustux/` (system calls, processargs, console and file protocols, spawning) |
+| `userspace/libc/include/` | Headers: `stdio.h`, `stdlib.h`, `string.h`, `ctype.h`, `errno.h`, `unistd.h`, `fcntl.h`, `dirent.h`, `limits.h`, `assert.h`, `time.h`, `pthread.h`, `sched.h`, `signal.h`, `spawn.h`, `termios.h`, `poll.h`, `getopt.h`, `dlfcn.h`, `sys/` (`types`, `stat`, `time`, `utsname`, `wait`, `mman`, `ioctl`, `uio`, `random`, `syscall`), and `rustux/` (system calls, processargs, console and file protocols, spawning, services, the device and block protocols) |
 | `userspace/libc/src/` | The library: startup, file descriptors, files and directories (`fs.c`), the ELF loader (`spawn.c`), threads and TLS (`thread.c`), `posix_spawn`/`waitpid` (`pspawn.c`), the rest of POSIX (`posix.c`), stdio, `printf`, `malloc`, environment, strings, numbers, time |
 | `userspace/libc/rustux.ld` | Linker script for programs (static, loaded at 1 MiB with their ELF headers) |
 | `userspace/c-progs/` | One program per `.c` file: `init`, `shell`, commands, tests; `keymap.h` (layouts, for `init`) and `lineedit.h` (the shell's line editor) |
@@ -173,6 +173,12 @@ UTF-8. `statfs`/`fstatfs` report memory for tmpfs. `chmod`, `utimensat`,
 and directories. `<math.h>` has the usual functions on the x87 unit
 (`sqrt`, `pow`, `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `floor`,
 `fmod`, ...). `sem_*` semaphores, `getrlimit`, `sysinfo`, `clock_getres`.
+Services and devices (step 12): `rx_service_connect`/`rx_service_publish`
+(`<rustux/service.h>`, `FS.md`); `rx_dev_call`, `rx_devmgr_connect`,
+`rx_block_open`, `rx_block_call` (`<rustux/device.h>`,
+`<rustux/block.h>`, `DRIVERS.md`); the driver calls in
+`<rustux/syscalls.h>` (physical and contiguous VMOs, BTIs, MSI, ACPI
+tables, `rx_inw`/`rx_inl`/`rx_outw`/`rx_outl`).
 Linux interfaces with nothing behind them fail so callers fall back:
 `inotify`, `epoll`, `eventfd`, `sendfile`, `splice`, sockets (`ENOSYS`,
 `EAFNOSUPPORT`); extended attributes are empty.

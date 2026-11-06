@@ -1,0 +1,21 @@
+lspci - list PCI devices
+
+USAGE
+    lspci [-n|-nn] [-v] [-k] [-D] [-s SLOT] [-d VENDOR:DEVICE] [--json]
+
+    Lists the devices the device manager (devmgr) found on the PCI bus:
+    BUS:DEV.FUNC, class and name. Names come from a small built-in table;
+    unknown ones show as "Vendor 1234 Device 11e8".
+
+    -n       numbers instead of names (-nn: both)
+    -v       details: subsystem, BARs, interrupts, capabilities, driver
+    -k       the driver of each device (its process, restarts)
+    -D       show the PCI domain (0000:)
+    -s SLOT  only devices at bus:dev.func; any part may be left out (-s 3)
+    -d ID    only devices with vendor:device, hex (-d 8086:)
+    --json   a JSON array
+
+    Which program drives which device is set in /etc/drivers.
+
+SEE ALSO
+    lsblk, dmesg

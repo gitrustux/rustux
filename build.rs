@@ -247,6 +247,9 @@ fn main() {
         }
     }
     image.extend_from_slice(&body);
+    // Whole pages: the kernel hands these pages out as they are (main.rs),
+    // so the last one must not share kernel data
+    image.resize((image.len() + 4095) & !4095, 0);
     fs::write(&image_path, &image).expect("cannot write bootfs.img");
     println!("cargo:rerun-if-changed=files/");
     println!("cargo:warning=Boot image: {} files, {} links, {} bytes", files.len(), links.len(), image.len());

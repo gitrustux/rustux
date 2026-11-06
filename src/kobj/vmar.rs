@@ -59,8 +59,20 @@ pub struct Aspace {
     inner: SpinMutex<Inner>,
 }
 
-fn pte_flags(perms: u32) -> u64 {
-    let mut f = kernel_map::PTE_USER;
+/// Page-table bits for a cache policy: PCD|PWT selects uncached with the
+/// power-on PAT
+const PTE_PWT: u64 = 1 << 3;
+const PTE_PCD: u64 = 1 << 4;
+
+fn cache_bits(policy: u32) -> u64 {
+    match policy {
+        super::vmo::cache::CACHED => 0,
+        _ => PTE_PCD | PTE_PWT,
+    }
+}
+
+fn pte_flags(perms: u32, policy: u32) -> u64 {
+    let mut f = kernel_map::PTE_USER | cache_bits(policy);
     if perms & opts::PERM_WRITE != 0 {
         f |= kernel_map::PTE_WRITABLE;
     }
@@ -117,7 +129,7 @@ impl Aspace {
         };
         let pages = vmo.commit_range(vmo_offset, len)?;
         if perms != 0 {
-            let flags = pte_flags(perms);
+            let flags = pte_flags(perms, vmo.cache_policy());
             for (i, &p) in pages.iter().enumerate() {
                 let va = base + i as u64 * PAGE;
                 if unsafe { kernel_map::map_4k(self.pml4, va, p, flags, alloc_table_page) }.is_err() {
@@ -204,7 +216,7 @@ impl Aspace {
                 } else if was == 0 {
                     remap.push((va, m.vmo.clone(), m.vmo_offset + i * PAGE));
                 } else {
-                    unsafe { kernel_map::protect_4k(pml4, va, pte_flags(perms)) };
+                    unsafe { kernel_map::protect_4k(pml4, va, pte_flags(perms, m.vmo.cache_policy())) };
                 }
             }
         }
@@ -214,7 +226,7 @@ impl Aspace {
         // tables; they were committed when it was mapped
         for (va, vmo, off) in remap {
             let p = vmo.commit_range(off, PAGE)?[0];
-            unsafe { kernel_map::map_4k(pml4, va, p, pte_flags(perms), alloc_table_page) }
+            unsafe { kernel_map::map_4k(pml4, va, p, pte_flags(perms, vmo.cache_policy()), alloc_table_page) }
                 .map_err(|_| RxStatus::ERR_NO_MEMORY)?;
         }
         Ok(())

@@ -46,6 +46,7 @@ static rx_handle_t con_client;   // console: the programs' end (copied to each)
 static rx_handle_t drv_proc, drv_chan; // keyboard driver
 static rx_handle_t sh_proc, sh_ctl;    // shell
 static rx_handle_t fsd_proc;           // filesystem service
+static rx_handle_t dm_proc;            // device manager
 static int driver_failures;
 
 // ---- console ----
@@ -270,6 +271,23 @@ static void start_fsd(rx_handle_t bootfs) {
     rx_ns_set_root(client);
 }
 
+// The device manager (PCI devices and their drivers) gets the root
+// resource; it publishes /svc/devmgr
+static void start_devmgr(void) {
+    rx_handle_t res;
+    if (!resource || rx_handle_duplicate(resource, RX_RIGHT_SAME_RIGHTS, &res) != RX_OK) return;
+    rx_spawn_handle_t hs[] = {
+        { RX_PA_ROOT_RESOURCE, res },
+        { RX_PA_HND(RX_PA_FD, 1), console_copy() },
+        { RX_PA_HND(RX_PA_FD, 2), console_copy() },
+    };
+    char *argv[] = { "devmgr", 0 };
+    if (rx_spawn("/bin/devmgr", argv, 0, RX_SPAWN_CLONE_NS, hs, 3, &dm_proc) != RX_OK) {
+        printf("init: cannot start /bin/devmgr\n");
+        dm_proc = 0;
+    }
+}
+
 static void start_driver(void) {
     rx_handle_t ours, theirs, res;
     if (!resource || driver_failures >= 5) return;
@@ -388,14 +406,15 @@ int main(void) {
     adjust_clock();
     rx_timer_create(0, 0, &repeat_timer);
     km_load();
+    start_devmgr();
     start_driver();
     printf("Spawning shell...\n\n");
     start_shell();
 
     for (;;) {
-        rx_wait_item_t items[8];
+        rx_wait_item_t items[10];
         int n = 0, i_drv = -1, i_kin = -1, i_dproc = -1, i_fsd = -1;
-        int i_rep = -1;
+        int i_rep = -1, i_dm = -1;
         if (repeating) { i_rep = n; items[n++] = (rx_wait_item_t){ repeat_timer, RX_TIMER_SIGNALED, 0 }; }
         int i_out = n; items[n++] = (rx_wait_item_t){ con_server, RX_CHANNEL_READABLE, 0 };
         if (drv_chan) { i_drv = n; items[n++] = (rx_wait_item_t){ drv_chan, RX_CHANNEL_READABLE, 0 }; }
@@ -404,6 +423,7 @@ int main(void) {
         if (drv_proc) { i_dproc = n; items[n++] = (rx_wait_item_t){ drv_proc, RX_PROCESS_TERMINATED, 0 }; }
         int i_sproc = n; items[n++] = (rx_wait_item_t){ sh_proc, RX_PROCESS_TERMINATED, 0 };
         if (fsd_proc) { i_fsd = n; items[n++] = (rx_wait_item_t){ fsd_proc, RX_PROCESS_TERMINATED, 0 }; }
+        if (dm_proc) { i_dm = n; items[n++] = (rx_wait_item_t){ dm_proc, RX_PROCESS_TERMINATED, 0 }; }
 
         if (rx_object_wait_many(items, n, RX_TIME_INFINITE) != RX_OK) continue;
 
@@ -418,6 +438,17 @@ int main(void) {
             printf("init: the filesystem service ended (code %lld); files are gone until a reboot\n",
                    (long long)rx_wait_process(fsd_proc));
             fsd_proc = 0;
+        }
+        if (i_dm >= 0 && (items[i_dm].pending & RX_PROCESS_TERMINATED)) {
+            static int dm_restarts;
+            long long code = (long long)rx_wait_process(dm_proc);
+            dm_proc = 0;
+            if (++dm_restarts <= 3) {
+                printf("init: the device manager ended (code %lld); starting it again\n", code);
+                start_devmgr();
+            } else {
+                printf("init: the device manager ended (code %lld); not starting it again\n", code);
+            }
         }
         if (items[i_sproc].pending & RX_PROCESS_TERMINATED) {
             console_output(); // its last words

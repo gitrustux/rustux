@@ -133,10 +133,13 @@ pub fn phys_to_virt(paddr: u64) -> u64 {
 }
 
 /// Convert a kernel virtual address back to physical. Accepts HHDM addresses
-/// and (identity-mapped) kernel image addresses.
+/// and kernel image addresses, relocated (top 2 GiB) or identity-mapped.
 #[inline]
 pub fn virt_to_phys(vaddr: u64) -> u64 {
-    if vaddr >= HHDM_BASE {
+    let delta = KERNEL_DELTA.load(Ordering::Acquire);
+    if vaddr >= KERNEL_VBASE && delta != 0 {
+        vaddr.wrapping_sub(delta)
+    } else if vaddr >= HHDM_BASE {
         vaddr - HHDM_BASE
     } else {
         vaddr
@@ -299,7 +302,8 @@ pub unsafe fn map_4k(pml4: u64, vaddr: u64, paddr: u64, flags: u64, alloc: Alloc
     if old & PTE_PRESENT != 0 && old & PTE_ADDR_MASK != paddr {
         return Err("kernel_map: address already mapped");
     }
-    *t.add(pt_idx) = paddr | PTE_PRESENT | (flags & (PTE_WRITABLE | PTE_USER | PTE_NO_EXECUTE));
+    // Bits 3-4 (PWT, PCD): the cache policy
+    *t.add(pt_idx) = paddr | PTE_PRESENT | (flags & (PTE_WRITABLE | PTE_USER | PTE_NO_EXECUTE | 0x18));
     Ok(())
 }
 
@@ -523,7 +527,8 @@ pub unsafe fn protect_4k(pml4: u64, vaddr: u64, flags: u64) -> bool {
     if old & PTE_PRESENT == 0 {
         return false;
     }
-    *pte = (old & PTE_ADDR_MASK) | PTE_PRESENT | (flags & (PTE_WRITABLE | PTE_USER | PTE_NO_EXECUTE));
+    // Bits 3-4 (PWT, PCD): the cache policy
+    *pte = (old & PTE_ADDR_MASK) | PTE_PRESENT | (flags & (PTE_WRITABLE | PTE_USER | PTE_NO_EXECUTE | 0x18));
     core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack));
     true
 }

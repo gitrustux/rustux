@@ -19,6 +19,7 @@
 //! never contended. Timers fire lazily: their state is computed when it is
 //! looked at, and waiters use the deadline to wake up in time.
 
+pub mod bti;
 pub mod channel;
 pub mod debuglog;
 pub mod event;
@@ -74,6 +75,8 @@ pub enum ObjType {
     Job = 17,
     Vmar = 18,
     Timer = 22,
+    Bti = 24,
+    Pmt = 26,
 }
 
 /// Signal bits of an object and the processes waiting for them to change
@@ -139,6 +142,8 @@ pub enum KObject {
     Interrupt(Arc<interrupt::Interrupt>),
     DebugLog(Arc<debuglog::DebugLog>),
     Socket(Arc<socket::Socket>),
+    Bti(Arc<bti::Bti>),
+    Pmt(Arc<bti::Pmt>),
 }
 
 impl KObject {
@@ -157,6 +162,8 @@ impl KObject {
             KObject::Interrupt(_) => ObjType::Interrupt,
             KObject::DebugLog(_) => ObjType::Log,
             KObject::Socket(_) => ObjType::Socket,
+            KObject::Bti(_) => ObjType::Bti,
+            KObject::Pmt(_) => ObjType::Pmt,
         }
     }
 
@@ -175,6 +182,8 @@ impl KObject {
             KObject::Interrupt(o) => &o.signals,
             KObject::DebugLog(o) => &o.signals,
             KObject::Socket(o) => &o.signals,
+            KObject::Bti(o) => &o.signals,
+            KObject::Pmt(o) => &o.signals,
         }
     }
 

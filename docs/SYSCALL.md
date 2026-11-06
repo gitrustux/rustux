@@ -138,6 +138,7 @@ The C header `<rustux/syscalls.h>` (`userspace/libc/include/rustux/`) defines th
 | `ERR_BAD_STATE` | 17 | Object or process in the wrong state |
 | `ERR_ALREADY_EXISTS` | 18 | Something is already there (e.g. a mapping at a specific address) |
 | `ERR_CANCELED` | 19 | The wait was cancelled (object destroyed, thread killed) |
+| `ERR_NO_RESOURCES` | 20 | A limited resource is used up (all 64 MSI vectors taken) |
 
 Checks happen in this order: handle valid (`BAD_HANDLE`), object type (`WRONG_TYPE`), rights (`ACCESS_DENIED`), then arguments.
 
@@ -320,6 +321,8 @@ Topics (Zircon numbers; structs in `<rustux/syscalls.h>`):
 | `JOB_PROCESSES` 7 | job | `ENUMERATE` | koids of its processes that have not exited |
 | `TASK_STATS` 11 | process | `INSPECT` | `{ u64 mem_mapped_bytes; u64 mem_private_bytes; u64 mem_shared_bytes; u64 scaled_shared; }`: memory committed in the VMOs it maps, each counted once, split into private (VMOs only this process holds) and shared (VMOs also held elsewhere, such as the boot image); `scaled_shared` is 0 |
 | `TASK_RUNTIME` 25 | process, thread | `INSPECT` | `{ i64 cpu_time; i64 queue_time; i64 page_fault_time; i64 lock_contention_time; }` ns (only `cpu_time` is measured) |
+| `INTERRUPT_MSI` 0x1000 | MSI interrupt | `INSPECT` | `{ u64 address; u32 data; u32 vector; }`: what to program into the device (`ERR_BAD_STATE` for an ISA interrupt) |
+| `BTI` 0x1001 | BTI | `INSPECT` | `{ u64 minimum_contiguity; u64 aspace_size; u64 pmo_count; u64 quarantine_count; }`: 4096, all addresses, ranges pinned now, 0 |
 
 For the koid lists, as many koids as fit in `size` are written; `actual`
 gets how many, `avail` how many exist. For the others both are 1. A buffer
@@ -391,6 +394,9 @@ All handles of a process are closed when it exits.
 | `VMAR_PROTECT` | 0x16 | Change mapping permissions | ✅ |
 | `VMO_GET_SIZE` | 0x17 | Size of a VMO | ✅ |
 | `VMO_REPLACE_AS_EXECUTABLE` | 0x18 | Add `EXECUTE` to a VMO handle | ✅ |
+| `VMO_CREATE_PHYSICAL` | 0x19 | A VMO over device memory (drivers) | ✅ |
+| `VMO_SET_CACHE_POLICY` | 0x1A | Cached or uncached mappings | ✅ |
+| `VMO_CREATE_CONTIGUOUS` | 0x1B | Physically contiguous memory for DMA | ✅ |
 
 A **VMO** is a piece of memory, a whole number of pages long (at most 1 GiB).
 Pages are allocated on first write or when mapped; unwritten memory reads
@@ -441,6 +447,32 @@ once (no copy-on-write yet). C: `rx_vmo_create_child()`.
 Replaces the VMO handle by one with the same rights plus `EXECUTE` (the old
 handle is closed, also on failure). `vmex` is not checked yet: any process
 may do this.
+
+#### VMO_CREATE_PHYSICAL (0x19)
+
+`vmo_create_physical(rx_handle_t resource, uint64_t paddr, uint64_t size, rx_handle_t *out)`
+— needs the root resource. A VMO over `[paddr, paddr + size)` (page
+aligned): device registers, a frame buffer, PCI configuration space. The
+range must not touch RAM, firmware memory, ACPI tables or the kernel
+(everything in the UEFI memory map except memory-mapped I/O and reserved
+ranges): `ERR_ACCESS_DENIED`. Its pages are never freed or committed;
+`vmo_read`/`vmo_write` give `ERR_NOT_SUPPORTED` (map it); it cannot be
+cloned or pinned. Mapped uncached (`UNCACHED_DEVICE`) unless changed.
+
+#### VMO_SET_CACHE_POLICY (0x1A)
+
+`vmo_set_cache_policy(rx_handle_t vmo, uint32_t policy)` — needs
+`SET_PROPERTY`. `CACHED` 0, `UNCACHED` 1, `UNCACHED_DEVICE` 2 (both
+uncached: PCD and PWT in the page tables), `WRITE_COMBINING` 3 gives
+`ERR_NOT_SUPPORTED` (needs the PAT). Applies to mappings made afterwards.
+
+#### VMO_CREATE_CONTIGUOUS (0x1B)
+
+`vmo_create_contiguous(rx_handle_t bti, uint64_t size, uint32_t options, rx_handle_t *out)`
+— needs a BTI with `MAP`. Zeroed memory in one physically contiguous run.
+`options`: bits 0-7 the log2 of the alignment (0: a page), `0x100`
+(`RX_VMO_CONTIGUOUS_LOW`) keeps it below 4 GiB. `ERR_NO_MEMORY` when no
+run that long is free. Its device address comes from `bti_pin`.
 
 #### VMAR_MAP (0x14)
 
@@ -710,6 +742,9 @@ handle, e.g. one that can only wait.
 | `IOPORTS_REQUEST` | 0x84 | Let the calling process use I/O ports | ✅ |
 | `IOPORTS_RELEASE` | 0x85 | Give the ports back | ✅ |
 | `RESOURCE_CREATE` | 0x86 | Make a narrower resource from the root resource | ✅ |
+| `BTI_CREATE` | 0x87 | A bus transaction initiator (DMA for one device) | ✅ |
+| `BTI_PIN` | 0x88 | Pin VMO pages, get their device addresses | ✅ |
+| `PMT_UNPIN` | 0x89 | Release pinned pages | ✅ |
 
 Drivers run as ordinary processes. Both calls that reach hardware need the
 **root resource** (object type 15, rights DUPLICATE + TRANSFER + WRITE +
@@ -719,19 +754,34 @@ port the process was not granted raises #GP and the process is killed
 (exit code -1025). The first driver is the PS/2 keyboard (`/bin/ps2kbd`,
 source `userspace/c-progs/ps2kbd.c`).
 
+From step 12 the device manager (`devmgr`) holds the root resource and
+gives each PCI driver only what its device needs: physical VMOs for its
+BARs, an IOPORT resource for an I/O BAR, MSI interrupt objects and a BTI
+(`docs/DRIVERS.md`).
+
 #### RESOURCE_CREATE (0x86)
 
-`resource_create(rx_handle_t parent, uint32_t kind, rx_handle_t *out)` —
-`parent` must be the root resource. Only kind 1, **power** (restart and
-power off with `system_powerctl`), so far. `init` makes one for the shell,
-which passes it on to the programs it runs (`PA_POWER_RESOURCE` 0xE1).
+`resource_create(rx_handle_t parent, uint32_t kind, rx_handle_t *out, uint64_t base, uint64_t size)` —
+`parent` must be the root resource. Kinds: 1, **power** (restart and
+power off with `system_powerctl`; `init` makes one for the shell, which
+passes it on to the programs it runs, `PA_POWER_RESOURCE` 0xE1), and 2,
+**I/O ports** `[base, base + size)` (at most 65536), which
+`ioports_request` accepts for ports in that range (devmgr gives one to a
+driver whose device has an I/O BAR). `base` and `size` are ignored for
+power.
 
 #### INTERRUPT_CREATE (0x80)
 
 `interrupt_create(rx_handle_t resource, uint32_t irq, uint32_t options, rx_handle_t *out)`
 
-Binds legacy ISA `irq` (only 1, the PS/2 keyboard, is wired up so far;
-others give `ERR_NOT_SUPPORTED`) to a new interrupt object (type 9).
+With `options` 0, binds legacy ISA `irq` (only 1, the PS/2 keyboard, is
+wired up so far; others give `ERR_NOT_SUPPORTED`) to a new interrupt
+object (type 9). With `options` `0x100` (`RX_INTERRUPT_MSI`, `irq` 0) it
+takes a free **MSI vector** (64 of them, 0x40-0x7F; `ERR_NO_RESOURCES`
+when all are taken): `object_get_info(INTERRUPT_MSI)` tells the address
+and data to write into the device's MSI capability or MSI-X table (a
+fixed, edge-triggered message to the boot CPU). Closing the last handle
+frees the vector.
 `ERR_ALREADY_EXISTS` if another interrupt object holds the IRQ. While
 bound, the kernel's interrupt handler only records the IRQ and wakes the
 waiting thread; the driver reads the device itself. Closing the last handle
@@ -748,8 +798,8 @@ the firing. One thread at a time (`ERR_BAD_STATE` for a second).
 #### INTERRUPT_ACK (0x82) / INTERRUPT_DESTROY (0x83)
 
 `interrupt_ack(rx_handle_t h)` and `interrupt_destroy(rx_handle_t h)` —
-need `WRITE`. Edge-triggered ISA IRQs are never masked, so `ack` has
-nothing to re-enable yet. `destroy` makes the current and later waits
+need `WRITE`. ISA IRQs and MSIs are edge-triggered and never masked, so
+`ack` has nothing to re-enable yet. `destroy` makes the current and later waits
 return `ERR_CANCELED`.
 
 #### IOPORTS_REQUEST (0x84) / IOPORTS_RELEASE (0x85)
@@ -758,7 +808,32 @@ return `ERR_CANCELED`.
 `ioports_release(...)` — grant or take back `in`/`out` on ports
 `[port, port + len)` for the **calling process** (all its threads). The
 kernel keeps a 64 Ki-bit permission bitmap per process and loads it into
-the TSS when one of its threads runs.
+the TSS when one of its threads runs. `resource` is the root resource or
+an I/O port resource covering the range.
+
+#### BTI_CREATE (0x87)
+
+`bti_create(rx_handle_t resource, uint32_t options, uint64_t bti_id, rx_handle_t *out)`
+— needs the root resource; `options` 0. A BTI (object type 24, rights
+BASIC + READ + WRITE + MAP) stands for one device's DMA (devmgr uses
+bus:device.function as the id). Without an IOMMU the device sees
+physical addresses.
+
+#### BTI_PIN (0x88)
+
+`bti_pin(rx_handle_t bti, uint32_t options, rx_handle_t vmo, uint64_t offset, uint64_t size, uint64_t *addrs, rx_handle_t *pmt)`
+— the kernel takes `bti | options << 32` in the first register (six
+registers in all). Needs `MAP` on both handles, and `READ`/`WRITE` on the
+VMO for `RX_BTI_PERM_READ` (1) / `RX_BTI_PERM_WRITE` (2), one of which is
+required. Commits and pins `[offset, offset + size)` (page multiples) and
+writes each page's device address to `addrs` (`size / 4096` entries), or
+just the first with `RX_BTI_CONTIGUOUS` (8, contiguous VMOs only). The
+pages stay put until `pmt_unpin` or the PMT handle (object type 26) is
+closed. Physical VMOs cannot be pinned (`ERR_NOT_SUPPORTED`).
+
+#### PMT_UNPIN (0x89)
+
+`pmt_unpin(rx_handle_t pmt)` — releases the pages and closes the handle.
 
 ---
 
@@ -794,6 +869,7 @@ local time (as Windows does), correcting by the offset of the zone in
 | `SYSTEM_GET_VERSION` | 0x90 | Kernel version string | ✅ |
 | `SYSTEM_GET_STATS` | 0x91 | Memory, CPUs, uptime | ✅ |
 | `SYSTEM_POWERCTL` | 0x92 | Restart or power off | ✅ |
+| `ACPI_TABLE_READ` | 0x93 | Copy an ACPI table (drivers) | ✅ |
 
 `system_get_version(char *buf, size_t len)` writes
 `Rustux <version> (git <hash>, built <date>) x86_64` with a NUL and
@@ -814,6 +890,14 @@ the power resource. `cmd` 1 restarts: the FADT reset register, then the
 powers off through ACPI S5 (the `_S5_` values from the DSDT written with
 SLP_EN to the PM1 control registers); it returns `ERR_NOT_SUPPORTED` only
 if that did not work. Nothing is synced first (there are no disks yet).
+
+`acpi_table_read(rx_handle_t resource, uint32_t signature, uint32_t index, void *buf, size_t len)`
+— needs the root resource. Copies the `index`th ACPI table with this
+signature (four ASCII bytes, little endian: `MCFG` is 0x4746434D; the
+C wrapper takes the string) into `buf` and returns the table's length;
+`len` 0 just returns the length. The DSDT is found through the FADT.
+`ERR_NOT_FOUND` if there is none. devmgr reads MCFG for PCI Express
+configuration space.
 
 #### TIMER_CREATE (0x41)
 

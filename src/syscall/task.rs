@@ -201,6 +201,9 @@ const INFO_JOB_CHILDREN: u32 = 6;
 const INFO_JOB_PROCESSES: u32 = 7;
 const INFO_TASK_STATS: u32 = 11;
 const INFO_TASK_RUNTIME: u32 = 25;
+/// Rustux topics
+const INFO_INTERRUPT_MSI: u32 = 0x1000;
+const INFO_BTI: u32 = 0x1001;
 
 /// The thread objects of a process that are running
 fn threads_of(p: &Process) -> alloc::vec::Vec<Arc<Thread>> {
@@ -221,7 +224,8 @@ fn koid_of(o: &KObject) -> (u64, u64) {
 
 /// object_get_info(handle, topic, *buf, size, *actual, *avail). Topics:
 /// HANDLE_BASIC (2), PROCESS (3), PROCESS_THREADS (4), JOB_CHILDREN (6),
-/// JOB_PROCESSES (7), TASK_STATS (11), TASK_RUNTIME (25). For the lists,
+/// JOB_PROCESSES (7), TASK_STATS (11), TASK_RUNTIME (25), INTERRUPT_MSI
+/// (0x1000), BTI (0x1001). For the lists,
 /// `actual` is how many koids were written and `avail` how many exist.
 pub fn sys_object_get_info(args: SyscallArgs) -> SyscallRet {
     let (h, topic, buf, size) = (args.arg_u32(0), args.arg_u32(1), args.arg(2), args.arg(3));
@@ -289,6 +293,25 @@ pub fn sys_object_get_info(args: SyscallArgs) -> SyscallRet {
                     _ => return Err(RxStatus::ERR_WRONG_TYPE),
                 };
                 for v in [cpu, 0, 0, 0] {
+                    push(&mut out, v);
+                }
+            }
+            INFO_INTERRUPT_MSI => {
+                // { u64 address; u32 data; u32 vector } to program into the device
+                let (obj, rights) = lookup(h, Rights::INSPECT)?;
+                let _ = rights;
+                let KObject::Interrupt(i) = obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+                let m = i.msi_info().ok_or(RxStatus::ERR_BAD_STATE)?;
+                push(&mut out, m.address);
+                out.extend_from_slice(&m.data.to_le_bytes());
+                out.extend_from_slice(&m.vector.to_le_bytes());
+            }
+            INFO_BTI => {
+                // { minimum_contiguity, aspace_size, pmo_count, quarantine_count }
+                let (obj, _) = lookup(h, Rights::INSPECT)?;
+                let KObject::Bti(b) = obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+                let pinned = b.pinned.load(core::sync::atomic::Ordering::Acquire) as u64;
+                for v in [4096, u64::MAX, pinned, 0] {
                     push(&mut out, v);
                 }
             }

@@ -322,6 +322,9 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x16 => memory::sys_vmar_protect(args),
         0x17 => memory::sys_vmo_get_size(args),
         0x18 => memory::sys_vmo_replace_as_executable(args),
+        0x19 => memory::sys_vmo_create_physical(args),
+        0x1A => memory::sys_vmo_set_cache_policy(args),
+        0x1B => memory::sys_vmo_create_contiguous(args),
 
         // IPC & Sync (0x20-0x2F)
         0x20 => object::sys_channel_create(args),
@@ -368,11 +371,15 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x84 => driver::sys_ioports_request(args),
         0x85 => driver::sys_ioports_release(args),
         0x86 => driver::sys_resource_create(args),
+        0x87 => driver::sys_bti_create(args),
+        0x88 => driver::sys_bti_pin(args),
+        0x89 => driver::sys_pmt_unpin(args),
 
         // System (0x90-0x9F)
         0x90 => system::sys_system_get_version(args),
         0x91 => system::sys_system_get_stats(args),
         0x92 => system::sys_system_powerctl(args),
+        0x93 => driver::sys_acpi_table_read(args),
 
         // yield(): give up the CPU (tests, and waiting for a full console)
         0x72 => sys_yield(args),

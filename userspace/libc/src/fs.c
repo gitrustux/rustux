@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <rustux/fs.h>
+#include <rustux/service.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -186,6 +187,11 @@ int open(const char *path, int flags, ...) {
         rx_handle_close(c);
         return fail(r);
     }
+    if (type == RX_FS_TYPE_SERVICE) {
+        // A service speaks its own protocol, not files: rx_service_connect
+        rx_handle_close(c);
+        return fail(-ENXIO);
+    }
     __fds[fd].kind = RX_FD_FILE;
     __fds[fd].handle = c;
     __fds[fd].flags = flags & (O_ACCMODE | O_APPEND | O_NONBLOCK);
@@ -206,7 +212,8 @@ static void fill_stat(const rx_fs_attr_t *a, struct stat *st) {
     memset(st, 0, sizeof *st);
     st->st_ino = a->ino;
     st->st_dev = a->fsid;
-    st->st_mode = (a->type == RX_FS_TYPE_DIR ? S_IFDIR : a->type == RX_FS_TYPE_CHR ? S_IFCHR : S_IFREG) | (a->mode & 07777);
+    st->st_mode = (a->type == RX_FS_TYPE_DIR ? S_IFDIR : a->type == RX_FS_TYPE_CHR ? S_IFCHR
+                   : a->type == RX_FS_TYPE_SERVICE ? S_IFSOCK : S_IFREG) | (a->mode & 07777);
     st->st_nlink = a->nlink;
     st->st_size = (off_t)a->size;
     st->st_blksize = 4096;
@@ -403,7 +410,8 @@ struct dirent *readdir(DIR *d) {
     d->ent.d_ino = ino;
     d->ent.d_off = 0;
     d->ent.d_reclen = sizeof d->ent;
-    d->ent.d_type = type == RX_FS_TYPE_DIR ? DT_DIR : type == RX_FS_TYPE_CHR ? DT_CHR : DT_REG;
+    d->ent.d_type = type == RX_FS_TYPE_DIR ? DT_DIR : type == RX_FS_TYPE_CHR ? DT_CHR
+                  : type == RX_FS_TYPE_SERVICE ? DT_SOCK : DT_REG;
     memcpy(d->ent.d_name, p + 10, nlen);
     d->ent.d_name[nlen] = 0;
     d->pos += 10u + nlen;
@@ -536,3 +544,36 @@ int symlink(const char *target, const char *link) { (void)target; (void)link; re
 int link(const char *old, const char *new) { (void)old; (void)new; return fail(-EPERM); }
 
 // chmod and file times: users.c
+
+// ---- services (/svc, step 12) ----
+
+int rx_service_connect(const char *path, rx_handle_t *out) {
+    char rel[PATH_MAX];
+    int r = resolve(path, rel);
+    if (r < 0) return r;
+    rx_handle_t c, s;
+    if (rx_channel_create(0, &c, &s) != RX_OK) return -ENOMEM;
+    uint32_t req[2] = { O_RDWR, 0 };
+    uint32_t type = 0;
+    r = __fs_call(ns_root, RX_FS_OP_OPEN, req, sizeof req, rel, strlen(rel), s, &type, sizeof type, 0);
+    if (r < 0) {
+        rx_handle_close(c);
+        return r;
+    }
+    if (type != RX_FS_TYPE_SERVICE) {
+        rx_handle_close(c);
+        return -ENOTSOCK;
+    }
+    *out = c;
+    return 0;
+}
+
+int rx_service_publish(const char *path, rx_handle_t server) {
+    char rel[PATH_MAX];
+    int r = resolve(path, rel);
+    if (r < 0) {
+        rx_handle_close(server);
+        return r;
+    }
+    return __fs_call(ns_root, RX_FS_OP_SERVE, 0, 0, rel, strlen(rel), server, 0, 0, 0);
+}

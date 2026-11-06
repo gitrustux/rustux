@@ -12,7 +12,7 @@ otherwise. `help` at the shell gives a short list.
 |---------|--------|----------|
 | `coreutils` | [uutils coreutils](https://github.com/uutils/coreutils) 0.12 (MIT), built for Rustux: `userspace/rust/coreutils` | `basename cat chmod cksum comm cp cut date dd df dirname du echo env expand expr false fmt fold head id join link ln ls md5sum mkdir mktemp mv nl nproc numfmt od paste printenv printf pwd readlink realpath rm rmdir seq sha256sum shuf sleep sort split stat sync tac tail tee test [ touch tr true truncate tsort uname unexpand uniq unlink wc whoami yes base64` |
 | `tools` | Rustux, `userspace/rust/tools` (Rust), with uutils findutils 0.11 and diffutils 0.6 and the kibi editor | `grep egrep fgrep less more man edit nano tar gzip gunzip zcat find xargs diff cmp` |
-| C programs | Rustux, `userspace/c-progs/` | `shell` (also `sh`), `ps kill top free uptime dmesg hostname reboot poweroff`, tests |
+| C programs | Rustux, `userspace/c-progs/` | `shell` (also `sh`), `ps kill top free uptime dmesg hostname reboot poweroff`, `lspci lsblk ramdisk` (step 12), tests |
 | scripts | `userspace/bin/` | `runtests` |
 
 One program serves many names: the boot image stores each name in
@@ -31,7 +31,7 @@ with `top` new in step 11.
 The commands print what their GNU counterparts print, so scripts and
 habits carry over. Machine-readable output, which `apps/CHECKLIST.md`
 asks for, is an option where it has been added: `ps --json`,
-`free --json`, `uptime --json`, `grep --json` (one object per matching
+`free --json`, `uptime --json`, `lspci --json`, `lsblk --json`, `grep --json` (one object per matching
 line), `tar -t --json` (one object per entry). The uutils commands have
 none yet (their GNU options like `stat -c` and `ls` columns cover some
 uses).
@@ -56,10 +56,14 @@ uses).
 | `grep` | basic (-G), extended (-E) and fixed (-F) patterns on the `regex` crate; no back-references (`\1`) |
 | `tar` | creates and reads ustar/GNU archives, with `-z` for gzip; no `-j`/`-J` (bzip2, xz) |
 | `man` | plain text pages, no sections; a command without a page shows its `--help` |
+| `lspci` | the device list comes from devmgr (`DRIVERS.md`); names from a small built-in table (no `pci.ids`), so most devices show as `Vendor Device dddd`; `-n`, `-nn`, `-v`, `-k`, `-D`, `-s`, `-d`, `--json` (no `-t`, `-x`) |
+| `lsblk` | block devices published to devmgr (RAM disks for now; disks in step 13); no partitions, `MAJ:MIN` or mount points yet; `-b`, `-n`, `-J` |
+| `ramdisk` | Rustux's: serves a block device in memory until killed (`ramdisk 16M &`) |
 | `shell` | no `fork`: see `USERSPACE.md`, "The shell", for how pipelines with built-ins run |
 
 ## Tests
 
 `runtests` runs the command test suite (`files/usr/share/tests/`, see
-`TESTS.md`); `systest`, `fstest`, `libctest`, `threadtest`, `hello-std`
+`TESTS.md`); `edutest`, `blktest` and `drvtest` test the drivers
+(`DRIVERS.md`); `systest`, `fstest`, `libctest`, `threadtest`, `hello-std`
 and the kernel tests are listed in `USERSPACE.md` and `SYSCALL.md`.

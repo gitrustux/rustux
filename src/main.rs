@@ -225,6 +225,8 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     unsafe { idt::idt_set_gate(0x80, rustux_int80_entry as u64, 0x08, 0xEE); }
     unsafe { idt::idt_set_gate(rustux::arch::amd64::smp::WAKE_VECTOR, wake_ipi_handler as u64, 0x08, 0x8E); }
     unsafe { idt::idt_set_gate(rustux::arch::amd64::smp::FLUSH_VECTOR, flush_ipi_handler as u64, 0x08, 0x8E); }
+    // MSI vectors for userspace drivers (0x40-0x7F)
+    rustux::arch::amd64::msi::install();
     debug_print("      ✓ Syscall handler at vector 0x80\n");
 
     // Initialize APIC
@@ -320,16 +322,24 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
         // the filesystem service) besides the usual bootstrap handles
         use rustux::kobj::{KObject, Rights};
         use rustux::process::launch::{self, pa};
-        static BOOT_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/bootfs.img"));
-        let bootfs = rustux::kobj::Vmo::new(BOOT_IMAGE.len() as u64).expect("boot image VMO");
-        bootfs.write_from(0, BOOT_IMAGE.as_ptr(), BOOT_IMAGE.len() as u64).expect("boot image VMO");
+        // The image is page aligned and padded to whole pages (build.rs), so
+        // its pages inside the kernel become the VMO as they are: no copy,
+        // which saves its size in RAM (18 MB with the commands)
+        #[repr(C, align(4096))]
+        struct PageAligned<B: ?Sized>(B);
+        static BOOT_PAGES: &PageAligned<[u8]> = &PageAligned(*include_bytes!(concat!(env!("OUT_DIR"), "/bootfs.img")));
+        let boot_image: &[u8] = &BOOT_PAGES.0;
+        let base = rustux::arch::amd64::mm::kernel_map::virt_to_phys(boot_image.as_ptr() as u64);
+        let (kbase, ksize) = rustux::arch::amd64::mm::kernel_map::kernel_image();
+        assert!(base >= kbase && base + boot_image.len() as u64 <= kbase + ksize, "boot image outside the kernel image");
+        let bootfs = rustux::kobj::Vmo::new_wired(base, boot_image.len() as u64).expect("boot image VMO");
         let read_only = Rights::BASIC | Rights::READ | Rights::MAP | Rights::GET_PROPERTY;
         let extra = alloc::vec![
             (pa::ROOT_RESOURCE, KObject::Resource(rustux::kobj::interrupt::Resource::root()), Rights(Rights::RESOURCE)),
             (pa::KERNEL_INPUT, KObject::Channel(rustux::drivers::keyboard::take_input_channel()), Rights(Rights::CHANNEL)),
             (pa::VMO_BOOTFS, KObject::Vmo(bootfs), Rights(read_only)),
         ];
-        let init_elf = launch::boot_image_find(BOOT_IMAGE, "bin/init").expect("bin/init missing from the boot image");
+        let init_elf = launch::boot_image_find(boot_image, "bin/init").expect("bin/init missing from the boot image");
         match launch::spawn_init("/bin/init", init_elf, &rustux::kobj::task::Job::root(), extra, Default::default()) {
             Ok((_, tid)) => {
                 rustux::drivers::keyboard::start_polling();
@@ -757,6 +767,12 @@ fn record_phys_limit(map: &impl uefi::mem::memory_map::MemoryMap) {
         note_phys_limit(desc.phys_start + desc.page_count * 4096);
         if desc.ty == MemoryType::CONVENTIONAL {
             rustux::mm::pmm::note_usable_memory(desc.phys_start, desc.page_count);
+        }
+        // Everything but device memory counts as RAM: physical VMOs
+        // (drivers) may not cover it. Firmware marks some device memory
+        // (PCI ECAM, chipset registers) as reserved, so reserved is not RAM.
+        if desc.ty != MemoryType::MMIO && desc.ty != MemoryType::MMIO_PORT_SPACE && desc.ty != MemoryType::RESERVED {
+            rustux::mm::pmm::note_ram(desc.phys_start, desc.page_count);
         }
     }
     // Two pages below 1 MiB for starting the other CPUs, before the PMM

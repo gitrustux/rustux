@@ -6,7 +6,7 @@ Rustux is the kernel of **Rustica OS**. The full OS (live USB image, shell, apps
 
 ## Status
 
-**Boots to an interactive shell in QEMU and on the test laptop.** Checklist steps 1-10 are done; step 11 (core commands: uutils coreutils, grep, find, less, an editor, tar/gzip, man pages and shell scripts) passes on QEMU. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and the checklist in the Rustux project.
+**Boots to an interactive shell in QEMU and on the test laptop.** Checklist steps 1-11 are done (phase A: a usable command line); step 12 (userspace PCI drivers: devmgr, MSI interrupts, DMA, block devices) passes on QEMU. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and the checklist in the Rustux project.
 
 | Area | State |
 |------|-------|
@@ -83,6 +83,7 @@ Writing and booting the image is covered in the [Rustica README](https://github.
 | [`docs/FS.md`](docs/FS.md) | Filesystem service, protocol and boot image |
 | [`docs/RUST.md`](docs/RUST.md) | Rust programs (std on Rustux) |
 | [`docs/COMMANDS.md`](docs/COMMANDS.md) | The commands: where each comes from, differences from GNU |
+| [`docs/DRIVERS.md`](docs/DRIVERS.md) | Drivers in userspace: devmgr, PCI, DMA, interrupts, block devices |
 | [`docs/TESTS.md`](docs/TESTS.md) | Build, QEMU testing and debugging |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Architecture checklist |
 | [`docs/HISTORY.md`](docs/HISTORY.md) | Project history and decisions |

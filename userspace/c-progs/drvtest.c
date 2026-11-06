@@ -40,6 +40,25 @@ int main(void) {
     check("ioports_request with an event -> WRONG_TYPE", r == RX_ERR_WRONG_TYPE, r);
     r = rx_interrupt_wait(ev, 0);
     check("interrupt_wait on an event -> WRONG_TYPE", r == RX_ERR_WRONG_TYPE, r);
+    // Step 12: device memory, MSI, DMA and ACPI need the root resource too
+    rx_handle_t h;
+    r = rx_interrupt_create(0, 0, RX_INTERRUPT_MSI, &h);
+    check("interrupt_create(MSI) without a resource -> BAD_HANDLE", r == RX_ERR_BAD_HANDLE, r);
+    r = rx_vmo_create_physical(0, 0xFEC00000, 4096, &h);
+    check("vmo_create_physical without a resource -> BAD_HANDLE", r == RX_ERR_BAD_HANDLE, r);
+    r = rx_vmo_create_physical(ev, 0xFEC00000, 4096, &h);
+    check("vmo_create_physical with an event -> WRONG_TYPE", r == RX_ERR_WRONG_TYPE, r);
+    r = rx_bti_create(0, 0, 0, &h);
+    check("bti_create without a resource -> BAD_HANDLE", r == RX_ERR_BAD_HANDLE, r);
+    r = rx_vmo_create_contiguous(ev, 4096, 0, &h);
+    check("vmo_create_contiguous with an event (not a BTI) -> WRONG_TYPE", r == RX_ERR_WRONG_TYPE, r);
+    uint64_t addr;
+    r = rx_bti_pin(ev, RX_BTI_PERM_READ, ev, 0, 4096, &addr, &h);
+    check("bti_pin with an event -> WRONG_TYPE", r == RX_ERR_WRONG_TYPE, r);
+    r = rx_resource_create_range(ev, RX_RSRC_KIND_IOPORT, 0x60, 1, &h);
+    check("resource_create(IOPORT) from an event -> WRONG_TYPE", r == RX_ERR_WRONG_TYPE, r);
+    r = rx_acpi_table_read(0, "MCFG", 0, 0, 0);
+    check("acpi_table_read without a resource -> BAD_HANDLE", r == RX_ERR_BAD_HANDLE, r);
     rx_puts("drvtest: ");
     rx_putd(passed);
     rx_puts(" passed, ");

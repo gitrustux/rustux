@@ -53,6 +53,17 @@ To add a test: write `NAME.sh`, run it with `bash --posix` on Linux to make
 `NAME.out` (the commands behave like GNU's), check that output by eye, and
 run `runtests NAME` on Rustux.
 
+## Device tests (step 12)
+
+The command tests boot QEMU with `-device edu,dma_mask=0xffffffff`, QEMU's
+educational PCI device, so `devices.sh` also runs `edutest`: the `edu`
+driver (started by `devmgr`) maps the device's registers, takes an MSI
+interrupt and does DMA in both directions (10 checks). `blktest` (16
+checks, block protocol against RAM disks) and `drvtest` (driver calls
+refused without the root resource) need no device. Without the `edu`
+device, `devices.sh` skips `edutest`, so the laptop runs it too.
+`docs/DRIVERS.md` explains the device mask and what each test covers.
+
 ## Run in QEMU
 
 ```bash

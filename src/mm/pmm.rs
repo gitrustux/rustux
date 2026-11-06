@@ -523,6 +523,46 @@ pub fn note_usable_memory(base: PAddr, page_count: u64) {
     }
 }
 
+/// Every memory-map range that is not device memory (free RAM, firmware
+/// and ACPI data, the kernel image, reserved areas), merged where they
+/// touch. Physical VMOs must not overlap them.
+static RAM_MAP: crate::sync::SpinMutex<([Region; 128], usize)> = crate::sync::SpinMutex::new(([Region { base: 0, end: 0 }; 128], 0));
+
+/// Record a non-device range of the firmware memory map
+pub fn note_ram(base: PAddr, page_count: u64) {
+    let end = base + page_count * PAGE_SIZE as PAddr;
+    let mut g = RAM_MAP.lock();
+    let (regions, n) = &mut *g;
+    if *n > 0 {
+        let full = *n == regions.len();
+        let last = &mut regions[*n - 1];
+        if base <= last.end && end >= last.base {
+            last.base = last.base.min(base);
+            last.end = last.end.max(end);
+            return;
+        }
+        if full {
+            // Full: grow the last range over the gap (refuses more, never less)
+            last.base = last.base.min(base);
+            last.end = last.end.max(end);
+            return;
+        }
+    }
+    regions[*n] = Region { base, end };
+    *n += 1;
+}
+
+/// Whether [base, end) touches RAM or firmware memory (true if no memory
+/// map was recorded: then nothing can be proven to be device memory)
+pub fn overlaps_ram(base: PAddr, end: PAddr) -> bool {
+    let g = RAM_MAP.lock();
+    let (regions, n) = &*g;
+    if *n == 0 {
+        return true;
+    }
+    regions[..*n].iter().any(|r| base < r.end && r.base < end)
+}
+
 /// Lowest physical address handed out: the first 1 MiB holds real-mode
 /// structures and firmware data on PCs.
 const MIN_USABLE: PAddr = 0x10_0000;

@@ -17,6 +17,8 @@
 //   /usr       bootfs's usr directory (mounted again)
 //   /dev       devices: null (reads nothing, takes every write) and zero
 //              (reads zeros)
+//   /svc       services (tmpfs): opening one hands the connection to the
+//              program serving it (RX_FS_OP_SERVE; devmgr, drivers)
 //
 // init starts fsd with the boot image VMO (PA_VMO_BOOTFS) and the server
 // end of the first root connection (PA_USER0). Every open file or
@@ -36,7 +38,8 @@
 #define MAX_CONNS 1000
 
 struct node {
-    uint32_t type;          // RX_FS_TYPE_FILE, _DIR or _CHR
+    uint32_t type;          // RX_FS_TYPE_FILE, _DIR, _CHR or _SERVICE
+    rx_handle_t svc;        // services: channel to the server
     int dev;                // devices: DEV_NULL or DEV_ZERO
     uint32_t mode;
     int read_only;          // bootfs
@@ -114,6 +117,7 @@ static void detach(struct node *n) {
 
 static void maybe_free(struct node *n) {
     if (n->linked || n->open) return;
+    if (n->svc) rx_handle_close(n->svc);
     free(n->data);
     free(n->name);
     free(n);
@@ -235,12 +239,27 @@ static int set_size(struct node *n, uint64_t size) {
     return 0;
 }
 
+// Hand an opener's connection to a service's server (the handle is gone
+// either way)
+static int connect_service(struct node *n, uint32_t flags, rx_handle_t server) {
+    rx_svc_connect_t m = { RX_SVC_CONNECT, flags };
+    if (rx_channel_write(n->svc, 0, &m, sizeof m, &server, 1) != RX_OK) return -ECONNREFUSED;
+    return 0;
+}
+
 static int do_open(struct ofd *dir, const char *path, size_t plen, uint32_t flags, uint32_t mode,
-                   rx_handle_t server, uint32_t *type) {
+                   rx_handle_t server, uint32_t *type, int *consumed) {
     struct node *n = 0, *parent;
     const char *last;
     size_t last_len;
     int r = walk(dir->node, path, plen, &n, 0, 0, 0);
+    if (r == 0 && n->type == RX_FS_TYPE_SERVICE) {
+        if ((flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
+        if (flags & O_DIRECTORY) return -ENOTDIR;
+        *consumed = 1;
+        *type = RX_FS_TYPE_SERVICE;
+        return connect_service(n, flags, server);
+    }
     if (r == -ENOENT && (flags & O_CREAT)) {
         r = walk(dir->node, path, plen, 0, &parent, &last, &last_len);
         if (r < 0) return r;
@@ -409,6 +428,33 @@ static int do_unlink(struct ofd *dir, const char *path, size_t plen, uint32_t fl
     return 0;
 }
 
+// Make (or replace) a service node at `path`, served over channel `ch`
+static int do_serve(struct ofd *dir, const char *path, size_t plen, rx_handle_t ch) {
+    struct node *parent, *n = 0;
+    const char *last;
+    size_t last_len;
+    if (dir->node->type != RX_FS_TYPE_DIR) return -ENOTDIR;
+    int r = walk(dir->node, path, plen, 0, &parent, &last, &last_len);
+    if (r < 0) return r;
+    if (parent->read_only) return -EROFS;
+    if (last_len == 0 || last_len > 255) return -EINVAL;
+    for (struct node *c = parent->first; c; c = c->next) {
+        if (strlen(c->name) == last_len && !memcmp(c->name, last, last_len)) { n = c; break; }
+    }
+    if (n && n->type != RX_FS_TYPE_SERVICE) return -EEXIST;
+    if (!n) {
+        char name[256];
+        memcpy(name, last, last_len);
+        name[last_len] = 0;
+        n = new_node(RX_FS_TYPE_SERVICE, name, parent, 0666);
+        if (!n) return -ENOSPC;
+    }
+    if (n->svc) rx_handle_close(n->svc);
+    n->svc = ch;
+    n->mtime = now();
+    return 0;
+}
+
 // Handle one request on connection `i`; returns 0, or -1 if the connection
 // was dropped
 static int serve(int i) {
@@ -441,7 +487,9 @@ static int serve(int i) {
         uint32_t f[2];
         memcpy(f, body, 8);
         if (o->node->type != RX_FS_TYPE_DIR) { st = -ENOTDIR; break; }
-        st = do_open(o, body + 8, blen - 8, f[0], f[1], h, &u32);
+        int consumed = 0;
+        st = do_open(o, body + 8, blen - 8, f[0], f[1], h, &u32, &consumed);
+        if (consumed) h = 0; // handed to a service
         if (st == 0) {
             h = 0; // the new connection owns it
             memcpy(out, &u32, 4);
@@ -562,6 +610,11 @@ static int serve(int i) {
         break;
     case RX_FS_OP_SYNC:
         break; // all in memory
+    case RX_FS_OP_SERVE:
+        if (!nh) { st = -EINVAL; break; }
+        st = do_serve(o, body, blen, h);
+        if (st == 0) h = 0;
+        break;
     default:
         st = -ENOSYS;
         break;
@@ -628,6 +681,7 @@ int main(void) {
     root = new_node(RX_FS_TYPE_DIR, "", 0, 0755);
     new_node(RX_FS_TYPE_DIR, "tmp", root, 01777);
     new_node(RX_FS_TYPE_DIR, "root", root, 0700);
+    new_node(RX_FS_TYPE_DIR, "svc", root, 0755);
     struct node *boot_top = bootfs ? bootfs_load(bootfs) : 0;
     if (boot_top) {
         struct node *m = new_node(RX_FS_TYPE_DIR, "boot", root, 0555);

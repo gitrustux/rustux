@@ -1,0 +1,8 @@
+# Drivers devmgr starts (step 12, docs/DRIVERS.md). One per line:
+#   VENDOR:DEVICE            PROGRAM     (hex IDs, as lspci -n shows them)
+#   class=CC[:SS[:PI]]       PROGRAM     (class, subclass, programming interface)
+# The first matching line wins. A driver gets the device's address as its
+# argument and its device channel as handle PA_USER0.
+#
+# QEMU's "edu" test device (-device edu): the test driver
+1234:11e8   /bin/edu

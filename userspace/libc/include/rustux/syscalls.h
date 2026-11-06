@@ -32,6 +32,7 @@ typedef int64_t rx_status_t;
 #define RX_ERR_BAD_STATE      -17
 #define RX_ERR_ALREADY_EXISTS -18
 #define RX_ERR_CANCELED       -19
+#define RX_ERR_NO_RESOURCES   -20
 
 #define RX_TASK_RETCODE_SYSCALL_KILL   -1024
 #define RX_TASK_RETCODE_EXCEPTION_KILL -1025
@@ -75,6 +76,8 @@ typedef int64_t rx_status_t;
 #define RX_OBJ_TYPE_TIMER     22
 #define RX_OBJ_TYPE_LOG       12
 #define RX_OBJ_TYPE_SOCKET    14
+#define RX_OBJ_TYPE_BTI       24
+#define RX_OBJ_TYPE_PMT       26
 
 // vmar_map / vmar_protect options
 #define RX_VM_PERM_READ    (1u << 0)
@@ -113,6 +116,8 @@ typedef int64_t rx_status_t;
 #define RX_INFO_JOB_PROCESSES    7   // u64 koids
 #define RX_INFO_TASK_STATS      11
 #define RX_INFO_TASK_RUNTIME    25
+#define RX_INFO_INTERRUPT_MSI   0x1000 // rx_info_msi_t
+#define RX_INFO_BTI             0x1001 // rx_info_bti_t
 
 typedef struct {
     uint64_t koid;          // 0 for objects other than jobs, processes, threads
@@ -273,6 +278,18 @@ static inline uint8_t rx_inb(uint16_t port) {
     return v;
 }
 static inline void rx_outb(uint16_t port, uint8_t v) { __asm__ volatile("outb %0, %1" : : "a"(v), "Nd"(port)); }
+static inline uint16_t rx_inw(uint16_t port) {
+    uint16_t v;
+    __asm__ volatile("inw %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+static inline void rx_outw(uint16_t port, uint16_t v) { __asm__ volatile("outw %0, %1" : : "a"(v), "Nd"(port)); }
+static inline uint32_t rx_inl(uint16_t port) {
+    uint32_t v;
+    __asm__ volatile("inl %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+static inline void rx_outl(uint16_t port, uint32_t v) { __asm__ volatile("outl %0, %1" : : "a"(v), "Nd"(port)); }
 
 // Debugging / tests
 static inline int64_t rx_debug_cpu(void) { return RX_SYS(0x51, 0, 0, 0, 0); }
@@ -295,9 +312,64 @@ static inline rx_status_t rx_debuglog_read(rx_handle_t h, uint32_t options, void
 }
 
 // Resources: a narrower resource from the root resource
-#define RX_RSRC_KIND_POWER 1
+#define RX_RSRC_KIND_POWER  1
+#define RX_RSRC_KIND_IOPORT 2   // ports [base, base+size), for ioports_request
 static inline rx_status_t rx_resource_create(rx_handle_t parent, uint32_t kind, rx_handle_t *out) {
     return RX_SYS(0x86, parent, kind, out, 0);
+}
+static inline rx_status_t rx_resource_create_range(rx_handle_t parent, uint32_t kind, uint64_t base, uint64_t size,
+                                                   rx_handle_t *out) {
+    return RX_SYS6(0x86, parent, kind, out, base, size, 0);
+}
+
+// Device memory and DMA (docs/SYSCALL.md, "Drivers")
+#define RX_CACHE_POLICY_CACHED          0u
+#define RX_CACHE_POLICY_UNCACHED        1u
+#define RX_CACHE_POLICY_UNCACHED_DEVICE 2u
+// Needs the root resource; [paddr, paddr+size) must be device memory
+static inline rx_status_t rx_vmo_create_physical(rx_handle_t resource, uint64_t paddr, uint64_t size, rx_handle_t *out) {
+    return RX_SYS(0x19, resource, paddr, size, out);
+}
+static inline rx_status_t rx_vmo_set_cache_policy(rx_handle_t vmo, uint32_t policy) { return RX_SYS(0x1A, vmo, policy, 0, 0); }
+// options: log2 alignment in bits 0-7 (0 = page), RX_VMO_CONTIGUOUS_LOW (below 4 GiB)
+#define RX_VMO_CONTIGUOUS_LOW 0x100u
+static inline rx_status_t rx_vmo_create_contiguous(rx_handle_t bti, uint64_t size, uint32_t options, rx_handle_t *out) {
+    return RX_SYS(0x1B, bti, size, options, out);
+}
+static inline rx_status_t rx_bti_create(rx_handle_t resource, uint32_t options, uint64_t bti_id, rx_handle_t *out) {
+    return RX_SYS(0x87, resource, options, bti_id, out);
+}
+#define RX_BTI_PERM_READ  (1u << 0)
+#define RX_BTI_PERM_WRITE (1u << 1)
+#define RX_BTI_CONTIGUOUS (1u << 3)  // contiguous VMO: one address in addrs
+// Pin [offset, offset+size) (page multiples); addrs gets size/4096 device
+// addresses (or one with RX_BTI_CONTIGUOUS)
+static inline rx_status_t rx_bti_pin(rx_handle_t bti, uint32_t options, rx_handle_t vmo, uint64_t offset, uint64_t size,
+                                     uint64_t *addrs, rx_handle_t *pmt) {
+    return RX_SYS6(0x88, (uint64_t)bti | ((uint64_t)options << 32), vmo, offset, size, addrs, pmt);
+}
+static inline rx_status_t rx_pmt_unpin(rx_handle_t pmt) { return RX_SYS(0x89, pmt, 0, 0, 0); }
+typedef struct {
+    uint64_t minimum_contiguity;
+    uint64_t aspace_size;
+    uint64_t pmo_count;          // pinned ranges not unpinned yet
+    uint64_t quarantine_count;
+} rx_info_bti_t;
+
+// MSI: rx_interrupt_create(resource, 0, RX_INTERRUPT_MSI, &h) takes a free
+// vector; RX_INFO_INTERRUPT_MSI tells what to program into the device
+#define RX_INTERRUPT_MSI 0x100u
+typedef struct {
+    uint64_t address;
+    uint32_t data;
+    uint32_t vector;
+} rx_info_msi_t;
+
+// ACPI: copy the index'th table with a signature ("MCFG", "APIC", "DSDT",
+// ...) into buf; returns its length (len 0: just the length). Root resource.
+static inline int64_t rx_acpi_table_read(rx_handle_t resource, const char sig[4], uint32_t index, void *buf, uint64_t len) {
+    uint32_t s = (uint32_t)(uint8_t)sig[0] | (uint32_t)(uint8_t)sig[1] << 8 | (uint32_t)(uint8_t)sig[2] << 16 | (uint32_t)(uint8_t)sig[3] << 24;
+    return RX_SYS6(0x93, resource, s, index, buf, len, 0);
 }
 
 // System information and power

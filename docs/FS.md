@@ -16,6 +16,7 @@ library (`open`, `read`, `opendir`, ...; `docs/USERSPACE.md`).
 | `/bin` | bootfs | `/boot/bin` mounted again: the programs |
 | `/usr` | bootfs | `/boot/usr` mounted again (`/usr/share/zoneinfo/zones`, `/usr/share/keymaps/`, `/usr/share/man/`, `/usr/share/tests/`) |
 | `/dev` | devices | `null` (reads nothing, takes every write) and `zero` (reads zeros); no new files here |
+| `/svc` | tmpfs | services: `devmgr`, `edu`, ... (step 12; see below) |
 
 Writes, creates, renames and removals under `/boot`, `/bin` and `/usr` fail with
 `EROFS`. Files on disk come in phase B (FAT32 in step 14, ext2/ext4 in
@@ -79,9 +80,11 @@ the current directory; `fsd` rejects them with `EINVAL`).
 | `SYNC` 13 | any | — | — |
 | `STAT_AT` 14 | directory | path | `rx_fs_attr_t` |
 | `SETATTR` 15 | any | `rx_fs_setattr_t { u32 mask; u32 mode; i64 mtime_ns; }`; mask 1 sets the permission bits, 2 the modification time | — (`EROFS` on bootfs) |
+| `SERVE` 17 | directory | path; one handle: a channel to the server | — (makes or replaces a service node; `EEXIST` over something else) |
 | `GET_VMO` 16 | file | — | `u64 offset; u64 size;` and one handle: the boot image VMO, read-only. Boot-image files only (`ENOTSUP` otherwise); the loader maps programs straight from it |
 
-Types: 1 file, 2 directory, 3 device (`/dev/null`, `/dev/zero`; step 10).
+Types: 1 file, 2 directory, 3 device (`/dev/null`, `/dev/zero`; step 10),
+4 service (step 12; `stat` shows `S_IFSOCK`).
 
 `rx_fs_attr_t` is `{ u32 type; u32 mode; u64 size; u64 ino; u64 nlink;
 i64 mtime_ns; u32 read_only; u32 fsid; }`. Times are UTC (nanoseconds
@@ -93,6 +96,19 @@ Errors follow POSIX: `ENOENT`, `EEXIST`, `ENOTDIR`, `EISDIR`, `ENOTEMPTY`,
 `EROFS`, `EBUSY` (removing or renaming a mount point), `EINVAL` (moving a
 directory into itself), `EBADF` (reading a write-only connection),
 `ENOSYS` (unknown op), `ENOTSUP` (`GET_VMO` on a file not in the boot image).
+
+## Services
+
+A program that serves a protocol of its own publishes it with `SERVE`
+(`rx_service_publish("/svc/NAME", channel)` in the C library,
+`<rustux/service.h>`). An `OPEN` of the service sends the opener's new
+connection to the server as an `rx_svc_connect_t { u32 op; u32 flags; }`
+message carrying the handle, and replies type 4; the opener then talks
+the server's protocol (`rx_service_connect`). If the server has ended,
+`OPEN` fails with `ECONNREFUSED`; publishing again replaces the old
+channel (a restarted driver does this). `open()` refuses services with
+`ENXIO`, since they do not speak the file protocol. `devmgr` publishes
+`/svc/devmgr`, the `edu` driver `/svc/edu` (`docs/DRIVERS.md`).
 
 ## Limits
 
@@ -119,6 +135,12 @@ creates the directories along them.
 The data of `bin/` files starts on a 4096-byte boundary of the image, so
 the loader can map a program's read-only segments from the image VMO
 without copying them.
+
+The image is padded to whole pages and placed on a page boundary inside
+the kernel, and the image VMO is made of those same pages (a "wired"
+VMO, never freed): the image sits in RAM once, not twice. With the
+commands that saves about 18 MB, which matters on small machines
+(128 MB under QEMU leaves about 58 MB for the kernel to manage).
 
 `userspace/links` lists extra names, one `NAME PROGRAM` per line
 (`ls coreutils`): each becomes a `bin/NAME` entry whose data offset and

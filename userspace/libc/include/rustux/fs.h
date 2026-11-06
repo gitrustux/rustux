@@ -62,6 +62,20 @@ typedef struct { uint32_t txid; int32_t status; } rx_fs_reply_t;
 // maps programs from it instead of reading them (step 11).
 #define RX_FS_OP_GET_VMO  16
 
+// On a directory (step 12). Request: path; one handle: a channel to a
+// server. Makes a service node there (replacing an older service of that
+// name). An OPEN of a service sends the opener's connection to the server
+// as an rx_svc_connect_t message carrying the handle, and replies
+// RX_FS_TYPE_SERVICE; from then on the opener talks to the server's own
+// protocol. ECONNREFUSED if the server has gone. Services live in /svc.
+#define RX_FS_OP_SERVE    17
+
+typedef struct {
+    uint32_t op;        // RX_SVC_CONNECT
+    uint32_t flags;     // the opener's O_* flags
+} rx_svc_connect_t;
+#define RX_SVC_CONNECT 1u
+
 #define RX_FS_SETATTR_MODE  1u
 #define RX_FS_SETATTR_MTIME 2u
 typedef struct {
@@ -75,6 +89,7 @@ typedef struct {
 #define RX_FS_TYPE_FILE 1u
 #define RX_FS_TYPE_DIR  2u
 #define RX_FS_TYPE_CHR  3u   // a device (/dev/null, /dev/zero)
+#define RX_FS_TYPE_SERVICE 4u // a service (RX_FS_OP_SERVE): S_IFSOCK
 
 // Most data in one READ or WRITE
 #define RX_FS_MAX_IO 32768u

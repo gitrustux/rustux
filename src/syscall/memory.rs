@@ -186,3 +186,64 @@ pub fn sys_vmar_protect(args: SyscallArgs) -> SyscallRet {
         Ok(0)
     })())
 }
+
+/// vmo_create_physical(resource, paddr, size, *out) — a VMO over device
+/// memory (registers, frame buffers). Needs the root resource; the range
+/// must be page aligned and outside RAM and firmware memory. Mapped
+/// uncached (UNCACHED_DEVICE) unless the policy is changed. Cannot be read
+/// or written with vmo_read/vmo_write: map it.
+pub fn sys_vmo_create_physical(args: SyscallArgs) -> SyscallRet {
+    let (res, paddr, size, out) = (args.arg_u32(0), args.arg_u64(1), args.arg_u64(2), args.arg(3));
+    ret((|| {
+        super::driver::require_resource(res)?;
+        if paddr % 4096 != 0 || size == 0 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        let end = paddr.checked_add(size).ok_or(RxStatus::ERR_OUT_OF_RANGE)?;
+        let (kbase, ksize) = crate::arch::amd64::mm::kernel_map::kernel_image();
+        if crate::mm::pmm::overlaps_ram(paddr, end) || (paddr < kbase + ksize && kbase < end) {
+            return Err(RxStatus::ERR_ACCESS_DENIED);
+        }
+        user::check(out, 4, true)?;
+        let v = install(KObject::Vmo(Vmo::new_physical(paddr, size)?), Rights::VMO)?;
+        user::write_u32(out, v)?;
+        Ok(0)
+    })())
+}
+
+/// vmo_set_cache_policy(vmo, policy) — CACHED 0, UNCACHED 1,
+/// UNCACHED_DEVICE 2 (WRITE_COMBINING 3 is not supported yet); applies to
+/// later mappings
+pub fn sys_vmo_set_cache_policy(args: SyscallArgs) -> SyscallRet {
+    let (h, policy) = (args.arg_u32(0), args.arg_u32(1));
+    ret((|| {
+        let (vmo, _) = vmo_of(h, Rights::SET_PROPERTY)?;
+        vmo.set_cache_policy(policy)?;
+        Ok(0)
+    })())
+}
+
+/// vmo_create_contiguous option: below 4 GiB (devices with 32-bit DMA)
+pub const VMO_CONTIGUOUS_LOW: usize = 0x100;
+
+/// vmo_create_contiguous(bti, size, options, *out) — zeroed, physically
+/// contiguous memory for DMA. options: log2 of the alignment in bits 0-7
+/// (0 = page aligned), VMO_CONTIGUOUS_LOW.
+pub fn sys_vmo_create_contiguous(args: SyscallArgs) -> SyscallRet {
+    let (bti, size, options, out) = (args.arg_u32(0), args.arg_u64(1), args.arg(2), args.arg(3));
+    ret((|| {
+        let (obj, rights) = lookup(bti, 0)?;
+        let KObject::Bti(_) = obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+        if !rights.has(Rights::MAP) {
+            return Err(RxStatus::ERR_ACCESS_DENIED);
+        }
+        if options & !(0xFF | VMO_CONTIGUOUS_LOW) != 0 || size == 0 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        user::check(out, 4, true)?;
+        let vmo = Vmo::new_contiguous(size, (options & 0xFF) as u8, options & VMO_CONTIGUOUS_LOW != 0)?;
+        let v = install(KObject::Vmo(vmo), Rights::VMO)?;
+        user::write_u32(out, v)?;
+        Ok(0)
+    })())
+}

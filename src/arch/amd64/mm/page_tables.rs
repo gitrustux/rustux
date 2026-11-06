@@ -173,6 +173,9 @@ pub enum RxStatus {
 
     /// The operation was cancelled (e.g. the object was destroyed)
     ERR_CANCELED = 19,
+
+    /// A limited system resource is used up (e.g. free MSI vectors)
+    ERR_NO_RESOURCES = 20,
 }
 
 /// Result type using RxStatus

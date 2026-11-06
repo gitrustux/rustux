@@ -1,0 +1,18 @@
+lsblk - list block devices
+
+USAGE
+    lsblk [-b] [-n] [-J|--json]
+
+    Lists the block devices published to the device manager: NAME, RM
+    (removable), SIZE, RO (read-only), TYPE. Disks appear when their driver
+    starts; "ramdisk 16M &" makes one in memory (ram0).
+
+    -b  sizes in bytes
+    -n  no header line
+    -J  JSON (also --json)
+
+    Nothing is mounted from block devices yet (filesystems come in steps
+    14 to 16), so MOUNTPOINTS is empty.
+
+SEE ALSO
+    lspci, ramdisk --help

@@ -54,6 +54,8 @@ impl Rights {
     pub const LOG: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL;
     pub const INTERRUPT: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL;
     pub const SOCKET: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL | Self::SIGNAL_PEER;
+    pub const BTI: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::MAP;
+    pub const PMT: u32 = Self::INSPECT;
     pub const CHANNEL: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL | Self::SIGNAL_PEER;
 
     pub fn has(self, r: u32) -> bool {
