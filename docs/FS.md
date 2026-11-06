@@ -143,9 +143,10 @@ out everything and ends. A server that has crashed can always be
 unmounted.
 
 At boot `init` runs `mount -a`, which mounts what `/etc/fstab` lists,
-waiting up to 5 seconds for disks to appear. The default `/etc/fstab`
+waiting up to 10 seconds for disks to appear. The default `/etc/fstab`
 mounts the EFI system partition at `/boot/efi`: the one on a removable
-disk (a USB stick Rustux started from) if there is one; one on a fixed
+disk (a USB stick Rustux started from) if one appears within those 10
+seconds; else one on a fixed
 disk (Windows' own) is mounted read-only, unless its options say `rw!`.
 
 ### FAT (`fatfs`)

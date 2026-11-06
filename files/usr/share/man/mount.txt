@@ -11,7 +11,8 @@ USAGE
     and mounts it there; files below the directory are then the disk's.
     With one argument, mounts as /etc/fstab says; -a mounts everything in
     /etc/fstab that is not noauto and not mounted yet, waiting up to
-    SECONDS (default 5) for disks to appear. init runs mount -a at boot.
+    SECONDS (default 10) for disks to appear (EFI waits that long for a
+    removable disk before it takes a fixed one). init runs it at boot.
 
     DEVICE: a block device name (sda1 or /dev/sda1), LABEL=name,
     UUID=XXXX-XXXX, PARTLABEL=name, or EFI: the EFI system partition, on a

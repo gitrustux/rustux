@@ -34,7 +34,8 @@ if lsblk sda > /dev/null 2>&1 && test "$(lsblk -n -d -o MODEL sda)" = "QEMU QEMU
     rm /tmp/disk.txt
     mount /boot/efi
 fi
-if lsblk nvme0n1 > /dev/null 2>&1; then
+# Only QEMU's NVMe disk is the test disk (a real one is someone's Windows)
+if lsblk nvme0n1 > /dev/null 2>&1 && test "$(lsblk -n -d -o MODEL nvme0n1)" = "QEMU NVMe Ctrl"; then
     check nvme "$(lsblk -n -l -o PARTN,PARTLABEL,PARTTYPENAME nvme0n1 | tr -s ' ' | cut -d' ' -f2- | grep -v '^$')" "$want"
     check nvme-ro "$(lsblk -n -d -o RO nvme0n1 | tr -d ' ')" 1
     check nvme-write "$(echo x | blk write nvme0n1p4 2>&1)" "blk: nvme0n1p4: write: Read-only file system"

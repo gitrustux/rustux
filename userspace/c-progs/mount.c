@@ -19,8 +19,9 @@
 // the options say "rw!".
 // TYPE: vfat (fat, msdos), or auto (default): what blkid finds.
 // OPTS: ro, rw, rw!, noauto, nofail, defaults (comma separated).
-// With -a, devices that are not there yet are waited for (-w, default 5
-// seconds: USB sticks take a moment); nofail entries that never come are
+// With -a, devices that are not there yet are waited for (-w, default 10
+// seconds: USB sticks take a moment; EFI waits that long for one on a
+// removable disk before it takes a fixed disk's); nofail entries that never come are
 // skipped quietly.
 //
 // The filesystem itself is served by a program per type (/bin/fatfs),
@@ -122,6 +123,11 @@ static int removable(const rx_block_info_t *all, int n, const rx_block_info_t *b
     return 0;
 }
 
+// While set (mount -a, before its deadline), EFI does not settle for a
+// fixed disk's partition: the USB stick Rustux started from may still be
+// on its way (USB devices appear seconds after NVMe ones)
+static int want_removable;
+
 // The device name for a source; *fixed_esp is set for EFI on a fixed disk.
 // -ENOENT if there is none (yet).
 static int find_device(const char *src, char *out, size_t cap, int *fixed_esp) {
@@ -157,7 +163,7 @@ static int find_device(const char *src, char *out, size_t cap, int *fixed_esp) {
         }
         snprintf(out, cap, "%s", b->name);
     }
-    if (r == -ENOENT && best >= 0) {
+    if (r == -ENOENT && best >= 0 && !want_removable) {
         snprintf(out, cap, "%s", all[best].name);
         *fixed_esp = 1;
         r = 0;
@@ -268,7 +274,7 @@ static int read_fstab(struct fsent *e, int max) {
 
 int main(int argc, char **argv) {
     const char *type = 0, *opts = "";
-    int all = 0, wait_s = 5, c;
+    int all = 0, wait_s = 10, c;
     while ((c = getopt(argc, argv, "t:o:aw:h")) != -1) {
         switch (c) {
         case 't': type = optarg; break;
@@ -294,8 +300,9 @@ int main(int argc, char **argv) {
             if (has_opt(tab[i].opts, "noauto") || !strcmp(tab[i].type, "swap") || mounted_at(tab[i].dir, 0, 0)) continue;
             int r;
             for (;;) {
+                want_removable = rx_clock_get_monotonic() < until;
                 r = do_mount(tab[i].src, tab[i].type, tab[i].opts, tab[i].dir, 1);
-                if (r != -ENOENT || rx_clock_get_monotonic() >= until) break;
+                if (r != -ENOENT || !want_removable) break;
                 usleep(250000);
             }
             if (r == -ENOENT && !has_opt(tab[i].opts, "nofail")) {

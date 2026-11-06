@@ -9,7 +9,7 @@ blktest -q | tail -1
 ramdisk -q 3M &
 sleep 1
 lsblk -n | tr -s ' ' | grep ' 3M ' | cut -d' ' -f2-
-lsblk --json -b | grep -c '"size":3145728'
+lsblk --json -b | grep -c '"size":3145728[,}]'
 kill $!
 # The edu device is there under QEMU (-device edu): its checks must pass
 if lspci -n | grep -q 1234:11e8; then edutest -q || echo edutest failed; fi
