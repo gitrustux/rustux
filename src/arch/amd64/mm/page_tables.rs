@@ -176,6 +176,9 @@ pub enum RxStatus {
 
     /// A limited system resource is used up (e.g. free MSI vectors)
     ERR_NO_RESOURCES = 20,
+
+    /// The device refused the request (a USB endpoint stalled)
+    ERR_IO_REFUSED = 21,
 }
 
 /// Result type using RxStatus

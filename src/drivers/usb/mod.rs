@@ -141,6 +141,39 @@ pub fn poll() {
     unsafe { device::poll() }
 }
 
+/// Mass storage (step 13): the calls behind the usb_* system calls
+pub use device::{StorageError, StorageInfo, BULK_MAX};
+
+pub fn storage_list() -> alloc::vec::Vec<StorageInfo> {
+    let _usb = USB_LOCK.lock();
+    device::storage_list()
+}
+
+pub fn storage_exists(id: u32) -> bool {
+    let _usb = USB_LOCK.lock();
+    device::storage_exists(id)
+}
+
+pub fn storage_bulk_in(id: u32, data: &mut [u8], ms: u64) -> core::result::Result<usize, StorageError> {
+    let _usb = USB_LOCK.lock();
+    unsafe { device::storage_bulk_in(id, data, ms) }
+}
+
+pub fn storage_bulk_out(id: u32, data: &[u8], ms: u64) -> core::result::Result<usize, StorageError> {
+    let _usb = USB_LOCK.lock();
+    unsafe { device::storage_bulk_out(id, data, ms) }
+}
+
+pub fn storage_clear_halt(id: u32, input: bool) -> core::result::Result<(), StorageError> {
+    let _usb = USB_LOCK.lock();
+    unsafe { device::storage_clear_halt(id, input) }
+}
+
+pub fn storage_control(id: u32, setup: [u8; 8], data: &mut [u8]) -> core::result::Result<usize, StorageError> {
+    let _usb = USB_LOCK.lock();
+    unsafe { device::storage_control(id, setup, data) }
+}
+
 /// True if a controller is running
 pub fn active() -> bool {
     let _usb = USB_LOCK.lock();

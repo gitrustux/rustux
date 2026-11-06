@@ -26,6 +26,8 @@ int rx_status_to_errno(rx_status_t s) {
     case RX_ERR_ALREADY_EXISTS: return EEXIST;
     case RX_ERR_CANCELED: return ECANCELED;
     case RX_ERR_NO_RESOURCES: return EBUSY;
+    case RX_ERR_IO: return EIO;
+    case RX_ERR_IO_REFUSED: return EIO;
     default: return EIO;
     }
 }

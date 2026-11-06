@@ -85,13 +85,20 @@ pub const TRB_DISABLE_SLOT: u32 = 10;
 pub const TRB_ADDRESS_DEVICE: u32 = 11;
 pub const TRB_CONFIGURE_EP: u32 = 12;
 pub const TRB_EVALUATE_CTX: u32 = 13;
+pub const TRB_RESET_EP: u32 = 14;
+pub const TRB_STOP_EP: u32 = 15;
+pub const TRB_SET_TR_DEQUEUE: u32 = 16;
 pub const EVT_TRANSFER: u32 = 32;
 pub const EVT_COMMAND: u32 = 33;
 pub const EVT_PORT_STATUS: u32 = 34;
 
 /// Completion codes
 pub const CC_SUCCESS: u8 = 1;
+pub const CC_STALL: u8 = 6;
 pub const CC_SHORT_PACKET: u8 = 13;
+
+/// Events set aside while waiting for a particular one (see `stash`)
+const STASH: usize = 64;
 
 /// Slots enabled (hubs keep theirs while devices behind them are set up)
 pub const MAX_SLOTS: usize = 32;
@@ -129,6 +136,11 @@ pub struct Controller {
     events: EventRing,
     _scratch: Option<(DmaBuffer, alloc::vec::Vec<DmaBuffer>)>,
     dead: bool,
+    /// Events that arrived while a command or transfer waited for its own
+    /// completion: kept for `next_event` (keyboard reports, port changes)
+    /// instead of being lost
+    stash: [Trb; STASH],
+    stashed: usize,
 }
 
 static CONTROLLER: super::UsbGlobal<Option<Controller>> = super::UsbGlobal::new(None);
@@ -236,6 +248,8 @@ impl Controller {
             events: EventRing::new()?,
             _scratch: None,
             dead: false,
+            stash: [Trb::default(); STASH],
+            stashed: 0,
         };
         c.bios_handoff(hcc1);
         c.reset()?;
@@ -422,6 +436,27 @@ impl Controller {
         Some(ev)
     }
 
+    /// The next event for the keyboard/port-change loop: set-aside events
+    /// first, then new ones
+    pub unsafe fn next_event(&mut self) -> Option<Trb> {
+        if self.stashed > 0 {
+            let ev = self.stash[0];
+            self.stash.copy_within(1..self.stashed, 0);
+            self.stashed -= 1;
+            return Some(ev);
+        }
+        self.poll_event()
+    }
+
+    /// Keep an event that is not the one being waited for (dropped if the
+    /// stash is full; a keyboard then re-arms on its next report)
+    fn set_aside(&mut self, ev: Trb) {
+        if self.stashed < STASH {
+            self.stash[self.stashed] = ev;
+            self.stashed += 1;
+        }
+    }
+
     /// Physical address of the Device Context Base Address Array entry
     pub unsafe fn set_dcbaa(&self, slot: u8, phys: u64) {
         core::ptr::write_volatile((self.dcbaa.virt as *mut u64).add(slot as usize), phys);
@@ -438,6 +473,9 @@ impl Controller {
                 Some(ev) => {
                     if (ev.control >> 10) & 0x3F == EVT_COMMAND && ev.param & !0xF == trb_phys {
                         return Ok(((ev.status >> 24) as u8, (ev.control >> 24) as u8));
+                    }
+                    if (ev.control >> 10) & 0x3F != EVT_COMMAND {
+                        self.set_aside(ev);
                     }
                 }
                 None if deadline.expired() => return Err(UsbError::Timeout),
@@ -519,6 +557,50 @@ impl Controller {
         self.command("Evaluate Context", input_ctx, 0, (slot as u32) << 24 | TRB_EVALUATE_CTX << 10).map(|_| ())
     }
 
+    /// Bring a halted endpoint (after a stall or error) back to Stopped
+    pub unsafe fn reset_endpoint(&mut self, slot: u8, dci: u8) -> Result<()> {
+        self.command("Reset Endpoint", 0, 0, (slot as u32) << 24 | (dci as u32) << 16 | TRB_RESET_EP << 10).map(|_| ())
+    }
+
+    /// Stop a running endpoint (after a transfer timed out)
+    pub unsafe fn stop_endpoint(&mut self, slot: u8, dci: u8) -> Result<()> {
+        self.command("Stop Endpoint", 0, 0, (slot as u32) << 24 | (dci as u32) << 16 | TRB_STOP_EP << 10).map(|_| ())
+    }
+
+    /// Point a stopped endpoint at `ring_phys` (cycle state 1)
+    pub unsafe fn set_tr_dequeue(&mut self, slot: u8, dci: u8, ring_phys: u64) -> Result<()> {
+        self.command("Set TR Dequeue", ring_phys | 1, 0, (slot as u32) << 24 | (dci as u32) << 16 | TRB_SET_TR_DEQUEUE << 10)
+            .map(|_| ())
+    }
+
+    /// One bulk transfer of `len` bytes (at most 64 KiB, not crossing a
+    /// 64 KiB boundary) at `phys` on endpoint `dci`. Returns the bytes
+    /// moved; a stall comes back as TransferFailed(CC_STALL), and on a
+    /// time-out the endpoint is stopped and its ring emptied.
+    pub unsafe fn bulk(&mut self, slot: u8, dci: u8, ring: &mut Ring, phys: u64, len: usize, ms: u64) -> Result<usize> {
+        // Normal TRB: interrupt on short packet and on completion
+        ring.push(phys, len as u32, TRB_NORMAL << 10 | 1 << 5 | 1 << 2);
+        self.ring_doorbell(slot, dci);
+        match self.wait_transfer(slot, dci, ms) {
+            Ok((CC_SUCCESS, residual)) | Ok((CC_SHORT_PACKET, residual)) => Ok(len.saturating_sub(residual as usize)),
+            Ok((cc, _)) => {
+                // The endpoint halted: the caller recovers (clear halt)
+                Err(UsbError::TransferFailed(cc))
+            }
+            Err(e) => {
+                log("[USB] bulk transfer timed out (slot ");
+                log_dec(slot as u64);
+                log(", endpoint ");
+                log_dec(dci as u64);
+                log(")\n");
+                let _ = self.stop_endpoint(slot, dci);
+                ring.reset();
+                let _ = self.set_tr_dequeue(slot, dci, ring.phys());
+                Err(e)
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Control transfers
     // ------------------------------------------------------------------
@@ -535,6 +617,9 @@ impl Controller {
                         && ((ev.control >> 16) & 0x1F) as u8 == dci
                     {
                         return Ok(((ev.status >> 24) as u8, ev.status & 0xFF_FFFF));
+                    }
+                    if (ev.control >> 10) & 0x3F != EVT_COMMAND {
+                        self.set_aside(ev);
                     }
                 }
                 None if deadline.expired() => return Err(UsbError::Timeout),

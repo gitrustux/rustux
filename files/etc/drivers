@@ -14,3 +14,7 @@
 #
 # NVMe disks (step 13): read-only until the installer (step 20)
 class=01:08:02  /bin/nvme
+#
+# USB mass storage, bulk-only (step 13): usb=CLASS:SUBCLASS:PROTOCOL.
+# The kernel's xHCI driver sets the device up; devmgr starts the driver
+usb=08:06:50    /bin/usb-storage

@@ -363,3 +363,133 @@ pub fn sys_acpi_table_read(args: SyscallArgs) -> SyscallRet {
         Ok(tlen)
     })())
 }
+
+// ---------------------------------------------------------------------
+// USB mass storage (step 13)
+// ---------------------------------------------------------------------
+
+/// The fixed layout usb_list fills (rx_usb_info_t in <rustux/syscalls.h>)
+const USB_INFO_SIZE: usize = 64;
+
+fn usb_of(h: u32, rights: u32) -> R<u32> {
+    let (obj, _) = lookup(h, rights)?;
+    let KObject::Usb(u) = obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+    Ok(u.id)
+}
+
+fn storage_status(e: crate::drivers::usb::StorageError) -> RxStatus {
+    use crate::drivers::usb::StorageError::*;
+    match e {
+        Gone => RxStatus::ERR_PEER_CLOSED,
+        Stall => RxStatus::ERR_IO_REFUSED,
+        Timeout => RxStatus::ERR_TIMED_OUT,
+        Io => RxStatus::ERR_IO,
+        Invalid => RxStatus::ERR_INVALID_ARGS,
+    }
+}
+
+/// usb_list(resource, *buf, count) — the USB mass-storage devices: up to
+/// `count` rx_usb_info_t records; returns how many there are
+pub fn sys_usb_list(args: SyscallArgs) -> SyscallRet {
+    let (res, buf, count) = (args.arg_u32(0), args.arg(1), args.arg(2));
+    ret((|| {
+        require_resource(res)?;
+        let list = crate::drivers::usb::storage_list();
+        let n = list.len().min(count);
+        if n > 0 {
+            user::check(buf, n * USB_INFO_SIZE, true)?;
+            let mut out = alloc::vec![0u8; n * USB_INFO_SIZE];
+            for (k, s) in list.iter().take(n).enumerate() {
+                let o = &mut out[k * USB_INFO_SIZE..(k + 1) * USB_INFO_SIZE];
+                o[0..4].copy_from_slice(&s.id.to_le_bytes());
+                o[4..6].copy_from_slice(&s.vid.to_le_bytes());
+                o[6..8].copy_from_slice(&s.pid.to_le_bytes());
+                o[8] = 8; // class: mass storage
+                o[9] = s.subclass;
+                o[10] = s.protocol;
+                o[11] = s.speed;
+                o[12] = s.root_port;
+                o[13] = s.interface;
+                o[16..64].copy_from_slice(&s.product);
+            }
+            user::write_bytes(buf, &out)?;
+        }
+        Ok(list.len())
+    })())
+}
+
+/// usb_open(resource, id, *out) — a handle to USB device `id`
+pub fn sys_usb_open(args: SyscallArgs) -> SyscallRet {
+    let (res, id, out) = (args.arg_u32(0), args.arg_u32(1), args.arg(2));
+    ret((|| {
+        require_resource(res)?;
+        user::check(out, 4, true)?;
+        if !crate::drivers::usb::storage_exists(id) {
+            return Err(RxStatus::ERR_NOT_FOUND);
+        }
+        let h = install(KObject::Usb(crate::kobj::usb::UsbDevice::new(id)), Rights::USB)?;
+        user::write_u32(out, h)?;
+        Ok(0)
+    })())
+}
+
+/// usb_bulk(handle, options, *buf, len, timeout_ms) — one bulk transfer:
+/// options bit 0 set = IN (device to buf), clear = OUT. At most 64 KiB.
+/// Returns the bytes moved; IO_REFUSED when the endpoint stalled (clear
+/// it with usb_clear_halt), PEER_CLOSED when the device is gone.
+pub fn sys_usb_bulk(args: SyscallArgs) -> SyscallRet {
+    let (h, opts, buf, len, ms) = (args.arg_u32(0), args.arg_u32(1), args.arg(2), args.arg(3), args.arg(4) as u64);
+    ret((|| {
+        let input = opts & 1 != 0;
+        let id = usb_of(h, if input { Rights::READ } else { Rights::WRITE })?;
+        if len > crate::drivers::usb::BULK_MAX {
+            return Err(RxStatus::ERR_OUT_OF_RANGE);
+        }
+        let ms = if ms == 0 || ms > 30000 { 5000 } else { ms };
+        if input {
+            user::check(buf, len, true)?;
+            let mut data = alloc::vec![0u8; len];
+            let n = crate::drivers::usb::storage_bulk_in(id, &mut data, ms).map_err(storage_status)?;
+            user::write_bytes(buf, &data[..n])?;
+            Ok(n)
+        } else {
+            let data = if len > 0 { user::read_bytes(buf, len)? } else { alloc::vec::Vec::new() };
+            crate::drivers::usb::storage_bulk_out(id, &data, ms).map_err(storage_status)
+        }
+    })())
+}
+
+/// usb_control(handle, *setup8, *buf, len) — a control request for the
+/// device's storage interface (class requests such as Get Max LUN and
+/// Bulk-Only Reset, GET_DESCRIPTOR); IN data or none. Returns the bytes
+/// received.
+pub fn sys_usb_control(args: SyscallArgs) -> SyscallRet {
+    let (h, setup, buf, len) = (args.arg_u32(0), args.arg(1), args.arg(2), args.arg(3));
+    ret((|| {
+        let id = usb_of(h, Rights::WRITE)?;
+        let s = user::read_bytes(setup, 8)?;
+        let mut st = [0u8; 8];
+        st.copy_from_slice(&s);
+        let len = len.min(4096);
+        if len > 0 {
+            user::check(buf, len, true)?;
+        }
+        let mut data = alloc::vec![0u8; len];
+        let n = crate::drivers::usb::storage_control(id, st, &mut data).map_err(storage_status)?;
+        if n > 0 {
+            user::write_bytes(buf, &data[..n])?;
+        }
+        Ok(n)
+    })())
+}
+
+/// usb_clear_halt(handle, options) — recover a stalled bulk endpoint
+/// (bit 0: the IN endpoint, else OUT)
+pub fn sys_usb_clear_halt(args: SyscallArgs) -> SyscallRet {
+    let (h, opts) = (args.arg_u32(0), args.arg_u32(1));
+    ret((|| {
+        let id = usb_of(h, Rights::WRITE)?;
+        crate::drivers::usb::storage_clear_halt(id, opts & 1 != 0).map_err(storage_status)?;
+        Ok(0)
+    })())
+}

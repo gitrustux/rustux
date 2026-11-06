@@ -7,8 +7,9 @@ finds the PCI devices and starts one driver process per device; a driver
 gets its own device's resources and nothing else.
 
 The kernel still drives two things itself: the screen (UEFI frame buffer)
-and the USB keyboard (xHCI). Moving xHCI out comes with USB storage in
-step 13; until then devmgr leaves display and USB controllers alone.
+and the USB controller (xHCI): keyboards, and since step 13 the transport
+of USB mass storage, whose SCSI driver is in userspace (`usb-storage`,
+below). devmgr leaves display and USB controllers alone.
 
 ## Pieces
 
@@ -25,7 +26,7 @@ step 13; until then devmgr leaves display and USB controllers alone.
 | Driver helpers | `<rustux/driver.h>` | config space, BARs, interrupts, DMA buffers in plain calls (step 13) |
 | Disk serving | `<rustux/blockdev.h>` | the block protocol, partitions and rescans for every disk driver (step 13) |
 | Partition tables | `<rustux/gpt.h>`, `<rustux/fsprobe.h>` | GPT read/write, MBR read, filesystem signatures (step 13) |
-| `virtio-blk`, `nvme` | `userspace/c-progs/` | disk drivers (step 13) |
+| `virtio-blk`, `nvme`, `usb-storage` | `userspace/c-progs/` | disk drivers (step 13) |
 | `lspci`, `lsblk`, `blkid`, `fdisk`, `gpt`, `blk` | `userspace/c-progs/` | listings and tools (`docs/COMMANDS.md`) |
 | Tests | `drvtest`, `edutest`, `blktest`, `/usr/share/tests/devices.sh`, `partitions.sh`, `disks.sh` | `docs/TESTS.md` |
 
@@ -59,6 +60,8 @@ step 13; until then devmgr leaves display and USB controllers alone.
 1af4:1042   /bin/virtio-blk
 # class=CC[:SS[:PI]]    PROGRAM
 class=01:08:02  /bin/nvme
+# usb=CLASS[:SUBCLASS[:PROTOCOL]]  PROGRAM   (USB devices the kernel set up)
+usb=08:06:50    /bin/usb-storage
 ```
 
 The first matching line for a device wins. Devices the kernel uses are
@@ -191,7 +194,33 @@ DMA buffers (`rx_dma_alloc`).
 | Driver | Devices | Notes |
 |--------|---------|-------|
 | `virtio-blk` | `1af4:1001`, `1af4:1042`: QEMU, KVM, cloud servers | virtio 1.0 (the capabilities' configuration structures), one split virtqueue, MSI-X vector 0 (polling if the device has none or no interrupt comes within 10 s); `vda`, `vdb`, ...; read-only if the device says so; flush when offered |
+| `usb-storage` | USB class 8, bulk-only (`usb=08:06:50`) | see "USB storage"; `sda`, `sdb`, ...; removable flag from INQUIRY, read-only when the write-protect switch is on |
 | `nvme` | class `01:08:02` | **read-only until the installer (step 20)**: no write function, no write command in the driver at all; one admin and one I/O queue pair on MSI-X (MSI, or polling), PRP lists for transfers over 8 KiB, the controller's transfer limit (MDTS), 512-byte and 4 KiB blocks, the first active namespace: `nvme0n1` |
+
+### USB storage
+
+The USB controller stays with the kernel, which already enumerates every
+device for the keyboards (hubs and KVM switches included). For a
+mass-storage interface with the bulk-only protocol it sets the
+configuration and both bulk endpoints up and keeps the device in a table;
+`SYSCALL.md` ("USB mass storage") has the five calls. devmgr asks for the
+list every second (`usb_list`, with the root resource), so sticks plugged
+in later are found; for a new device it opens a handle (`usb_open`) and
+starts the driver named by the `usb=` line in `/etc/drivers` with it.
+When the device disappears devmgr stops its driver, which removes its
+block devices; a stick plugged in again is a new device.
+
+`usb-storage` speaks Bulk-Only Transport (a 31-byte command block, the
+data, a 13-byte status block) and SCSI: INQUIRY, TEST UNIT READY, READ
+CAPACITY (10 and 16), READ and WRITE (10, or 16 beyond 2 TiB blocks),
+MODE SENSE (write protection), SYNCHRONIZE CACHE, REQUEST SENSE. A stall
+is cleared and the status read; a bad status block, a phase error or a
+time-out leads to a reset recovery (Bulk-Only Reset and both endpoints
+cleared) and the command is tried again, up to three times. LUN 0 only.
+
+Events the controller posts while the kernel waits for one transfer
+(keyboard reports, port changes) are kept for the keyboard loop, so
+typing during disk transfers is not lost.
 
 ### Partitions
 
@@ -225,10 +254,10 @@ the tests raise the mask to 4 GiB (buffers come from below 4 GiB).
 |---------|--------|
 | `edutest` | asks the `edu` driver to run its checks: no root resource, identification and liveness registers through the BAR VMO, the factorial unit, an MSI raised by the device, DMA both ways with a contiguous buffer and with pinned pages, the BTI's pinned count (10 checks) |
 | `blktest` | block protocol against RAM disks it starts: info, read/write, range and size errors, flush, VMO transfers, read-only devices, removal (16 checks) |
-| `drvtest` | every driver call refused without the root resource (13 checks) |
+| `drvtest` | every driver call refused without the root resource, the USB calls included (17 checks) |
 | `devices.sh` | in `runtests`: lspci, lspci --json, blktest, ramdisk + lsblk, edutest when an edu device is present |
 | `partitions.sh` | in `runtests`: GPT create, add, label, remove, destroy on RAM disks of 512-byte and 4 KiB blocks; writes through a partition read back through the disk; lsblk, blkid, fdisk -l (any machine) |
-| `disks.sh` | in `runtests`: with the test disk attached as virtio-blk and NVMe (the build's command tests do this), its partitions, the NTFS signature, a new partition written and read back, NVMe writes refused; prints nothing without those disks |
+| `disks.sh` | in `runtests`: with the test disk attached as virtio-blk, NVMe and a USB stick (the build's command tests do this), its partitions, the NTFS signature, a new partition written and read back (virtio, USB), NVMe writes refused; prints nothing without those disks |
 
 `scripts/make-test-disk.py make DISK.img` builds the test disk: 64 MiB,
 GPT, shaped like a Windows laptop's (EFI System on FAT, Microsoft
@@ -240,8 +269,10 @@ file to the EFI partition of any writable disk at every boot.
 
 ## Not yet
 
-- USB mass storage: the xHCI driver is still in the kernel (keyboard);
-  storage needs bulk transfers and moves the controller to userspace
+- The xHCI driver in userspace (it stays in the kernel; storage uses its
+  bulk transfers); USB Attached SCSI (UAS), several LUNs, USB 3 hubs
+  (a USB 3 stick behind a USB 3 hub is not found yet; on a root port or
+  a USB 2 hub it is)
 - AHCI (SATA)
 - NVMe writes (step 20), several I/O queues, more than one namespace
 - Several requests in flight per disk

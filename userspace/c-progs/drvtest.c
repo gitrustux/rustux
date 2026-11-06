@@ -59,6 +59,17 @@ int main(void) {
     check("resource_create(IOPORT) from an event -> WRONG_TYPE", r == RX_ERR_WRONG_TYPE, r);
     r = rx_acpi_table_read(0, "MCFG", 0, 0, 0);
     check("acpi_table_read without a resource -> BAD_HANDLE", r == RX_ERR_BAD_HANDLE, r);
+    rx_usb_info_t ui[2];
+    r = rx_usb_list(0, ui, 2);
+    check("usb_list without a resource -> BAD_HANDLE", r == RX_ERR_BAD_HANDLE, r);
+    rx_handle_t uh = 0;
+    r = rx_usb_open(0, 1, &uh);
+    check("usb_open without a resource -> BAD_HANDLE", r == RX_ERR_BAD_HANDLE, r);
+    uint8_t setup[8] = { 0 }, ub[8];
+    r = rx_usb_bulk(ev, RX_USB_IN, ub, 8, 100);
+    check("usb_bulk with an event (not a USB device) -> refused", r == RX_ERR_WRONG_TYPE || r == RX_ERR_ACCESS_DENIED, r);
+    r = rx_usb_control(ev, setup, 0, 0);
+    check("usb_control with an event -> refused", r == RX_ERR_WRONG_TYPE || r == RX_ERR_ACCESS_DENIED, r);
     rx_puts("drvtest: ");
     rx_putd(passed);
     rx_puts(" passed, ");

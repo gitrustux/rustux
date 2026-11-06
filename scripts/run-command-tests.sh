@@ -34,6 +34,8 @@ qemu-system-x86_64 -machine q35 -m 512M -smp 2 -bios "$OVMF" -drive file="$W/boo
     -device edu,dma_mask=0xffffffff \
     -drive file="$W/disk.img",if=none,id=vd,format=raw,snapshot=on,file.locking=off -device virtio-blk-pci,drive=vd \
     -drive file="$W/disk.img",if=none,id=nv,format=raw,snapshot=on,file.locking=off -device nvme,drive=nv,serial=rustux \
+    -device qemu-xhci,id=xhci -drive file="$W/disk.img",if=none,id=us,format=raw,snapshot=on,file.locking=off \
+    -device usb-storage,bus=xhci.0,drive=us,removable=on \
     -display none -debugcon file:"$W/console.log" -no-reboot -monitor unix:"$W/mon",server,nowait \
     >/dev/null 2>&1 &
 Q=$!

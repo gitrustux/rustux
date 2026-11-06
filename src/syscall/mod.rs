@@ -380,6 +380,11 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x91 => system::sys_system_get_stats(args),
         0x92 => system::sys_system_powerctl(args),
         0x93 => driver::sys_acpi_table_read(args),
+        0x94 => driver::sys_usb_list(args),
+        0x95 => driver::sys_usb_open(args),
+        0x96 => driver::sys_usb_bulk(args),
+        0x97 => driver::sys_usb_control(args),
+        0x98 => driver::sys_usb_clear_halt(args),
 
         // yield(): give up the CPU (tests, and waiting for a full console)
         0x72 => sys_yield(args),

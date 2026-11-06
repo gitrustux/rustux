@@ -5,8 +5,11 @@
 // https://opensource.org/licenses/MIT
 
 //! Device enumeration: root ports, USB 2.0 hubs (nested), HID boot
-//! keyboards, and root-port hot-plug (a KVM switch disconnects its whole
-//! hub from the root port).
+//! keyboards, mass storage (bulk-only transport, step 13: the kernel sets
+//! up the two bulk endpoints and moves data; the SCSI driver is the
+//! userspace `usb-storage`, which reaches the device through a USB handle),
+//! and root-port hot-plug (a KVM switch disconnects its whole hub from the
+//! root port).
 //!
 //! Each slot has its own Input Context, Device Context, EP0 ring and
 //! descriptor buffer (DMA pages, reused when the slot id is reused), so a
@@ -14,7 +17,7 @@
 
 use super::ring::{dma_page, Ring};
 use super::xhci::{
-    self, Controller, Setup, CC_SHORT_PACKET, CC_SUCCESS, EVT_PORT_STATUS, EVT_TRANSFER, MAX_SLOTS,
+    self, Controller, Setup, CC_SHORT_PACKET, CC_STALL, CC_SUCCESS, EVT_PORT_STATUS, EVT_TRANSFER, MAX_SLOTS,
     PORTSC_CCS, PORTSC_CSC, PORTSC_PED, PORTSC_SPEED_SHIFT, SPEED_FULL, SPEED_HIGH, SPEED_LOW,
     SPEED_SUPER, TRB_NORMAL,
 };
@@ -23,6 +26,9 @@ use crate::arch::amd64::tsc::delay_ms;
 use crate::mm::dma::DmaBuffer;
 
 const MAX_KEYBOARDS: usize = 4;
+const MAX_STORAGE: usize = 8;
+/// Largest bulk transfer (the transfer buffer: 64 KiB, 64 KiB aligned)
+pub const BULK_MAX: usize = 65536;
 const MAX_HUB_DEPTH: u8 = 4;
 const REPORT_SIZE: usize = 8;
 
@@ -41,6 +47,10 @@ const DT_ENDPOINT: u8 = 5;
 const DT_HUB: u8 = 0x29;
 const CLASS_HID: u8 = 3;
 const CLASS_HUB: u8 = 9;
+const CLASS_STORAGE: u8 = 8;
+const DT_STRING: u8 = 3;
+const DT_SS_EP_COMPANION: u8 = 0x30;
+const FEATURE_ENDPOINT_HALT: u16 = 0;
 
 // Hub class features and port status bits (USB 2.0 ch. 11.24)
 const HUB_PORT_RESET: u16 = 4;
@@ -131,6 +141,344 @@ pub fn keyboard_count() -> usize {
     keyboards().iter().filter(|k| k.is_some()).count()
 }
 
+// ============================================================
+// Mass storage (bulk-only transport)
+// ============================================================
+
+/// What `usb_list` reports about a storage device
+#[derive(Clone, Copy)]
+pub struct StorageInfo {
+    pub id: u32,
+    pub vid: u16,
+    pub pid: u16,
+    pub subclass: u8,
+    pub protocol: u8,
+    pub speed: u8,
+    pub root_port: u8,
+    pub interface: u8,
+    pub product: [u8; 48],
+}
+
+struct Storage {
+    info: StorageInfo,
+    slot: u8,
+    dci_in: u8,
+    dci_out: u8,
+    /// Endpoint context dword 1 of each (type, burst, packet size), to add
+    /// the endpoint again when it must be reset without being halted
+    ep1_in: u32,
+    ep1_out: u32,
+    ep_in: u8,
+    ep_out: u8,
+    ring_in: Ring,
+    ring_out: Ring,
+    buf: DmaBuffer,
+}
+
+const NO_STORAGE: Option<Storage> = None;
+static STORAGE: super::UsbGlobal<[Option<Storage>; MAX_STORAGE]> = super::UsbGlobal::new([NO_STORAGE; MAX_STORAGE]);
+/// Ids are never reused, so a handle to an unplugged stick cannot reach
+/// the next device in its place
+static NEXT_STORAGE_ID: super::UsbGlobal<u32> = super::UsbGlobal::new(1);
+
+fn storage() -> &'static mut [Option<Storage>; MAX_STORAGE] {
+    unsafe { STORAGE.get() }
+}
+
+/// The storage devices present
+pub fn storage_list() -> alloc::vec::Vec<StorageInfo> {
+    storage().iter().flatten().map(|s| s.info).collect()
+}
+
+pub fn storage_exists(id: u32) -> bool {
+    storage().iter().flatten().any(|s| s.info.id == id)
+}
+
+fn storage_by_id(id: u32) -> Option<&'static mut Storage> {
+    storage().iter_mut().flatten().find(|s| s.info.id == id)
+}
+
+/// Errors of the storage calls, as the kernel's status codes
+pub enum StorageError {
+    Gone,
+    Stall,
+    Timeout,
+    Io,
+    Invalid,
+}
+
+fn storage_err(e: UsbError) -> StorageError {
+    match e {
+        UsbError::TransferFailed(CC_STALL) => StorageError::Stall,
+        UsbError::Timeout => StorageError::Timeout,
+        UsbError::NoController => StorageError::Gone,
+        _ => StorageError::Io,
+    }
+}
+
+/// Bulk IN: up to `data.len()` (at most BULK_MAX) bytes into `data`;
+/// returns how many came
+pub unsafe fn storage_bulk_in(id: u32, data: &mut [u8], ms: u64) -> core::result::Result<usize, StorageError> {
+    let s = storage_by_id(id).ok_or(StorageError::Gone)?;
+    if data.len() > BULK_MAX {
+        return Err(StorageError::Invalid);
+    }
+    let c = xhci::controller().ok_or(StorageError::Gone)?;
+    let n = c.bulk(s.slot, s.dci_in, &mut s.ring_in, s.buf.phys, data.len(), ms).map_err(storage_err)?;
+    let n = core::cmp::min(n, data.len());
+    core::ptr::copy_nonoverlapping(s.buf.virt, data.as_mut_ptr(), n);
+    Ok(n)
+}
+
+/// Bulk OUT: `data` (at most BULK_MAX bytes); returns how many went
+pub unsafe fn storage_bulk_out(id: u32, data: &[u8], ms: u64) -> core::result::Result<usize, StorageError> {
+    let s = storage_by_id(id).ok_or(StorageError::Gone)?;
+    if data.len() > BULK_MAX {
+        return Err(StorageError::Invalid);
+    }
+    core::ptr::copy_nonoverlapping(data.as_ptr(), s.buf.virt, data.len());
+    let c = xhci::controller().ok_or(StorageError::Gone)?;
+    c.bulk(s.slot, s.dci_out, &mut s.ring_out, s.buf.phys, data.len(), ms).map_err(storage_err)
+}
+
+/// Endpoint state from the Device Context the controller keeps: 1
+/// running, 2 halted, 3 stopped, 4 error (xHCI 6.2.3)
+unsafe fn ep_state(slot: u8, dci: u8) -> u32 {
+    let cs = match xhci::controller() {
+        Some(c) => c.ctx_size,
+        None => return 0,
+    };
+    match SLOT_MEM.get()[slot as usize].as_ref() {
+        Some(m) => core::ptr::read_volatile(m.dev.virt.add(dci as usize * cs) as *const u32) & 7,
+        None => 0,
+    }
+}
+
+/// Bring a bulk endpoint back to a clean, empty ring whatever state it is
+/// in, and clear the device's halt: Reset Endpoint if halted, Stop
+/// Endpoint if running, Set TR Dequeue, CLEAR_FEATURE(ENDPOINT_HALT) (BOT
+/// recovery). The ring is emptied only once the controller has let go of
+/// it, so both sides agree where it starts.
+pub unsafe fn storage_clear_halt(id: u32, input: bool) -> core::result::Result<(), StorageError> {
+    let s = storage_by_id(id).ok_or(StorageError::Gone)?;
+    let (dci, ep) = if input { (s.dci_in, s.ep_in) } else { (s.dci_out, s.ep_out) };
+    let ring = if input { &mut s.ring_in } else { &mut s.ring_out };
+    let slot = s.slot;
+    let c = xhci::controller().ok_or(StorageError::Gone)?;
+    let ep1 = if input { s.ep1_in } else { s.ep1_out };
+    let m = SLOT_MEM.get()[slot as usize].as_mut().ok_or(StorageError::Gone)?;
+    match ep_state(slot, dci) {
+        2 | 4 => {
+            // Halted: Reset Endpoint also resets the host's data toggle /
+            // sequence number, as CLEAR_FEATURE does on the device
+            c.reset_endpoint(slot, dci).map_err(storage_err)?;
+            ring.reset();
+            c.set_tr_dequeue(slot, dci, ring.phys()).map_err(storage_err)?;
+        }
+        state => {
+            // Not halted (after a time-out or a Bulk-Only Reset): Reset
+            // Endpoint is not allowed, so stop it, then drop and add it
+            // again (xHCI 4.6.6, as Linux's xhci_endpoint_reset), which
+            // resets its toggle and points it at the emptied ring
+            if state == 1 {
+                c.stop_endpoint(slot, dci).map_err(storage_err)?;
+            }
+            ring.reset();
+            let cs = c.ctx_size;
+            m.clear_input();
+            *m.input_dw(cs, 0, 0) = 1 << dci;          // drop
+            *m.input_dw(cs, 0, 1) = 1 | 1 << dci;      // add (with the slot context)
+            for k in 0..4 {
+                *m.input_dw(cs, 1, k) = core::ptr::read_volatile((m.dev.virt as *const u32).add(k));
+            }
+            let ctx = 1 + dci as usize;
+            *m.input_dw(cs, ctx, 0) = 0;
+            *m.input_dw(cs, ctx, 1) = ep1;
+            *m.input_dw(cs, ctx, 2) = ring.phys() as u32 | 1;
+            *m.input_dw(cs, ctx, 3) = (ring.phys() >> 32) as u32;
+            *m.input_dw(cs, ctx, 4) = 3072;
+            let c = xhci::controller().ok_or(StorageError::Gone)?;
+            c.configure_endpoint(slot, m.input.phys).map_err(storage_err)?;
+        }
+    }
+    ctrl(slot, m, Setup { request_type: 0x02, request: REQ_CLEAR_FEATURE, value: FEATURE_ENDPOINT_HALT, index: ep as u16, length: 0 })
+        .map_err(storage_err)?;
+    Ok(())
+}
+
+/// A control request for the storage interface: class or standard
+/// requests to the interface, its endpoints, or GET_DESCRIPTOR/GET_STATUS
+/// to the device. IN data (at most 4096 bytes) or none. Returns the bytes
+/// received.
+pub unsafe fn storage_control(id: u32, setup: [u8; 8], data: &mut [u8]) -> core::result::Result<usize, StorageError> {
+    let s = storage_by_id(id).ok_or(StorageError::Gone)?;
+    let (rt, req) = (setup[0], setup[1]);
+    let value = u16::from_le_bytes([setup[2], setup[3]]);
+    let index = u16::from_le_bytes([setup[4], setup[5]]);
+    let length = u16::from_le_bytes([setup[6], setup[7]]);
+    let input = rt & 0x80 != 0;
+    let ok = match rt & 0x1F {
+        0 => rt & 0x60 == 0 && (req == REQ_GET_DESCRIPTOR || req == REQ_GET_STATUS),
+        1 => index & 0xFF == s.info.interface as u16,
+        2 => index & 0xFF == s.ep_in as u16 || index & 0xFF == s.ep_out as u16,
+        _ => false,
+    };
+    if !ok || (length > 0 && !input) || length as usize > data.len() || length > 4096 {
+        return Err(StorageError::Invalid);
+    }
+    let slot = s.slot;
+    let m = SLOT_MEM.get()[slot as usize].as_mut().ok_or(StorageError::Gone)?;
+    let n = ctrl(slot, m, Setup { request_type: rt, request: req, value, index, length }).map_err(storage_err)?;
+    let n = core::cmp::min(n, length as usize);
+    data[..n].copy_from_slice(m.buf(n));
+    Ok(n)
+}
+
+struct BotInterface {
+    interface: u8,
+    subclass: u8,
+    ep_in: u8,
+    ep_out: u8,
+    mps_in: u16,
+    mps_out: u16,
+    burst_in: u8,
+    burst_out: u8,
+}
+
+/// The first mass-storage bulk-only interface (class 8, protocol 0x50)
+/// with a bulk IN and a bulk OUT endpoint
+fn find_bot(desc: &[u8]) -> Option<BotInterface> {
+    let mut i = 0;
+    let mut cur: Option<BotInterface> = None;
+    let mut last_in = true;
+    while i + 2 <= desc.len() {
+        let len = desc[i] as usize;
+        if len < 2 || i + len > desc.len() {
+            break;
+        }
+        match desc[i + 1] {
+            DT_INTERFACE if len >= 9 => {
+                if let Some(b) = cur.take() {
+                    if b.ep_in != 0 && b.ep_out != 0 {
+                        return Some(b);
+                    }
+                }
+                // Alternate setting 0 only
+                if desc[i + 5] == CLASS_STORAGE && desc[i + 7] == 0x50 && desc[i + 3] == 0 {
+                    cur = Some(BotInterface { interface: desc[i + 2], subclass: desc[i + 6], ep_in: 0, ep_out: 0, mps_in: 0, mps_out: 0, burst_in: 0, burst_out: 0 });
+                }
+            }
+            DT_ENDPOINT if len >= 7 => {
+                if let Some(b) = cur.as_mut() {
+                    let addr = desc[i + 2];
+                    let mps = ((desc[i + 5] as u16) << 8 | desc[i + 4] as u16) & 0x7FF;
+                    if desc[i + 3] & 3 == 2 {
+                        if addr & 0x80 != 0 && b.ep_in == 0 {
+                            b.ep_in = addr;
+                            b.mps_in = mps;
+                            last_in = true;
+                        } else if addr & 0x80 == 0 && b.ep_out == 0 {
+                            b.ep_out = addr;
+                            b.mps_out = mps;
+                            last_in = false;
+                        }
+                    }
+                }
+            }
+            DT_SS_EP_COMPANION if len >= 6 => {
+                if let Some(b) = cur.as_mut() {
+                    if last_in { b.burst_in = desc[i + 2]; } else { b.burst_out = desc[i + 2]; }
+                }
+            }
+            _ => {}
+        }
+        i += len;
+    }
+    cur.filter(|b| b.ep_in != 0 && b.ep_out != 0)
+}
+
+/// A string descriptor as ASCII (English), or empty
+unsafe fn read_string(slot: u8, m: &mut SlotMem, index: u8, out: &mut [u8; 48]) {
+    if index == 0 {
+        return;
+    }
+    let n = match ctrl(slot, m, Setup { request_type: 0x80, request: REQ_GET_DESCRIPTOR, value: (DT_STRING as u16) << 8 | index as u16, index: 0x0409, length: 255 }) {
+        Ok(n) => n,
+        Err(_) => return,
+    };
+    let b = m.buf(n);
+    let len = core::cmp::min(b.first().copied().unwrap_or(0) as usize, n);
+    let mut o = 0;
+    let mut k = 2;
+    while k + 1 < len && o < out.len() - 1 {
+        let c = b[k] as u16 | (b[k + 1] as u16) << 8;
+        out[o] = if (0x20..0x7F).contains(&c) { c as u8 } else { b'?' };
+        o += 1;
+        k += 2;
+    }
+    while o > 0 && out[o - 1] == b' ' {
+        o -= 1;
+        out[o] = 0;
+    }
+}
+
+unsafe fn setup_storage(slot: u8, m: &mut SlotMem, loc: &Location, config_value: u8, bot: &BotInterface,
+                        vid: u16, pid: u16, product_index: u8) -> Result<Kind> {
+    let free = match storage().iter().position(|s| s.is_none()) {
+        Some(i) => i,
+        None => {
+            indent(loc.depth);
+            log("storage limit reached, skipping\n");
+            return Ok(Kind::Other);
+        }
+    };
+    let mut product = [0u8; 48];
+    read_string(slot, m, product_index, &mut product);
+    ctrl(slot, m, Setup { request_type: 0, request: REQ_SET_CONFIGURATION, value: config_value as u16, index: 0, length: 0 })?;
+    let ring_in = Ring::new()?;
+    let ring_out = Ring::new()?;
+    let buf = crate::mm::dma::dma_alloc_aligned(BULK_MAX, BULK_MAX, crate::mm::dma::DmaZone::Below4G).map_err(|_| UsbError::NoMemory)?;
+    let dci_in = (bot.ep_in & 0x0F) * 2 + 1;
+    let dci_out = (bot.ep_out & 0x0F) * 2;
+    let c = xhci::controller().ok_or(UsbError::NoController)?;
+    let cs = c.ctx_size;
+    m.clear_input();
+    *m.input_dw(cs, 0, 1) = 1 | 1 << dci_in | 1 << dci_out;
+    write_slot_ctx(m, cs, loc, core::cmp::max(dci_in, dci_out) as u32, None);
+    let ep1 = |ty: u32, mps: u16, burst: u8| 3 << 1 | ty << 3 | (burst as u32) << 8 | (mps as u32) << 16; // CErr=3, Bulk IN (6) / OUT (2)
+    let (ep1_in, ep1_out) = (ep1(6, bot.mps_in, bot.burst_in), ep1(2, bot.mps_out, bot.burst_out));
+    for (dci, dw1, ring) in [(dci_in, ep1_in, &ring_in), (dci_out, ep1_out, &ring_out)] {
+        let ctx = 1 + dci as usize;
+        *m.input_dw(cs, ctx, 0) = 0;
+        *m.input_dw(cs, ctx, 1) = dw1;
+        *m.input_dw(cs, ctx, 2) = ring.phys() as u32 | 1;
+        *m.input_dw(cs, ctx, 3) = (ring.phys() >> 32) as u32;
+        *m.input_dw(cs, ctx, 4) = 3072; // average TRB length (xHCI 4.14.1.1: bulk)
+    }
+    c.configure_endpoint(slot, m.input.phys)?;
+    let id = *NEXT_STORAGE_ID.get();
+    *NEXT_STORAGE_ID.get() = id.wrapping_add(1).max(1);
+    let info = StorageInfo {
+        id,
+        vid,
+        pid,
+        subclass: bot.subclass,
+        protocol: 0x50,
+        speed: loc.speed as u8,
+        root_port: loc.root_port,
+        interface: bot.interface,
+        product,
+    };
+    storage()[free] = Some(Storage { info, slot, dci_in, dci_out, ep1_in, ep1_out, ep_in: bot.ep_in, ep_out: bot.ep_out, ring_in, ring_out, buf });
+    indent(loc.depth);
+    log("mass storage ");
+    log_hex(vid as u64, 4);
+    log(":");
+    log_hex(pid as u64, 4);
+    log(" ready\n");
+    Ok(Kind::Storage)
+}
+
 /// Keep a transfer armed on every keyboard, decode finished reports and
 /// handle root port changes.
 pub unsafe fn poll() {
@@ -149,7 +497,7 @@ pub unsafe fn poll() {
 
     let mut changed: u64 = 0;
     for _ in 0..64 {
-        let ev = match c.poll_event() {
+        let ev = match c.next_event() {
             Some(e) => e,
             None => break,
         };
@@ -257,6 +605,13 @@ unsafe fn release_root_port(port: u8) -> usize {
                 *k = None;
             }
         }
+        for s in storage().iter_mut() {
+            if s.as_ref().map_or(false, |s| s.slot as usize == slot) {
+                if let Some(old) = s.take() {
+                    crate::mm::dma::dma_free(old.buf);
+                }
+            }
+        }
         release_slot(slot as u8);
         n += 1;
     }
@@ -291,6 +646,7 @@ struct Location {
 enum Kind {
     Keyboard,
     Hub,
+    Storage,
     Other,
 }
 
@@ -459,6 +815,7 @@ unsafe fn setup_device(slot: u8, loc: &Location) -> Result<Kind> {
     ctrl(slot, m, get_descriptor(DT_DEVICE, 18))?;
     let d = m.buf(18);
     let (vid, pid, class, protocol) = ((d[9] as u16) << 8 | d[8] as u16, (d[11] as u16) << 8 | d[10] as u16, d[4], d[6]);
+    let product_index = d[15];
     indent(loc.depth);
     log("device ");
     log_hex(vid as u64, 4);
@@ -494,12 +851,15 @@ unsafe fn setup_device(slot: u8, loc: &Location) -> Result<Kind> {
         return Ok(Kind::Hub);
     }
 
-    // ---- Keyboard ----
+    // ---- Keyboard, or mass storage ----
     let kbd = match find_boot_keyboard(cfg) {
         Some(k) => k,
         None => {
+            if let Some(bot) = find_bot(cfg) {
+                return setup_storage(slot, m, loc, config_value, &bot, vid, pid, product_index);
+            }
             indent(loc.depth);
-            log("not a boot keyboard, skipping\n");
+            log("not a boot keyboard or USB storage, skipping\n");
             return Ok(Kind::Other);
         }
     };

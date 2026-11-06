@@ -139,6 +139,8 @@ The C header `<rustux/syscalls.h>` (`userspace/libc/include/rustux/`) defines th
 | `ERR_ALREADY_EXISTS` | 18 | Something is already there (e.g. a mapping at a specific address) |
 | `ERR_CANCELED` | 19 | The wait was cancelled (object destroyed, thread killed) |
 | `ERR_NO_RESOURCES` | 20 | A limited resource is used up (all 64 MSI vectors taken) |
+| `ERR_IO` | 7 | The device reported an error |
+| `ERR_IO_REFUSED` | 21 | The device refused the request (a USB endpoint stalled) |
 
 Checks happen in this order: handle valid (`BAD_HANDLE`), object type (`WRONG_TYPE`), rights (`ACCESS_DENIED`), then arguments.
 
@@ -874,6 +876,11 @@ local time (as Windows does), correcting by the offset of the zone in
 | `SYSTEM_GET_STATS` | 0x91 | Memory, CPUs, uptime | ✅ |
 | `SYSTEM_POWERCTL` | 0x92 | Restart or power off | ✅ |
 | `ACPI_TABLE_READ` | 0x93 | Copy an ACPI table (drivers) | ✅ |
+| `USB_LIST` | 0x94 | USB mass-storage devices (step 13) | ✅ |
+| `USB_OPEN` | 0x95 | A handle to one | ✅ |
+| `USB_BULK` | 0x96 | One bulk transfer | ✅ |
+| `USB_CONTROL` | 0x97 | A control request to its interface | ✅ |
+| `USB_CLEAR_HALT` | 0x98 | Recover a bulk endpoint | ✅ |
 
 `system_get_version(char *buf, size_t len)` writes
 `Rustux <version> (git <hash>, built <date>) x86_64` with a NUL and
@@ -902,6 +909,51 @@ C wrapper takes the string) into `buf` and returns the table's length;
 `len` 0 just returns the length. The DSDT is found through the FADT.
 `ERR_NOT_FOUND` if there is none. devmgr reads MCFG for PCI Express
 configuration space.
+
+#### USB mass storage (0x94-0x98, step 13)
+
+The xHCI driver stays in the kernel (it serves the USB keyboards from
+the timer tick). For mass-storage devices (class 8, bulk-only protocol
+0x50) it sets the configuration and the two bulk endpoints up during
+enumeration and moves bytes on request; SCSI is the userspace
+`usb-storage` driver's (`docs/DRIVERS.md`). A **USB device** handle
+(object type 40, rights `BASIC | READ | WRITE`) names a device by an id
+that is never reused; once it is unplugged every call on the handle fails
+with `ERR_PEER_CLOSED`.
+
+`usb_list(rx_handle_t resource, rx_usb_info_t *buf, size_t count)` —
+root resource. Fills up to `count` records `{ u32 id; u16 vid, pid; u8
+class, subclass, protocol, speed; u8 root_port, interface; u8 pad[2];
+char product[48]; }` (64 bytes) and returns how many devices there are.
+
+`usb_open(rx_handle_t resource, uint32_t id, rx_handle_t *out)` — root
+resource; `ERR_NOT_FOUND` if `id` is not present.
+
+`usb_bulk(rx_handle_t h, uint32_t options, void *buf, size_t len, uint64_t timeout_ms)`
+— one transfer on the bulk IN (`options` bit 0, needs `READ`) or OUT
+(needs `WRITE`) endpoint, at most 64 KiB; `timeout_ms` 0 means 5 s (at
+most 30 s). Returns the bytes moved (fewer on a short packet).
+`ERR_IO_REFUSED`: the endpoint stalled (BOT: clear it, then read the
+status); `ERR_TIMED_OUT`: the endpoint was stopped and its ring emptied;
+`ERR_IO`: another transfer error.
+
+`usb_control(rx_handle_t h, const uint8_t setup[8], void *buf, size_t len)`
+— needs `WRITE`. A control request to the device's storage interface or
+its endpoints (class requests: Get Max LUN, Bulk-Only Reset), or
+GET_DESCRIPTOR / GET_STATUS to the device; IN data (at most 4096 bytes)
+or none. Returns the bytes received; `ERR_INVALID_ARGS` for anything
+else (no SET_ADDRESS, SET_CONFIGURATION, ...).
+
+`usb_clear_halt(rx_handle_t h, uint32_t options)` — needs `WRITE`.
+Brings the IN (bit 0) or OUT endpoint back to an empty ring and clears
+the device's halt (CLEAR_FEATURE): a halted endpoint with Reset
+Endpoint, a running or stopped one by stopping it and adding it again
+(so the controller's data toggle matches the device's).
+
+USB polling (keyboards, port changes) runs in the timer tick; events
+that arrive while a transfer or command waits for its own completion are
+kept and handed to it afterwards, so typing during disk transfers is not
+lost.
 
 #### TIMER_CREATE (0x41)
 

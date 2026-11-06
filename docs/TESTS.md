@@ -64,9 +64,12 @@ refused without the root resource) need no device. Without the `edu`
 device, `devices.sh` skips `edutest`, so the laptop runs it too.
 
 Step 13 adds a disk: the command tests make one with
-`scripts/make-test-disk.py` and attach it twice, as virtio-blk and as
-NVMe (`snapshot=on`, so the file stays as it was), and `disks.sh` checks
-both drivers. `partitions.sh` uses RAM disks and runs anywhere. The
+`scripts/make-test-disk.py` and attach it three times, as virtio-blk, as
+NVMe and as a USB stick on a `qemu-xhci` controller (`snapshot=on`, so
+the file stays as it was), and `disks.sh` checks all three drivers.
+
+By hand: `-device qemu-xhci,id=x -drive if=none,id=u,file=stick.img,format=raw -device usb-storage,bus=x.0,drive=u`;
+`device_del` / `device_add` in the QEMU monitor unplug and plug it. `partitions.sh` uses RAM disks and runs anywhere. The
 script also checks a disk image after Rustux wrote to it
 (`make-test-disk.py check disk.img`), with its own GPT code.
 `docs/DRIVERS.md` explains the device mask and what each test covers.

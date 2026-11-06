@@ -33,6 +33,8 @@ typedef int64_t rx_status_t;
 #define RX_ERR_ALREADY_EXISTS -18
 #define RX_ERR_CANCELED       -19
 #define RX_ERR_NO_RESOURCES   -20
+#define RX_ERR_IO              -7
+#define RX_ERR_IO_REFUSED     -21
 
 #define RX_TASK_RETCODE_SYSCALL_KILL   -1024
 #define RX_TASK_RETCODE_EXCEPTION_KILL -1025
@@ -375,6 +377,39 @@ static inline int64_t rx_acpi_table_read(rx_handle_t resource, const char sig[4]
     uint32_t s = (uint32_t)(uint8_t)sig[0] | (uint32_t)(uint8_t)sig[1] << 8 | (uint32_t)(uint8_t)sig[2] << 16 | (uint32_t)(uint8_t)sig[3] << 24;
     return RX_SYS6(0x93, resource, s, index, buf, len, 0);
 }
+
+// USB mass storage (step 13): devices the kernel's xHCI driver set up.
+// usb_list and usb_open need the root resource (devmgr); the handle is
+// what the usb-storage driver gets.
+typedef struct {
+    uint32_t id;            // never reused
+    uint16_t vid, pid;
+    uint8_t class_code, subclass, protocol;  // 8, 6 (SCSI), 0x50 (bulk-only)
+    uint8_t speed;          // 1 full, 2 low, 3 high, 4 super
+    uint8_t root_port, interface;
+    uint8_t pad[2];
+    char product[48];
+} rx_usb_info_t;
+
+// Fills up to `count` records; returns how many devices there are
+static inline int64_t rx_usb_list(rx_handle_t resource, rx_usb_info_t *buf, uint64_t count) {
+    return RX_SYS(0x94, resource, buf, count, 0);
+}
+static inline rx_status_t rx_usb_open(rx_handle_t resource, uint32_t id, rx_handle_t *out) {
+    return RX_SYS(0x95, resource, id, out, 0);
+}
+#define RX_USB_IN 1u
+// One bulk transfer (at most 64 KiB); returns the bytes moved, or
+// RX_ERR_IO_REFUSED (stall: rx_usb_clear_halt), RX_ERR_TIMED_OUT,
+// RX_ERR_PEER_CLOSED (unplugged), RX_ERR_IO
+static inline int64_t rx_usb_bulk(rx_handle_t h, uint32_t options, void *buf, uint64_t len, uint64_t timeout_ms) {
+    return RX_SYS6(0x96, h, options, buf, len, timeout_ms, 0);
+}
+// A control request to the storage interface (IN data or none); returns the bytes received
+static inline int64_t rx_usb_control(rx_handle_t h, const uint8_t setup[8], void *buf, uint64_t len) {
+    return RX_SYS(0x97, h, setup, buf, len);
+}
+static inline rx_status_t rx_usb_clear_halt(rx_handle_t h, uint32_t options) { return RX_SYS(0x98, h, options, 0, 0); }
 
 // System information and power
 typedef struct {

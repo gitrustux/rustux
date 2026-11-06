@@ -18,6 +18,11 @@
 //   failures in a row).
 // - Serves /svc/devmgr: the device list (lspci), block devices (publish,
 //   list for lsblk, connect).
+// - USB mass storage (step 13): the kernel's xHCI driver sets up the
+//   devices; devmgr looks for new and vanished ones every second
+//   (rx_usb_list), starts the driver /etc/drivers names for them
+//   ("usb=08:06:50 ...") with a USB handle, and stops the driver of an
+//   unplugged one.
 //
 // init starts it with the root resource; nobody else holds that.
 
@@ -307,6 +312,15 @@ static int word(char **s, char *out, size_t cap) {
     return n > 0;
 }
 
+// USB drivers: "usb=CC:SS:PP PROGRAM" lines (class, subclass, protocol)
+struct usb_rule {
+    unsigned long v[3];
+    int n;
+    char prog[128];
+};
+static struct usb_rule usb_rules[8];
+static int nusb_rules;
+
 static void read_drivers(void) {
     FILE *f = fopen("/etc/drivers", "r");
     if (!f) return;
@@ -314,6 +328,15 @@ static void read_drivers(void) {
     while (fgets(line, sizeof line, f)) {
         char pat[64], prog[128], *s = line;
         if (line[0] == '#' || !word(&s, pat, sizeof pat) || !word(&s, prog, sizeof prog)) continue;
+        if (!strncmp(pat, "usb=", 4)) {
+            if (nusb_rules < 8) {
+                struct usb_rule *u = &usb_rules[nusb_rules];
+                u->n = hex_list(pat + 4, u->v, 3);
+                snprintf(u->prog, sizeof u->prog, "%s", prog);
+                if (u->n > 0) nusb_rules++;
+            }
+            continue;
+        }
         for (int k = 0; k < ndevs; k++) {
             struct pci *p = &devs[k];
             if (p->prog[0] || (p->info.flags & RX_PCI_FLAG_KERNEL) || !matches(pat, &p->info)) continue;
@@ -381,6 +404,105 @@ static void driver_ended(struct pci *p) {
     printf("devmgr: %s for %s ended (code %lld); restarting it\n", p->info.driver, bdf, (long long)code);
     p->info.restarts++;
     start_driver(p);
+}
+
+// ---- USB devices ----
+
+#define MAX_USB 8
+
+struct usbdev {
+    rx_usb_info_t info;
+    char prog[128];
+    rx_handle_t proc;
+    uint64_t started;
+    int quick_fails, given_up, present;
+};
+static struct usbdev usbs[MAX_USB];
+static int nusbs;
+
+static void start_usb_driver(struct usbdev *u) {
+    rx_handle_t h;
+    if (rx_usb_open(resource, u->info.id, &h) != RX_OK) return;  // gone already
+    char where[24], ifc[8];
+    snprintf(where, sizeof where, "usb:%u", u->info.id);
+    snprintf(ifc, sizeof ifc, "%u", u->info.interface);
+    const char *base = strrchr(u->prog, '/');
+    char *argv[] = { (char *)(base ? base + 1 : u->prog), where, ifc, 0 };
+    rx_spawn_handle_t hs[] = { { RX_PA_USER0, h } };
+    if (rx_spawn(u->prog, argv, 0, RX_SPAWN_CLONE_ALL, hs, 1, &u->proc) != RX_OK) {
+        printf("devmgr: cannot start %s for USB device %04x:%04x\n", u->prog, u->info.vid, u->info.pid);
+        u->given_up = 1;
+        u->proc = 0;
+        return;
+    }
+    u->started = now_ns();
+}
+
+// New devices get their driver; the driver of a vanished one is stopped
+// (it would notice only at its next transfer)
+static void usb_scan(void) {
+    if (!nusb_rules) return;
+    rx_usb_info_t list[MAX_USB];
+    int64_t n = rx_usb_list(resource, list, MAX_USB);
+    if (n < 0) return;
+    if (n > MAX_USB) n = MAX_USB;
+    for (int k = 0; k < nusbs; k++) usbs[k].present = 0;
+    for (int64_t i = 0; i < n; i++) {
+        int found = -1;
+        for (int k = 0; k < nusbs; k++) if (usbs[k].info.id == list[i].id) found = k;
+        if (found >= 0) {
+            usbs[found].present = 1;
+            continue;
+        }
+        if (nusbs >= MAX_USB) continue;
+        const char *prog = 0;
+        for (int r = 0; r < nusb_rules && !prog; r++) {
+            struct usb_rule *u = &usb_rules[r];
+            const uint8_t have[3] = { list[i].class_code, list[i].subclass, list[i].protocol };
+            int ok = 1;
+            for (int j = 0; j < u->n; j++) ok &= u->v[j] == have[j];
+            if (ok) prog = u->prog;
+        }
+        struct usbdev *u = &usbs[nusbs++];
+        memset(u, 0, sizeof *u);
+        u->info = list[i];
+        u->present = 1;
+        if (prog) {
+            snprintf(u->prog, sizeof u->prog, "%s", prog);
+            start_usb_driver(u);
+        }
+    }
+    for (int k = 0; k < nusbs; k++) {
+        if (!usbs[k].present && usbs[k].proc) rx_task_kill(usbs[k].proc);
+    }
+    // Forget devices that are gone and have no driver running
+    for (int k = nusbs - 1; k >= 0; k--) {
+        if (!usbs[k].present && !usbs[k].proc) usbs[k] = usbs[--nusbs];
+    }
+}
+
+static void usb_driver_ended(struct usbdev *u) {
+    int64_t code = rx_wait_process(u->proc);
+    rx_handle_close(u->proc);
+    u->proc = 0;
+    // Still plugged in? (an unplugged device's driver exits normally)
+    rx_usb_info_t list[MAX_USB];
+    int64_t n = rx_usb_list(resource, list, MAX_USB);
+    int present = 0;
+    for (int64_t i = 0; i < n && i < MAX_USB; i++) present |= list[i].id == u->info.id;
+    if (!present) {
+        *u = usbs[--nusbs];
+        return;
+    }
+    if (now_ns() - u->started < 5000000000ull) u->quick_fails++;
+    else u->quick_fails = 0;
+    if (u->quick_fails >= 5) {
+        printf("devmgr: %s for USB device %04x:%04x keeps failing (code %lld); not restarting it\n", u->prog,
+               u->info.vid, u->info.pid, (long long)code);
+        u->given_up = 1;
+        return;
+    }
+    start_usb_driver(u);
 }
 
 // ---- the device channel ----
@@ -754,8 +876,10 @@ int main(void) {
         if (devs[k].prog[0]) start_driver(&devs[k]);
     }
 
-    static rx_wait_item_t items[1 + MAX_CLIENTS + MAX_BLOCK + 2 * MAX_PCI];
-    static int who[1 + MAX_CLIENTS + MAX_BLOCK + 2 * MAX_PCI]; // what each item is
+    usb_scan();
+    static rx_wait_item_t items[1 + MAX_CLIENTS + MAX_BLOCK + 2 * MAX_PCI + MAX_USB];
+    static int who[1 + MAX_CLIENTS + MAX_BLOCK + 2 * MAX_PCI + MAX_USB]; // what each item is
+    uint64_t next_usb_scan = now_ns() + 1000000000ull;
     for (;;) {
         int n = 0;
         items[n] = (rx_wait_item_t){ svc, RX_CHANNEL_READABLE, 0 };
@@ -778,7 +902,20 @@ int main(void) {
                 who[n++] = 0x40000 | k;
             }
         }
-        if (rx_object_wait_many(items, (uint64_t)n, RX_TIME_INFINITE) != RX_OK) continue;
+        for (int k = 0; k < nusbs; k++) {
+            if (usbs[k].proc) {
+                items[n] = (rx_wait_item_t){ usbs[k].proc, RX_PROCESS_TERMINATED, 0 };
+                who[n++] = 0x50000 | k;
+            }
+        }
+        // USB devices come and go: look every second (if a driver is set up for them)
+        rx_status_t ws = rx_object_wait_many(items, (uint64_t)n, nusb_rules ? next_usb_scan : RX_TIME_INFINITE);
+        if (nusb_rules && now_ns() >= next_usb_scan) {
+            usb_scan();
+            next_usb_scan = now_ns() + 1000000000ull;
+            continue;   // the USB table may have changed under the items
+        }
+        if (ws != RX_OK) continue;
         // Handle from the end so removals do not shift what is still to do
         for (int k = n - 1; k >= 0; k--) {
             uint32_t pend = items[k].pending;
@@ -802,6 +939,8 @@ int main(void) {
                 if (devs[idx].chan && (pend & RX_CHANNEL_READABLE)) device_request(&devs[idx]);
             } else if (kind == 4) {
                 if (devs[idx].proc) driver_ended(&devs[idx]);
+            } else if (kind == 5) {
+                if (idx < nusbs && usbs[idx].proc) usb_driver_ended(&usbs[idx]);
             }
         }
     }

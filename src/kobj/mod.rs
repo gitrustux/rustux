@@ -28,6 +28,7 @@ pub mod socket;
 pub mod interrupt;
 pub mod task;
 pub mod timer;
+pub mod usb;
 pub mod vmar;
 pub mod vmo;
 
@@ -77,6 +78,8 @@ pub enum ObjType {
     Timer = 22,
     Bti = 24,
     Pmt = 26,
+    /// A USB device (step 13; not a Zircon type)
+    Usb = 40,
 }
 
 /// Signal bits of an object and the processes waiting for them to change
@@ -144,6 +147,7 @@ pub enum KObject {
     Socket(Arc<socket::Socket>),
     Bti(Arc<bti::Bti>),
     Pmt(Arc<bti::Pmt>),
+    Usb(Arc<usb::UsbDevice>),
 }
 
 impl KObject {
@@ -164,6 +168,7 @@ impl KObject {
             KObject::Socket(_) => ObjType::Socket,
             KObject::Bti(_) => ObjType::Bti,
             KObject::Pmt(_) => ObjType::Pmt,
+            KObject::Usb(_) => ObjType::Usb,
         }
     }
 
@@ -184,6 +189,7 @@ impl KObject {
             KObject::Socket(o) => &o.signals,
             KObject::Bti(o) => &o.signals,
             KObject::Pmt(o) => &o.signals,
+            KObject::Usb(o) => &o.signals,
         }
     }
 
