@@ -485,6 +485,18 @@ pub fn sys_usb_control(args: SyscallArgs) -> SyscallRet {
 
 /// usb_clear_halt(handle, options) — recover a stalled bulk endpoint
 /// (bit 0: the IN endpoint, else OUT)
+/// usb_reset(handle) — the stick does not answer: reset its root port and
+/// enumerate it again (it comes back with a new id; this handle is then
+/// gone). ERR_INVALID_ARGS if no root port is known for it.
+pub fn sys_usb_reset(args: SyscallArgs) -> SyscallRet {
+    let h = args.arg_u32(0);
+    ret((|| {
+        let id = usb_of(h, Rights::WRITE)?;
+        crate::drivers::usb::storage_reset(id).map_err(storage_status)?;
+        Ok(0)
+    })())
+}
+
 pub fn sys_usb_clear_halt(args: SyscallArgs) -> SyscallRet {
     let (h, opts) = (args.arg_u32(0), args.arg_u32(1));
     ret((|| {

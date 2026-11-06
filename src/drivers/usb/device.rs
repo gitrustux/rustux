@@ -224,7 +224,8 @@ pub unsafe fn storage_bulk_in(id: u32, data: &mut [u8], ms: u64) -> core::result
         return Err(StorageError::Invalid);
     }
     let c = xhci::controller().ok_or(StorageError::Gone)?;
-    let n = c.bulk(s.slot, s.dci_in, &mut s.ring_in, s.buf.phys, data.len(), ms).map_err(storage_err)?;
+    let (ctx, port) = ep_ctx(s.slot, s.dci_in);
+    let n = c.bulk(s.slot, s.dci_in, &mut s.ring_in, s.buf.phys, data.len(), ms, ctx, port).map_err(storage_err)?;
     let n = core::cmp::min(n, data.len());
     core::ptr::copy_nonoverlapping(s.buf.virt, data.as_mut_ptr(), n);
     Ok(n)
@@ -238,7 +239,44 @@ pub unsafe fn storage_bulk_out(id: u32, data: &[u8], ms: u64) -> core::result::R
     }
     core::ptr::copy_nonoverlapping(data.as_ptr(), s.buf.virt, data.len());
     let c = xhci::controller().ok_or(StorageError::Gone)?;
-    c.bulk(s.slot, s.dci_out, &mut s.ring_out, s.buf.phys, data.len(), ms).map_err(storage_err)
+    let (ctx, port) = ep_ctx(s.slot, s.dci_out);
+    c.bulk(s.slot, s.dci_out, &mut s.ring_out, s.buf.phys, data.len(), ms, ctx, port).map_err(storage_err)
+}
+
+/// The endpoint's context in the Device Context the controller keeps, and
+/// the root port of the slot (for the time-out report)
+unsafe fn ep_ctx(slot: u8, dci: u8) -> (*const u32, usize) {
+    static ZERO: [u32; 8] = [0; 8];
+    let cs = match xhci::controller() {
+        Some(c) => c.ctx_size,
+        None => return (ZERO.as_ptr(), 0),
+    };
+    let port = KEPT_ROOT_PORT.get()[slot as usize] as usize;
+    match SLOT_MEM.get()[slot as usize].as_ref() {
+        Some(m) => (m.dev.virt.add(dci as usize * cs) as *const u32, port),
+        None => (ZERO.as_ptr(), port),
+    }
+}
+
+/// The last resort when a stick no longer answers even after a Bulk-Only
+/// Reset: reset its root port and enumerate it again, as an unplug and
+/// replug (Linux's usb_reset_device does the same). The device gets a new
+/// id; the driver holding this one sees it gone, and devmgr starts a new
+/// driver for the new one. Everything else behind that port (a hub, a
+/// keyboard on it) is enumerated again too.
+pub unsafe fn storage_reset(id: u32) -> core::result::Result<(), StorageError> {
+    let s = storage_by_id(id).ok_or(StorageError::Gone)?;
+    let port = KEPT_ROOT_PORT.get()[s.slot as usize] as usize;
+    if port == 0 {
+        return Err(StorageError::Invalid);
+    }
+    log("[USB] port ");
+    log_dec(port as u64);
+    log(": resetting a mass storage device that does not answer\n");
+    release_root_port(port as u8);
+    delay_ms(50);
+    enumerate_root_port(port);
+    Ok(())
 }
 
 /// Endpoint state from the Device Context the controller keeps: 1

@@ -410,6 +410,9 @@ static inline int64_t rx_usb_control(rx_handle_t h, const uint8_t setup[8], void
     return RX_SYS(0x97, h, setup, buf, len);
 }
 static inline rx_status_t rx_usb_clear_halt(rx_handle_t h, uint32_t options) { return RX_SYS(0x98, h, options, 0, 0); }
+// The device does not answer: reset its root port and enumerate it again
+// (it comes back with a new id; this handle is gone afterwards)
+static inline rx_status_t rx_usb_reset(rx_handle_t h) { return RX_SYS(0x99, h, 0, 0, 0); }
 
 // System information and power
 typedef struct {

@@ -881,6 +881,7 @@ local time (as Windows does), correcting by the offset of the zone in
 | `USB_BULK` | 0x96 | One bulk transfer | ✅ |
 | `USB_CONTROL` | 0x97 | A control request to its interface | ✅ |
 | `USB_CLEAR_HALT` | 0x98 | Recover a bulk endpoint | ✅ |
+| `USB_RESET` | 0x99 | Reset a stuck device's port; it is enumerated again | ✅ |
 
 `system_get_version(char *buf, size_t len)` writes
 `Rustux <version> (git <hash>, built <date>) x86_64` with a NUL and
@@ -910,7 +911,7 @@ C wrapper takes the string) into `buf` and returns the table's length;
 `ERR_NOT_FOUND` if there is none. devmgr reads MCFG for PCI Express
 configuration space.
 
-#### USB mass storage (0x94-0x98, step 13)
+#### USB mass storage (0x94-0x99, step 13)
 
 The xHCI driver stays in the kernel (it serves the USB keyboards from
 the timer tick). For mass-storage devices (class 8, bulk-only protocol
@@ -949,6 +950,19 @@ Brings the IN (bit 0) or OUT endpoint back to an empty ring and clears
 the device's halt (CLEAR_FEATURE): a halted endpoint with Reset
 Endpoint, a running or stopped one by stopping it and adding it again
 (so the controller's data toggle matches the device's).
+
+`usb_reset(rx_handle_t h)` — needs `WRITE` (step 15). The last resort
+for a device that no longer answers even after a Bulk-Only Reset: its
+root port is reset and everything behind it enumerated again, as after
+unplugging it. The device comes back with a new id (this handle and the
+driver holding it are done; devmgr starts a new driver).
+
+`usb_bulk` matches a completion by the TRB it names, so an old event of
+the endpoint (the "stopped" event after an earlier time-out, a
+completion that came too late) is not taken for the current transfer's.
+On a time-out the kernel logs the endpoint's state and dequeue pointer
+(still on the transfer's TRB: the device never took or gave the data),
+the controller's status and the port's.
 
 USB polling (keyboards, port changes) runs in the timer tick; events
 that arrive while a transfer or command waits for its own completion are

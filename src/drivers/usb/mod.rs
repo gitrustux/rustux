@@ -169,6 +169,11 @@ pub fn storage_clear_halt(id: u32, input: bool) -> core::result::Result<(), Stor
     unsafe { device::storage_clear_halt(id, input) }
 }
 
+pub fn storage_reset(id: u32) -> core::result::Result<(), StorageError> {
+    let _usb = USB_LOCK.lock();
+    unsafe { device::storage_reset(id) }
+}
+
 pub fn storage_control(id: u32, setup: [u8; 8], data: &mut [u8]) -> core::result::Result<usize, StorageError> {
     let _usb = USB_LOCK.lock();
     unsafe { device::storage_control(id, setup, data) }

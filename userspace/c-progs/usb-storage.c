@@ -26,7 +26,12 @@
 #define CBW_SIG 0x43425355u  // "USBC"
 #define CSW_SIG 0x53425355u  // "USBS"
 #define MAX_XFER 65536u      // one bulk call
-#define TIMEOUT_MS 10000
+#define TIMEOUT_MS 10000     // the command block
+#define DATA_TIMEOUT_MS 30000 // its data and status (as Linux's SCSI disk time-out)
+
+// The most bytes one SCSI command moves: halved after a time-out (some
+// sticks stall on long writes), down to 4 KiB
+static uint32_t cmd_max = MAX_XFER;
 
 static rx_handle_t usb;
 static uint8_t iface;
@@ -90,12 +95,12 @@ static int command(const uint8_t *cdb, int cdblen, void *data, uint32_t len, int
     gone(r);
     if (r != 31) {
         reset_recovery();
-        return -EIO;
+        return r == RX_ERR_TIMED_OUT ? -ETIMEDOUT : -EIO;
     }
     // Data stage, in pieces of at most one bulk call
     for (uint32_t done = 0; done < len; ) {
         uint32_t n = len - done < MAX_XFER ? len - done : MAX_XFER;
-        r = rx_usb_bulk(usb, in ? RX_USB_IN : 0, (uint8_t *)data + done, n, TIMEOUT_MS);
+        r = rx_usb_bulk(usb, in ? RX_USB_IN : 0, (uint8_t *)data + done, n, DATA_TIMEOUT_MS);
         gone(r);
         if (r == RX_ERR_IO_REFUSED) {   // stalled: clear it, then the status
             gone(rx_usb_clear_halt(usb, in ? RX_USB_IN : 0));
@@ -110,7 +115,7 @@ static int command(const uint8_t *cdb, int cdblen, void *data, uint32_t len, int
     }
     // Status: one retry after clearing a stall
     for (int attempt = 0; ; attempt++) {
-        r = rx_usb_bulk(usb, RX_USB_IN, csw, 13, TIMEOUT_MS);
+        r = rx_usb_bulk(usb, RX_USB_IN, csw, 13, DATA_TIMEOUT_MS);
         gone(r);
         if (r == RX_ERR_IO_REFUSED && attempt == 0) {
             gone(rx_usb_clear_halt(usb, RX_USB_IN));
@@ -120,7 +125,7 @@ static int command(const uint8_t *cdb, int cdblen, void *data, uint32_t len, int
     }
     if (r != 13 || le32(csw) != CSW_SIG || le32(csw + 4) != t) {
         reset_recovery();
-        return -EIO;
+        return r == RX_ERR_TIMED_OUT ? -ETIMEDOUT : -EIO;
     }
     if (csw[12] == 0) return 0;
     if (csw[12] == 2) {         // phase error
@@ -133,7 +138,43 @@ static int command(const uint8_t *cdb, int cdblen, void *data, uint32_t len, int
 
 static int is_medium_error(void) { return sense_key == 2 && asc == 0x3A; }
 
+static int rw1(int write, uint64_t lba, uint32_t count, void *buf);
+
+// A read or write, in commands of at most cmd_max bytes. A command that
+// times out is tried again after a Bulk-Only Reset; one that times out
+// again makes the commands smaller; when even that fails the stick's port
+// is reset (it comes back as a new device, with a new driver).
+static int timeouts;   // commands in a row that timed out
+
 static int rw(int write, uint64_t lba, uint32_t count, void *buf) {
+    uint32_t per = cmd_max / block_size ? cmd_max / block_size : 1;
+    for (uint32_t done = 0; done < count;) {
+        uint32_t n = count - done < per ? count - done : per;
+        int r = rw1(write, lba + done, n, (uint8_t *)buf + (size_t)done * block_size);
+        if (r == -ETIMEDOUT) {
+            // Smaller commands (16 KiB, then 4 KiB), then a port reset
+            if (++timeouts <= 2) {
+                uint32_t want = timeouts == 1 ? 16384 : 4096;
+                if (want < block_size) want = block_size;
+                if (want < cmd_max) {
+                    cmd_max = want;
+                    fprintf(stderr, "usb-storage %s: commands of at most %u KiB from now on\n", where, cmd_max / 1024);
+                }
+                per = cmd_max / block_size ? cmd_max / block_size : 1;
+                continue;   // the same blocks again
+            }
+            fprintf(stderr, "usb-storage %s: the device does not answer: resetting its port\n", where);
+            rx_usb_reset(usb);
+            exit(0);        // a new driver takes the device that comes back
+        }
+        if (r < 0) return r;
+        timeouts = 0;
+        done += n;
+    }
+    return 0;
+}
+
+static int rw1(int write, uint64_t lba, uint32_t count, void *buf) {
     uint8_t cdb[16] = { 0 };
     int len;
     if (lba + count <= 0xFFFFFFFFull && count <= 0xFFFF) {
@@ -156,9 +197,11 @@ static int rw(int write, uint64_t lba, uint32_t count, void *buf) {
         if (r == 0) return 0;
         if (is_medium_error()) return -ENOMEDIUM;
         if (sense_key == 7) return -EROFS;      // DATA PROTECT
-        // Retry UNIT ATTENTION, and transport failures (a time-out, a bad
-        // status block), after which command() did a reset recovery
+        // Retry UNIT ATTENTION, and transport failures (a bad status
+        // block), after which command() did a reset recovery; a time-out
+        // once (rw makes the commands smaller after that)
         if (sense_key != 6 && sense_key != 0) break;
+        if (r == -ETIMEDOUT && attempt >= 1) return r;
     }
     fprintf(stderr, "usb-storage %s: %s of %u blocks at %llu failed (sense %x/%02x/%02x)\n", where, write ? "write" : "read",
             count, (unsigned long long)lba, sense_key, asc, ascq);

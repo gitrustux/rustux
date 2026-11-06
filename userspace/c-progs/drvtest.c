@@ -70,6 +70,8 @@ int main(void) {
     check("usb_bulk with an event (not a USB device) -> refused", r == RX_ERR_WRONG_TYPE || r == RX_ERR_ACCESS_DENIED, r);
     r = rx_usb_control(ev, setup, 0, 0);
     check("usb_control with an event -> refused", r == RX_ERR_WRONG_TYPE || r == RX_ERR_ACCESS_DENIED, r);
+    r = rx_usb_reset(ev);
+    check("usb_reset with an event -> refused", r == RX_ERR_WRONG_TYPE || r == RX_ERR_ACCESS_DENIED, r);
     rx_puts("drvtest: ");
     rx_putd(passed);
     rx_puts(" passed, ");

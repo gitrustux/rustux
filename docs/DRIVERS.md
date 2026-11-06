@@ -218,6 +218,16 @@ is cleared and the status read; a bad status block, a phase error or a
 time-out leads to a reset recovery (Bulk-Only Reset and both endpoints
 cleared) and the command is tried again, up to three times. LUN 0 only.
 
+Time-outs (step 15): 10 s for the command block, 30 s for the data and
+the status (as Linux's SCSI disks), since a stick may stall while it
+erases flash. A command that times out twice (with a reset recovery
+between) is split: from then on commands move at most 16 KiB, after
+another such failure 4 KiB (some sticks cope with short writes only);
+if even that fails, the driver has the kernel reset the stick's port
+(`usb_reset`) and ends; the stick is enumerated again and served by a new
+driver (its block devices come back, mounted filesystems on it get
+I/O errors).
+
 Events the controller posts while the kernel waits for one transfer
 (keyboard reports, port changes) are kept for the keyboard loop, so
 typing during disk transfers is not lost.

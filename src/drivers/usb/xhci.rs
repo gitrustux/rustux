@@ -579,22 +579,48 @@ impl Controller {
     /// 64 KiB boundary) at `phys` on endpoint `dci`. Returns the bytes
     /// moved; a stall comes back as TransferFailed(CC_STALL), and on a
     /// time-out the endpoint is stopped and its ring emptied.
-    pub unsafe fn bulk(&mut self, slot: u8, dci: u8, ring: &mut Ring, phys: u64, len: usize, ms: u64) -> Result<usize> {
+    ///
+    /// `ep_ctx` is the endpoint's context in the Device Context (for the
+    /// report on a time-out). The completion is matched by the TRB it
+    /// names, so an old event of this endpoint (the "stopped" event of an
+    /// earlier time-out, a completion that came too late) is not taken for
+    /// this transfer's.
+    pub unsafe fn bulk(&mut self, slot: u8, dci: u8, ring: &mut Ring, phys: u64, len: usize, ms: u64,
+                       ep_ctx: *const u32, port: usize) -> Result<usize> {
         // Normal TRB: interrupt on short packet and on completion
-        ring.push(phys, len as u32, TRB_NORMAL << 10 | 1 << 5 | 1 << 2);
+        let trb = ring.push(phys, len as u32, TRB_NORMAL << 10 | 1 << 5 | 1 << 2);
         self.ring_doorbell(slot, dci);
-        match self.wait_transfer(slot, dci, ms) {
+        match self.wait_transfer_trb(slot, dci, trb, ms) {
             Ok((CC_SUCCESS, residual)) | Ok((CC_SHORT_PACKET, residual)) => Ok(len.saturating_sub(residual as usize)),
             Ok((cc, _)) => {
                 // The endpoint halted: the caller recovers (clear halt)
                 Err(UsbError::TransferFailed(cc))
             }
             Err(e) => {
+                // What the controller was doing: the endpoint's state and
+                // where its dequeue pointer is (on our TRB: the device did
+                // not take or give the data), the controller's status
+                // (HSE/HCE: the controller itself failed), the port
+                let state = core::ptr::read_volatile(ep_ctx) & 7;
+                let deq = (core::ptr::read_volatile(ep_ctx.add(2)) as u64 | (core::ptr::read_volatile(ep_ctx.add(3)) as u64) << 32) & !0xF;
                 log("[USB] bulk transfer timed out (slot ");
                 log_dec(slot as u64);
                 log(", endpoint ");
                 log_dec(dci as u64);
-                log(")\n");
+                log(", ");
+                log_dec(len as u64);
+                log(" bytes): endpoint state ");
+                log_dec(state as u64);
+                log(", dequeue ");
+                log_hex(deq, 8);
+                log(if deq == trb { " (our TRB)" } else if deq == trb + 16 { " (past our TRB)" } else { " (elsewhere)" });
+                log(", USBSTS ");
+                log_hex(self.op_r(OP_USBSTS) as u64, 8);
+                if port > 0 && port <= self.max_ports() {
+                    log(", PORTSC ");
+                    log_hex(self.portsc(port) as u64, 8);
+                }
+                log("\n");
                 let _ = self.stop_endpoint(slot, dci);
                 ring.reset();
                 let _ = self.set_tr_dequeue(slot, dci, ring.phys());
@@ -606,6 +632,31 @@ impl Controller {
     // ------------------------------------------------------------------
     // Control transfers
     // ------------------------------------------------------------------
+
+    /// Wait for the Transfer Event of the TRB at `trb` (endpoint `dci` of
+    /// `slot`): (completion code, residual bytes). Other events of this
+    /// endpoint are old ones and are dropped; other endpoints' are kept.
+    pub unsafe fn wait_transfer_trb(&mut self, slot: u8, dci: u8, trb: u64, ms: u64) -> Result<(u8, u32)> {
+        let deadline = Deadline::after_ms(ms);
+        loop {
+            match self.poll_event() {
+                Some(ev) => {
+                    let ty = (ev.control >> 10) & 0x3F;
+                    if ty == EVT_TRANSFER && (ev.control >> 24) as u8 == slot && ((ev.control >> 16) & 0x1F) as u8 == dci {
+                        if ev.param & !0xF == trb {
+                            return Ok(((ev.status >> 24) as u8, ev.status & 0xFF_FFFF));
+                        }
+                        continue;
+                    }
+                    if ty != EVT_COMMAND {
+                        self.set_aside(ev);
+                    }
+                }
+                None if deadline.expired() => return Err(UsbError::Timeout),
+                None => core::hint::spin_loop(),
+            }
+        }
+    }
 
     /// Wait for a Transfer Event for endpoint `dci` of `slot`:
     /// (completion code, residual bytes)
