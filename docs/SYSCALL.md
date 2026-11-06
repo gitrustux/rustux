@@ -318,7 +318,7 @@ Topics (Zircon numbers; structs in `<rustux/syscalls.h>`):
 | `PROCESS_THREADS` 4 | process | `ENUMERATE` | koids (u64) of its running threads |
 | `JOB_CHILDREN` 6 | job | `ENUMERATE` | koids of its child jobs |
 | `JOB_PROCESSES` 7 | job | `ENUMERATE` | koids of its processes that have not exited |
-| `TASK_STATS` 11 | process | `INSPECT` | `{ u64 mem_mapped_bytes; u64 mem_private_bytes; u64 shared; u64 scaled_shared; }` (private = memory committed in the VMOs it maps, each counted once) |
+| `TASK_STATS` 11 | process | `INSPECT` | `{ u64 mem_mapped_bytes; u64 mem_private_bytes; u64 mem_shared_bytes; u64 scaled_shared; }`: memory committed in the VMOs it maps, each counted once, split into private (VMOs only this process holds) and shared (VMOs also held elsewhere, such as the boot image); `scaled_shared` is 0 |
 | `TASK_RUNTIME` 25 | process, thread | `INSPECT` | `{ i64 cpu_time; i64 queue_time; i64 page_fault_time; i64 lock_contention_time; }` ns (only `cpu_time` is measured) |
 
 For the koid lists, as many koids as fit in `size` are written; `actual`

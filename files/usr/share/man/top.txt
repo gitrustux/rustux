@@ -1,0 +1,14 @@
+top - processes by CPU use, updated on the screen
+
+USAGE
+    top [-d SECONDS] [-n COUNT] [-b]
+
+    -d  seconds between updates (2)   -n  stop after COUNT updates
+    -b  plain reports (also when the output is not the screen)
+
+KEYS
+    q quit, space update now, c/m/p sort by CPU/memory/pid
+
+COLUMNS
+    PID (process id, as kill takes it), JOB, THR (threads), MEM (KiB),
+    CPU% (over the last interval), TIME (CPU time used), NAME

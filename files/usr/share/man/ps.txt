@@ -1,0 +1,11 @@
+ps - list processes
+
+USAGE
+    ps [--json]
+
+    PID   the process id (kill PID ends it)
+    JOB   the job it runs in (each command line gets one)
+    THR   threads; MEM  memory in KiB; TIME  CPU time used; NAME
+
+SEE ALSO
+    top, kill

@@ -9,9 +9,14 @@
 
 #include <rustux/process.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc > 1) {
+        printf("Usage: reboot\nTo restart the computer (needs the power resource the shell passes on).\n");
+        return strcmp(argv[1], "--help") ? 2 : 0;
+    }
     rx_handle_t power = rx_take_startup_handle(RX_PA_POWER_RESOURCE);
     if (!power) {
         fprintf(stderr, "reboot: not allowed (no power resource)\n");

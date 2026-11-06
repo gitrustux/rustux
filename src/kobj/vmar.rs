@@ -229,21 +229,24 @@ impl Aspace {
         core::mem::take(&mut inner.maps)
     }
 
-    /// (bytes mapped, bytes of memory committed in the VMOs mapped, each
-    /// VMO counted once)
-    pub fn stats(&self) -> (u64, u64) {
+    /// (bytes mapped, private bytes, shared bytes): memory committed in
+    /// the mapped ranges, private when only this address space holds the
+    /// VMO (a VMO also held elsewhere, like the boot image programs are
+    /// mapped from, counts as shared)
+    pub fn stats(&self) -> (u64, u64, u64) {
         let inner = self.inner.lock();
         let mapped = inner.maps.values().map(|m| m.size).sum();
-        let mut seen: Vec<*const Vmo> = Vec::new();
-        let mut committed = 0u64;
+        let (mut private, mut shared) = (0u64, 0u64);
         for m in inner.maps.values() {
-            let p = Arc::as_ptr(&m.vmo);
-            if !seen.contains(&p) {
-                seen.push(p);
-                committed += m.vmo.committed() as u64 * PAGE;
+            let here = inner.maps.values().filter(|o| Arc::ptr_eq(&o.vmo, &m.vmo)).count();
+            let bytes = m.vmo.committed_in(m.vmo_offset, m.size) as u64 * PAGE;
+            if Arc::strong_count(&m.vmo) > here {
+                shared += bytes;
+            } else {
+                private += bytes;
             }
         }
-        (mapped, committed)
+        (mapped, private, shared)
     }
 
     pub fn mapping_count(&self) -> usize {

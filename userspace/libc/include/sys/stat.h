@@ -57,6 +57,13 @@ int fstatat(int dirfd, const char *restrict path, struct stat *restrict st, int 
 int mkdirat(int dirfd, const char *path, mode_t mode);
 int chmod(const char *path, mode_t mode);
 int fchmod(int fd, mode_t mode);
+int fchmodat(int dirfd, const char *path, mode_t mode, int flags);
+int utimensat(int dirfd, const char *path, const struct timespec t[2], int flags);
+int futimens(int fd, const struct timespec t[2]);
+int mkfifo(const char *path, mode_t mode);
+int mknod(const char *path, mode_t mode, dev_t dev);
+#define UTIME_NOW  0x3fffffff
+#define UTIME_OMIT 0x3ffffffe
 int mkdir(const char *path, mode_t mode);
 mode_t umask(mode_t mask);
 

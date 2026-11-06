@@ -62,6 +62,8 @@ void __unlock(volatile int *l);
 int __futex_wait(volatile int *addr, int val, uint64_t deadline);
 int __futex_wake(volatile int *addr, int n);
 void __init_tls(void);
+// A boot-image file's bytes as a VMO (RX_FS_OP_GET_VMO); 0 or -errno
+int __fs_get_vmo(int fd, rx_handle_t *vmo, uint64_t *offset, uint64_t *size);
 void __run_init_array(int argc, char **argv, char **envp);
 // Monotonic deadline for an absolute time on `clock` (CLOCK_REALTIME or
 // CLOCK_MONOTONIC); RX_TIME_INFINITE for NULL

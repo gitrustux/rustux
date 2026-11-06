@@ -52,6 +52,23 @@ typedef struct { uint32_t txid; int32_t status; } rx_fs_reply_t;
 #define RX_FS_OP_SYNC     13
 // On a directory. Request: path. Reply: rx_fs_attr_t of that path.
 #define RX_FS_OP_STAT_AT  14
+// On any. Request: rx_fs_setattr_t. Reply: nothing. Changes the
+// permission bits and/or the modification time (step 11).
+#define RX_FS_OP_SETATTR  15
+
+// On a file. Request: nothing. Reply: u64 offset, u64 size, and one
+// handle: a read-only VMO holding the file's bytes at that offset. Only
+// files of the boot image have one (others: ENOTSUP). The program loader
+// maps programs from it instead of reading them (step 11).
+#define RX_FS_OP_GET_VMO  16
+
+#define RX_FS_SETATTR_MODE  1u
+#define RX_FS_SETATTR_MTIME 2u
+typedef struct {
+    uint32_t mask;      // RX_FS_SETATTR_*
+    uint32_t mode;      // permission bits (07777)
+    int64_t mtime_ns;   // nanoseconds since 1970 (UTC)
+} rx_fs_setattr_t;
 
 #define RX_FS_UNLINK_DIR 1u
 
@@ -70,7 +87,7 @@ typedef struct {
     uint64_t nlink;
     int64_t mtime_ns;   // monotonic clock until step 9 brings real time
     uint32_t read_only; // on a read-only filesystem (bootfs)
-    uint32_t pad;
+    uint32_t fsid;      // which filesystem (1 tmpfs, 2 bootfs, 3 devices): st_dev
 } rx_fs_attr_t;
 
 #endif

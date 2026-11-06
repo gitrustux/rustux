@@ -1,0 +1,15 @@
+edit - a small text editor (also nano)
+
+USAGE
+    edit [FILE]
+
+KEYS
+    arrows, Home, End, PgUp, PgDn    move
+    Ctrl+S          save                Ctrl+Q   quit (3 times: drop changes)
+    Ctrl+F          find (arrows: next/previous match, Enter: stop)
+    Ctrl+G          go to a line        Ctrl+D   duplicate the line
+    Ctrl+R          remove the line
+    Ctrl+C, Ctrl+X, Ctrl+V          copy, cut, paste the line
+    Ctrl+E          run a shell command and insert its output
+
+Based on kibi (github.com/ilai-deutel/kibi), MIT or Apache-2.0.

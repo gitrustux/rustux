@@ -50,6 +50,22 @@ processes (`Command::output`, `status`, piped stdin/stdout, `current_dir`,
 `env_clear`, a program found on `$PATH`) and a `HashMap` (random keys). It
 prints `hello-std: 28 passed, 0 failed` on QEMU.
 
+Two more packages make up the commands (step 11, `docs/COMMANDS.md`):
+
+| Package | What |
+|---------|------|
+| `coreutils` | uutils coreutils as one multi-call binary; `rustux-build` lists the features (commands) built |
+| `tools` | grep, find, xargs, less, diff, cmp, edit (kibi), man, tar, gzip, gunzip, zcat; dispatches on `argv[0]` |
+| `vendor/` | crates patched for Rustux (`platform-info`, `kibi`, `diffutils`, `findutils`, `uu_tail`); `vendor/README.md` lists each change |
+
+A package may have a `rustux-build` file setting `CARGO_ARGS` (for example
+`--features ...`). `build-rust.sh` also passes `--cfg rustix_use_libc`, so
+the `rustix` crate calls the C library instead of issuing Linux `syscall`
+instructions (which fault on Rustux), and points `cc`-built C code (the
+Oniguruma regex library) at gcc with the library's headers
+(`-ffreestanding -nostdinc -I userspace/libc/include`). Each build removes
+the old binaries first, as cargo does not notice a changed `libc.a`.
+
 ## What the C library does for std
 
 | std uses | The library |
@@ -72,8 +88,9 @@ prints `hello-std: 28 passed, 0 failed` on QEMU.
   (`[crashed (CPU exception)]`), not std's "stack overflow" message.
 - **`fork`/`exec`**: `Command` must be able to use `posix_spawn`, so
   `uid`/`gid`/`pre_exec`/`process_group` (Unix `CommandExt`) fail.
-- **Symbolic links and permissions**: `read_link` fails with `EINVAL`,
-  `set_permissions` changes nothing (no users until step 17).
+- **Symbolic links**: `read_link` fails with `EINVAL`, links cannot be
+  made. Permissions can be set (`set_permissions`) but are not enforced
+  until users exist (step 17).
 - **`File` locking, memory-mapped files, `fs::copy` fast paths** (it falls
   back to read/write).
 - **Unwinding**: `panic=abort` only; `catch_unwind` cannot catch.

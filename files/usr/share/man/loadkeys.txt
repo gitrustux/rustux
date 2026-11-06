@@ -1,0 +1,9 @@
+loadkeys - keyboard layout (a shell built-in)
+
+USAGE
+    loadkeys            the layout in use and the ones there are
+    loadkeys NAME       us, de, uk
+
+    The choice is written to /etc/keymap. Layouts are text files in
+    /usr/share/keymaps: each line is a key's HID usage and the characters
+    it types (normal, Shift, AltGr).

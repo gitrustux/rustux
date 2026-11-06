@@ -1,0 +1,7 @@
+man - manual pages
+
+USAGE
+    man NAME        the page for NAME (a command without one: NAME --help)
+    man -k WORD     the pages that mention WORD
+
+    Pages are text files in /usr/share/man. Start with: man intro

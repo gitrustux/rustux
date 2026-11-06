@@ -1,0 +1,13 @@
+tar - create, extract and list tar archives
+
+USAGE
+    tar -cf ARCHIVE FILE...     create (add -z for gzip: .tar.gz)
+    tar -xf ARCHIVE [FILE...]   extract (-C DIR: into DIR)
+    tar -tf ARCHIVE             list (-v: with sizes; --json)
+
+    The dash may be left out: tar czf backup.tgz /root
+    -O extracts to standard output; --exclude=GLOB leaves files out.
+    Archives are read with the tar format (ustar/GNU) and gzip.
+
+SEE ALSO
+    gzip --help

@@ -155,6 +155,14 @@ impl Vmo {
     pub fn committed(&self) -> usize {
         self.pages.lock().iter().filter(|&&p| p != 0).count()
     }
+
+    /// Committed pages in [offset, offset + len)
+    pub fn committed_in(&self, offset: u64, len: u64) -> usize {
+        let first = (offset / PAGE) as usize;
+        let last = offset.saturating_add(len).div_ceil(PAGE) as usize;
+        let pages = self.pages.lock();
+        pages.iter().take(last).skip(first).filter(|&&p| p != 0).count()
+    }
 }
 
 impl Drop for Vmo {

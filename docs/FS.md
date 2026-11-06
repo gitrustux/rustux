@@ -11,10 +11,10 @@ library (`open`, `read`, `opendir`, ...; `docs/USERSPACE.md`).
 | `/` | tmpfs | in memory, writable; lost at reboot |
 | `/tmp` | tmpfs | |
 | `/root` | tmpfs | root's home (`$HOME`); the shell starts here |
-| `/etc` | tmpfs | settings (`hostname`, `timezone`, `adjtime`, `keymap`), copied from `/boot/etc` at start |
+| `/etc` | tmpfs | settings (`hostname`, `timezone`, `adjtime`, `keymap`, `passwd`, `group`, `mtab`), copied from `/boot/etc` at start |
 | `/boot` | bootfs | the boot image, read-only |
 | `/bin` | bootfs | `/boot/bin` mounted again: the programs |
-| `/usr` | bootfs | `/boot/usr` mounted again (`/usr/share/zoneinfo/zones`, `/usr/share/keymaps/`) |
+| `/usr` | bootfs | `/boot/usr` mounted again (`/usr/share/zoneinfo/zones`, `/usr/share/keymaps/`, `/usr/share/man/`, `/usr/share/tests/`) |
 | `/dev` | devices | `null` (reads nothing, takes every write) and `zero` (reads zeros); no new files here |
 
 Writes, creates, renames and removals under `/boot`, `/bin` and `/usr` fail with
@@ -78,17 +78,21 @@ the current directory; `fsd` rejects them with `EINVAL`).
 | `RENAME` 12 | directory | `u32 old_len`, old path, new path | — |
 | `SYNC` 13 | any | — | — |
 | `STAT_AT` 14 | directory | path | `rx_fs_attr_t` |
+| `SETATTR` 15 | any | `rx_fs_setattr_t { u32 mask; u32 mode; i64 mtime_ns; }`; mask 1 sets the permission bits, 2 the modification time | — (`EROFS` on bootfs) |
+| `GET_VMO` 16 | file | — | `u64 offset; u64 size;` and one handle: the boot image VMO, read-only. Boot-image files only (`ENOTSUP` otherwise); the loader maps programs straight from it |
 
 Types: 1 file, 2 directory, 3 device (`/dev/null`, `/dev/zero`; step 10).
 
 `rx_fs_attr_t` is `{ u32 type; u32 mode; u64 size; u64 ino; u64 nlink;
-i64 mtime_ns; u32 read_only; u32 pad; }`. Times are from the monotonic
-clock until step 9 brings wall-clock time.
+i64 mtime_ns; u32 read_only; u32 fsid; }`. Times are UTC (nanoseconds
+since 1970). `fsid` tells the filesystems apart (1 tmpfs, 2 bootfs,
+3 devices); `stat` reports it as `st_dev`, which `df`, `find -xdev` and
+`cp` use.
 
 Errors follow POSIX: `ENOENT`, `EEXIST`, `ENOTDIR`, `EISDIR`, `ENOTEMPTY`,
 `EROFS`, `EBUSY` (removing or renaming a mount point), `EINVAL` (moving a
 directory into itself), `EBADF` (reading a write-only connection),
-`ENOSYS` (unknown op).
+`ENOSYS` (unknown op), `ENOTSUP` (`GET_VMO` on a file not in the boot image).
 
 ## Limits
 
@@ -111,3 +115,13 @@ offset 0   u32 magic 0x52555458 ("RUTX")
 
 Names are paths without a leading `/` (`bin/shell`, `test.txt`); `fsd`
 creates the directories along them.
+
+The data of `bin/` files starts on a 4096-byte boundary of the image, so
+the loader can map a program's read-only segments from the image VMO
+without copying them.
+
+`userspace/links` lists extra names, one `NAME PROGRAM` per line
+(`ls coreutils`): each becomes a `bin/NAME` entry whose data offset and
+size are those of `bin/PROGRAM`, so the multi-call binaries are stored
+once. Lines naming a missing program or an existing file are skipped.
+`build.rs` prints `Boot image: N files, M links`.

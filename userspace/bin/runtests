@@ -1,0 +1,39 @@
+#!/bin/sh
+# runtests: the command test suite (checklist step 11). Each test is a
+# shell script in /usr/share/tests; its output (with errors) must be the
+# same as the .out file next to it. Prints a line per test and a summary;
+# the exit status is the number of failures.
+#
+#   runtests            all tests
+#   runtests NAME...    only these (text, files, ...)
+#   runtests -v ...     show the differences of failing tests
+
+dir=/usr/share/tests
+verbose=
+if [ "$1" = -v ]; then verbose=1; shift; fi
+if [ $# -eq 0 ]; then
+    set -- $(cd $dir && for f in *.sh; do echo "${f%.sh}"; done)
+fi
+passed=0
+failed=0
+for t in "$@"; do
+    t=${t%.sh}
+    if [ ! -f "$dir/$t.sh" ]; then
+        echo "runtests: no test named $t"
+        failed=$((failed + 1))
+        continue
+    fi
+    out=/tmp/runtests-$t.out
+    (cd / && sh "$dir/$t.sh") > "$out" 2>&1
+    if diff "$dir/$t.out" "$out" > /tmp/runtests-$t.diff 2>&1; then
+        echo "  ok   $t"
+        passed=$((passed + 1))
+        rm -f "$out" /tmp/runtests-$t.diff
+    else
+        echo "  FAIL $t (differences: /tmp/runtests-$t.diff)"
+        [ -n "$verbose" ] && cat /tmp/runtests-$t.diff
+        failed=$((failed + 1))
+    fi
+done
+echo "runtests: $passed passed, $failed failed"
+exit $failed

@@ -59,6 +59,9 @@ int *__errno_location(void);
 #define ELOOP 40
 #define EOVERFLOW 75
 #define EDEADLK 35
+#define ENODATA 61
+#define ENOTSUP 95
+#define EOPNOTSUPP 95
 #define ECANCELED 125
 
 #endif

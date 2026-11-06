@@ -270,10 +270,10 @@ pub fn sys_object_get_info(args: SyscallArgs) -> SyscallRet {
                 list(&mut out, &koids, &mut n_actual, &mut n_avail);
             }
             INFO_TASK_STATS => {
-                // { mapped, private (committed), shared, scaled shared } bytes
+                // { mapped, private, shared, scaled shared (not computed: 0) } bytes
                 let p = process_of(h, Rights::INSPECT)?;
-                let (mapped, committed) = p.aspace.stats();
-                for v in [mapped, committed, 0, 0] {
+                let (mapped, private, shared) = p.aspace.stats();
+                for v in [mapped, private, shared, 0] {
                     push(&mut out, v);
                 }
             }

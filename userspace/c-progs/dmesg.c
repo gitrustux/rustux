@@ -8,9 +8,15 @@
 // for debugging since boot)
 
 #include <rustux/process.h>
+#include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc > 1) {
+        printf("Usage: dmesg\nPrint the kernel log (the last 64 KiB).\n");
+        return strcmp(argv[1], "--help") ? 2 : 0;
+    }
     rx_handle_t log;
     if (rx_debuglog_create(0, RX_LOG_FLAG_READABLE, &log) != RX_OK) return 1;
     char buf[4096];

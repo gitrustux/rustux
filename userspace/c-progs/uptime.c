@@ -4,16 +4,32 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-// uptime: the time, how long the system has been running, CPUs, threads
+// uptime [--json]: the time, how long the system has been running, CPUs, threads
 // and how busy the CPUs have been since boot
 
 #include <rustux/process.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
-int main(void) {
+int main(int argc, char **argv) {
+    int json = argc > 1 && !strcmp(argv[1], "--json");
+    if (argc > 1 && !json) {
+        if (!strcmp(argv[1], "--help")) {
+            printf("Usage: uptime [--json]\nThe time, how long the system has run, CPUs, threads, how busy the CPUs were.\n");
+            return 0;
+        }
+        fprintf(stderr, "usage: uptime [--json]\n");
+        return 2;
+    }
     rx_system_stats_t s;
     if (rx_system_get_stats(&s) != RX_OK) return 1;
+    if (json) {
+        printf("{\"uptime_ns\":%llu,\"cpus\":%llu,\"threads\":%llu,\"idle_ns\":%llu,\"time\":%lld}\n",
+               (unsigned long long)s.uptime, (unsigned long long)s.cpus, (unsigned long long)s.threads,
+               (unsigned long long)s.idle_time, (long long)time(0));
+        return 0;
+    }
     time_t now = time(0);
     struct tm tm;
     char clock[16];

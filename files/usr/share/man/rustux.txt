@@ -1,0 +1,25 @@
+rustux - the system: what runs, where things are
+
+PROCESSES
+    The kernel starts init, which runs the console, the keyboard driver,
+    the file system service (fsd) and the shell. Programs run in jobs;
+    ps lists them, kill ends one, top shows what is busy.
+
+THE FILE TREE
+    /           in memory (tmpfs), writable
+    /tmp        scratch files
+    /root       your home directory ($HOME)
+    /etc        settings: hostname, timezone, keymap, passwd, group, mtab
+                (copied from the boot image at start; changes last until reboot)
+    /bin        programs (read-only, from the boot image)
+    /usr        read-only data: share/man (manual pages), share/keymaps,
+                share/zoneinfo, share/tests (the command tests)
+    /boot       the boot image itself
+    /dev        null and zero
+
+TIME AND LANGUAGE
+    /etc/timezone names the time zone (America/Chicago, Europe/Berlin, ...).
+    Text is UTF-8. One user, root, until users come.
+
+SEE ALSO
+    man intro, man shell, man top, uname -a

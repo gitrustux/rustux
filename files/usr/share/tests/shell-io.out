@@ -1,0 +1,17 @@
+one
+two
+2
+status 2
+1
+to-stderr
+here /tmp/rt-io
+not $expanded
+a.c b.c
+*.none
+a.c b.c
+script got 2 args: x y
+script status 4
+script got 1 args: z
+first=one
+ONE
+TWO

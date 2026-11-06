@@ -17,6 +17,7 @@ void *malloc(size_t size);
 void *calloc(size_t n, size_t size);
 void *realloc(void *p, size_t size);
 void free(void *p);
+#define alloca __builtin_alloca
 int posix_memalign(void **out, size_t align, size_t size);
 void *aligned_alloc(size_t align, size_t size);
 void *memalign(size_t align, size_t size);

@@ -11,6 +11,7 @@
 #include "tasks.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 struct find { uint64_t koid; int found; rx_status_t r; };
 
@@ -25,6 +26,11 @@ static void match(rx_handle_t p, uint64_t koid, uint64_t job, void *ctx) {
 int main(int argc, char **argv) {
     int status = 0, any = 0;
     uint64_t self = rx_koid_of(rx_proc_self);
+    if (argc == 2 && !strcmp(argv[1], "--help")) {
+        printf("Usage: kill PID...\nEnd processes (PIDs as ps shows them). Signal options (-9, -TERM) are\n"
+               "accepted and ignored: Rustux has no signals, a process always ends at once.\n");
+        return 0;
+    }
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '-') continue; // -9, -TERM, ...: no signals
         char *end;

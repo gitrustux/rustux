@@ -42,19 +42,43 @@ void __fs_init(void) {
 // reply must reach the thread that sent the request
 static volatile int fs_lock;
 
+// Applied to the modes of new files and directories (as the kernel does
+// on Unix); permissions are recorded, not enforced, until step 17
+static mode_t cur_umask = 022;
+
 static int fs_call(rx_handle_t ch, uint32_t op, const void *a, size_t alen, const void *b, size_t blen,
-                   rx_handle_t h, void *out, size_t cap, size_t *len);
+                   rx_handle_t h, void *out, size_t cap, size_t *len, rx_handle_t *hout);
 
 int __fs_call(rx_handle_t ch, uint32_t op, const void *a, size_t alen, const void *b, size_t blen,
               rx_handle_t h, void *out, size_t cap, size_t *len) {
     __lock(&fs_lock);
-    int r = fs_call(ch, op, a, alen, b, blen, h, out, cap, len);
+    int r = fs_call(ch, op, a, alen, b, blen, h, out, cap, len, 0);
     __unlock(&fs_lock);
     return r;
 }
 
+int __fs_get_vmo(int fd, rx_handle_t *vmo, uint64_t *offset, uint64_t *size) {
+    struct fd *f = __fd_get(fd);
+    if (!f || f->kind != RX_FD_FILE) return -EBADF;
+    uint64_t v[2];
+    size_t n = 0;
+    *vmo = 0;
+    __lock(&fs_lock);
+    int r = fs_call(f->handle, RX_FS_OP_GET_VMO, 0, 0, 0, 0, 0, v, sizeof v, &n, vmo);
+    __unlock(&fs_lock);
+    if (r == 0 && (n < sizeof v || !*vmo)) r = -EIO;
+    if (r < 0) {
+        if (*vmo) rx_handle_close(*vmo);
+        *vmo = 0;
+        return r;
+    }
+    *offset = v[0];
+    *size = v[1];
+    return 0;
+}
+
 static int fs_call(rx_handle_t ch, uint32_t op, const void *a, size_t alen, const void *b, size_t blen,
-                   rx_handle_t h, void *out, size_t cap, size_t *len) {
+                   rx_handle_t h, void *out, size_t cap, size_t *len, rx_handle_t *hout) {
     static char msg[sizeof(rx_fs_hdr_t) + RX_FS_MAX_IO + PATH_MAX + 64];
     if (len) *len = 0;
     if (!ch) {
@@ -75,10 +99,17 @@ static int fs_call(rx_handle_t ch, uint32_t op, const void *a, size_t alen, cons
     for (;;) {
         uint32_t observed = 0;
         rx_object_wait_one(ch, RX_CHANNEL_READABLE | RX_PEER_CLOSED, RX_TIME_INFINITE, &observed);
-        r = rx_channel_read(ch, 0, msg, 0, sizeof msg, 0, &nb, 0);
+        rx_handle_t got = 0;
+        uint32_t nh = 0;
+        r = rx_channel_read(ch, 0, msg, &got, sizeof msg, 1, &nb, &nh);
         if (r == RX_ERR_SHOULD_WAIT) continue;
         if (r != RX_OK) return -EIO;
-        if (nb >= sizeof(rx_fs_reply_t) && ((rx_fs_reply_t *)msg)->txid == hdr.txid) break;
+        if (nb >= sizeof(rx_fs_reply_t) && ((rx_fs_reply_t *)msg)->txid == hdr.txid) {
+            if (nh && hout) *hout = got;
+            else if (nh) rx_handle_close(got);
+            break;
+        }
+        if (nh) rx_handle_close(got);
         // A reply to someone else's request (a connection shared with
         // another process): dropped
     }
@@ -140,7 +171,7 @@ int open(const char *path, int flags, ...) {
     if (flags & O_CREAT) {
         va_list ap;
         va_start(ap, flags);
-        mode = va_arg(ap, unsigned int);
+        mode = va_arg(ap, unsigned int) & ~cur_umask;
         va_end(ap);
     }
     int fd = __fd_alloc(0);
@@ -174,6 +205,7 @@ int creat(const char *path, mode_t mode) {
 static void fill_stat(const rx_fs_attr_t *a, struct stat *st) {
     memset(st, 0, sizeof *st);
     st->st_ino = a->ino;
+    st->st_dev = a->fsid;
     st->st_mode = (a->type == RX_FS_TYPE_DIR ? S_IFDIR : a->type == RX_FS_TYPE_CHR ? S_IFCHR : S_IFREG) | (a->mode & 07777);
     st->st_nlink = a->nlink;
     st->st_size = (off_t)a->size;
@@ -232,7 +264,7 @@ int mkdir(const char *path, mode_t mode) {
     char rel[PATH_MAX];
     int r = resolve(path, rel);
     if (r < 0) return fail(r);
-    uint32_t m = mode;
+    uint32_t m = mode & ~cur_umask;
     r = __fs_call(ns_root, RX_FS_OP_MKDIR, &m, sizeof m, rel, strlen(rel), 0, 0, 0, 0);
     return r < 0 ? fail(r) : 0;
 }
@@ -325,8 +357,9 @@ int fsync(int fd) {
 }
 
 mode_t umask(mode_t mask) {
-    (void)mask;
-    return 022; // permissions are not enforced yet (users come in step 17)
+    mode_t old = cur_umask;
+    cur_umask = mask & 0777;
+    return old;
 }
 
 // ---- directories ----
@@ -465,6 +498,13 @@ int renameat(int olddirfd, const char *old, int newdirfd, const char *new) {
     return rename(a, b);
 }
 
+int faccessat(int dirfd, const char *path, int mode, int flags) {
+    (void)flags;
+    char p[PATH_MAX];
+    if (at_path(dirfd, path, p) < 0) return -1;
+    return access(p, mode);
+}
+
 int fchdir(int fd) {
     struct fd *f = __fd_get(fd);
     if (!f) return -1;
@@ -495,14 +535,4 @@ ssize_t readlink(const char *restrict path, char *restrict buf, size_t size) {
 int symlink(const char *target, const char *link) { (void)target; (void)link; return fail(-EPERM); }
 int link(const char *old, const char *new) { (void)old; (void)new; return fail(-EPERM); }
 
-// Permissions are not enforced (or changed) until users exist (step 17)
-int chmod(const char *path, mode_t mode) {
-    (void)mode;
-    struct stat st;
-    return stat(path, &st);
-}
-int fchmod(int fd, mode_t mode) {
-    (void)mode;
-    struct stat st;
-    return fstat(fd, &st);
-}
+// chmod and file times: users.c

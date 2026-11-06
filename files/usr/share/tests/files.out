@@ -1,0 +1,20 @@
+a.txt
+sub
+c.txt
+deeper
+hello
+c.txt
+deeper
+./a.txt
+./copy/c.txt
+./sub/c.txt
+empty-is-empty
+a-exists
+6 a.txt
+du-ok
+a.txt
+empty
+c
+/a/b
+/tmp/rt-files/a.txt
+gone

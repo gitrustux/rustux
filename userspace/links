@@ -1,0 +1,92 @@
+# Names in /bin that run a multi-call program: "NAME PROGRAM" per line.
+# build.rs puts each NAME in the boot image as another name for
+# bin/PROGRAM's data (like a hard link: no extra space). The program looks
+# at the name it was started by.
+#
+# uutils coreutils (rust/coreutils; keep in step with its rustux-build)
+basename coreutils
+cat coreutils
+chmod coreutils
+comm coreutils
+cp coreutils
+cut coreutils
+date coreutils
+dd coreutils
+df coreutils
+dirname coreutils
+du coreutils
+echo coreutils
+env coreutils
+expand coreutils
+expr coreutils
+false coreutils
+fmt coreutils
+fold coreutils
+head coreutils
+id coreutils
+join coreutils
+link coreutils
+ln coreutils
+ls coreutils
+mkdir coreutils
+mktemp coreutils
+mv coreutils
+nl coreutils
+nproc coreutils
+numfmt coreutils
+od coreutils
+paste coreutils
+printenv coreutils
+printf coreutils
+pwd coreutils
+readlink coreutils
+realpath coreutils
+rm coreutils
+rmdir coreutils
+seq coreutils
+shuf coreutils
+sleep coreutils
+sort coreutils
+split coreutils
+stat coreutils
+sync coreutils
+tac coreutils
+tail coreutils
+tee coreutils
+test coreutils
+[ coreutils
+touch coreutils
+tr coreutils
+true coreutils
+truncate coreutils
+tsort coreutils
+uname coreutils
+unexpand coreutils
+uniq coreutils
+unlink coreutils
+wc coreutils
+whoami coreutils
+yes coreutils
+base64 coreutils
+cksum coreutils
+md5sum coreutils
+sha256sum coreutils
+
+# Rustux tools (rust/tools)
+grep tools
+egrep tools
+fgrep tools
+less tools
+more tools
+man tools
+edit tools
+nano tools
+tar tools
+gzip tools
+gunzip tools
+zcat tools
+find tools
+xargs tools
+diff tools
+cmp tools
+sh shell

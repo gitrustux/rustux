@@ -1,0 +1,33 @@
+intro - getting around the Rustux command line
+
+You are in the Rustux shell. Type a command and press Enter.
+
+FINDING THINGS
+    help            the shell's built-in commands and the programs in /bin
+    man NAME        a manual page (man -k WORD lists pages about WORD)
+    NAME --help     every command explains its options
+    ls /bin         all the programs
+
+FILES
+    The file system lives in memory: what you create is gone after a
+    reboot (disks come in a later version). / and /tmp are yours to write;
+    /bin, /usr and /boot hold the system and are read-only.
+
+        ls -l               list files          cd DIR      change directory
+        cat FILE            show a file         less FILE   page through it
+        edit FILE           edit a file         mkdir DIR   make a directory
+        cp A B, mv A B      copy, move          rm FILE     remove
+        find . -name '*.txt'                    grep WORD FILE
+
+PIPES
+    Programs connect with |, files with > and <:
+        cat words | sort | uniq -c | sort -n | head
+        ls -l > list.txt
+
+THE KEYBOARD
+    Up/Down recall earlier commands, Tab completes names, Ctrl+C stops a
+    program, Shift+PgUp scrolls back. loadkeys de (or uk) changes the
+    keyboard layout.
+
+SEE ALSO
+    man shell, man edit, man less, man rustux

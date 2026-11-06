@@ -6,7 +6,7 @@ Rustux is the kernel of **Rustica OS**. The full OS (live USB image, shell, apps
 
 ## Status
 
-**Boots to an interactive shell in QEMU.** Checklist steps 1 and 2 are done (own page tables with the kernel in the upper half, physical memory from the UEFI memory map, DMA allocator; boots on the test laptop with PS/2 and USB keyboards); see [`docs/ROADMAP.md`](docs/ROADMAP.md) and the checklist in the Rustux project.
+**Boots to an interactive shell in QEMU and on the test laptop.** Checklist steps 1-10 are done; step 11 (core commands: uutils coreutils, grep, find, less, an editor, tar/gzip, man pages and shell scripts) passes on QEMU. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and the checklist in the Rustux project.
 
 | Area | State |
 |------|-------|
@@ -79,6 +79,10 @@ Writing and booting the image is covered in the [Rustica README](https://github.
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Kernel architecture |
 | [`docs/OBJECTS.md`](docs/OBJECTS.md) | Kernel objects |
 | [`docs/SYSCALL.md`](docs/SYSCALL.md) | System calls |
+| [`docs/USERSPACE.md`](docs/USERSPACE.md) | Userspace: C library, programs, shell |
+| [`docs/FS.md`](docs/FS.md) | Filesystem service, protocol and boot image |
+| [`docs/RUST.md`](docs/RUST.md) | Rust programs (std on Rustux) |
+| [`docs/COMMANDS.md`](docs/COMMANDS.md) | The commands: where each comes from, differences from GNU |
 | [`docs/TESTS.md`](docs/TESTS.md) | Build, QEMU testing and debugging |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Architecture checklist |
 | [`docs/HISTORY.md`](docs/HISTORY.md) | Project history and decisions |

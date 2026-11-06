@@ -38,6 +38,21 @@ Rebuilding the user programs and the C library after changing C code (needs `gcc
 userspace/build.sh
 ```
 
+
+## Command tests (step 11)
+
+`build.sh` ends by running the command test suite in QEMU
+(`scripts/run-command-tests.sh`, which needs `qemu-system-x86_64`, OVMF,
+`socat` and `python3`; `SKIP_TESTS=1 ./build.sh` skips it). It boots the
+kernel, types `runtests -v` at the shell and fails the build unless every
+test passes. The tests are shell scripts in `files/usr/share/tests/`
+(served as `/usr/share/tests/`), each with the output it must print in a
+`.out` file next to it; `runtests` at the Rustux shell runs them by hand.
+
+To add a test: write `NAME.sh`, run it with `bash --posix` on Linux to make
+`NAME.out` (the commands behave like GNU's), check that output by eye, and
+run `runtests NAME` on Rustux.
+
 ## Run in QEMU
 
 ```bash

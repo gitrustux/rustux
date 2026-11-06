@@ -1,0 +1,15 @@
+find - search for files (uutils findutils)
+
+USAGE
+    find [DIR...] [EXPRESSION]
+
+    -name PATTERN  -iname  -type f|d  -size N[ck]  -mtime N  -newer FILE
+    -maxdepth N  -mindepth N  -empty  -path PATTERN  -regex RE
+    -print  -print0  -printf FORMAT  -ls  -delete  -exec CMD {} ;  -exec CMD {} +
+    !  -a  -o  ( )
+
+EXAMPLES
+    find /root -name '*.txt'
+    find . -type f -size +100k
+    find . -name '*.tmp' -delete
+    find . -type f | xargs grep -l TODO

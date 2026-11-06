@@ -186,22 +186,59 @@ fn main() {
     programs.sort();
     files.extend(programs);
 
+    // userspace/links: more names for multi-call programs ("NAME PROGRAM"),
+    // stored as entries that share the program's data
+    println!("cargo:rerun-if-changed=userspace/links");
+    let mut links: Vec<(String, String)> = Vec::new();
+    for line in fs::read_to_string("userspace/links").unwrap_or_default().lines() {
+        let mut w = line.split_whitespace();
+        if let (Some(name), Some(target)) = (w.next(), w.next()) {
+            if !name.starts_with('#') {
+                links.push((format!("bin/{}", name), format!("bin/{}", target)));
+            }
+        }
+    }
+    links.retain(|(name, target)| {
+        let ok = files.iter().any(|(_, n)| n == target) && !files.iter().any(|(_, n)| n == name);
+        if !ok {
+            println!("cargo:warning=userspace/links: skipping {} ({} missing, or a program of that name exists)", name, target);
+        }
+        ok
+    });
+
     let table = 12usize;
-    let mut next = table + 16 * files.len();
+    let count = files.len() + links.len();
+    let mut next = table + 16 * count;
     let mut entries = Vec::new();
     let mut body = Vec::new();
+    let mut placed: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
     for (src, name) in &files {
         let contents = fs::read(src).unwrap_or_else(|e| panic!("cannot read {}: {}", src, e));
         let name_off = next;
-        let data_off = name_off + name.len() + 1;
-        entries.push((name_off as u32, data_off as u32, contents.len() as u32));
+        let mut data_off = name_off + name.len() + 1;
         body.extend_from_slice(name.as_bytes());
         body.push(0);
+        // Programs start on a page boundary: the loader maps their code
+        // straight from the image (docs/FS.md)
+        if name.starts_with("bin/") {
+            let pad = (4096 - data_off % 4096) % 4096;
+            body.resize(body.len() + pad, 0);
+            data_off += pad;
+        }
+        entries.push((name_off as u32, data_off as u32, contents.len() as u32));
+        placed.insert(name.clone(), (data_off as u32, contents.len() as u32));
         body.extend_from_slice(&contents);
         next = data_off + contents.len();
     }
+    for (name, target) in &links {
+        let (data_off, len) = placed[target];
+        entries.push((next as u32, data_off, len));
+        body.extend_from_slice(name.as_bytes());
+        body.push(0);
+        next += name.len() + 1;
+    }
     let mut image = Vec::with_capacity(next);
-    for v in [0x5255_5458u32, files.len() as u32, table as u32] {
+    for v in [0x5255_5458u32, count as u32, table as u32] {
         image.extend_from_slice(&v.to_le_bytes());
     }
     for (n, d, len) in &entries {
@@ -212,7 +249,7 @@ fn main() {
     image.extend_from_slice(&body);
     fs::write(&image_path, &image).expect("cannot write bootfs.img");
     println!("cargo:rerun-if-changed=files/");
-    println!("cargo:warning=Boot image: {} files, {} bytes", files.len(), image.len());
+    println!("cargo:warning=Boot image: {} files, {} links, {} bytes", files.len(), links.len(), image.len());
 
     // ============================================================================
     // Part 3: Link search path

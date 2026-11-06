@@ -1,0 +1,9 @@
+gzip - compress and decompress files (also gunzip, zcat)
+
+USAGE
+    gzip FILE...        FILE becomes FILE.gz
+    gunzip FILE.gz      back again (gzip -d)
+    zcat FILE.gz        decompress to standard output (gzip -dc)
+
+    -c to standard output, -k keep the input, -f overwrite,
+    -l list sizes, -t test, -v verbose, -1 (fast) ... -9 (small)

@@ -122,7 +122,26 @@ echo -e "${GREEN}✓${NC} Kernel installed to disk image"
 echo ""
 
 # ============================================================================
-# Step 5: Summary
+# Step 5: Command tests (userspace `runtests` in QEMU; checklist step 11)
+# ============================================================================
+
+if [ "${SKIP_TESTS:-}" = 1 ]; then
+    echo "[Step 5] Command tests skipped (SKIP_TESTS=1)"
+elif command -v qemu-system-x86_64 &> /dev/null && command -v socat &> /dev/null && command -v python3 &> /dev/null; then
+    echo "[Step 5] Running the command tests in QEMU..."
+    if scripts/run-command-tests.sh target/x86_64-unknown-uefi/release/rustux.efi; then
+        echo -e "${GREEN}✓${NC} Command tests passed"
+    else
+        echo -e "${RED}✗ Command tests failed${NC} (SKIP_TESTS=1 builds without them)"
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}[Step 5] Command tests skipped: qemu-system-x86_64, socat and python3 are needed${NC}"
+fi
+echo ""
+
+# ============================================================================
+# Step 6: Summary
 # ============================================================================
 
 echo "===================================================================="

@@ -29,14 +29,38 @@ time_t time(time_t *t) {
     return now;
 }
 
-int clock_gettime(clockid_t clock, struct timespec *ts) {
+int clock_gettime(clockid_t which, struct timespec *ts) {
     int64_t ns;
-    if (clock == CLOCK_REALTIME) ns = rx_clock_get_utc();
-    else if (clock == CLOCK_MONOTONIC) ns = (int64_t)rx_clock_get_monotonic();
-    else { errno = EINVAL; return -1; }
+    switch (which) {
+    case CLOCK_REALTIME: case 5: // _COARSE
+        ns = rx_clock_get_utc();
+        break;
+    case CLOCK_MONOTONIC: case 4: case 6: case 7: // _RAW, _COARSE, BOOTTIME
+        ns = (int64_t)rx_clock_get_monotonic();
+        break;
+    case 2: case 3: // process and thread CPU time (both the process's)
+        ns = (int64_t)clock() * (1000000000 / CLOCKS_PER_SEC);
+        break;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
     ts->tv_sec = ns / 1000000000;
     ts->tv_nsec = ns % 1000000000;
     return 0;
+}
+
+int clock_getres(clockid_t clock, struct timespec *ts) {
+    if (clock < 0 || clock > 7) { errno = EINVAL; return -1; }
+    if (ts) { ts->tv_sec = 0; ts->tv_nsec = 1; }
+    return 0;
+}
+
+// Setting the clock needs the root resource, which programs don't get
+int clock_settime(clockid_t clock, const struct timespec *ts) {
+    (void)clock; (void)ts;
+    errno = EPERM;
+    return -1;
 }
 
 int gettimeofday(struct timeval *restrict tv, void *restrict tz) {

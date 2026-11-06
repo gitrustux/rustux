@@ -40,6 +40,7 @@ struct node {
     int dev;                // devices: DEV_NULL or DEV_ZERO
     uint32_t mode;
     int read_only;          // bootfs
+    uint32_t fsid;          // which filesystem: 1 tmpfs, 2 bootfs, 3 devices (st_dev)
     char *name;
     struct node *parent;
     struct node *first, *next; // children (directories), siblings
@@ -71,9 +72,13 @@ struct conn {
 static struct conn conns[MAX_CONNS];
 static int nconns;
 static uint64_t next_ino = 1;
+// The boot image: its VMO and where we mapped it (GET_VMO)
+static rx_handle_t image_vmo;
+static const unsigned char *image_base;
+
 static struct node *root;
 
-static int64_t now(void) { return (int64_t)rx_clock_get_monotonic(); }
+static int64_t now(void) { return rx_clock_get_utc(); } // ns since 1970
 
 static struct node *new_node(uint32_t type, const char *name, struct node *parent, uint32_t mode) {
     struct node *n = calloc(1, sizeof *n);
@@ -83,9 +88,11 @@ static struct node *new_node(uint32_t type, const char *name, struct node *paren
     n->name = strdup(name);
     n->ino = next_ino++;
     n->mtime = now();
+    n->fsid = 1;
     if (parent) {
         n->parent = parent;
         n->read_only = parent->read_only;
+        n->fsid = parent->fsid;
         // Keep entries in creation order: append
         struct node **p = &parent->first;
         while (*p) p = &(*p)->next;
@@ -172,6 +179,7 @@ static void attr_of(struct node *n, rx_fs_attr_t *a) {
     a->nlink = n->type == RX_FS_TYPE_DIR ? 2 : 1;
     a->mtime_ns = n->mtime;
     a->read_only = (uint32_t)n->read_only;
+    a->fsid = n->fsid;
 }
 
 // ---- connections ----
@@ -425,6 +433,7 @@ static int serve(int i) {
     size_t olen = 0;
     int st = 0;
     uint32_t u32;
+    rx_handle_t reply_handle = 0; // sent with the reply (GET_VMO)
 
     switch (hdr.op) {
     case RX_FS_OP_OPEN: {
@@ -495,6 +504,27 @@ static int serve(int i) {
         else st = set_size(o->node, len);
         break;
     }
+    case RX_FS_OP_GET_VMO: {
+        rx_handle_t dup;
+        if (o->node->type != RX_FS_TYPE_FILE || !o->node->rodata || !image_vmo) { st = -ENOTSUP; break; }
+        if (rx_handle_duplicate(image_vmo, RX_RIGHT_SAME_RIGHTS, &dup) != RX_OK) { st = -ENOMEM; break; }
+        uint64_t v[2] = { (uint64_t)((const unsigned char *)o->node->rodata - image_base), o->node->size };
+        memcpy(out, v, sizeof v);
+        olen = sizeof v;
+        reply_handle = dup;
+        st = 0;
+        break;
+    }
+    case RX_FS_OP_SETATTR: {
+        rx_fs_setattr_t sa;
+        if (blen < sizeof sa) { st = -EINVAL; break; }
+        memcpy(&sa, body, sizeof sa);
+        if (o->node->read_only) { st = -EROFS; break; }
+        if (sa.mask & RX_FS_SETATTR_MODE) o->node->mode = sa.mode & 07777;
+        if (sa.mask & RX_FS_SETATTR_MTIME) o->node->mtime = sa.mtime_ns;
+        st = 0;
+        break;
+    }
     case RX_FS_OP_READDIR:
         if (blen < 4) { st = -EINVAL; break; }
         memcpy(&u32, body, 4);
@@ -539,7 +569,9 @@ static int serve(int i) {
     if (h) rx_handle_close(h);
     rx_fs_reply_t r = { hdr.txid, st };
     memcpy(rep, &r, sizeof r);
-    rx_channel_write(conns[i].ch, 0, rep, (uint32_t)(sizeof r + (st < 0 ? 0 : olen)), 0, 0);
+    if (rx_channel_write(conns[i].ch, 0, rep, (uint32_t)(sizeof r + (st < 0 ? 0 : olen)),
+                         reply_handle ? &reply_handle : 0, reply_handle ? 1 : 0) != RX_OK && reply_handle)
+        rx_handle_close(reply_handle);
     return 0;
 }
 
@@ -552,8 +584,11 @@ static struct node *bootfs_load(rx_handle_t vmo) {
     if (rx_vmo_get_size(vmo, &size) != RX_OK ||
         rx_vmar_map(rx_vmar_root, RX_VM_PERM_READ, 0, vmo, 0, (size + 4095) & ~4095ull, &addr) != RX_OK) return 0;
     const unsigned char *img = (const unsigned char *)addr;
+    image_vmo = vmo;
+    image_base = img;
     struct node *top = new_node(RX_FS_TYPE_DIR, "boot", 0, 0555);
     top->read_only = 1;
+    top->fsid = 2;
     if (size < 12 || rd32(img) != 0x52555458) return top;
     uint32_t count = rd32(img + 4), table = rd32(img + 8);
     for (uint32_t i = 0; i < count && table + 16ull * (i + 1) <= size; i++) {
@@ -619,6 +654,7 @@ int main(void) {
     }
     struct node *dev = new_node(RX_FS_TYPE_DIR, "dev", root, 0755);
     dev->read_only = 1; // no new files here
+    dev->fsid = 3;
     struct node *null = new_node(RX_FS_TYPE_CHR, "null", dev, 0666);
     struct node *zero = new_node(RX_FS_TYPE_CHR, "zero", dev, 0666);
     // Writable themselves (the directory stays read-only)

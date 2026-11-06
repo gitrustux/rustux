@@ -1,0 +1,60 @@
+shell - the Rustux command shell (also sh)
+
+USAGE
+    shell                   interactive (at the console)
+    shell FILE [ARGS...]    run a script
+    shell -c 'COMMANDS'     run commands
+    Options: -e (stop when a command fails), -x (print commands as they run)
+    A file that starts with #!/bin/sh runs as a program (./script.sh).
+
+COMMANDS
+    a | b           pipe a's output into b
+    a ; b           one after the other
+    a && b          b only if a succeeded;   a || b   b only if a failed
+    ! a             the opposite exit status
+    a &             start a in the background
+    { a; b; }       a group;   ( a; b )  a group whose changes stay inside
+
+REDIRECTION
+    < FILE   > FILE   >> FILE   2> FILE   2>&1   n>&m   <<END ... END
+
+WORDS
+    'quoted'   "quoted with $VAR"   \x
+    $NAME ${NAME} ${NAME:-default} ${NAME:=default} ${NAME:+other} ${#NAME}
+    ${NAME#prefix} ${NAME%suffix} (## %% for the longest)
+    $1..$9 $# "$@" $* $? $$ $! $0
+    $(command)  `command`  $((arithmetic))   ~   *.txt  file?.c  [ab].c
+
+COMPOUND COMMANDS
+    if COMMANDS; then ...; elif ...; then ...; else ...; fi
+    while COMMANDS; do ...; done          until COMMANDS; do ...; done
+    for NAME in WORDS; do ...; done       (without "in": the arguments)
+    case WORD in PATTERN|PATTERN) ...;; *) ...;; esac
+    NAME() { COMMANDS; }                  a function: $1... are its arguments
+
+BUILT-IN COMMANDS
+    cd [DIR|-]  pwd  echo [-n] [-e]  test EXPR / [ EXPR ]  true  false  :
+    export NAME[=V]  unset [-f] NAME  set [-ex] [-- ARGS]  local NAME[=V]
+    read [-r] [-p PROMPT] NAME...   shift [N]   return [N]   exit [N]
+    break [N]  continue [N]  source FILE (. FILE)  eval ARGS  type NAME
+    alias NAME=TEXT  unalias NAME  umask [MODE]  history  exec CMD
+    help  clear  loadkeys [LAYOUT]  restart-kbd
+
+EDITING (interactive)
+    Left/Right, Home/End, Ctrl+A/E, Ctrl+Left/Right    move
+    Backspace, Delete, Ctrl+W, Ctrl+U, Ctrl+K           delete
+    Up/Down (Ctrl+P/N)  history     Tab  complete (twice: list)
+    Ctrl+L  clear the screen        Ctrl+C  abandon the line or stop a program
+    An unfinished command (open if, quote, |) continues after "> ".
+
+LIMITS
+    There is no fork: a pipeline with built-ins, functions or compound
+    commands runs its parts one after another through files in /tmp (not
+    at the same time). Programs in the background are not followed (no
+    jobs, fg or bg). No signals (trap), no arrays.
+
+EXAMPLE
+    for f in *.txt; do
+        n=$(wc -l < "$f")
+        [ "$n" -gt 10 ] && echo "$f: $n lines"
+    done

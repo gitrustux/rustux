@@ -1,0 +1,15 @@
+less - page through text (also more)
+
+USAGE
+    less [-N] [-S] [-i] [-F] [-R] [FILE...]
+    COMMAND | less
+
+    -N  line numbers   -S  cut long lines   -i  case-blind searches
+    -F  just print it if it fits on the screen   -R  keep colours
+
+KEYS
+    Space, PgDn, f      next page          b, PgUp     previous page
+    Enter, j, Down      next line          k, Up       previous line
+    d, u                half a page        g, G        first, last line
+    /PATTERN, ?PATTERN  search forward, backward     n, N  next, previous
+    :n, :p              next, previous file          q      quit

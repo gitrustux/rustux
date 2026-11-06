@@ -1,0 +1,10 @@
+# Read by build-rust.sh: extra cargo arguments for this package.
+# The utilities built into the multi-call binary; each also needs a line in
+# userspace/links so it appears in /bin.
+CARGO_ARGS=(--no-default-features --features "
+    basename cat chmod comm cp cut date dd df dirname du echo env expand expr
+    false fmt fold head id join link ln ls mkdir mktemp mv nl nproc numfmt od
+    paste printenv printf pwd readlink realpath rm rmdir seq shuf sleep sort
+    split stat sync tac tail tee test touch tr true truncate tsort uname
+    unexpand uniq unlink wc whoami yes base64 cksum md5sum sha256sum
+")

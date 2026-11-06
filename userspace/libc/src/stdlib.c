@@ -7,6 +7,7 @@
 #include "libc.h"
 #include <ctype.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -208,3 +209,6 @@ double strtod(const char *restrict s, char **restrict end) {
 }
 
 double atof(const char *s) { return strtod(s, 0); }
+
+intmax_t strtoimax(const char *restrict s, char **restrict end, int base) { return strtoll(s, end, base); }
+uintmax_t strtoumax(const char *restrict s, char **restrict end, int base) { return strtoull(s, end, base); }

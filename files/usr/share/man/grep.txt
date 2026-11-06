@@ -1,0 +1,17 @@
+grep - print lines that match a pattern (also egrep, fgrep)
+
+USAGE
+    grep [OPTIONS] PATTERN [FILE...]
+
+    Basic regular expressions by default; -E extended, -F fixed strings.
+    -i ignore case   -v non-matching lines   -w whole words   -x whole lines
+    -n line numbers  -c count   -l file names only   -L files without
+    -o only the matches   -q quiet   -m N at most N lines
+    -A N, -B N, -C N  context lines   -r recursive (--include, --exclude)
+    --color   highlight   --json  one JSON object per match
+
+    grep --help lists every option. Exit status: 0 found, 1 none, 2 trouble.
+
+EXAMPLES
+    grep -rn TODO /root
+    ps | grep -i shell

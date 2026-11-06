@@ -1,9 +1,9 @@
 # Rustux Userspace: C Library, Console and Programs
 
 How programs start, print, read input, use files, run threads and start
-other programs (checklist steps 7, 8 and 10). System calls are in
+other programs (checklist steps 7, 8, 10 and 11). System calls are in
 `SYSCALL.md`, the filesystem service and its protocol in `FS.md`, Rust
-programs in `RUST.md`.
+programs in `RUST.md`, the commands in `/bin` in `COMMANDS.md`.
 
 ## Layout
 
@@ -130,6 +130,11 @@ were close-on-exec), `waitpid`/`wait` (`WNOHANG`; a killed child reads as
 the process). A pid is the process's koid. There is no `fork` or `exec`
 (they fail with `ENOSYS`).
 
+A file that starts with `#!` is a script: `rx_spawn` (and so
+`posix_spawn`) starts the interpreter named on that line, with one
+optional argument, the file's path and the arguments (`#!/bin/sh` runs it
+with the shell).
+
 ## Threads
 
 `<pthread.h>`: `pthread_create`/`join`/`detach`/`exit`/`self`, attributes
@@ -159,58 +164,65 @@ ignored or caught). User ids are all 0 (root) until step 17.
 `dl_iterate_phdr` reports the program's own headers; `dlopen`/`dlsym`
 find nothing (no dynamic linking).
 
-The loader (`libc/src/spawn.c`) reads the file, checks it is a static
-x86-64 ELF, copies its segments into a VMO, maps each page with its
-segment's permissions, maps a 256 KiB stack at the top of the address
-space and starts the first thread with the processargs message.
+Users and groups come from `/etc/passwd` and `/etc/group` (`getpwuid`,
+`getpwnam`, `getgrgid`, `getgrouplist` and the `_r` forms; one user,
+root). `setlocale` knows "C" and UTF-8 locales; `nl_langinfo(CODESET)` is
+UTF-8. `statfs`/`fstatfs` report memory for tmpfs. `chmod`, `utimensat`,
+`futimens`, `utimes` change modes and modification times (`fsd`'s
+`SETATTR`; owners are always root). `umask` (022) is applied to new files
+and directories. `<math.h>` has the usual functions on the x87 unit
+(`sqrt`, `pow`, `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `floor`,
+`fmod`, ...). `sem_*` semaphores, `getrlimit`, `sysinfo`, `clock_getres`.
+Linux interfaces with nothing behind them fail so callers fall back:
+`inotify`, `epoll`, `eventfd`, `sendfile`, `splice`, sockets (`ENOSYS`,
+`EAFNOSUPPORT`); extended attributes are empty.
+
+The loader (`libc/src/spawn.c`) checks the file is a static x86-64 ELF,
+maps each page with its segment's permissions, maps a 256 KiB stack at
+the top of the address space and starts the first thread with the
+processargs message. A program in the boot image is not read: `fsd`
+hands over the image's VMO (`GET_VMO`, `FS.md`) and the loader maps its
+code and read-only data straight from it (shared by every process running
+it; only writable segments are copied). That makes starting a program
+from `/bin` take a few milliseconds whatever its size.
 
 ## The shell
 
-`userspace/c-progs/shell.c`. Line editing (`lineedit.h`): arrows,
-Home/End, Ctrl+A/E/B/F, Ctrl+Left/Right and Alt+B/F by word, Backspace,
-Delete, Ctrl+D, Ctrl+W, Ctrl+U, Ctrl+K, Ctrl+L, history with Up/Down
-(Ctrl+P/N; the last 200 lines, not kept across reboots), Tab completion of
-commands (first word: built-ins and `$PATH`) and paths (a second Tab lists
-the choices). The console is in raw mode while a line is typed and in
-cooked mode while programs run. Quoting (`'...'`, `"..."`, `\`), variables
-(`$NAME`, `${NAME}`, `$?`), `NAME=value` (shell variable), `export`,
-`unset`, `set`, `NAME=value command` (for one command), pipelines
-(`a | b | c`), redirection (`<`, `>`, `>>`, `2>`, `2>>`, `2>&1`), lists
-(`;`, `&&`, `||`; each part expanded just before it runs), `cd` (`cd`,
-`cd -`), `pwd`, `$PATH` lookup. The prompt shows the current directory.
-Exit codes below 0 (killed -1024, crashed -1025) are printed; Ctrl+C ends
-every program of the pipeline in the foreground and sets `$?` to 130.
-Built-ins can be redirected (`pwd > file`) but not used inside a pipeline
-yet.
+`userspace/c-progs/shell.c` (also `/bin/sh`): a POSIX-style shell with
+pipelines, lists, redirections and here-documents, `if`/`while`/`until`/
+`for`/`case`, functions, `$(...)`, `$((...))`, `${...}` forms, file name
+patterns, and the usual built-ins (`cd`, `export`, `read`, `test`, `local`,
+`source`, `eval`, `set -e`/`-x`, ...); `man shell` lists it all. It runs
+scripts (`shell FILE`, `shell -c`, `#!/bin/sh`), commands from a pipe or
+file on standard input, or interactively at the console.
 
-## Commands and tests in `/bin`
+Interactively: line editing (`lineedit.h`; arrows, Home/End, Ctrl+A/E/B/F,
+Ctrl+Left/Right and Alt+B/F by word, Backspace, Delete, Ctrl+D, Ctrl+W,
+Ctrl+U, Ctrl+K, Ctrl+L), history with Up/Down (the last 200 lines, not kept
+across reboots), Tab completion of commands and paths (a second Tab lists
+the choices). An unfinished command (an open `if`, quote or trailing `|`)
+continues on the next line after `> `. The console is in raw mode while a
+line is typed and in cooked mode while programs run. Ctrl+C ends what runs
+in the foreground (programs, and loops in the shell itself) and sets `$?`
+to 130. Exit codes of killed (137) and crashed (139) programs are printed.
 
-Small C stand-ins until uutils (step 11):
+There is no `fork`: the shell runs built-ins, functions and compound
+commands itself, and starts programs with `rx_spawn`, each command line in
+a job of its own. A pipeline of programs runs them at the same time,
+connected by pipes; a pipeline with a built-in, function or compound
+command in it runs its parts one after another, each part's output going
+through a file in `/tmp` to the next (fine for `for ... done | sort`, not
+for endless producers). `( ... )` runs in the shell with its variables,
+directory and options restored afterwards; `$(...)` captures through a
+file in `/tmp`. A program started with `&` runs on but is not followed
+(no job control: `jobs`, `fg`, `bg`, `wait` do nothing).
 
-| Program | What it does |
-|---------|--------------|
-| `ls [-l] [-a] [PATH]...` | list directories |
-| `cat [FILE]...` | copy files (or standard input) to standard output |
-| `mkdir [-p] DIR...`, `rm [-r] [-f] PATH...`, `mv SRC... DEST` | make, remove, move |
-| `echo [-n] [-e] ...` | print the arguments |
-| `upper` | standard input to upper case (a pipe test filter) |
-| `env [-i] [NAME=VALUE]... [COMMAND]` | print the environment or run a command with a changed one |
-| `true`, `false` | exit 0 / 1 |
-| `hello`, `counter [N]`, `args ...` | small examples (`args` shows how the shell split a line) |
-| `ps`, `kill PID...` | list processes (PID, job, threads, memory, CPU time, name); end one |
-| `loadkeys [LAYOUT]` (built in) | keyboard layout: `us`, `de`, `uk` |
-| `uptime`, `free [-h]`, `date [-u] [+FORMAT]`, `uname [-a]`, `hostname [NAME]` | system information |
-| `dmesg` | the kernel log |
-| `reboot`, `poweroff` | restart or turn off (need the power resource the shell passes on) |
-| `systest` | 39 checks of process and system information, clocks and time zones |
-| `threadtest` | 15 checks of threads, TLS, mutexes, condition variables, keys |
-| `termtest` | a full-screen program: draws with escape sequences, shows each key's bytes in raw mode (q leaves) |
-| `hello-std` | Rust with std: 28 checks of files, threads, child processes, time (`RUST.md`) |
-| `fstest` | 64 checks of files, directories, two processes on one file, pipes (with a slow reader) |
-| `libctest` | 50 checks of the C library |
-| `spin` | loops forever (stop it with Ctrl+C) |
-| `objtest`, `ipctest`, `spawntest`, `drvtest`, `smptest` | kernel tests (`SYSCALL.md`) |
-| `init`, `fsd`, `shell`, `ps2kbd` | the system itself |
+## Commands in `/bin`
+
+`COMMANDS.md` lists them: uutils coreutils and findutils, the Rustux
+`tools` (`grep`, `less`, `edit`, `tar`, `gzip`, `man`, `diff`), the system
+commands and the tests. `help` at the shell gives the short list, `man
+NAME` or `NAME --help` the details.
 
 ## Time
 
@@ -244,7 +256,8 @@ Other system calls in the library: `uname` (kernel version, host name from
   characters); the line editor assumes the same.
 - Up to 64 file descriptors; arguments and environment together up to
   32 KiB; programs up to 64 MiB.
-- No symbolic links, no file locking, no `fork`/`exec` (programs are
+- No symbolic links (`ln -s` fails) or hard links (`ln` fails), no file
+  locking, no `fork`/`exec` (programs are
   started with `rx_spawn` or `posix_spawn`), no Unix signals, no sockets,
   no file mappings (`mmap` of anonymous memory only), no guard pages below
   thread stacks.

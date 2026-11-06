@@ -12,7 +12,11 @@
 #include <unistd.h>
 
 int main(int argc, char **argv) {
-    if (argc > 2) { fprintf(stderr, "usage: hostname [NAME]\n"); return 2; }
+    if (argc == 2 && !strcmp(argv[1], "--help")) {
+        printf("Usage: hostname [NAME]\nPrint the host name, or set it (in /etc/hostname, until the next boot).\n");
+        return 0;
+    }
+    if (argc > 2 || (argc == 2 && argv[1][0] == '-')) { fprintf(stderr, "usage: hostname [NAME]\n"); return 2; }
     if (argc == 2) {
         FILE *f = fopen("/etc/hostname", "w");
         if (!f) { perror("hostname: /etc/hostname"); return 1; }

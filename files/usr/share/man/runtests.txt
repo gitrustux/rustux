@@ -1,0 +1,10 @@
+runtests - the command test suite
+
+USAGE
+    runtests [-v] [NAME...]
+
+    Runs each script in /usr/share/tests (shell, files, text, archives)
+    and compares what it prints with the .out file next to it. -v shows
+    the differences of failing tests. The exit status is the number of
+    failures. scripts/run-command-tests.sh runs it in QEMU when the kernel
+    is built.

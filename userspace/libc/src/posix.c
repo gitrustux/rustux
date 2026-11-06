@@ -648,3 +648,81 @@ char *strsignal(int sig) {
     if (sig > 0 && sig < (int)(sizeof names / sizeof *names) && names[sig]) return (char *)names[sig];
     return "Unknown signal";
 }
+
+// ---- Linux interfaces that Rustux doesn't have: callers fall back ----
+
+int inotify_init1(int flags) { (void)flags; return fail(ENOSYS); }
+int inotify_add_watch(int fd, const char *path, uint32_t mask) { (void)fd; (void)path; (void)mask; return fail(ENOSYS); }
+int inotify_rm_watch(int fd, int wd) { (void)fd; (void)wd; return fail(ENOSYS); }
+int epoll_create1(int flags) { (void)flags; return fail(ENOSYS); }
+int epoll_ctl(int ep, int op, int fd, void *ev) { (void)ep; (void)op; (void)fd; (void)ev; return fail(ENOSYS); }
+int epoll_wait(int ep, void *ev, int n, int timeout) { (void)ep; (void)ev; (void)n; (void)timeout; return fail(ENOSYS); }
+int eventfd(unsigned value, int flags) { (void)value; (void)flags; return fail(ENOSYS); }
+ssize_t sendfile(int out, int in, off_t *off, size_t n) { (void)out; (void)in; (void)off; (void)n; return fail(ENOSYS); }
+ssize_t splice(int in, off_t *ioff, int out, off_t *ooff, size_t n, unsigned flags) {
+    (void)in; (void)ioff; (void)out; (void)ooff; (void)n; (void)flags;
+    return fail(ENOSYS);
+}
+int socket(int domain, int type, int protocol) { (void)domain; (void)type; (void)protocol; return fail(EAFNOSUPPORT); }
+int bind(int fd, const void *addr, unsigned len) { (void)fd; (void)addr; (void)len; return fail(ENOTSOCK); }
+int listen(int fd, int backlog) { (void)fd; (void)backlog; return fail(ENOTSOCK); }
+int connect(int fd, const void *addr, unsigned len) { (void)fd; (void)addr; (void)len; return fail(ENOTSOCK); }
+int __libc_current_sigrtmin(void) { return 34; }
+int __libc_current_sigrtmax(void) { return 64; }
+int sched_getscheduler(pid_t pid) { (void)pid; return 0; } // SCHED_OTHER
+
+// Every CPU
+int sched_getaffinity(pid_t pid, size_t size, void *set) {
+    (void)pid;
+    memset(set, 0, size);
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    for (long i = 0; i < n && (size_t)i < size * 8; i++) ((unsigned char *)set)[i / 8] |= (unsigned char)(1 << (i % 8));
+    return 0;
+}
+
+// ---- more Linux interfaces ----
+
+// No extended attributes
+ssize_t fgetxattr(int fd, const char *name, void *v, size_t n) { (void)fd; (void)name; (void)v; (void)n; return fail(ENODATA); }
+ssize_t getxattr(const char *p, const char *name, void *v, size_t n) { (void)p; (void)name; (void)v; (void)n; return fail(ENODATA); }
+ssize_t lgetxattr(const char *p, const char *name, void *v, size_t n) { (void)p; (void)name; (void)v; (void)n; return fail(ENODATA); }
+ssize_t flistxattr(int fd, char *list, size_t n) { (void)fd; (void)list; (void)n; return 0; }
+ssize_t listxattr(const char *p, char *list, size_t n) { (void)p; (void)list; (void)n; return 0; }
+ssize_t llistxattr(const char *p, char *list, size_t n) { (void)p; (void)list; (void)n; return 0; }
+int fsetxattr(int fd, const char *name, const void *v, size_t n, int f) { (void)fd; (void)name; (void)v; (void)n; (void)f; return fail(ENOTSUP); }
+int setxattr(const char *p, const char *name, const void *v, size_t n, int f) { (void)p; (void)name; (void)v; (void)n; (void)f; return fail(ENOTSUP); }
+int lsetxattr(const char *p, const char *name, const void *v, size_t n, int f) { (void)p; (void)name; (void)v; (void)n; (void)f; return fail(ENOTSUP); }
+
+ssize_t tee(int in, int out, size_t n, unsigned flags) { (void)in; (void)out; (void)n; (void)flags; return fail(ENOSYS); }
+int posix_fadvise(int fd, off_t off, off_t len, int advice) { (void)fd; (void)off; (void)len; (void)advice; return 0; }
+void sync(void) {}
+
+struct rlimit { unsigned long rlim_cur, rlim_max; };
+int getrlimit(int resource, struct rlimit *r) {
+    r->rlim_cur = r->rlim_max = resource == 7 ? MAX_FDS : ~0ul; // RLIMIT_NOFILE
+    if (resource == 3) r->rlim_cur = r->rlim_max = 256 * 1024; // RLIMIT_STACK
+    return 0;
+}
+int setrlimit(int resource, const struct rlimit *r) { (void)resource; (void)r; return 0; }
+
+struct sysinfo {
+    long uptime;
+    unsigned long loads[3];
+    unsigned long totalram, freeram, sharedram, bufferram, totalswap, freeswap;
+    unsigned short procs, pad;
+    unsigned long totalhigh, freehigh;
+    unsigned mem_unit;
+    char reserved[256];
+};
+int sysinfo(struct sysinfo *s) {
+    rx_system_stats_t st;
+    memset(s, 0, sizeof *s);
+    memset(&st, 0, sizeof st);
+    if (rx_system_get_stats(&st) != RX_OK) return fail(EINVAL);
+    s->uptime = (long)(st.uptime / 1000000000ull);
+    s->totalram = st.total_bytes;
+    s->freeram = st.free_bytes;
+    s->procs = (unsigned short)st.threads;
+    s->mem_unit = 1;
+    return 0;
+}

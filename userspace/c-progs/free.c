@@ -4,7 +4,7 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-// free [-k|-m|-g|-h]: memory in use and free (KiB by default)
+// free [-k|-m|-g|-h] [--json]: memory in use and free (KiB by default)
 
 #include <rustux/process.h>
 #include <stdio.h>
@@ -27,13 +27,23 @@ static void show(const char *label, unsigned long long bytes, int unit) {
 }
 
 int main(int argc, char **argv) {
-    int unit = 'k';
-    if (argc > 1) {
-        if (strlen(argv[1]) == 2 && argv[1][0] == '-' && strchr("kmgh", argv[1][1])) unit = argv[1][1];
-        else { fprintf(stderr, "usage: free [-k|-m|-g|-h]\n"); return 2; }
+    int unit = 'k', json = 0;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--json")) json = 1;
+        else if (!strcmp(argv[i], "--help")) {
+            printf("Usage: free [-k|-m|-g|-h] [--json]\nMemory: total, used and free (KiB; -m MiB, -g GiB, -h readable).\n"
+                   "--json: {\"total\":BYTES,\"used\":BYTES,\"free\":BYTES}\n");
+            return 0;
+        } else if (strlen(argv[i]) == 2 && argv[i][0] == '-' && strchr("kmgh", argv[i][1])) unit = argv[i][1];
+        else { fprintf(stderr, "usage: free [-k|-m|-g|-h] [--json]\n"); return 2; }
     }
     rx_system_stats_t s;
     if (rx_system_get_stats(&s) != RX_OK) return 1;
+    if (json) {
+        printf("{\"total\":%llu,\"used\":%llu,\"free\":%llu}\n", (unsigned long long)s.total_bytes,
+               (unsigned long long)(s.total_bytes - s.free_bytes), (unsigned long long)s.free_bytes);
+        return 0;
+    }
     printf("     %12s%12s%12s\n", "total", "used", "free");
     show("Mem: ", s.total_bytes, unit);
     show("", s.total_bytes - s.free_bytes, unit);
