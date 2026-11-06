@@ -789,11 +789,15 @@ unbinds it (for example when the driver is killed).
 
 #### INTERRUPT_WAIT (0x81)
 
-`interrupt_wait(rx_handle_t h, uint64_t *timestamp)` — needs `WAIT`.
+`interrupt_wait(rx_handle_t h, uint64_t *timestamp, uint64_t deadline)` — needs `WAIT`.
 Returns at once if the IRQ fired since the last wait, otherwise blocks
 until it does; `timestamp` (may be NULL) receives the monotonic time of
 the firing. One thread at a time (`ERR_BAD_STATE` for a second).
 `ERR_CANCELED` after `interrupt_destroy` or when the thread is killed.
+`deadline` (step 13): monotonic nanoseconds after which the wait fails
+with `ERR_TIMED_OUT`; 0 waits for ever (Zircon's call has no deadline;
+the C library's `rx_interrupt_wait` passes 0, `rx_interrupt_wait_until`
+a deadline). Disk drivers use it so a lost interrupt cannot hang them.
 
 #### INTERRUPT_ACK (0x82) / INTERRUPT_DESTROY (0x83)
 

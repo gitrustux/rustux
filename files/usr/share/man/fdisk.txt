@@ -1,0 +1,12 @@
+fdisk - list partition tables
+
+USAGE
+    fdisk -l [DISK...]
+
+    Lists each disk (all of them without DISKs): its size and model, its
+    partition table (GPT or MBR, read from the disk itself) and the
+    partitions with their first and last sectors and type. To change a
+    table, use gpt.
+
+SEE ALSO
+    gpt, lsblk, blkid

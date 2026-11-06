@@ -179,6 +179,11 @@ Services and devices (step 12): `rx_service_connect`/`rx_service_publish`
 `<rustux/block.h>`, `DRIVERS.md`); the driver calls in
 `<rustux/syscalls.h>` (physical and contiguous VMOs, BTIs, MSI, ACPI
 tables, `rx_inw`/`rx_inl`/`rx_outw`/`rx_outl`).
+Disks (step 13): `rx_block_list`, `rx_block_info`, `rx_block_read`,
+`rx_block_write`, `rx_block_simple` (`<rustux/device.h>`); serving a disk
+(`<rustux/blockdev.h>`), driver helpers (`<rustux/driver.h>`), GPT and
+MBR tables (`<rustux/gpt.h>`), filesystem signatures
+(`<rustux/fsprobe.h>`); see `DRIVERS.md`.
 Linux interfaces with nothing behind them fail so callers fall back:
 `inotify`, `epoll`, `eventfd`, `sendfile`, `splice`, sockets (`ENOSYS`,
 `EAFNOSUPPORT`); extended attributes are empty.

@@ -1,0 +1,21 @@
+blk - read and write block devices
+
+USAGE
+    blk read NAME [-o OFFSET] [-n BYTES]
+    blk write NAME [-o OFFSET]
+    blk info NAME
+    blk rescan NAME
+    blk flush NAME
+
+    Block devices are not files in /dev yet; blk is how the shell reaches
+    them. read writes the device's bytes to standard output; write copies
+    standard input onto the device (partial blocks are read, changed and
+    written back) and flushes. OFFSET and BYTES are bytes (K, M, G allowed).
+
+EXAMPLES
+    blk read vda -n 512 | od -A x -t x1     the first block
+    echo hello | blk write vda5
+    blk read nvme0n1 | md5sum               the whole disk
+
+SEE ALSO
+    lsblk, gpt

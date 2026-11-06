@@ -113,3 +113,84 @@ int rx_block_call(rx_handle_t ch, rx_block_req_t *req, const void *data, size_t 
     if (outlen) *outlen = n;
     return 0;
 }
+
+// ---- conveniences for tools (step 13) ----
+
+int rx_block_list(rx_block_info_t **out) {
+    *out = 0;
+    rx_handle_t dm;
+    int r = rx_devmgr_connect(&dm);
+    if (r < 0) return r;
+    char *buf = malloc(65536);
+    if (!buf) {
+        rx_handle_close(dm);
+        return -ENOMEM;
+    }
+    size_t got = 0;
+    r = rx_dev_call(dm, RX_DM_OP_LIST_BLOCK, 0, 0, 0, buf, 65536, &got, 0);
+    rx_handle_close(dm);
+    uint32_t n = 0;
+    if (r == 0 && got >= 4) memcpy(&n, buf, 4);
+    else if (r == 0) r = -EIO;
+    if (r < 0) {
+        free(buf);
+        return r;
+    }
+    if (n > (got - 4) / sizeof(rx_block_info_t)) n = (uint32_t)((got - 4) / sizeof(rx_block_info_t));
+    *out = malloc((n ? n : 1) * sizeof(rx_block_info_t));
+    if (!*out) {
+        free(buf);
+        return -ENOMEM;
+    }
+    memcpy(*out, buf + 4, n * sizeof(rx_block_info_t));
+    free(buf);
+    return (int)n;
+}
+
+int rx_block_info(rx_handle_t ch, rx_block_info_t *info) {
+    rx_block_req_t q = { 0 };
+    q.op = RX_BLOCK_OP_GET_INFO;
+    size_t got = 0;
+    int r = rx_block_call(ch, &q, 0, 0, 0, info, sizeof *info, &got);
+    return r < 0 ? r : got == sizeof *info ? 0 : -EIO;
+}
+
+int rx_block_read(rx_handle_t ch, uint32_t bs, uint64_t block, uint32_t count, void *buf) {
+    uint32_t per = RX_BLOCK_MAX_IO / bs;
+    if (!per) return -EINVAL;
+    for (uint32_t done = 0; done < count; ) {
+        uint32_t n = count - done < per ? count - done : per;
+        rx_block_req_t q = { 0 };
+        q.op = RX_BLOCK_OP_READ;
+        q.block = block + done;
+        q.count = n;
+        size_t got = 0;
+        int r = rx_block_call(ch, &q, 0, 0, 0, (char *)buf + (size_t)done * bs, (size_t)n * bs, &got);
+        if (r < 0) return r;
+        if (got != (size_t)n * bs) return -EIO;
+        done += n;
+    }
+    return 0;
+}
+
+int rx_block_write(rx_handle_t ch, uint32_t bs, uint64_t block, uint32_t count, const void *buf) {
+    uint32_t per = RX_BLOCK_MAX_IO / bs;
+    if (!per) return -EINVAL;
+    for (uint32_t done = 0; done < count; ) {
+        uint32_t n = count - done < per ? count - done : per;
+        rx_block_req_t q = { 0 };
+        q.op = RX_BLOCK_OP_WRITE;
+        q.block = block + done;
+        q.count = n;
+        int r = rx_block_call(ch, &q, (const char *)buf + (size_t)done * bs, (size_t)n * bs, 0, 0, 0, 0);
+        if (r < 0) return r;
+        done += n;
+    }
+    return 0;
+}
+
+int rx_block_simple(rx_handle_t ch, uint32_t op) {
+    rx_block_req_t q = { 0 };
+    q.op = op;
+    return rx_block_call(ch, &q, 0, 0, 0, 0, 0, 0);
+}

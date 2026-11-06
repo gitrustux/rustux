@@ -179,12 +179,14 @@ pub fn sys_interrupt_create(args: SyscallArgs) -> SyscallRet {
 /// interrupt_wait(handle, *timestamp) — block until the IRQ fires
 pub fn sys_interrupt_wait(args: SyscallArgs) -> SyscallRet {
     let (h, out) = (args.arg_u32(0), args.arg(1));
+    // deadline: monotonic ns; 0 = none (older callers pass 0)
+    let deadline = match args.arg(2) as u64 { 0 => crate::kobj::INFINITE, d => d };
     ret((|| {
         let i = interrupt_of(h, Rights::WAIT)?;
         if out != 0 {
             user::check(out, 8, true)?;
         }
-        let ts = i.wait()?;
+        let ts = i.wait(deadline)?;
         if out != 0 {
             user::write_u64(out, ts)?;
         }

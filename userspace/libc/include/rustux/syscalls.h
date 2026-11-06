@@ -268,6 +268,10 @@ static inline rx_status_t rx_interrupt_create(rx_handle_t resource, uint32_t irq
     return RX_SYS(0x80, resource, irq, options, out);
 }
 static inline rx_status_t rx_interrupt_wait(rx_handle_t h, uint64_t *timestamp) { return RX_SYS(0x81, h, timestamp, 0, 0); }
+// The same, giving up with RX_ERR_TIMED_OUT at `deadline` (monotonic ns, as rx_clock_get_monotonic)
+static inline rx_status_t rx_interrupt_wait_until(rx_handle_t h, uint64_t *timestamp, uint64_t deadline) {
+    return RX_SYS(0x81, h, timestamp, deadline, 0);
+}
 static inline rx_status_t rx_interrupt_ack(rx_handle_t h) { return RX_SYS(0x82, h, 0, 0, 0); }
 static inline rx_status_t rx_interrupt_destroy(rx_handle_t h) { return RX_SYS(0x83, h, 0, 0, 0); }
 static inline rx_status_t rx_ioports_request(rx_handle_t resource, uint16_t port, uint32_t len) { return RX_SYS(0x84, resource, port, len, 0); }

@@ -142,4 +142,14 @@ int rx_block_open(const char *name, rx_handle_t *out);
 int rx_block_call(rx_handle_t ch, rx_block_req_t *req, const void *data, size_t len, rx_handle_t h,
                   void *out, size_t cap, size_t *outlen);
 
+// Conveniences (step 13). rx_block_list: every block device devmgr knows,
+// in *out (free() it); the count or a negative errno. rx_block_read and
+// rx_block_write take any count of blocks (split into RX_BLOCK_MAX_IO
+// requests). rx_block_simple: a request without data (FLUSH, RESCAN).
+int rx_block_list(rx_block_info_t **out);
+int rx_block_info(rx_handle_t ch, rx_block_info_t *info);
+int rx_block_read(rx_handle_t ch, uint32_t block_size, uint64_t block, uint32_t count, void *buf);
+int rx_block_write(rx_handle_t ch, uint32_t block_size, uint64_t block, uint32_t count, const void *buf);
+int rx_block_simple(rx_handle_t ch, uint32_t op);
+
 #endif

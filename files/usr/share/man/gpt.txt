@@ -1,0 +1,33 @@
+gpt - show and change GPT partition tables
+
+USAGE
+    gpt [show] DISK
+    gpt create [-f] DISK
+    gpt add [-i N] [-b START] [-s SIZE] [-t TYPE] [-l LABEL] DISK
+    gpt remove -i N DISK
+    gpt label -i N -l LABEL DISK
+    gpt type -i N -t TYPE DISK
+    gpt destroy DISK
+    gpt types
+
+    Works on whole disks (vda, ram0), never partitions. After a change it
+    asks the disk's driver to read the table again, so the partitions
+    show in lsblk at once (unless one of them is open).
+
+    START is in blocks; SIZE in blocks, or bytes with K, M, G or T; without
+    -s a partition takes the rest of the free space. New partitions start
+    on a 1 MiB boundary. TYPE: efi, msdata, linux, swap, ... (gpt types)
+    or a GUID; the default is linux.
+
+    The NVMe driver is read-only until the installer (step 20), so its
+    disks refuse every change.
+
+EXAMPLES
+    ramdisk -n test 64M &
+    gpt create test
+    gpt add -s 16M -t efi -l boot test
+    gpt add -l data test
+    gpt show test
+
+SEE ALSO
+    lsblk, fdisk, blkid, blk

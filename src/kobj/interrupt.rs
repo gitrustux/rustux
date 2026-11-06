@@ -177,8 +177,9 @@ impl Interrupt {
     }
 
     /// Block until the IRQ fires (or the object is destroyed / the thread
-    /// killed). Returns the firing's timestamp.
-    pub fn wait(&self) -> Result<u64, RxStatus> {
+    /// killed, or monotonic time reaches `deadline`: TIMED_OUT). Returns
+    /// the firing's timestamp.
+    pub fn wait(&self, deadline: u64) -> Result<u64, RxStatus> {
         let (tid, _) = crate::process::run::current_thread().ok_or(RxStatus::ERR_BAD_STATE)?;
         loop {
             if self.destroyed.load(Ordering::Acquire) {
@@ -190,12 +191,15 @@ impl Interrupt {
             if crate::process::run::is_killed() {
                 return Err(RxStatus::ERR_CANCELED);
             }
+            if deadline != super::INFINITE && super::now_ns() >= deadline {
+                return Err(RxStatus::ERR_TIMED_OUT);
+            }
             // Only one thread may wait (as in Zircon)
             if self.waiter.compare_exchange(0, tid, Ordering::AcqRel, Ordering::Acquire).map_or_else(|w| w != tid, |_| false) {
                 return Err(RxStatus::ERR_BAD_STATE);
             }
             if !self.triggered.load(Ordering::Acquire) && !self.destroyed.load(Ordering::Acquire) {
-                crate::process::run::block_current(super::INFINITE);
+                crate::process::run::block_current(deadline);
             }
             self.waiter.store(0, Ordering::Release);
         }

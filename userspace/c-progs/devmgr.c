@@ -32,7 +32,7 @@
 
 #define MAX_PCI     256
 #define MAX_CLIENTS 64
-#define MAX_BLOCK   32
+#define MAX_BLOCK   128
 
 static rx_handle_t resource;
 
@@ -593,14 +593,26 @@ static int publish_block(const rx_block_info_t *in, rx_handle_t server, rx_block
     if (nblocks >= MAX_BLOCK) return -ENOSPC;
     struct block *b = &blocks[nblocks];
     b->info = *in;
-    char prefix[24];
-    snprintf(prefix, sizeof prefix, "%.20s", in->name[0] ? in->name : "blk");
-    for (int n = 0;; n++) {
-        snprintf(b->info.name, sizeof b->info.name, "%s%d", prefix, n);
-        int taken = 0;
+    // The name asked for: '#' becomes the first free number (ram# -> ram0),
+    // '@' the first free letter (vd@ -> vda); without either it is taken
+    // as it is (partitions: vda1, nvme0n1p2) and must be free
+    char want[32];
+    snprintf(want, sizeof want, "%.24s", in->name[0] ? in->name : "blk#");
+    char *mark = strpbrk(want, "#@");
+    int taken = 1;
+    for (int n = 0; taken && n < (mark ? (*mark == '@' ? 26 : 1000) : 1); n++) {
+        if (mark) {
+            char num[8];
+            if (*mark == '@') snprintf(num, sizeof num, "%c", 'a' + n);
+            else snprintf(num, sizeof num, "%d", n);
+            snprintf(b->info.name, sizeof b->info.name, "%.*s%s%s", (int)(mark - want), want, num, mark + 1);
+        } else {
+            snprintf(b->info.name, sizeof b->info.name, "%s", want);
+        }
+        taken = 0;
         for (int k = 0; k < nblocks; k++) taken |= !strcmp(blocks[k].info.name, b->info.name);
-        if (!taken) break;
     }
+    if (taken) return -EEXIST;
     b->server = server;
     nblocks++;
     *out = b->info;

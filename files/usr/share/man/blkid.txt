@@ -1,0 +1,14 @@
+blkid - what block devices hold
+
+USAGE
+    blkid [-o full|value|export] [-s TAG]... [NAME...]
+
+    Prints the tags of each block device (all of them without NAMEs):
+      PTTYPE, PTUUID        a disk's partition table (gpt or dos)
+      TYPE, LABEL, UUID     a filesystem: vfat, exfat, ntfs, BitLocker,
+                            ext2, ext3, ext4, swap, iso9660
+      PARTLABEL, PARTUUID   a GPT partition's name and GUID
+    Names are devmgr's (vda1), not /dev paths.
+
+SEE ALSO
+    lsblk -f, fdisk

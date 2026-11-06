@@ -58,6 +58,8 @@ int *__errno_location(void);
 #define ENOLCK 37
 #define ELOOP 40
 #define EOVERFLOW 75
+#define EBADMSG 74
+#define ENOMEDIUM 123
 #define EDEADLK 35
 #define ENODATA 61
 #define ENOTSUP 95

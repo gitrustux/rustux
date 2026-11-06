@@ -62,6 +62,13 @@ interrupt and does DMA in both directions (10 checks). `blktest` (16
 checks, block protocol against RAM disks) and `drvtest` (driver calls
 refused without the root resource) need no device. Without the `edu`
 device, `devices.sh` skips `edutest`, so the laptop runs it too.
+
+Step 13 adds a disk: the command tests make one with
+`scripts/make-test-disk.py` and attach it twice, as virtio-blk and as
+NVMe (`snapshot=on`, so the file stays as it was), and `disks.sh` checks
+both drivers. `partitions.sh` uses RAM disks and runs anywhere. The
+script also checks a disk image after Rustux wrote to it
+(`make-test-disk.py check disk.img`), with its own GPT code.
 `docs/DRIVERS.md` explains the device mask and what each test covers.
 
 ## Run in QEMU

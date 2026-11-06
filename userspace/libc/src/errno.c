@@ -74,6 +74,8 @@ char *strerror(int e) {
     case ENOLCK: return "No locks available";
     case ELOOP: return "Too many levels of symbolic links";
     case EOVERFLOW: return "Value too large";
+    case EBADMSG: return "Bad message";
+    case ENOMEDIUM: return "No medium found";
     case ENOTSOCK: return "Not a socket";
     case EAFNOSUPPORT: return "Address family not supported";
     case EADDRINUSE: return "Address in use";

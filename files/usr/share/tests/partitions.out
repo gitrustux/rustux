@@ -1,0 +1,33 @@
+pt: new GPT
+pt: partition 1 added, blocks 2048-18431 (8M)
+pt: partition 2 added, blocks 18432-65502 (23M)
+NAME          SIZE TYPE PARTLABEL        PARTTYPENAME
+pt             32M disk
+├─pt1           8M part boot             EFI System
+└─pt2          23M part data             Linux filesystem
+hello partition
+hello partition
+pt: partition 2 changed
+pt2: PARTLABEL="renamed"
+start 18432
+number 2
+label renamed
+pt: partition 1 removed
+pt
+pt2
+2 18432 65502 47071 23M Linux filesystem renamed
+Disklabel type: gpt
+pt2                 18432        65502        47071    23M Linux filesystem
+gpt: pt already has a GPT (gpt create -f replaces it)
+create 1
+gpt: pt: no free space that large
+add 1
+pt: partition table erased
+table none
+pt
+blk: pt: the data goes past the end
+pq: new GPT, usable blocks 6-4090
+pq: partition 1 added, blocks 256-4090 (15M)
+NAME          SIZE LOG-SEC PARTLABEL
+pq             16M    4096
+└─pq1          15M    4096 four

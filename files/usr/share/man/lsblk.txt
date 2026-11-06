@@ -1,18 +1,19 @@
 lsblk - list block devices
 
 USAGE
-    lsblk [-b] [-n] [-J|--json]
+    lsblk [-b] [-n] [-l] [-d] [-f] [-o COLUMNS] [-J] [NAME...]
 
-    Lists the block devices published to the device manager: NAME, RM
-    (removable), SIZE, RO (read-only), TYPE. Disks appear when their driver
-    starts; "ramdisk 16M &" makes one in memory (ram0).
+    Lists the disks and their partitions as a tree: NAME, RM (removable),
+    SIZE, RO (read-only), TYPE (disk or part), MOUNTPOINTS (none yet).
+    Disks appear when their driver starts: vda (virtio), nvme0n1 (NVMe),
+    ram0 ("ramdisk 16M &").
 
-    -b  sizes in bytes
-    -n  no header line
-    -J  JSON (also --json)
-
-    Nothing is mounted from block devices yet (filesystems come in steps
-    14 to 16), so MOUNTPOINTS is empty.
+    -b  sizes in bytes          -n  no header line
+    -l  a list, not a tree      -d  disks only
+    -f  filesystems: FSTYPE, LABEL, UUID
+    -o  columns, e.g. -o NAME,SIZE,PARTLABEL (+COL adds to the default;
+        lsblk --help lists them)
+    -J  JSON (also --json), partitions as "children"
 
 SEE ALSO
-    lspci, ramdisk --help
+    blkid, fdisk, gpt, lspci

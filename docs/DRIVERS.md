@@ -22,8 +22,12 @@ step 13; until then devmgr leaves display and USB controllers alone.
 | Services | `<rustux/service.h>`, `docs/FS.md` | `/svc/NAME`: a program's own protocol reached by path |
 | `edu` | `userspace/c-progs/edu.c` | test driver for QEMU's `edu` device |
 | `ramdisk` | `userspace/c-progs/ramdisk.c` | a block device in memory |
-| `lspci`, `lsblk` | `userspace/c-progs/` | listings (`docs/COMMANDS.md`) |
-| Tests | `drvtest`, `edutest`, `blktest`, `/usr/share/tests/devices.sh` | `docs/TESTS.md` |
+| Driver helpers | `<rustux/driver.h>` | config space, BARs, interrupts, DMA buffers in plain calls (step 13) |
+| Disk serving | `<rustux/blockdev.h>` | the block protocol, partitions and rescans for every disk driver (step 13) |
+| Partition tables | `<rustux/gpt.h>`, `<rustux/fsprobe.h>` | GPT read/write, MBR read, filesystem signatures (step 13) |
+| `virtio-blk`, `nvme` | `userspace/c-progs/` | disk drivers (step 13) |
+| `lspci`, `lsblk`, `blkid`, `fdisk`, `gpt`, `blk` | `userspace/c-progs/` | listings and tools (`docs/COMMANDS.md`) |
+| Tests | `drvtest`, `edutest`, `blktest`, `/usr/share/tests/devices.sh`, `partitions.sh`, `disks.sh` | `docs/TESTS.md` |
 
 ## Start-up
 
@@ -51,8 +55,10 @@ step 13; until then devmgr leaves display and USB controllers alone.
 ```
 # VENDOR:DEVICE         PROGRAM
 1234:11e8   /bin/edu
+1af4:1001   /bin/virtio-blk
+1af4:1042   /bin/virtio-blk
 # class=CC[:SS[:PI]]    PROGRAM
-class=01:08:02  /bin/nvme      (step 13)
+class=01:08:02  /bin/nvme
 ```
 
 The first matching line for a device wins. Devices the kernel uses are
@@ -127,7 +133,7 @@ the pages in the device's translation tables, so drivers need no change.
 | `LIST_PCI` 1 | — | `u32 count`, `rx_pci_info_t[count]` |
 | `LIST_BLOCK` 2 | — | `u32 count`, `rx_block_info_t[count]` |
 | `CONNECT_BLOCK` 3 | name; a handle: the server end of a new connection | — (ENOENT: no such device) |
-| `PUBLISH_BLOCK` 4 | `rx_block_info_t` (name: a prefix); a handle: a channel for connection requests | `rx_block_info_t` with the name given (`ram0`) |
+| `PUBLISH_BLOCK` 4 | `rx_block_info_t`; a handle: a channel for connection requests | `rx_block_info_t` with the name given: `#` in the name becomes the first free number (`ram#` → `ram0`), `@` the first free letter (`vd@` → `vda`); a name without either is used as it is (`vda1`), `EEXIST` if taken |
 
 A published block device is removed when its server's channel closes
 (the server ended). Connections are passed to the server as
@@ -147,11 +153,63 @@ txid, op, block, count, vmoid, vmo_offset }`, replies `{ txid, status }`.
 | `ATTACH_VMO` 5 | a VMO handle; reply: `u32 vmoid` |
 | `READ_VMO` 6 / `WRITE_VMO` 7 | `count` blocks between the device and the attached VMO at `vmo_offset` (any size) |
 | `DETACH_VMO` 8 | forget a vmoid |
+| `RESCAN` 9 | read the partition table again and replace the partition devices (whole disks; `EBUSY` while a partition is open) |
+
+`rx_block_info_t` also carries partition data (step 13): flags
+`PARTITION`, `GPT`, `MBR`; `label`, `type_guid`, `guid` (a disk's: the
+GPT disk GUID), `parent`, `start` (first block on the parent), `number`.
 
 Errors: `ERANGE` past the end, `EROFS` writing a read-only device,
 `EINVAL` for bad fields. `rx_block_open(name)` and `rx_block_call()` in the
 C library are the client side. `ramdisk SIZE &` serves one from memory;
 the disk drivers of step 13 serve the same protocol.
+
+## Disk drivers (step 13)
+
+A disk driver supplies three functions over whole blocks, `read`,
+`write` (NULL: read-only) and `flush`, and `<rustux/blockdev.h>` does the
+rest: it reads the partition table, publishes the disk and one device
+per partition, serves the block protocol to every client (requests on a
+partition are moved by its start and checked against its end), splits
+large transfers to the driver's limit, and re-reads the table on
+`RESCAN`. One request at a time; the driver copies between the caller's
+buffer and its DMA buffer.
+
+```c
+rx_block_info_t info = { .name = "vd@", .block_count = n, .block_size = 512 };
+rx_blockdev_ops_t ops = { rd, wr, fl };
+rx_blockdev_publish(&ops, 0, &info, max_blocks, 0);   // info.name is now "vda"
+return rx_blockdev_run();
+```
+
+`<rustux/driver.h>` wraps the device channel (`rx_drv_cfg_read`,
+`rx_drv_find_cap`, `rx_drv_map_bar`, `rx_drv_interrupt`, `rx_drv_bti`),
+waits for an interrupt with a time limit (`rx_drv_wait_irq`, built on
+the new deadline of `interrupt_wait`) and allocates pinned, contiguous
+DMA buffers (`rx_dma_alloc`).
+
+| Driver | Devices | Notes |
+|--------|---------|-------|
+| `virtio-blk` | `1af4:1001`, `1af4:1042`: QEMU, KVM, cloud servers | virtio 1.0 (the capabilities' configuration structures), one split virtqueue, MSI-X vector 0 (polling if the device has none or no interrupt comes within 10 s); `vda`, `vdb`, ...; read-only if the device says so; flush when offered |
+| `nvme` | class `01:08:02` | **read-only until the installer (step 20)**: no write function, no write command in the driver at all; one admin and one I/O queue pair on MSI-X (MSI, or polling), PRP lists for transfers over 8 KiB, the controller's transfer limit (MDTS), 512-byte and 4 KiB blocks, the first active namespace: `nvme0n1` |
+
+### Partitions
+
+GPT (UEFI specification, chapter 5) is read from the primary header, or
+from the backup at the end of the disk if the primary is damaged (both
+header and entry CRCs are checked); entries outside the disk are
+ignored. Without a GPT, the four primary MBR entries are used (extended
+partitions are listed, not followed). Partitions are named after the
+disk: `vda1`, `nvme0n1p2` (with `p` after a digit), numbered by their
+GPT entry. `gpt` writes the backup copy first, then the primary, then the
+protective MBR, so a crash leaves one good copy.
+
+Filesystems are recognised by signature (`<rustux/fsprobe.h>`: vfat,
+exfat, ntfs, BitLocker, ext2/3/4, swap, iso9660) for `blkid` and
+`lsblk -f`; mounting them starts in step 14.
+
+Block devices are not files in `/dev` yet: `blk read` and `blk write`
+reach them from the shell.
 
 ## Testing
 
@@ -169,11 +227,24 @@ the tests raise the mask to 4 GiB (buffers come from below 4 GiB).
 | `blktest` | block protocol against RAM disks it starts: info, read/write, range and size errors, flush, VMO transfers, read-only devices, removal (16 checks) |
 | `drvtest` | every driver call refused without the root resource (13 checks) |
 | `devices.sh` | in `runtests`: lspci, lspci --json, blktest, ramdisk + lsblk, edutest when an edu device is present |
+| `partitions.sh` | in `runtests`: GPT create, add, label, remove, destroy on RAM disks of 512-byte and 4 KiB blocks; writes through a partition read back through the disk; lsblk, blkid, fdisk -l (any machine) |
+| `disks.sh` | in `runtests`: with the test disk attached as virtio-blk and NVMe (the build's command tests do this), its partitions, the NTFS signature, a new partition written and read back, NVMe writes refused; prints nothing without those disks |
+
+`scripts/make-test-disk.py make DISK.img` builds the test disk: 64 MiB,
+GPT, shaped like a Windows laptop's (EFI System on FAT, Microsoft
+reserved, Microsoft basic data with an NTFS boot sector) plus an ext4
+Linux partition and free space. `check DISK.img` verifies a GPT with its
+own code (both copies, CRCs) after Rustux wrote to it. Attach disks with
+`snapshot=on` when the image must stay as it is: OVMF writes an `NvVars`
+file to the EFI partition of any writable disk at every boot.
 
 ## Not yet
 
-- MSI-X is programmed (table entry, enable, unmask) but no test device
-  uses it yet; the NVMe and virtio drivers of step 13 will
+- USB mass storage: the xHCI driver is still in the kernel (keyboard);
+  storage needs bulk transfers and moves the controller to userspace
+- AHCI (SATA)
+- NVMe writes (step 20), several I/O queues, more than one namespace
+- Several requests in flight per disk
 - INTx through the IOAPIC (needs `_PRT` from the ACPI namespace)
 - An IOMMU (VT-d / AMD-Vi): DMA addresses are physical
 - Write-combining mappings (needs the PAT)

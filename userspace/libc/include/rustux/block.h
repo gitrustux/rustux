@@ -13,6 +13,10 @@
 // then (READ) the data, or (GET_INFO) an rx_block_info_t, or (ATTACH_VMO)
 // a u32 vmoid. status is 0 or a negative errno: EINVAL (bad op or field),
 // ERANGE (blocks past the end), EROFS (write to a read-only device), EIO.
+//
+// Partitions (step 13) are block devices of their own, served by the
+// disk's driver (<rustux/blockdev.h> does this for every driver): `parent`
+// names the disk and `start` is where the partition begins on it.
 
 #ifndef RUSTUX_BLOCK_H
 #define RUSTUX_BLOCK_H
@@ -21,6 +25,9 @@
 
 #define RX_BLOCK_FLAG_READONLY  1u
 #define RX_BLOCK_FLAG_REMOVABLE 2u
+#define RX_BLOCK_FLAG_PARTITION 4u   // a partition of `parent`
+#define RX_BLOCK_FLAG_GPT       8u   // a disk with a GPT (a partition: from a GPT)
+#define RX_BLOCK_FLAG_MBR       16u  // a disk with an MBR partition table (a partition: from one)
 
 typedef struct {
     char name[32];          // ram0, nvme0n1, ...
@@ -29,6 +36,14 @@ typedef struct {
     uint32_t flags;         // RX_BLOCK_FLAG_*
     char driver[32];        // the program serving it
     char model[48];         // what the device says it is
+    // Partition table data (zeros if none)
+    char label[72];         // GPT partition name (UTF-8)
+    uint8_t type_guid[16];  // GPT partition type (an MBR type: in type_guid[0])
+    uint8_t guid[16];       // disk: GPT disk GUID; partition: its unique GUID (on-disk byte order)
+    char parent[32];        // partition: the disk it is on
+    uint64_t start;         // partition: first block on the parent
+    uint32_t number;        // partition: its number (1 = first entry)
+    uint32_t reserved;
 } rx_block_info_t;
 
 typedef struct {
@@ -60,6 +75,7 @@ typedef struct {
 #define RX_BLOCK_OP_READ_VMO   6
 #define RX_BLOCK_OP_WRITE_VMO  7
 #define RX_BLOCK_OP_DETACH_VMO 8
+#define RX_BLOCK_OP_RESCAN     9   // re-read the partition table (whole disks only; EBUSY if a partition is open)
 
 // Most data in one READ or WRITE through the channel
 #define RX_BLOCK_MAX_IO 32768u

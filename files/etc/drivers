@@ -6,3 +6,11 @@
 #
 # QEMU's "edu" test device (-device edu): the test driver
 1234:11e8   /bin/edu
+#
+# virtio-blk: QEMU/KVM disks (step 13). 1001 is the transitional device
+# QEMU makes by default; 1042 the modern-only one
+1af4:1001   /bin/virtio-blk
+1af4:1042   /bin/virtio-blk
+#
+# NVMe disks (step 13): read-only until the installer (step 20)
+class=01:08:02  /bin/nvme

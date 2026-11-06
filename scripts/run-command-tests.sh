@@ -24,11 +24,16 @@ done
 W=$(mktemp -d)
 trap 'kill $Q 2>/dev/null; rm -rf "$W"' EXIT
 dd if=/dev/zero of="$W/boot.img" bs=1M count=64 status=none
+# The disk tests' disk (disks.sh), as virtio-blk and as NVMe; snapshot=on
+# keeps writes (and the firmware's NvVars file) out of the image
+python3 "$(dirname "$0")/make-test-disk.py" make "$W/disk.img" > /dev/null
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
 mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI
 qemu-system-x86_64 -machine q35 -m 512M -smp 2 -bios "$OVMF" -drive file="$W/boot.img",format=raw \
     -device edu,dma_mask=0xffffffff \
+    -drive file="$W/disk.img",if=none,id=vd,format=raw,snapshot=on,file.locking=off -device virtio-blk-pci,drive=vd \
+    -drive file="$W/disk.img",if=none,id=nv,format=raw,snapshot=on,file.locking=off -device nvme,drive=nv,serial=rustux \
     -display none -debugcon file:"$W/console.log" -no-reboot -monitor unix:"$W/mon",server,nowait \
     >/dev/null 2>&1 &
 Q=$!

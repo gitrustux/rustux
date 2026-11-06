@@ -3,5 +3,5 @@ devices listed
 [
 00:00.0 
 blktest: 16 passed, 0 failed
-ram0 0 2M 0 disk
+0 3M 0 disk
 1
