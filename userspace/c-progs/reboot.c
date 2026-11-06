@@ -8,6 +8,7 @@
 // shell and the shell passes on to the programs it starts.
 
 #include <rustux/process.h>
+#include <sys/mount.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -22,7 +23,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "reboot: not allowed (no power resource)\n");
         return 1;
     }
-    printf("reboot: syncing... (nothing on disk yet)\n");
+    // Every mounted filesystem written out and marked clean (step 15)
+    printf("reboot: writing out the disks...\n");
+    fflush(stdout);
+    sync();
+    rx_fs_shutdown_all();
     fflush(stdout);
     usleep(200000); // let the console print it
     rx_status_t r = rx_system_powerctl(power, RX_SYSTEM_POWERCTL_REBOOT);

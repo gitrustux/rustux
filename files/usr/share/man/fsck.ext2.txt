@@ -1,0 +1,19 @@
+fsck.ext2 - check an ext2 filesystem
+
+USAGE
+    fsck.ext2 [-a] [-v] DEVICE
+
+    Checks an ext2 filesystem that is not mounted, in e2fsck's five
+    passes: every inode in use (its type; its blocks in range, used once,
+    counted right, none past its size), every directory (entries, "." and
+    "..", file types), that every directory can be reached from the root,
+    link counts and inodes no directory names, and the block and inode
+    bitmaps with the free counts. It repairs nothing, except that -a
+    corrects wrong free counts. -v lists the directories. Exit status:
+    0 no errors, 1 corrected, 4 errors left: then run e2fsck -f on Linux.
+
+EXAMPLES
+    umount /mnt; fsck.ext2 sda2
+
+SEE ALSO
+    mkfs.ext2, mount

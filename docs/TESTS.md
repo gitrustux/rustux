@@ -97,6 +97,28 @@ On a real machine: mount the stick's EFI partition (it is at `/boot/efi`
 after boot), write files, `umount`, then open them in Windows, or run
 `fsck.fat -n` on Linux.
 
+## ext2 tests (step 15)
+
+`ext2.sh` (in the command tests, on RAM disks) checks symbolic links on
+tmpfs (relative, absolute, dangling, loops, `realpath`), then on a
+filesystem made by `mkfs.ext2`: files and a large copy, a directory of
+400 entries growing past a block, symbolic links within, out of and
+pointing at directories (fast and slow ones), hard links, sparse files
+and truncation, times and set-user-ID bits, renames across directories
+and into itself (refused), `umount` while a file is open, `fsck.ext2`, a
+read-only mount; with 1 KiB blocks, double indirect blocks and a full
+disk.
+
+`scripts/run-ext2-test.sh` boots QEMU three times: with `root=UUID=...`
+in `\EFI\BOOT\cmdline.txt`, so the root filesystem is a host-made ext2
+disk, `boot1.sh` copies about 30 MiB and the main programs onto another
+host-made ext2 disk (`mkfs.ext2 -d`, with links and a sparse file),
+removes, renames and links, runs `mkfs.ext2` on a third disk and fills
+it, and writes files under `/root` and `/home`; the second boot finds
+them; the third, with no command line and no disks, runs from memory.
+Then the host's `e2fsck -f -n` checks the three disks (all must be clean
+and marked clean) and `debugfs` reads the files back. It needs e2fsprogs.
+
 ## Run in QEMU
 
 ```bash

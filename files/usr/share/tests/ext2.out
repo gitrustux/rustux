@@ -1,0 +1,87 @@
+target
+target
+file
+/tmp/lk
+lrwxrwxrwx /tmp/lk/rel -> file
+ No such file or directory
+ Too many levels of symbolic links
+/tmp/lk/file
+lrwxrwxrwx /etc/mtab -> /run/mtab
+mkfs.ext2: ea: 16384 blocks of 4096 bytes, 16384 inodes, 1 groups
+mkfs.ext2: UUID 01234567-89ab-4cde-8f01-23456789abcd
+ea: LABEL="test" UUID="01234567-89ab-4cde-8f01-23456789abcd" TYPE="ext2"
+/dev/ea on /tmp/e type ext2 (rw)
+.
+..
+lost+found
+hello ext2
+big copy ok
+6888896 13480
+400
+20480
+289
+hello ext2
+hello ext2
+big
+link out of the filesystem ok
+a-target-of-more-than-sixty-bytes-is-kept-in-a-block-of-its-own-xxxxxxxxxxxx
+lrwxrwxrwx /tmp/e/rel -> hello.txt
+2
+hello ext2
+ /tmp/e/a: hard link not allowed for directory
+ failed to create hard link '/tmp/seq-hard' => '/tmp/e/a/hard': Cross-device link
+104857604 24
+end
+1
+2
+3
+4
+5
+
+0000000   1  \n   2  \n   3  \n   4  \n   5  \n  \0  \0  \0  \0  \0  \0
+0000020  \0  \0  \0  \0
+-rw-r--r-- 2001-02-03_04:05:06 /tmp/e/a/hard
+-rwsr-x---
+big
+ cannot move '/tmp/e/many' to a subdirectory of itself, '/tmp/e/many/b/c/many'
+/tmp/e:
+a
+abs
+long
+lost+found
+many
+out
+rel
+renamed
+sparse
+
+/tmp/e/a:
+empty
+ Directory not empty
+hello ext2
+65536 5344 60192
+umount: /tmp/e: busy (files are open on it; -f unmounts anyway)
+ea: ext2, 16384 blocks of 4096 bytes, 16384 inodes, 1 groups
+ea: 296 files, 7 directories, 1336/16384 blocks, 312/16384 inodes in use, no errors
+/dev/ea on /tmp/e type ext2 (ro)
+shell: /tmp/e/new: Read-only file system
+a
+abs
+long
+lost+found
+many
+out
+rel
+sparse
+mkfs.ext2: eb: 8192 blocks of 1024 bytes, 2048 inodes, 1 groups
+double indirect ok
+ No space left on device
+ No space left on device
+ No space left on device
+ No space left on device
+ No space left on device
+100%
+still writable
+eb: 6 files, 2 directories, 7286/8191 blocks, 17/2048 inodes in use, no errors
+mkfs.ext2: nothing: no such block device
+fsck.ext2: nothing: no such block device

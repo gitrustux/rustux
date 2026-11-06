@@ -20,6 +20,17 @@
 //   /svc       services (tmpfs): opening one hands the connection to the
 //              program serving it (RX_FS_OP_SERVE; devmgr, drivers)
 //   /mnt, /boot/efi  empty directories to mount filesystems on
+//   /run       tmpfs: runtime state (mtab; /etc/mtab is a link to it)
+//
+// Root filesystem on a disk (step 15): a filesystem mounted on "/" takes
+// everything at the top that is not one of fsd's own directories (boot,
+// bin, usr, dev, svc, tmp, mnt, run): /etc, /root, /home, /var, ... are
+// then on the disk, and fsd's in-memory /etc and /root go away. Missing
+// files of /etc are copied from the boot image when it is mounted.
+//
+// Symbolic links (step 15): tmpfs has them; a walk that meets one starts
+// again from the root with the link's target in its place (the servers of
+// mounted filesystems do the same through RX_FS_REDIRECT replies).
 //
 // Mounts (step 14): another filesystem's server (fatfs) can be attached
 // at a directory (RX_FS_OP_MOUNT). Path requests that go below it are
@@ -45,10 +56,13 @@
 #define MAX_CONNS 1000
 // A walk reached a mounted filesystem: g_remote and g_rest say where
 #define EREMOTE_FS 10000
+// A walk met a symbolic link: start again with g_redirect
+#define EREDIRECT 10001
 #define FORWARD_MS 30000
+#define FSD_PATH_MAX 4096
 
 struct node {
-    uint32_t type;          // RX_FS_TYPE_FILE, _DIR, _CHR or _SERVICE
+    uint32_t type;          // RX_FS_TYPE_FILE, _DIR, _CHR, _SERVICE or _SYMLINK (data: the target)
     rx_handle_t svc;        // services: channel to the server
     int dev;                // devices: DEV_NULL or DEV_ZERO
     uint32_t mode;
@@ -79,6 +93,8 @@ struct ofd {
     int flags;              // O_* from open
     int refs;
     uint32_t dir_pos;       // READDIR position (entries returned so far)
+    rx_handle_t rdir;       // "/" with a root filesystem: its root directory, for READDIR
+    int rphase;             // READDIR of "/": 1 once fsd's own entries are done
 };
 
 struct conn {
@@ -102,6 +118,72 @@ static const char *g_rest;
 static size_t g_rest_len;
 static uint32_t next_txid = 1;
 static int set_size(struct node *n, uint64_t size);
+// Where a walk was sent instead (EREDIRECT): a path from the root, and
+// which of the request's paths it replaces
+static char g_redirect[FSD_PATH_MAX];
+static int g_which;
+// A handle that came back with a forwarded reply (a redirected OPEN)
+static rx_handle_t g_fwd_handle;
+// The payload of the last RX_FS_REDIRECT reply
+static char g_rpay[FSD_PATH_MAX + 2];
+static size_t g_rpay_len;
+static void path_of(struct node *n, char *buf, size_t cap);
+
+// fsd's own directories at the top, kept when a root filesystem is mounted
+static int system_name(const char *s, size_t n) {
+    static const char *names[] = { "boot", "bin", "usr", "dev", "svc", "tmp", "mnt", "run" };
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++)
+        if (strlen(names[i]) == n && !memcmp(names[i], s, n)) return 1;
+    return 0;
+}
+
+// `in` (n bytes) with "." and ".." resolved and slashes collapsed, into
+// g_redirect without the leading '/'
+static int set_redirect(const char *in, size_t n) {
+    char *out = g_redirect;
+    size_t len = 0, i = 0;
+    while (i < n) {
+        while (i < n && in[i] == '/') i++;
+        size_t j = i;
+        while (j < n && in[j] != '/') j++;
+        size_t k = j - i;
+        if (k == 0) break;
+        if (k == 1 && in[i] == '.') {
+        } else if (k == 2 && in[i] == '.' && in[i + 1] == '.') {
+            while (len > 0 && out[len - 1] != '/') len--;
+            if (len > 0) len--;
+        } else {
+            if (len + 1 + k >= FSD_PATH_MAX) return -ENAMETOOLONG;
+            if (len) out[len++] = '/';
+            memcpy(out + len, in + i, k);
+            len += k;
+        }
+        i = j;
+    }
+    out[len] = 0;
+    return -EREDIRECT;
+}
+
+// Redirect through a link in directory `dir`: its target, then `rest`
+static int redirect_link(struct node *dir, const struct node *link, const char *rest, size_t rest_len) {
+    char buf[FSD_PATH_MAX * 2 + 2];
+    size_t used = 0;
+    if (link->size && link->data[0] != '/') {
+        path_of(dir, buf, FSD_PATH_MAX);
+        used = strlen(buf);
+        buf[used++] = '/';
+    }
+    if (used + link->size + 1 + rest_len >= sizeof buf) return -ENAMETOOLONG;
+    memcpy(buf + used, link->data, link->size);
+    used += link->size;
+    if (rest_len) {
+        buf[used++] = '/';
+        memcpy(buf + used, rest, rest_len);
+        used += rest_len;
+    }
+    g_which = 0;
+    return set_redirect(buf, used);
+}
 
 static int64_t now(void) { return rx_clock_get_utc(); } // ns since 1970
 
@@ -159,9 +241,11 @@ static struct node *child(struct node *dir, const char *name, size_t len) {
 
 // Walk `path` (len bytes, '/'-separated, relative) from `dir`. If `parent`
 // is not NULL, stop before the last component: *parent gets its directory
-// and *last/*last_len the name. Returns 0 or a negative errno.
-static int walk(struct node *dir, const char *path, size_t len, struct node **out,
-                struct node **parent, const char **last, size_t *last_len) {
+// and *last/*last_len the name. Returns 0 or a negative errno:
+// EREMOTE_FS (another filesystem: g_remote, g_rest), EREDIRECT (a link:
+// g_redirect). Links are followed on the way, and at the end if `follow`.
+static int walk_f(struct node *dir, const char *path, size_t len, struct node **out,
+                  struct node **parent, const char **last, size_t *last_len, int follow_last) {
     struct node *n = follow(dir);
     size_t i = 0;
     while (i < len && path[i] == '/') i++;
@@ -179,14 +263,22 @@ static int walk(struct node *dir, const char *path, size_t len, struct node **ou
         if (j - i > 255) return -ENAMETOOLONG;
         if ((j - i == 1 && path[i] == '.') || (j - i == 2 && path[i] == '.' && path[i + 1] == '.')) return -EINVAL;
         if (n->type != RX_FS_TYPE_DIR) return -ENOTDIR;
+        struct node *c = child(n, path + i, j - i);
+        if (n == root && root->remote && !c) {
+            // Not one of ours: on the root filesystem
+            g_remote = root;
+            g_rest = path + i;
+            g_rest_len = len - i;
+            return -EREMOTE_FS;
+        }
         if (final && parent) {
             *parent = n;
             *last = path + i;
             *last_len = j - i;
             return 0;
         }
-        struct node *c = child(n, path + i, j - i);
         if (!c) return -ENOENT;
+        if (c->type == RX_FS_TYPE_SYMLINK && (!final || follow_last)) return redirect_link(n, c, path + k, len - k);
         if (c->remote) {
             // Below here is another filesystem: the rest of the path is its
             g_remote = c;
@@ -201,6 +293,11 @@ static int walk(struct node *dir, const char *path, size_t len, struct node **ou
         n = c;
         i = k;
     }
+}
+
+static int walk(struct node *dir, const char *path, size_t len, struct node **out,
+                struct node **parent, const char **last, size_t *last_len) {
+    return walk_f(dir, path, len, out, parent, last, last_len, 1);
 }
 
 static void attr_of(struct node *n, rx_fs_attr_t *a) {
@@ -242,6 +339,7 @@ static void drop_conn(int i) {
     rx_handle_close(conns[i].ch);
     conns[i] = conns[--nconns];
     if (--o->refs == 0) {
+        if (o->rdir) rx_handle_close(o->rdir);
         o->node->open--;
         maybe_free(o->node);
         free(o);
@@ -254,10 +352,12 @@ static void drop_conn(int i) {
 // reply (FORWARD_MS at most): `pre` (op fields before the path), the path,
 // and handle `h` (consumed). The reply's fields go to `out`. Returns the
 // reply's status, or EIO (the server is gone) / ETIMEDOUT.
-static int forward(struct node *m, uint32_t op, const void *pre, size_t prelen, const char *path, size_t plen,
-                   rx_handle_t h, char *out, size_t cap, size_t *olen) {
-    static char msg[sizeof(rx_fs_hdr_t) + 8192 + 512], rbuf[sizeof(rx_fs_reply_t) + 512];
+static int forward_ch(rx_handle_t ch, uint32_t op, const void *pre, size_t prelen, const char *path, size_t plen,
+                      rx_handle_t h, char *out, size_t cap, size_t *olen) {
+    static char msg[sizeof(rx_fs_hdr_t) + RX_FS_MAX_IO + 8192 + 512], rbuf[sizeof(rx_fs_reply_t) + RX_FS_MAX_IO + 512];
     if (olen) *olen = 0;
+    if (g_fwd_handle) rx_handle_close(g_fwd_handle);
+    g_fwd_handle = 0;
     if (sizeof(rx_fs_hdr_t) + prelen + plen > sizeof msg) {
         if (h) rx_handle_close(h);
         return -ENAMETOOLONG;
@@ -266,7 +366,7 @@ static int forward(struct node *m, uint32_t op, const void *pre, size_t prelen, 
     memcpy(msg, &hd, sizeof hd);
     if (prelen) memcpy(msg + sizeof hd, pre, prelen);
     if (plen) memcpy(msg + sizeof hd + prelen, path, plen);
-    if (rx_channel_write(m->remote, 0, msg, (uint32_t)(sizeof hd + prelen + plen), h ? &h : 0, h ? 1 : 0) != RX_OK) {
+    if (rx_channel_write(ch, 0, msg, (uint32_t)(sizeof hd + prelen + plen), h ? &h : 0, h ? 1 : 0) != RX_OK) {
         if (h) rx_handle_close(h);
         return -EIO;
     }
@@ -274,25 +374,61 @@ static int forward(struct node *m, uint32_t op, const void *pre, size_t prelen, 
     for (;;) {
         uint32_t pend = 0, nb = 0, nh = 0;
         rx_handle_t hh = 0;
-        rx_status_t s = rx_channel_read(m->remote, 0, rbuf, &hh, sizeof rbuf, 1, &nb, &nh);
+        rx_status_t s = rx_channel_read(ch, 0, rbuf, &hh, sizeof rbuf, 1, &nb, &nh);
         if (s == RX_ERR_SHOULD_WAIT) {
-            s = rx_object_wait_one(m->remote, RX_CHANNEL_READABLE | RX_PEER_CLOSED, deadline, &pend);
+            s = rx_object_wait_one(ch, RX_CHANNEL_READABLE | RX_PEER_CLOSED, deadline, &pend);
             if (s == RX_ERR_TIMED_OUT) return -ETIMEDOUT;
             if (!(pend & RX_CHANNEL_READABLE) && (pend & RX_PEER_CLOSED)) return -EIO;
             continue;
         }
         if (s != RX_OK) return -EIO;
-        if (nh) rx_handle_close(hh);
         rx_fs_reply_t rp;
-        if (nb < sizeof rp) continue;
-        memcpy(&rp, rbuf, sizeof rp);
-        if (rp.txid != hd.txid) continue;  // a late reply to a request that timed out
+        if (nb < sizeof rp || (memcpy(&rp, rbuf, sizeof rp), rp.txid != hd.txid)) {
+            // A late reply to a request that timed out
+            if (nh) rx_handle_close(hh);
+            continue;
+        }
+        if (nh) g_fwd_handle = hh;
         size_t n = nb - sizeof rp;
+        if (rp.status == RX_FS_REDIRECT) {
+            g_rpay_len = n < sizeof g_rpay ? n : sizeof g_rpay;
+            memcpy(g_rpay, rbuf + sizeof rp, g_rpay_len);
+            return RX_FS_REDIRECT;
+        }
         if (n > cap) n = cap;
         if (out && n) memcpy(out, rbuf + sizeof rp, n);
         if (olen) *olen = n;
         return rp.status;
     }
+}
+
+static int remote_redirect(struct node *m, const char *out, size_t n);
+
+// As forward_ch, to the filesystem mounted at m; a redirect becomes
+// EREDIRECT (g_redirect)
+static int forward(struct node *m, uint32_t op, const void *pre, size_t prelen, const char *path, size_t plen,
+                   rx_handle_t h, char *out, size_t cap, size_t *olen) {
+    int r = forward_ch(m->remote, op, pre, prelen, path, plen, h, out, cap, olen);
+    return r == RX_FS_REDIRECT ? remote_redirect(m, g_rpay, g_rpay_len) : r;
+}
+
+// A mounted filesystem's server answered RX_FS_REDIRECT (in out, n bytes:
+// u8 which, path): where to start again
+static int remote_redirect(struct node *m, const char *out, size_t n) {
+    char buf[FSD_PATH_MAX * 2];
+    if (n < 2) return -EIO;
+    size_t used = 0;
+    if (out[1] != '/') {
+        path_of(m, buf, FSD_PATH_MAX);
+        used = strlen(buf);
+        buf[used++] = '/';
+    }
+    if (used + n - 1 >= sizeof buf) return -ENAMETOOLONG;
+    memcpy(buf + used, out + 1, n - 1);
+    used += n - 1;
+    int r = set_redirect(buf, used);
+    g_which = out[0];
+    return r;
 }
 
 // "/boot/efi" for a node
@@ -306,19 +442,37 @@ static void path_of(struct node *n, char *buf, size_t cap) {
     if (!used) snprintf(buf, cap, "/");
 }
 
-static struct node *etc_dir;
+static struct node *etc_dir, *run_mtab;
 
-// /etc/mtab: what the boot image had, then a line per mount
+// /run/mtab (/etc/mtab links to it): the root, what the boot image's
+// etc/mtab lists, then a line per mount
 static void update_mtab(void) {
-    struct node *f = etc_dir ? child(etc_dir, "mtab", 4) : 0;
-    if (!f || f->type != RX_FS_TYPE_FILE) return;
+    struct node *f = run_mtab;
+    if (!f) return;
     size_t base = mtab_base ? strlen(mtab_base) : 0, cap = base + 1;
     for (struct node *m = mounts; m; m = m->mnt_next) cap += 600;
     char *s = malloc(cap);
     if (!s) return;
-    size_t used = base;
-    if (base) memcpy(s, mtab_base, base);
+    size_t used = 0;
+    // The root filesystem's line replaces the in-memory root's
     for (struct node *m = mounts; m; m = m->mnt_next) {
+        if (m != root) continue;
+        used += (size_t)snprintf(s + used, cap - used, "%s / %s %s 0 0\n", m->mnt_source, m->mnt_type,
+                                 (m->mnt_flags & RX_FS_MOUNT_RDONLY) ? "ro" : "rw");
+    }
+    for (const char *l = mtab_base; l && *l;) {
+        const char *e = strchr(l, '\n');
+        size_t n = e ? (size_t)(e - l + 1) : strlen(l);
+        const char *sp = memchr(l, ' ', n);
+        int is_root = sp && sp + 2 < l + n && sp[1] == '/' && sp[2] == ' ';
+        if (!(is_root && root->remote)) {
+            memcpy(s + used, l, n);
+            used += n;
+        }
+        l += n;
+    }
+    for (struct node *m = mounts; m; m = m->mnt_next) {
+        if (m == root) continue;
         char p[512];
         path_of(m, p, sizeof p);
         used += (size_t)snprintf(s + used, cap - used, "%s %s %s %s 0 0\n", m->mnt_source, p, m->mnt_type,
@@ -327,6 +481,58 @@ static void update_mtab(void) {
     set_size(f, 0);
     if (set_size(f, used) == 0) memcpy(f->data, s, used);
     free(s);
+}
+
+static struct node *boot_etc;     // the boot image's etc/
+
+// ---- the root filesystem (step 15) ----
+
+static void seed_mkdir(const char *p, uint32_t mode) {
+    forward(root, RX_FS_OP_MKDIR, &mode, 4, p, strlen(p), 0, 0, 0, 0);   // EEXIST is fine
+}
+
+// A file of the boot image's /etc that the disk does not have yet
+static void seed_file(const char *p, const char *data, size_t n) {
+    rx_fs_attr_t a;
+    if (forward(root, RX_FS_OP_LSTAT_AT, 0, 0, p, strlen(p), 0, (char *)&a, sizeof a, 0) != -ENOENT) return;
+    rx_handle_t c, s;
+    if (rx_channel_create(0, &c, &s) != RX_OK) return;
+    uint32_t f[2] = { O_WRONLY | O_CREAT | O_EXCL, 0644 }, t;
+    if (forward(root, RX_FS_OP_OPEN, f, sizeof f, p, strlen(p), s, (char *)&t, sizeof t, 0) == 0) {
+        for (size_t off = 0; off < n;) {
+            size_t k = n - off < RX_FS_MAX_IO ? n - off : RX_FS_MAX_IO;
+            uint64_t w = 0;
+            if (forward_ch(c, RX_FS_OP_WRITE, data + off, k, 0, 0, 0, (char *)&w, sizeof w, 0) < 0 || !w) break;
+            off += (size_t)w;
+        }
+    }
+    rx_handle_close(c);
+}
+
+// What a fresh root filesystem needs from us: the top directories, the
+// settings of the boot image's /etc it does not have, /etc/mtab as a link
+static void seed_root(void) {
+    seed_mkdir("etc", 0755);
+    seed_mkdir("root", 0700);
+    seed_mkdir("home", 0755);
+    seed_mkdir("var", 0755);
+    for (struct node *f = boot_etc ? boot_etc->first : 0; f; f = f->next) {
+        if (f->type != RX_FS_TYPE_FILE || !strcmp(f->name, "mtab")) continue;
+        char p[300];
+        snprintf(p, sizeof p, "etc/%s", f->name);
+        seed_file(p, f->rodata, f->size);
+    }
+    char t[64];
+    size_t n = 0;
+    int r = forward(root, RX_FS_OP_READLINK, 0, 0, "etc/mtab", 8, 0, t, sizeof t, &n);
+    if (r != 0 || n != 9 || memcmp(t, "/run/mtab", 9)) {
+        uint32_t fl = 0, tl = 9;
+        char pre[13];
+        forward(root, RX_FS_OP_UNLINK, &fl, 4, "etc/mtab", 8, 0, 0, 0, 0);
+        memcpy(pre, &tl, 4);
+        memcpy(pre + 4, "/run/mtab", 9);
+        forward(root, RX_FS_OP_SYMLINK, pre, sizeof pre, "etc/mtab", 8, 0, 0, 0, 0);
+    }
 }
 
 static int do_mount(struct ofd *dir, const char *body, size_t blen, rx_handle_t h) {
@@ -341,7 +547,27 @@ static int do_mount(struct ofd *dir, const char *body, size_t blen, rx_handle_t 
     if (r == -EREMOTE_FS) return g_rest_len ? -EXDEV : -EBUSY;   // inside, or on, another mount
     if (r < 0) return r;
     if (n->type != RX_FS_TYPE_DIR) return -ENOTDIR;
-    if (n == root || n->mount) return -EBUSY;
+    if (n == root) {
+        // The root filesystem: it takes the top, except fsd's own directories
+        if (root->remote) return -EBUSY;
+        root->remote = h;
+        root->mnt_source = strndup(src, mt.source_len);
+        root->mnt_type = strndup(type, mt.type_len);
+        root->mnt_flags = mt.flags;
+        root->mnt_next = mounts;
+        mounts = root;
+        for (struct node *c = root->first, *next; c; c = next) {
+            next = c->next;
+            if (system_name(c->name, strlen(c->name))) continue;
+            if (c == etc_dir) etc_dir = 0;
+            detach(c);
+            maybe_free(c);
+        }
+        if (!(mt.flags & RX_FS_MOUNT_RDONLY)) seed_root();
+        update_mtab();
+        return 0;
+    }
+    if (n->mount) return -EBUSY;
     n->remote = h;
     n->mnt_source = strndup(src, mt.source_len);
     n->mnt_type = strndup(type, mt.type_len);
@@ -361,6 +587,7 @@ static int do_unmount(struct ofd *dir, const char *body, size_t blen) {
     memcpy(&flags, body, 4);
     struct node *n;
     int r = walk(dir->node, body + 4, blen - 4, &n, 0, 0, 0);
+    if (r == 0 && n == root && root->remote) return -EBUSY;   // the root filesystem stays
     if (r != -EREMOTE_FS) return r < 0 ? r : -EINVAL;   // not a mount point
     if (g_rest_len) return -EINVAL;
     struct node *m = g_remote;
@@ -431,21 +658,32 @@ static int connect_service(struct node *n, uint32_t flags, rx_handle_t server) {
     return 0;
 }
 
+// The server end of a redirected OPEN, sent back by a mounted filesystem
+static rx_handle_t g_open_handle;
+
 static int do_open(struct ofd *dir, const char *path, size_t plen, uint32_t flags, uint32_t mode,
                    rx_handle_t server, uint32_t *type, int *consumed) {
     struct node *n = 0, *parent;
     const char *last;
     size_t last_len;
-    int r = walk(dir->node, path, plen, &n, 0, 0, 0);
+    int follow = !(flags & O_NOFOLLOW) && !((flags & O_CREAT) && (flags & O_EXCL));
+    int r = walk_f(dir->node, path, plen, &n, 0, 0, 0, follow);
     if (r == -EREMOTE_FS) {
         // On a mounted filesystem: it opens the file and gets the connection
         uint32_t f[2] = { flags, mode }, t = 0;
         size_t got = 0;
         *consumed = 1;
         r = forward(g_remote, RX_FS_OP_OPEN, f, sizeof f, g_rest, g_rest_len, server, (char *)&t, sizeof t, &got);
+        if (r == -EREDIRECT) {
+            // It sent the connection back: we try again with it
+            g_open_handle = g_fwd_handle;
+            g_fwd_handle = 0;
+            if (!g_open_handle) return -EIO;
+        }
         *type = t;
         return r;
     }
+    if (r == 0 && n->type == RX_FS_TYPE_SYMLINK) return (flags & O_CREAT) && (flags & O_EXCL) ? -EEXIST : -ELOOP;
     if (r == 0 && n->type == RX_FS_TYPE_SERVICE) {
         if ((flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
         if (flags & O_DIRECTORY) return -ENOTDIR;
@@ -533,7 +771,7 @@ static int do_readdir(struct ofd *o, uint32_t max, char *out, size_t *len) {
     struct node *c = d->first;
     for (uint32_t i = 0; c && i < o->dir_pos; i++) c = c->next;
     size_t used = 0;
-    for (; c; c = c->next) {
+    for (; c && !o->rphase; c = c->next) {
         struct node *t = follow(c);
         size_t nl = strlen(c->name);
         if (used + 10 + nl > max) break;
@@ -544,6 +782,38 @@ static int do_readdir(struct ofd *o, uint32_t max, char *out, size_t *len) {
         used += 10 + nl;
         o->dir_pos++;
     }
+    if (d == root && root->remote && !c) {
+        // Then the root filesystem's entries, without the names fsd keeps
+        o->rphase = 1;
+        if (!o->rdir) {
+            rx_handle_t s;
+            uint32_t f[2] = { O_RDONLY | O_DIRECTORY, 0 }, t;
+            if (rx_channel_create(0, &o->rdir, &s) != RX_OK) { o->rdir = 0; goto done; }
+            if (forward(root, RX_FS_OP_OPEN, f, sizeof f, "", 0, s, (char *)&t, sizeof t, 0) < 0) {
+                rx_handle_close(o->rdir);
+                o->rdir = 0;
+                goto done;
+            }
+        }
+        static char tmp[RX_FS_MAX_IO];
+        while (used + 10 + 255 <= max) {
+            size_t n = 0;
+            uint32_t want = (uint32_t)(max - used);
+            if (forward_ch(o->rdir, RX_FS_OP_READDIR, &want, 4, 0, 0, 0, tmp, sizeof tmp, &n) < 0 || n == 0) break;
+            for (size_t p = 0; p + 10 <= n;) {
+                size_t nl = (unsigned char)tmp[p + 9];
+                if (p + 10 + nl > n) break;
+                int ours = system_name(tmp + p + 10, nl) || (nl == 1 && tmp[p + 10] == '.') ||
+                           (nl == 2 && tmp[p + 10] == '.' && tmp[p + 11] == '.');
+                if (!ours) {
+                    memcpy(out + used, tmp + p, 10 + nl);
+                    used += 10 + nl;
+                }
+                p += 10 + nl;
+            }
+        }
+    }
+done:
     *len = used;
     return 0;
 }
@@ -558,10 +828,15 @@ static int do_rename(struct ofd *dir, const char *a, size_t alen, const char *b,
     const char *sn, *dn;
     size_t snl, dnl;
     int r = walk(dir->node, a, alen, 0, &src_dir, &sn, &snl);
+    if (r == -EREDIRECT) return r;
     struct node *ma = r == -EREMOTE_FS ? g_remote : 0;
     const char *ra = g_rest;
     size_t ral = g_rest_len;
     int rb = walk(dir->node, b, blen, 0, &dst_dir, &dn, &dnl);
+    if (rb == -EREDIRECT) {
+        g_which = 1;
+        return rb;
+    }
     struct node *mb = rb == -EREMOTE_FS ? g_remote : 0;
     if (ma || mb) {
         // Within one mounted filesystem it renames; across filesystems no
@@ -637,6 +912,103 @@ static int do_unlink(struct ofd *dir, const char *path, size_t plen, uint32_t fl
     return 0;
 }
 
+// A second name for a file: on mounted filesystems that have them (ext2);
+// tmpfs has no hard links (EPERM)
+static int do_link(struct ofd *dir, const char *a, size_t alen, const char *b, size_t blen) {
+    struct node *n, *dst_dir;
+    const char *dn;
+    size_t dnl;
+    int r = walk_f(dir->node, a, alen, &n, 0, 0, 0, 0);
+    if (r == -EREDIRECT) return r;
+    struct node *ma = r == -EREMOTE_FS ? g_remote : 0;
+    const char *ra = g_rest;
+    size_t ral = g_rest_len;
+    int rb = walk(dir->node, b, blen, 0, &dst_dir, &dn, &dnl);
+    if (rb == -EREDIRECT) {
+        g_which = 1;
+        return rb;
+    }
+    struct node *mb = rb == -EREMOTE_FS ? g_remote : 0;
+    if (ma || mb) {
+        if (ma != mb) return (ma && rb < 0 && rb != -EREMOTE_FS) ? rb : -EXDEV;
+        uint32_t l = (uint32_t)ral;
+        char pre[4 + 4096];
+        if (ral > 4096) return -ENAMETOOLONG;
+        memcpy(pre, &l, 4);
+        memcpy(pre + 4, ra, ral);
+        return forward(ma, RX_FS_OP_LINK, pre, 4 + ral, g_rest, g_rest_len, 0, 0, 0, 0);
+    }
+    if (r < 0) return r;
+    if (rb < 0) return rb;
+    if (child(dst_dir, dn, dnl)) return -EEXIST;
+    return -EPERM;
+}
+
+static int do_symlink(struct ofd *dir, const char *body, size_t blen) {
+    uint32_t tl;
+    if (blen < 4) return -EINVAL;
+    memcpy(&tl, body, 4);
+    if (tl == 0 || tl > blen - 4 || tl >= FSD_PATH_MAX) return -EINVAL;
+    const char *target = body + 4, *path = body + 4 + tl;
+    size_t plen = blen - 4 - tl;
+    struct node *parent;
+    const char *last;
+    size_t last_len;
+    int r = walk(dir->node, path, plen, 0, &parent, &last, &last_len);
+    if (r == -EREMOTE_FS) return forward(g_remote, RX_FS_OP_SYMLINK, body, 4 + tl, g_rest, g_rest_len, 0, 0, 0, 0);
+    if (r < 0) return r;
+    for (struct node *c = parent->first; c; c = c->next)
+        if (strlen(c->name) == last_len && !memcmp(c->name, last, last_len)) return -EEXIST;
+    if (parent->read_only) return -EROFS;
+    char name[256];
+    memcpy(name, last, last_len);
+    name[last_len] = 0;
+    struct node *n = new_node(RX_FS_TYPE_SYMLINK, name, parent, 0777);
+    if (!n || set_size(n, tl) < 0) return -ENOSPC;
+    memcpy(n->data, target, tl);
+    return 0;
+}
+
+// A request's body with the path that `g_which` names replaced by
+// g_redirect (which is from the root)
+static int rebuild(uint32_t op, const char *body, size_t blen, char *nb, size_t cap, size_t *nlen) {
+    size_t pre = 0, glen = strlen(g_redirect);
+    uint32_t u = 0;
+    if (blen >= 4) memcpy(&u, body, 4);
+    switch (op) {
+    case RX_FS_OP_OPEN: pre = 8; break;
+    case RX_FS_OP_MKDIR: case RX_FS_OP_UNLINK: case RX_FS_OP_UNMOUNT: pre = 4; break;
+    case RX_FS_OP_SYMLINK: pre = 4 + (size_t)u; break;
+    case RX_FS_OP_MOUNT: {
+        rx_fs_mount_t mt;
+        if (blen < sizeof mt) return -EINVAL;
+        memcpy(&mt, body, sizeof mt);
+        pre = sizeof mt + mt.source_len + mt.type_len;
+        break;
+    }
+    case RX_FS_OP_RENAME: case RX_FS_OP_LINK: {
+        if (blen < 4 || u > blen - 4) return -EINVAL;
+        const char *a = body + 4, *b = body + 4 + u;
+        size_t al = u, bl = blen - 4 - u;
+        if (g_which == 0) { a = g_redirect; al = glen; }
+        else { b = g_redirect; bl = glen; }
+        if (4 + al + bl > cap) return -ENAMETOOLONG;
+        uint32_t l = (uint32_t)al;
+        memcpy(nb, &l, 4);
+        memmove(nb + 4, a, al);
+        memmove(nb + 4 + al, b, bl);
+        *nlen = 4 + al + bl;
+        return 0;
+    }
+    default: break;
+    }
+    if (pre > blen || pre + glen > cap) return -EINVAL;
+    memmove(nb, body, pre);
+    memcpy(nb + pre, g_redirect, glen);
+    *nlen = pre + glen;
+    return 0;
+}
+
 // Make (or replace) a service node at `path`, served over channel `ch`
 static int do_serve(struct ofd *dir, const char *path, size_t plen, rx_handle_t ch) {
     struct node *parent, *n = 0;
@@ -667,6 +1039,8 @@ static int do_serve(struct ofd *dir, const char *path, size_t plen, rx_handle_t 
 
 // Handle one request on connection `i`; returns 0, or -1 if the connection
 // was dropped
+static struct ofd root_ofd;    // the root, for requests a link sent there
+
 static int serve(int i) {
     rx_handle_t h = 0;
     uint32_t nb = 0, nh = 0;
@@ -690,7 +1064,10 @@ static int serve(int i) {
     int st = 0;
     uint32_t u32;
     rx_handle_t reply_handle = 0; // sent with the reply (GET_VMO)
+    static char rbuf[2][FSD_PATH_MAX * 3 + 64];
+    int hops = 0;
 
+again:
     switch (hdr.op) {
     case RX_FS_OP_OPEN: {
         if (blen < 8 || !nh) { st = -EINVAL; break; }
@@ -700,12 +1077,15 @@ static int serve(int i) {
         int consumed = 0;
         st = do_open(o, body + 8, blen - 8, f[0], f[1], h, &u32, &consumed);
         if (consumed) h = 0; // handed to a service
+        if (st == -EREDIRECT && consumed) {
+            h = g_open_handle;   // back from the mounted filesystem
+            g_open_handle = 0;
+        }
         if (st == 0) {
             h = 0; // the new connection owns it
             memcpy(out, &u32, 4);
             olen = 4;
         }
-        o = conns[i].ofd; // conns[] may have moved? no: add_conn appends
         break;
     }
     case RX_FS_OP_CLONE:
@@ -717,11 +1097,12 @@ static int serve(int i) {
         attr_of(o->node, (rx_fs_attr_t *)out);
         olen = sizeof(rx_fs_attr_t);
         break;
-    case RX_FS_OP_STAT_AT: {
+    case RX_FS_OP_STAT_AT:
+    case RX_FS_OP_LSTAT_AT: {
         struct node *n;
-        st = walk(o->node, body, blen, &n, 0, 0, 0);
+        st = walk_f(o->node, body, blen, &n, 0, 0, 0, hdr.op == RX_FS_OP_STAT_AT);
         if (st == -EREMOTE_FS) {
-            st = forward(g_remote, RX_FS_OP_STAT_AT, 0, 0, g_rest, g_rest_len, 0, out, sizeof(rx_fs_attr_t), &olen);
+            st = forward(g_remote, hdr.op, 0, 0, g_rest, g_rest_len, 0, out, sizeof(rx_fs_attr_t), &olen);
         } else if (st == 0) {
             attr_of(n, (rx_fs_attr_t *)out);
             olen = sizeof(rx_fs_attr_t);
@@ -792,6 +1173,8 @@ static int serve(int i) {
         break;
     case RX_FS_OP_REWIND:
         o->dir_pos = 0;
+        o->rphase = 0;
+        if (o->rdir) forward_ch(o->rdir, RX_FS_OP_REWIND, 0, 0, 0, 0, 0, 0, 0, 0);
         break;
     case RX_FS_OP_MKDIR: {
         struct node *parent;
@@ -843,12 +1226,62 @@ static int serve(int i) {
         st = do_unmount(o, body, blen);
         break;
     case RX_FS_OP_STATFS:
+        if (o->node == root && root->remote) {
+            st = forward(root, RX_FS_OP_STATFS, 0, 0, 0, 0, 0, out, sizeof(rx_fs_statfs_t), &olen);
+            break;
+        }
         statfs_of(o->node, (rx_fs_statfs_t *)out);
         olen = sizeof(rx_fs_statfs_t);
         break;
+    case RX_FS_OP_READLINK: {
+        struct node *n;
+        st = walk_f(o->node, body, blen, &n, 0, 0, 0, 0);
+        if (st == -EREMOTE_FS) {
+            st = forward(g_remote, RX_FS_OP_READLINK, 0, 0, g_rest, g_rest_len, 0, out, FSD_PATH_MAX, &olen);
+        } else if (st == 0) {
+            if (n->type != RX_FS_TYPE_SYMLINK) st = -EINVAL;
+            else {
+                memcpy(out, n->data, n->size);
+                olen = n->size;
+            }
+        }
+        break;
+    }
+    case RX_FS_OP_SYMLINK:
+        st = do_symlink(o, body, blen);
+        break;
+    case RX_FS_OP_LINK:
+        if (blen < 4) { st = -EINVAL; break; }
+        memcpy(&u32, body, 4);
+        if (u32 > blen - 4) { st = -EINVAL; break; }
+        st = do_link(o, body + 4, u32, body + 4 + u32, blen - 4 - u32);
+        break;
+    case RX_FS_OP_SHUTDOWN_ALL: {
+        // Mounted filesystems first, the root filesystem (the first mount) last
+        struct node *list[64];
+        int k = 0;
+        for (struct node *m = mounts; m && k < 64; m = m->mnt_next) list[k++] = m;
+        uint32_t force = RX_FS_UNMOUNT_FORCE;
+        while (k-- > 0) forward(list[k], RX_FS_OP_SHUTDOWN, &force, 4, 0, 0, 0, 0, 0, 0);
+        break;
+    }
     default:
         st = -ENOSYS;
         break;
+    }
+    if (st == -EREDIRECT) {
+        // A symbolic link: the same request again with the path it gives,
+        // from the root
+        size_t nlen = 0;
+        char *nb = rbuf[hops & 1];
+        if (++hops > RX_FS_MAX_LINKS) st = -ELOOP;
+        else if ((st = rebuild(hdr.op, body, blen, nb, sizeof rbuf[0], &nlen)) == 0) {
+            body = nb;
+            blen = nlen;
+            o = &root_ofd;
+            if (hdr.op == RX_FS_OP_OPEN && h) nh = 1;
+            goto again;
+        }
     }
     if (h) rx_handle_close(h);
     rx_fs_reply_t r = { hdr.txid, st };
@@ -914,6 +1347,9 @@ int main(void) {
     new_node(RX_FS_TYPE_DIR, "root", root, 0700);
     new_node(RX_FS_TYPE_DIR, "svc", root, 0755);
     new_node(RX_FS_TYPE_DIR, "mnt", root, 0755);
+    struct node *run = new_node(RX_FS_TYPE_DIR, "run", root, 0755);
+    run_mtab = new_node(RX_FS_TYPE_FILE, "mtab", run, 0644);
+    root_ofd.node = root;
     struct node *boot_top = bootfs ? bootfs_load(bootfs) : 0;
     if (boot_top) {
         struct node *m = new_node(RX_FS_TYPE_DIR, "boot", root, 0555);
@@ -935,16 +1371,24 @@ int main(void) {
         struct node *etc = new_node(RX_FS_TYPE_DIR, "etc", root, 0755);
         etc_dir = etc;
         struct node *src = child(boot_top, "etc", 3);
+        boot_etc = src;
         for (struct node *f = src ? src->first : 0; f; f = f->next) {
             if (f->type != RX_FS_TYPE_FILE) continue;
+            if (!strcmp(f->name, "mtab")) {
+                // The fixed lines; the file itself is /run/mtab
+                if ((mtab_base = malloc(f->size + 1))) {
+                    memcpy(mtab_base, f->rodata, f->size);
+                    mtab_base[f->size] = 0;
+                }
+                struct node *l = new_node(RX_FS_TYPE_SYMLINK, "mtab", etc, 0777);
+                if (l && set_size(l, 9) == 0) memcpy(l->data, "/run/mtab", 9);
+                continue;
+            }
             struct node *c = new_node(RX_FS_TYPE_FILE, f->name, etc, 0644);
             if (c && set_size(c, f->size) == 0) memcpy(c->data, f->rodata, f->size);
-            if (c && !strcmp(f->name, "mtab") && (mtab_base = malloc(f->size + 1))) {
-                memcpy(mtab_base, f->rodata, f->size);
-                mtab_base[f->size] = 0;
-            }
         }
     }
+    update_mtab();
     struct node *dev = new_node(RX_FS_TYPE_DIR, "dev", root, 0755);
     dev->read_only = 1; // no new files here
     dev->fsid = 3;

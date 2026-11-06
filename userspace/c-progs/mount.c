@@ -17,14 +17,17 @@
 // removable disk if there is one (the stick Rustux started from). An EFI
 // partition on a fixed disk (Windows' own) is mounted read-only unless
 // the options say "rw!".
-// TYPE: vfat (fat, msdos), or auto (default): what blkid finds.
+// TYPE: vfat (fat, msdos), ext2 (ext3 and ext4 without their new
+// features: read-only or refused, step 16), or auto (default): what blkid
+// finds.
 // OPTS: ro, rw, rw!, noauto, nofail, defaults (comma separated).
 // With -a, devices that are not there yet are waited for (-w, default 10
 // seconds: USB sticks take a moment; EFI waits that long for one on a
 // removable disk before it takes a fixed disk's); nofail entries that never come are
 // skipped quietly.
 //
-// The filesystem itself is served by a program per type (/bin/fatfs),
+// The filesystem itself is served by a program per type (/bin/fatfs,
+// /bin/ext2fs),
 // which mount starts and hands to fsd.
 
 #include <errno.h>
@@ -49,7 +52,7 @@ static void usage(void) {
             "       mount [-t TYPE] [-o OPTS] DEV DIR  mount DEV (sda1, LABEL=x, UUID=x, EFI) at DIR\n"
             "       mount DIR|DEV                      as /etc/fstab says\n"
             "       mount -a [-w SECONDS]              everything in /etc/fstab\n"
-            "TYPE: vfat or auto; OPTS: ro, rw, noauto, nofail, defaults\n");
+            "TYPE: vfat, ext2 or auto; OPTS: ro, rw, noauto, nofail, defaults\n");
 }
 
 // Split a line into whitespace-separated fields (in place)
@@ -194,8 +197,15 @@ static int do_mount(const char *src, const char *type, const char *opts, const c
         type = probed;
     }
     if (!strcmp(type, "fat") || !strcmp(type, "msdos") || !strcmp(type, "fat32") || !strcmp(type, "fat16")) type = "vfat";
-    if (strcmp(type, "vfat")) {
-        fprintf(stderr, "%s: %s: cannot mount %s filesystems (only vfat)\n", prog, dev, type);
+    const char *server_path, *server_name;
+    if (!strcmp(type, "vfat")) {
+        server_path = "/bin/fatfs";
+        server_name = "fatfs";
+    } else if (!strcmp(type, "ext2") || !strcmp(type, "ext3") || !strcmp(type, "ext4")) {
+        server_path = "/bin/ext2fs";
+        server_name = "ext2fs";
+    } else {
+        fprintf(stderr, "%s: %s: cannot mount %s filesystems (vfat and ext2)\n", prog, dev, type);
         return -ENOTSUP;
     }
     struct stat st;
@@ -210,11 +220,11 @@ static int do_mount(const char *src, const char *type, const char *opts, const c
     }
     rx_handle_t client, server, proc;
     if (rx_channel_create(0, &client, &server) != RX_OK) return -ENOMEM;
-    char *argv[] = { "fatfs", ro ? "-r" : dev, ro ? dev : 0, 0 };
+    char *argv[] = { (char *)server_name, ro ? "-r" : dev, ro ? dev : 0, 0 };
     rx_spawn_handle_t hs[] = { { RX_PA_USER0, server } };
     // In the default job, so the server outlives this command (and Ctrl+C)
-    if (rx_spawn_etc(rx_job_default, "/bin/fatfs", argv, 0, RX_SPAWN_CLONE_ALL, hs, 1, &proc) != RX_OK) {
-        fprintf(stderr, "%s: cannot start /bin/fatfs: %s\n", prog, strerror(errno));
+    if (rx_spawn_etc(rx_job_default, server_path, argv, 0, RX_SPAWN_CLONE_ALL, hs, 1, &proc) != RX_OK) {
+        fprintf(stderr, "%s: cannot start %s: %s\n", prog, server_path, strerror(errno));
         rx_handle_close(client);
         return -ENOENT;
     }
@@ -237,6 +247,14 @@ static int do_mount(const char *src, const char *type, const char *opts, const c
         return -EIO;
     }
     rx_handle_close(proc);
+    // The server may serve it read-only (features it does not keep up)
+    rx_fs_reply_t rp;
+    memcpy(&rp, rep, sizeof rp);
+    if (rp.status == 0 && nb >= sizeof rp + sizeof(rx_fs_attr_t)) {
+        rx_fs_attr_t a;
+        memcpy(&a, rep + sizeof rp, sizeof a);
+        if (a.read_only) ro = 1;
+    }
     char source[80];
     snprintf(source, sizeof source, "/dev/%s", dev);
     r = rx_mount(source, dir, type, ro ? MS_RDONLY : 0, client);
@@ -273,8 +291,15 @@ static int read_fstab(struct fsent *e, int max) {
 }
 
 int main(int argc, char **argv) {
-    const char *type = 0, *opts = "";
+    const char *type = 0, *opts = "", *root_spec = 0;
     int all = 0, wait_s = 10, c;
+    // init at boot: mount --root SPEC [-t TYPE] [-o OPTS] (the root= of
+    // the kernel command line; waits up to 30 s for the disk)
+    if (argc >= 3 && !strcmp(argv[1], "--root")) {
+        root_spec = argv[2];
+        optind = 3;
+        wait_s = 30;
+    }
     while ((c = getopt(argc, argv, "t:o:aw:h")) != -1) {
         switch (c) {
         case 't': type = optarg; break;
@@ -285,6 +310,19 @@ int main(int argc, char **argv) {
         }
     }
     int rest = argc - optind;
+    if (root_spec) {
+        if (rest) { usage(); return 2; }
+        uint64_t until = rx_clock_get_monotonic() + (uint64_t)wait_s * 1000000000ull;
+        int r;
+        for (;;) {
+            r = do_mount(root_spec, type, opts, "/", 1);
+            if (r != -ENOENT || rx_clock_get_monotonic() >= until) break;
+            usleep(250000);
+        }
+        if (r == -ENOENT) fprintf(stderr, "mount: root %s: no such block device\n", root_spec);
+        else if (r == 0) printf("mount: root filesystem: %s\n", root_spec);
+        return r < 0;
+    }
     if (!all && rest == 0) return list();
     struct fsent tab[32];
     if (all) {

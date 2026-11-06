@@ -8,21 +8,67 @@ library (`open`, `read`, `opendir`, ...; `docs/USERSPACE.md`).
 
 | Path | Filesystem | Notes |
 |------|------------|-------|
-| `/` | tmpfs | in memory, writable; lost at reboot |
+| `/` | tmpfs | in memory, writable; lost at reboot. Or a disk: the root filesystem (step 15, below) |
 | `/tmp` | tmpfs | |
 | `/root` | tmpfs | root's home (`$HOME`); the shell starts here |
-| `/etc` | tmpfs | settings (`hostname`, `timezone`, `adjtime`, `keymap`, `passwd`, `group`, `mtab`), copied from `/boot/etc` at start |
+| `/etc` | tmpfs | settings (`hostname`, `timezone`, `adjtime`, `keymap`, `passwd`, `group`, `fstab`, `drivers`), copied from `/boot/etc` at start; `mtab` is a link to `/run/mtab` |
 | `/boot` | bootfs | the boot image, read-only |
 | `/bin` | bootfs | `/boot/bin` mounted again: the programs |
 | `/usr` | bootfs | `/boot/usr` mounted again (`/usr/share/zoneinfo/zones`, `/usr/share/keymaps/`, `/usr/share/man/`, `/usr/share/tests/`) |
 | `/dev` | devices | `null` (reads nothing, takes every write) and `zero` (reads zeros); no new files here |
 | `/svc` | tmpfs | services: `devmgr`, `edu`, ... (step 12; see below) |
 | `/mnt` | tmpfs | an empty directory to mount disks on (step 14) |
+| `/run` | tmpfs | runtime state: `mtab` (what is mounted), `cmdline` (the kernel command line) |
 | `/boot/efi` | FAT | the EFI system partition, mounted at boot from `/etc/fstab` when there is one (step 14) |
 
 Writes, creates, renames and removals under `/boot`, `/bin` and `/usr` fail with
 `EROFS`. Filesystems on disks are mounted into this tree (see Mounts):
-FAT12/16/32 since step 14, ext2/ext4 in steps 15-16.
+FAT12/16/32 since step 14, ext2 since step 15, ext4 in step 16.
+
+### The root filesystem on a disk (step 15)
+
+With `root=` on the kernel command line, `init` has `mount --root` mount
+that filesystem on `/` before the shell starts (waiting up to 30 s for the
+disk). It then holds everything at the top except `fsd`'s own
+directories, which stay as in the live system: `/boot`, `/bin` and `/usr`
+(the boot image: the programs always come with the kernel), `/dev`,
+`/svc`, `/tmp`, `/mnt` and `/run` (in memory, empty at each boot).
+`/etc`, `/root`, `/home`, `/var` and anything else made at the top are on
+the disk and survive reboots; names the disk has for fsd's directories
+(a `/bin` of its own) are hidden. When it is mounted, `fsd` creates
+`/etc`, `/root`, `/home` and `/var` on it if missing, copies the files of
+`/boot/etc` that `/etc` lacks (changed settings are kept), and makes
+`/etc/mtab` a link to `/run/mtab`. `poweroff` and `reboot` write every
+filesystem out and mark it clean (`RX_FS_OP_SHUTDOWN_ALL`), the root last.
+
+The kernel command line is the UEFI load options (a boot manager's entry;
+`rboot` in step 19), or else the first line of `\EFI\BOOT\cmdline.txt`
+next to the kernel on the EFI partition (a USB stick, QEMU). Its words
+are `init`'s arguments and are in `/run/cmdline`:
+
+| Word | Meaning |
+|------|---------|
+| `root=SPEC` | the root filesystem: `UUID=...`, `LABEL=...`, `PARTLABEL=...` or a device name (`vda2`); `root=live` or none: from memory, as before |
+| `rootfstype=TYPE` | its type (default: what `blkid` finds) |
+| `ro`, `rw` | mount it read-only (default `rw`) |
+
+If the root filesystem cannot be mounted, `init` says so and the system
+runs from memory.
+
+### Symbolic links (step 15)
+
+tmpfs and ext2 have symbolic links; FAT and bootfs have none. Whoever
+serves a path follows the links on it: `fsd` for its own directories, the
+filesystem's server for its part. A server that meets a link it has to
+follow replies `RX_FS_REDIRECT` (status 1) with the path to use instead
+(below); `fsd` normalises it and starts the request again from the root,
+so a link can point anywhere in the tree, across filesystems. After 40
+links: `ELOOP`. Links are followed everywhere in a path and at its end
+for `OPEN` (unless `O_NOFOLLOW`) and `STAT_AT`; not at the end for
+`LSTAT_AT`, `READLINK`, `UNLINK`, `RENAME`, `SYMLINK`, `LINK`, `MKDIR`. The
+C library still resolves `..` by the text of the path, before any link
+is looked at (as a shell's `cd ..` does), and `realpath` follows links.
+Hard links exist on ext2 (`LINK`); tmpfs and FAT refuse them (`EPERM`).
 
 Permissions are recorded (`ls -l` shows them) but not enforced until users
 exist (step 17).
@@ -88,13 +134,30 @@ the current directory; `fsd` rejects them with `EINVAL`).
 | `UNMOUNT` 19 | directory | `u32 flags` (1 = force), path of the mount point | — (`EINVAL` if nothing is mounted there, `EBUSY` if files are open) |
 | `SHUTDOWN` 20 | root of a mounted filesystem | `u32 flags` (1 = force) | — : the server writes everything out and ends; `EBUSY` while other connections are open, unless forced. Sent by `fsd` on `UNMOUNT` |
 | `STATFS` 21 | any | — | `rx_fs_statfs_t { u64 block_size, blocks, blocks_free, files, files_free; u32 name_max; u32 flags; char type[16]; }` (`statfs`, `df`) |
+| `SYMLINK` 22 | directory | `u32 target_len`, target, path | — (`EEXIST`, `EPERM` on FAT) |
+| `READLINK` 23 | directory | path | the target (`EINVAL` if not a link) |
+| `LINK` 24 | directory | `u32 old_len`, old path, new path | — (a hard link: `EXDEV` across filesystems, `EPERM` for directories, on tmpfs and FAT) |
+| `LSTAT_AT` 25 | directory | path | `rx_fs_attr_t` of the path itself (a link is not followed) |
+| `SHUTDOWN_ALL` 26 | `fsd`'s root | — | — : every mounted filesystem is written out and marked clean, the root filesystem last (`poweroff`, `reboot`) |
+
+A path request may be answered with status 1, `RX_FS_REDIRECT`: `u8
+which` (0 the request's path, 1 the second path of `RENAME`/`LINK`), then
+the path to use instead, from the namespace root if it starts with `/`,
+else from the replying server's root. A redirected `OPEN` sends the
+connection's server end back with the reply. Only `fsd` sees these; it
+retries (see Symbolic links).
 
 Types: 1 file, 2 directory, 3 device (`/dev/null`, `/dev/zero`; step 10),
-4 service (step 12; `stat` shows `S_IFSOCK`).
+4 service (step 12; `stat` shows `S_IFSOCK`), 5 symbolic link (step 15).
 
 `rx_fs_attr_t` is `{ u32 type; u32 mode; u64 size; u64 ino; u64 nlink;
-i64 mtime_ns; u32 read_only; u32 fsid; }`. Times are UTC (nanoseconds
-since 1970). `fsid` tells the filesystems apart (1 tmpfs, 2 bootfs,
+i64 mtime_ns; u32 read_only; u32 fsid; u32 uid, gid; i64 atime_ns,
+ctime_ns; u64 blocks; }` (the last five since step 15; a filesystem that
+fills `ctime_ns` also counts `blocks`, in 512-byte units; else the C
+library uses the modification time and the size). `rx_fs_setattr_t` grew
+the same way: `{ u32 mask; u32 mode; i64 mtime_ns; u32 uid, gid; i64
+atime_ns; }`, mask 4 the owner, 8 the group, 16 the access time. Times
+are UTC (nanoseconds since 1970). `fsid` tells the filesystems apart (1 tmpfs, 2 bootfs,
 3 devices); `stat` reports it as `st_dev`, which `df`, `find -xdev` and
 `cp` use.
 
@@ -174,6 +237,42 @@ FAT12, FAT16 and FAT32, read and write, as Windows writes them:
 
 `mkfs.fat` makes FAT filesystems as Windows' format does, `fsck.fat`
 checks them (docs/COMMANDS.md).
+
+### ext2 (`ext2fs`)
+
+ext2 as Linux's `mke2fs -t ext2` makes it, read and write: revision 0
+and 1, blocks of 1, 2 or 4 KiB, 128- or 256-byte inodes (nanosecond times
+in the larger ones), sparse superblocks, large files, file types in
+directories, direct, indirect, double and triple indirect blocks.
+
+- Files: holes (sparse files read zeros and take no blocks), truncation
+  frees blocks and zeroes the rest of the last one, at most 4 TiB with
+  4 KiB blocks. A full disk fails the write with `ENOSPC` and leaves no
+  blocks past the file's end.
+- Directories: entries are found by a scan; indexed ones (`dir_index`,
+  as Linux makes large directories) are read the same way and lose the
+  index when changed, as with Linux's own ext2 driver; e2fsck accepts
+  both.
+- Symbolic links (short ones in the inode), hard links (up to 65000),
+  owners and groups (32-bit), all permission bits including set-user-ID,
+  access times as Linux's `relatime`.
+- Allocation: directories go to the group with the most free inodes,
+  files near their directory, blocks after the previous block of the
+  file; the bitmaps, the group counts and the superblock are kept exact.
+- Metadata reaches the disk before each reply, file data within half a
+  second or at close. While mounted for writing the superblock says "not
+  clean"; unmounting (or `poweroff`) marks it clean, so a crash makes
+  `e2fsck` check it, and mounting a filesystem that was not clean prints
+  a warning.
+- Filesystems with ext3/ext4 features this server does not keep (a
+  journal, checksums, ...) are served read-only; those it cannot read
+  (extents, 64-bit, inline data, ...) are refused until step 16.
+- Not kept up to date: the backup superblocks and descriptors (Linux does
+  not either, except when resizing); extended attributes are left as they
+  are.
+
+`mkfs.ext2` and `fsck.ext2` make and check ext2 filesystems
+(docs/COMMANDS.md).
 
 ## Limits
 

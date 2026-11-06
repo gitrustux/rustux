@@ -1387,6 +1387,20 @@ static int serve(int i) {
         attr_of(o->n, (rx_fs_attr_t *)out);
         olen = sizeof(rx_fs_attr_t);
         break;
+    case RX_FS_OP_SYMLINK:
+    case RX_FS_OP_LINK:
+        st = read_only ? -EROFS : -EPERM;   // FAT has neither
+        break;
+    case RX_FS_OP_READLINK: {
+        struct fnode *n;
+        st = walk(o->n, body, blen, &n, 0, 0, 0);
+        if (st == 0) {
+            node_put(n);
+            st = -EINVAL;   // there are no links on FAT
+        }
+        break;
+    }
+    case RX_FS_OP_LSTAT_AT:
     case RX_FS_OP_STAT_AT: {
         struct fnode *n;
         st = walk(o->n, body, blen, &n, 0, 0, 0);

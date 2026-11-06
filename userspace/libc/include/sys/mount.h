@@ -21,6 +21,9 @@
 // at directory `target`; source and type are what /etc/mtab shows.
 // flags: RX_FS_MOUNT_RDONLY. 0 or a negative errno.
 int rx_mount(const char *source, const char *target, const char *type, unsigned flags, rx_handle_t root);
+// Every mounted filesystem written out and marked clean, the root last
+// (poweroff, reboot)
+int rx_fs_shutdown_all(void);
 int umount(const char *target);
 int umount2(const char *target, int flags);
 // The statfs data of an open file's filesystem (0 or a negative errno)

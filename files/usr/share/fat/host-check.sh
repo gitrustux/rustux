@@ -1,10 +1,13 @@
 # Run by scripts/run-fat-test.sh (step 14) under QEMU: writes to two FAT
-# disks for the host's fsck.fat and mtools to check. vda: made by the
-# host's mkfs.fat; vdb: empty, formatted here, then filled up.
+# disks for the host's fsck.fat and mtools to check: LINUXA, made by the
+# host's mkfs.fat; BLANKB, formatted here, then filled up. Found by label:
+# disk names (vda, vdb) go in the order the disks appear, which varies.
 echo FATTEST start
 programs="coreutils tools shell fsd fatfs mount mkfs.fat fsck.fat devmgr lsblk"
 mkdir -p /tmp/a /tmp/b
-mount vda /tmp/a
+a=$(blkid -L LINUXA)
+b=$(blkid -L BLANKB)
+mount $a /tmp/a
 cat /tmp/a/from-linux/hello.txt
 seq 1 2000000 > /tmp/seq.txt
 mkdir "/tmp/a/Large Copy" "/tmp/a/Programs from Rustux"
@@ -16,8 +19,8 @@ echo "written by Rustux" > /tmp/a/from-linux/rustux.txt
 rm /tmp/a/from-linux/delete-me.txt
 df /tmp/a | tail -1
 umount /tmp/a
-mkfs.fat -F 32 -n RUSTUXB -i 0B0B0B0B vdb
-mount vdb /tmp/b
+mkfs.fat -F 32 -n RUSTUXB -i 0B0B0B0B $b
+mount $b /tmp/b
 mkdir /tmp/b/bin
 for p in $programs; do cp /bin/$p /tmp/b/bin/$p; done
 cp /tmp/seq.txt /tmp/b/numbers.txt
@@ -29,7 +32,7 @@ for i in 1 2 3 4 5 6 7 8 9; do cp /tmp/seq.txt /tmp/b/fill/$i 2>&1 | cut -d: -f3
 df /tmp/b | tail -1
 rm /tmp/b/fill/2 /tmp/b/fill/4
 umount /tmp/b
-fsck.fat vda | tail -1
-fsck.fat vdb | tail -1
+fsck.fat $a | tail -1
+fsck.fat $b | tail -1
 rm /tmp/seq.txt
 echo FATTEST done

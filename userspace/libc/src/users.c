@@ -334,11 +334,19 @@ int statfs(const char *path, struct statfs *s) {
 
 // ---- file times and modes ----
 
+static int setattr_full(int fd, const rx_fs_setattr_t *sa) {
+    struct fd *f = __fd_get(fd);
+    if (!f) return -1;
+    if (f->kind != RX_FD_FILE) return 0;
+    int r = __fs_call(f->handle, RX_FS_OP_SETATTR, sa, sizeof *sa, 0, 0, 0, 0, 0, 0);
+    return r < 0 ? fail(-r) : 0;
+}
+
 static int setattr_fd(int fd, uint32_t mask, uint32_t mode, int64_t mtime) {
     struct fd *f = __fd_get(fd);
     if (!f) return -1;
     if (f->kind != RX_FD_FILE) return 0;
-    rx_fs_setattr_t sa = { mask, mode, mtime };
+    rx_fs_setattr_t sa = { mask, mode, mtime, 0, 0, 0 };
     int r = __fs_call(f->handle, RX_FS_OP_SETATTR, &sa, sizeof sa, 0, 0, 0, 0, 0, 0);
     return r < 0 ? fail(-r) : 0;
 }
@@ -353,39 +361,52 @@ static int setattr_path(const char *path, uint32_t mask, uint32_t mode, int64_t 
     return r;
 }
 
-// The modification time to set from a timespec pair (-1: leave it)
-static int64_t mtime_of(const struct timespec *t) {
-    if (!t || t[1].tv_nsec == UTIME_NOW) return rx_clock_get_utc();
-    if (t[1].tv_nsec == UTIME_OMIT) return -1;
-    return t[1].tv_sec * 1000000000ll + t[1].tv_nsec;
+// A time to set from a timespec (-1: leave it)
+static int64_t time_of(const struct timespec *t, int i) {
+    if (!t || t[i].tv_nsec == UTIME_NOW) return rx_clock_get_utc();
+    if (t[i].tv_nsec == UTIME_OMIT) return -1;
+    return t[i].tv_sec * 1000000000ll + t[i].tv_nsec;
 }
 
 int futimens(int fd, const struct timespec t[2]) {
-    int64_t m = mtime_of(t);
-    return m < 0 ? 0 : setattr_fd(fd, RX_FS_SETATTR_MTIME, 0, m);
+    int64_t a = time_of(t, 0), m = time_of(t, 1);
+    rx_fs_setattr_t sa = { 0, 0, m, 0, 0, a };
+    if (m >= 0) sa.mask |= RX_FS_SETATTR_MTIME;
+    if (a >= 0) sa.mask |= RX_FS_SETATTR_ATIME;
+    return sa.mask ? setattr_full(fd, &sa) : 0;
 }
 
 int utimensat(int dirfd, const char *path, const struct timespec t[2], int flags) {
-    (void)flags;
-    int64_t m = mtime_of(t);
     if (!path) return futimens(dirfd, t);
+    struct stat st;
+    // A link itself has no times of its own to set here
+    if ((flags & AT_SYMLINK_NOFOLLOW) && fstatat(dirfd, path, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(st.st_mode)) return 0;
     int fd = openat(dirfd, path, O_RDONLY);
     if (fd < 0) return -1;
-    int r = m < 0 ? 0 : setattr_fd(fd, RX_FS_SETATTR_MTIME, 0, m);
+    int r = futimens(fd, t);
     int e = errno;
     close(fd);
     errno = e;
     return r;
 }
 
-int utimes(const char *path, const struct timeval t[2]) {
-    int64_t m = t ? t[1].tv_sec * 1000000000ll + t[1].tv_usec * 1000ll : rx_clock_get_utc();
-    return setattr_path(path, RX_FS_SETATTR_MTIME, 0, m);
+static int utimes_ns(const char *path, int64_t a, int64_t m) {
+    struct timespec t[2] = { { a / 1000000000, a % 1000000000 }, { m / 1000000000, m % 1000000000 } };
+    return utimensat(AT_FDCWD, path, t, 0);
 }
-int lutimes(const char *path, const struct timeval t[2]) { return utimes(path, t); }
+int utimes(const char *path, const struct timeval t[2]) {
+    int64_t now = rx_clock_get_utc();
+    return utimes_ns(path, t ? t[0].tv_sec * 1000000000ll + t[0].tv_usec * 1000ll : now,
+                     t ? t[1].tv_sec * 1000000000ll + t[1].tv_usec * 1000ll : now);
+}
+int lutimes(const char *path, const struct timeval t[2]) {
+    struct stat st;
+    if (lstat(path, &st) == 0 && S_ISLNK(st.st_mode)) return 0;
+    return utimes(path, t);
+}
 int utime(const char *path, const struct utimbuf *t) {
-    int64_t m = t ? t->modtime * 1000000000ll : rx_clock_get_utc();
-    return setattr_path(path, RX_FS_SETATTR_MTIME, 0, m);
+    int64_t now = rx_clock_get_utc();
+    return utimes_ns(path, t ? t->actime * 1000000000ll : now, t ? t->modtime * 1000000000ll : now);
 }
 
 int chmod(const char *path, mode_t mode) { return setattr_path(path, RX_FS_SETATTR_MODE, mode & 07777, 0); }
@@ -401,28 +422,57 @@ int fchmodat(int dirfd, const char *path, mode_t mode, int flags) {
     return r;
 }
 
-// No owners until step 17: everything belongs to root
-int chown(const char *path, uid_t u, gid_t g) { (void)u; (void)g; struct stat st; return stat(path, &st); }
-int lchown(const char *path, uid_t u, gid_t g) { return chown(path, u, g); }
-int fchown(int fd, uid_t u, gid_t g) { (void)u; (void)g; struct stat st; return fstat(fd, &st); }
-int fchownat(int dirfd, const char *path, uid_t u, gid_t g, int flags) {
-    (void)u; (void)g;
+// Owners are stored where the filesystem keeps them (ext2); enforced from
+// step 17. (uid_t)-1 leaves one unchanged.
+int fchown(int fd, uid_t u, gid_t g) {
+    rx_fs_setattr_t sa = { 0, 0, 0, (uint32_t)u, (uint32_t)g, 0 };
+    if (u != (uid_t)-1) sa.mask |= RX_FS_SETATTR_UID;
+    if (g != (gid_t)-1) sa.mask |= RX_FS_SETATTR_GID;
+    return sa.mask ? setattr_full(fd, &sa) : 0;
+}
+int chown(const char *path, uid_t u, gid_t g) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    int r = fchown(fd, u, g);
+    int e = errno;
+    close(fd);
+    errno = e;
+    return r;
+}
+// A link's own owner is not changed (links have no owner that matters)
+int lchown(const char *path, uid_t u, gid_t g) {
     struct stat st;
-    return fstatat(dirfd, path, &st, flags);
+    if (lstat(path, &st) < 0) return -1;
+    return S_ISLNK(st.st_mode) ? 0 : chown(path, u, g);
+}
+int fchownat(int dirfd, const char *path, uid_t u, gid_t g, int flags) {
+    if ((flags & AT_EMPTY_PATH) && (!path || !*path)) return fchown(dirfd, u, g);
+    char p[4096];
+    if (__at_path(dirfd, path, p) < 0) return -1;
+    return (flags & AT_SYMLINK_NOFOLLOW) ? lchown(p, u, g) : chown(p, u, g);
 }
 
 int mkfifo(const char *path, mode_t mode) { (void)path; (void)mode; return fail(EPERM); }
 int mknod(const char *path, mode_t mode, dev_t dev) { (void)path; (void)mode; (void)dev; return fail(EPERM); }
 int linkat(int a, const char *old, int b, const char *new, int flags) {
-    (void)a; (void)old; (void)b; (void)new; (void)flags;
-    return fail(EPERM);
+    char p[4096], q[4096];
+    if (__at_path(a, old, p) < 0 || __at_path(b, new, q) < 0) return -1;
+    if (flags & AT_SYMLINK_FOLLOW) {
+        char real[4096];
+        if (!realpath(p, real)) return -1;
+        return link(real, q);
+    }
+    return link(p, q);
 }
-int symlinkat(const char *target, int dirfd, const char *link) { (void)target; (void)dirfd; (void)link; return fail(EPERM); }
+int symlinkat(const char *target, int dirfd, const char *path) {
+    char p[4096];
+    if (__at_path(dirfd, path, p) < 0) return -1;
+    return symlink(target, p);
+}
 ssize_t readlinkat(int dirfd, const char *restrict path, char *restrict buf, size_t size) {
-    (void)buf; (void)size;
-    struct stat st;
-    if (fstatat(dirfd, path, &st, 0) < 0) return -1;
-    return fail(EINVAL);
+    char p[4096];
+    if (__at_path(dirfd, path, p) < 0) return -1;
+    return readlink(p, buf, size);
 }
 
 // ---- semaphores (on the library's futexes) ----

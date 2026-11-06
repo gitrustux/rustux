@@ -56,6 +56,7 @@ ssize_t pread(int fd, void *buf, size_t n, off_t off);
 ssize_t pwrite(int fd, const void *buf, size_t n, off_t off);
 ssize_t readlink(const char *restrict path, char *restrict buf, size_t size);
 int fdatasync(int fd);
+void sync(void);
 long sysconf(int name);
 int getpagesize(void);
 int chroot(const char *path);

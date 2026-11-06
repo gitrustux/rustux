@@ -97,6 +97,36 @@ typedef struct {
 #define RX_FS_OP_SHUTDOWN 20
 // Any connection. Reply: rx_fs_statfs_t (statfs, df)
 #define RX_FS_OP_STATFS   21
+
+// Symbolic and hard links (step 15). On a directory.
+// SYMLINK: u32 target_len, target, path: makes a symbolic link at path.
+// READLINK: path; reply: the target (EINVAL if path is not a link).
+// LINK: u32 old_len, old path, new path: a second name for a file (same
+//   filesystem, else EXDEV; EPERM for directories and where links do not
+//   exist, as on FAT).
+// LSTAT_AT: as STAT_AT, but a link at the end of the path is not followed.
+#define RX_FS_OP_SYMLINK  22
+#define RX_FS_OP_READLINK 23
+#define RX_FS_OP_LINK     24
+#define RX_FS_OP_LSTAT_AT 25
+// The final step of a shutdown, on fsd's root (poweroff, reboot): every
+// mounted filesystem writes everything out and is marked clean, the root
+// filesystem last; from then on writes to them fail (EROFS). Request:
+// nothing. Reply: nothing.
+#define RX_FS_OP_SHUTDOWN_ALL 26
+
+// Symbolic links are followed by the one that serves the path. A server
+// that meets a link it must follow (anywhere but at the end of the path,
+// and at the end for OPEN without O_NOFOLLOW and STAT_AT) replies with
+// this positive status and: u8 which (0: the request's path, 1: the second
+// path of RENAME or LINK), then the path to use instead. If that path
+// starts with '/', it is from the namespace root; otherwise it is from the
+// server's own root (fsd puts the mount point in front). fsd normalises
+// it (".", "..") and starts again, at most 40 times (then ELOOP). An OPEN
+// that is redirected sends the connection's server end back with the
+// reply.
+#define RX_FS_REDIRECT 1
+#define RX_FS_MAX_LINKS 40
 typedef struct {
     uint64_t block_size;
     uint64_t blocks, blocks_free;
@@ -114,10 +144,15 @@ typedef struct {
 
 #define RX_FS_SETATTR_MODE  1u
 #define RX_FS_SETATTR_MTIME 2u
+#define RX_FS_SETATTR_UID   4u   // step 15
+#define RX_FS_SETATTR_GID   8u
+#define RX_FS_SETATTR_ATIME 16u
 typedef struct {
     uint32_t mask;      // RX_FS_SETATTR_*
     uint32_t mode;      // permission bits (07777)
     int64_t mtime_ns;   // nanoseconds since 1970 (UTC)
+    uint32_t uid, gid;  // owner and group
+    int64_t atime_ns;   // last access
 } rx_fs_setattr_t;
 
 #define RX_FS_UNLINK_DIR 1u
@@ -126,6 +161,7 @@ typedef struct {
 #define RX_FS_TYPE_DIR  2u
 #define RX_FS_TYPE_CHR  3u   // a device (/dev/null, /dev/zero)
 #define RX_FS_TYPE_SERVICE 4u // a service (RX_FS_OP_SERVE): S_IFSOCK
+#define RX_FS_TYPE_SYMLINK 5u // a symbolic link (step 15): S_IFLNK
 
 // Most data in one READ or WRITE
 #define RX_FS_MAX_IO 32768u
@@ -139,6 +175,12 @@ typedef struct {
     int64_t mtime_ns;   // monotonic clock until step 9 brings real time
     uint32_t read_only; // on a read-only filesystem (bootfs)
     uint32_t fsid;      // which filesystem (1 tmpfs, 2 bootfs, 3 devices): st_dev
+    // Step 15 (0 where a filesystem has none: then the C library uses
+    // mtime for both times and the size for the blocks)
+    uint32_t uid, gid;  // owner and group
+    int64_t atime_ns;   // last access
+    int64_t ctime_ns;   // last change of the inode
+    uint64_t blocks;    // space used, in 512-byte units
 } rx_fs_attr_t;
 
 #endif

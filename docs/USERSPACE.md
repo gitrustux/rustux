@@ -171,7 +171,12 @@ UTF-8. `statfs`/`fstatfs` ask the file's filesystem (`STATFS`): memory for
 tmpfs, clusters for FAT. `<sys/mount.h>` has `rx_mount` (hand a
 filesystem server's root connection to `fsd`), `umount`, `umount2`
 (`MNT_FORCE`) and `rx_statfs_fd` (step 14, `FS.md` "Mounts"); `sync`
-asks every mounted filesystem to write out what it has. `chmod`, `utimensat`,
+asks every mounted filesystem to write out what it has. Step 15:
+`symlink`, `readlink`, `link`, `lstat`, `realpath` (follows links),
+`fstatat(AT_SYMLINK_NOFOLLOW)`, the `*at` forms, `chown`/`fchown`/
+`lchown` (owners are stored on ext2; not enforced until step 17),
+`utimensat`/`futimens`/`utimes` set the access time too, and
+`rx_fs_shutdown_all` (`poweroff`, `reboot`). `chmod`, `utimensat`,
 `futimens`, `utimes` change modes and modification times (`fsd`'s
 `SETATTR`; owners are always root). `umask` (022) is applied to new files
 and directories. `<math.h>` has the usual functions on the x87 unit

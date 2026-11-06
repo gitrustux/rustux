@@ -18,12 +18,14 @@ USAGE
     UUID=XXXX-XXXX, PARTLABEL=name, or EFI: the EFI system partition, on a
     removable disk if there is one. One on a fixed disk (Windows' own) is
     mounted read-only unless the options say rw!.
-    TYPE: vfat (also fat, msdos), or auto (default): what blkid finds.
+    TYPE: vfat (also fat, msdos), ext2 (ext3 and ext4: read-only or
+    refused until step 16), or auto (default): what blkid finds.
     OPTIONS: ro, rw, rw!, noauto, nofail, defaults (comma separated).
 
 EXAMPLES
     mount sda1 /mnt                     a USB stick's first partition
     mount -o ro LABEL=SYSTEM /mnt
+    mount -t ext2 vdb /mnt
     mount /boot/efi                     as /etc/fstab says
     mount | grep vfat
 

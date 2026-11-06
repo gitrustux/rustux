@@ -79,6 +79,7 @@ void __fs_init(void);
 // Lowest free fd at or above `from`, or -1 (EMFILE)
 int __fd_alloc(int from);
 struct fd *__fd_get(int fd);
+int __at_path(int dirfd, const char *path, char *out);  // dirfd + path, for the *at calls
 // A handle another process can use for `fd` (a new connection for a file,
 // a copy otherwise); 0 on failure
 rx_handle_t __fd_export(int fd);

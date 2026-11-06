@@ -288,6 +288,58 @@ static void start_devmgr(void) {
     }
 }
 
+// The root filesystem (step 15): root=SPEC on the kernel command line
+// (UUID=..., LABEL=..., a device name; "live" or none: stay in memory),
+// rootfstype=TYPE, ro. mount does it (it waits for the disk) and init waits
+// for it, so everything after it finds /etc, /root and /home on the disk.
+static void mount_root(int argc, char **argv) {
+    const char *spec = 0, *type = 0;
+    int ro = 0;
+    char line[600] = "";
+    for (int i = 1; i < argc; i++) {
+        if (!strncmp(argv[i], "root=", 5)) spec = argv[i] + 5;
+        else if (!strncmp(argv[i], "rootfstype=", 11)) type = argv[i] + 11;
+        else if (!strcmp(argv[i], "ro")) ro = 1;
+        else if (!strcmp(argv[i], "rw")) ro = 0;
+        if (strlen(line) + strlen(argv[i]) + 2 < sizeof line) {
+            if (line[0]) strcat(line, " ");
+            strcat(line, argv[i]);
+        }
+    }
+    // For programs: /run/cmdline (as Linux's /proc/cmdline)
+    FILE *f = fopen("/run/cmdline", "w");
+    if (f) {
+        fprintf(f, "%s\n", line);
+        fclose(f);
+    }
+    if (!spec || !*spec || !strcmp(spec, "live")) return;
+    char *av[8];
+    int n = 0;
+    av[n++] = "mount";
+    av[n++] = "--root";
+    av[n++] = (char *)spec;
+    if (type) { av[n++] = "-t"; av[n++] = (char *)type; }
+    av[n++] = "-o";
+    av[n++] = ro ? "ro" : "rw";
+    av[n] = 0;
+    rx_handle_t proc;
+    rx_spawn_handle_t hs[] = {
+        { RX_PA_HND(RX_PA_FD, 1), console_copy() },
+        { RX_PA_HND(RX_PA_FD, 2), console_copy() },
+    };
+    printf("init: mounting the root filesystem (%s)...\n", spec);
+    if (rx_spawn("/bin/mount", av, 0, RX_SPAWN_CLONE_NS, hs, 2, &proc) != RX_OK) {
+        printf("init: cannot start /bin/mount: running from memory\n");
+        return;
+    }
+    uint32_t pend = 0;
+    rx_object_wait_one(proc, RX_PROCESS_TERMINATED, rx_clock_get_monotonic() + 60000000000ull, &pend);
+    int64_t code = (pend & RX_PROCESS_TERMINATED) ? rx_wait_process(proc) : -1;
+    if (!(pend & RX_PROCESS_TERMINATED)) rx_task_kill(proc);
+    rx_handle_close(proc);
+    if (code != 0) printf("init: the root filesystem %s is not mounted: running from memory\n", spec);
+}
+
 // Mount what /etc/fstab lists (step 14: the EFI partition at /boot/efi).
 // In the background: mount waits a few seconds for disks (USB sticks
 // appear a moment after devmgr starts) and the shell need not wait.
@@ -401,7 +453,7 @@ static void driver_ended(void) {
     start_driver();
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     rx_handle_t log;
     resource = rx_take_startup_handle(RX_PA_ROOT_RESOURCE);
     kernel_input = rx_take_startup_handle(RX_PA_KERNEL_INPUT);
@@ -420,6 +472,7 @@ int main(void) {
     rx_timer_create(0, 0, &repeat_timer);
     km_load();
     start_devmgr();
+    mount_root(argc, argv);
     start_mounts();
     start_driver();
     printf("Spawning shell...\n\n");

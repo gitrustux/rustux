@@ -92,13 +92,16 @@ static int by_name(const void *a, const void *b) {
 }
 
 int main(int argc, char **argv) {
-    const char *names[64];
+    const char *names[64], *find_label = 0, *find_uuid = 0;
     int nnames = 0;
     for (int a = 1; a < argc; a++) {
         if (!strcmp(argv[a], "-o") && a + 1 < argc) mode = argv[++a];
+        else if (!strcmp(argv[a], "-L") && a + 1 < argc) find_label = argv[++a];
+        else if (!strcmp(argv[a], "-U") && a + 1 < argc) find_uuid = argv[++a];
         else if (!strcmp(argv[a], "-s") && a + 1 < argc) { if (ntags < 16) tags[ntags++] = argv[++a]; }
         else if (!strcmp(argv[a], "--help") || !strcmp(argv[a], "-h")) {
             printf("usage: blkid [-o full|value|export] [-s TAG]... [NAME...]\n"
+                   "       blkid -L LABEL | -U UUID   the device with that filesystem\n"
                    "What block devices hold: partition tables (PTTYPE, PTUUID), filesystems\n"
                    "(TYPE, LABEL, UUID) and GPT partition names and GUIDs (PARTLABEL, PARTUUID).\n");
             return 0;
@@ -127,6 +130,18 @@ int main(int argc, char **argv) {
         }
     }
     qsort(all, (size_t)n, sizeof *all, by_name);
+    if (find_label || find_uuid) {
+        // As findfs: the first device whose filesystem has it
+        for (int k = 0; k < n; k++) {
+            rx_fsprobe_t fs;
+            if (rx_block_probe(all[k].name, &fs) < 0) continue;
+            if (find_label ? !strcmp(fs.label, find_label) : !strcasecmp(fs.uuid, find_uuid)) {
+                printf("%s\n", all[k].name);
+                return 0;
+            }
+        }
+        return 2;
+    }
     int any = 0, status = 0;
     if (nnames) {
         for (int i = 0; i < nnames; i++) {

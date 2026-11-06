@@ -56,6 +56,7 @@ fn main() -> Status {
         rustux::arch::amd64::smp::set_rsdp(rsdp);
     }
     record_kernel_image();
+    capture_cmdline();
     let memory_map = unsafe { uefi::boot::exit_boot_services(None) };
     record_phys_limit(&memory_map);
 
@@ -340,7 +341,22 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
             (pa::VMO_BOOTFS, KObject::Vmo(bootfs), Rights(read_only)),
         ];
         let init_elf = launch::boot_image_find(boot_image, "bin/init").expect("bin/init missing from the boot image");
-        match launch::spawn_init("/bin/init", init_elf, &rustux::kobj::task::Job::root(), extra, Default::default()) {
+        // The command line's words become init's arguments (as on Linux)
+        let mut args = launch::ProcArgs::default();
+        args.args.extend_from_slice(b"/bin/init\0");
+        args.argc = 1;
+        let line = cmdline();
+        if !line.is_empty() {
+            debug_print("[BOOT] Command line: ");
+            debug_print(line);
+            debug_print("\n");
+        }
+        for word in line.split(' ').filter(|w| !w.is_empty()) {
+            args.args.extend_from_slice(word.as_bytes());
+            args.args.push(0);
+            args.argc += 1;
+        }
+        match launch::spawn_init("/bin/init", init_elf, &rustux::kobj::task::Job::root(), extra, args) {
             Ok((_, tid)) => {
                 rustux::drivers::keyboard::start_polling();
                 debug_print("[INIT] init started\n");
@@ -738,6 +754,90 @@ fn capture_framebuffer() {
             stride: mode.stride(),
             blue_first,
         };
+    }
+}
+
+/// The kernel command line (step 15): the UEFI load options (a boot
+/// manager's entry), or else the first line of `\EFI\BOOT\cmdline.txt` on
+/// the partition the kernel was loaded from (a USB stick, QEMU). Printable
+/// ASCII only; at most 511 bytes. Kept in a static buffer: the UEFI
+/// allocator is gone after ExitBootServices.
+static CMDLINE: rustux::sync::BootCell<([u8; 512], usize)> = rustux::sync::BootCell::new(([0; 512], 0));
+
+fn cmdline() -> &'static str {
+    let (buf, len) = CMDLINE.get();
+    core::str::from_utf8(&buf[..*len]).unwrap_or("")
+}
+
+fn set_cmdline(text: &[u8]) -> bool {
+    // A shell may pass the program's own name first ("bootx64.efi root=...")
+    let mut words = text.split(|&b| b == b' ').filter(|w| !w.is_empty()).peekable();
+    if let Some(first) = words.peek() {
+        if first.len() >= 4 && first[first.len() - 4..].eq_ignore_ascii_case(b".efi") {
+            words.next();
+        }
+    }
+    let mut n = 0usize;
+    // Written once, before ExitBootServices, while only this CPU runs
+    let (buf, len) = unsafe { CMDLINE.boot_mut() };
+    {
+        for w in words {
+            if n + w.len() + 1 > buf.len() - 1 {
+                break;
+            }
+            if n > 0 {
+                buf[n] = b' ';
+                n += 1;
+            }
+            buf[n..n + w.len()].copy_from_slice(w);
+            n += w.len();
+        }
+        *len = n;
+    }
+    n > 0
+}
+
+fn printable(text: &[u8]) -> bool {
+    !text.is_empty() && text.iter().all(|&b| (0x20..0x7f).contains(&b))
+}
+
+// No heap here: the kernel's allocator does not exist yet
+fn capture_cmdline() {
+    use uefi::boot;
+    use uefi::proto::loaded_image::LoadedImage;
+    use uefi::proto::media::file::{File, FileAttribute, FileMode};
+
+    let mut text = [0u8; 512];
+    if let Ok(image) = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle()) {
+        if let Ok(opts) = image.load_options_as_cstr16() {
+            let mut n = 0;
+            for c in opts.iter() {
+                if n == text.len() {
+                    break;
+                }
+                let u = u16::from(*c);
+                text[n] = if u < 0x80 { u as u8 } else { 0 };
+                n += 1;
+            }
+            if printable(&text[..n]) && set_cmdline(&text[..n]) {
+                return;
+            }
+        }
+    }
+    let Ok(mut sfs) = boot::get_image_file_system(boot::image_handle()) else { return };
+    let Ok(mut root) = sfs.open_volume() else { return };
+    let Ok(handle) = root.open(uefi::cstr16!("\\EFI\\BOOT\\cmdline.txt"), FileMode::Read, FileAttribute::empty()) else { return };
+    let Some(mut file) = handle.into_regular_file() else { return };
+    let Ok(n) = file.read(&mut text) else { return };
+    let mut len = 0;
+    while len < n && text[len] != b'\n' && text[len] != b'\r' {
+        if text[len] == b'\t' {
+            text[len] = b' ';
+        }
+        len += 1;
+    }
+    if printable(&text[..len]) {
+        set_cmdline(&text[..len]);
     }
 }
 

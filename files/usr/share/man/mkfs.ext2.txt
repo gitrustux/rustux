@@ -1,0 +1,22 @@
+mkfs.ext2 - make an ext2 filesystem (also mke2fs)
+
+USAGE
+    mkfs.ext2 [-b BLOCKSIZE] [-i BYTES-PER-INODE] [-L LABEL] [-U UUID]
+              [-m PERCENT] [-I] DEVICE
+
+    Makes an empty ext2 filesystem on a block device (a partition,
+    usually); everything on it is lost. As Linux's mke2fs makes ext2:
+    4 KiB blocks (1 KiB below 4 MiB), 256-byte inodes, one inode per
+    16 KiB (4 KiB below 512 MiB), 5% of the blocks reserved for root, a
+    root directory and lost+found; features ext_attr, dir_index, filetype,
+    sparse_super, large_file. -L sets the label (16 characters), -U the
+    UUID (else a random one), -m the reserved percentage. A whole disk
+    with a partition table is refused unless -I; a mounted one always.
+    Linux reads it, and e2fsck checks it.
+
+EXAMPLES
+    mkfs.ext2 -L data sda2
+    mount sda2 /mnt
+
+SEE ALSO
+    fsck.ext2, mount, gpt, blkid

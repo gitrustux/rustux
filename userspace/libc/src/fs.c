@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <stdio.h>
 #include <unistd.h>
 
 static rx_handle_t ns_root;
@@ -181,7 +182,7 @@ int open(const char *path, int flags, ...) {
     rx_handle_t c, s;
     if (rx_channel_create(0, &c, &s) != RX_OK) return fail(-ENOMEM);
     // Only these flags mean something to the filesystem service
-    uint32_t req[2] = { (uint32_t)flags & (O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_DIRECTORY), mode };
+    uint32_t req[2] = { (uint32_t)flags & (O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_DIRECTORY | O_NOFOLLOW), mode };
     uint32_t type = 0;
     r = __fs_call(ns_root, RX_FS_OP_OPEN, req, sizeof req, rel, strlen(rel), s, &type, sizeof type, 0);
     if (r < 0) {
@@ -214,14 +215,26 @@ static void fill_stat(const rx_fs_attr_t *a, struct stat *st) {
     st->st_ino = a->ino;
     st->st_dev = a->fsid;
     st->st_mode = (a->type == RX_FS_TYPE_DIR ? S_IFDIR : a->type == RX_FS_TYPE_CHR ? S_IFCHR
-                   : a->type == RX_FS_TYPE_SERVICE ? S_IFSOCK : S_IFREG) | (a->mode & 07777);
+                   : a->type == RX_FS_TYPE_SERVICE ? S_IFSOCK : a->type == RX_FS_TYPE_SYMLINK ? S_IFLNK
+                   : S_IFREG) | (a->mode & 07777);
     st->st_nlink = a->nlink;
     st->st_size = (off_t)a->size;
+    st->st_uid = a->uid;
+    st->st_gid = a->gid;
     st->st_blksize = 4096;
-    st->st_blocks = (blkcnt_t)((a->size + 511) / 512);
     st->st_mtim.tv_sec = a->mtime_ns / 1000000000;
     st->st_mtim.tv_nsec = a->mtime_ns % 1000000000;
     st->st_atim = st->st_ctim = st->st_mtim;
+    // Filesystems that keep the inode times (ext2) also count the blocks
+    if (a->ctime_ns) {
+        st->st_ctim.tv_sec = a->ctime_ns / 1000000000;
+        st->st_ctim.tv_nsec = a->ctime_ns % 1000000000;
+        st->st_atim.tv_sec = a->atime_ns / 1000000000;
+        st->st_atim.tv_nsec = a->atime_ns % 1000000000;
+        st->st_blocks = (blkcnt_t)a->blocks;
+    } else {
+        st->st_blocks = (blkcnt_t)((a->size + 511) / 512);
+    }
 }
 
 static int stat_at(const char *path, rx_fs_attr_t *a) {
@@ -240,7 +253,13 @@ int stat(const char *restrict path, struct stat *restrict st) {
 }
 
 int lstat(const char *restrict path, struct stat *restrict st) {
-    return stat(path, st); // no symbolic links yet
+    char rel[PATH_MAX];
+    rx_fs_attr_t a;
+    int r = resolve(path, rel);
+    if (r == 0) r = __fs_call(ns_root, RX_FS_OP_LSTAT_AT, rel, strlen(rel), 0, 0, 0, &a, sizeof a, 0);
+    if (r < 0) return fail(r);
+    fill_stat(&a, st);
+    return 0;
 }
 
 int fstat(int fd, struct stat *st) {
@@ -412,7 +431,7 @@ struct dirent *readdir(DIR *d) {
     d->ent.d_off = 0;
     d->ent.d_reclen = sizeof d->ent;
     d->ent.d_type = type == RX_FS_TYPE_DIR ? DT_DIR : type == RX_FS_TYPE_CHR ? DT_CHR
-                  : type == RX_FS_TYPE_SERVICE ? DT_SOCK : DT_REG;
+                  : type == RX_FS_TYPE_SERVICE ? DT_SOCK : type == RX_FS_TYPE_SYMLINK ? DT_LNK : DT_REG;
     memcpy(d->ent.d_name, p + 10, nlen);
     d->ent.d_name[nlen] = 0;
     d->pos += 10u + nlen;
@@ -452,6 +471,11 @@ DIR *fdopendir(int fd) {
 // ---- *at() calls: a relative path is taken from the directory's path ----
 
 // `path` relative to `dirfd` as a path the calls above take; 0 or -1
+static int at_path(int dirfd, const char *path, char *out);
+int __at_path(int dirfd, const char *path, char *out) {
+    return at_path(dirfd, path, out);
+}
+
 static int at_path(int dirfd, const char *path, char *out) {
     if (!path) return fail(-EFAULT);
     if (path[0] == '/' || dirfd == AT_FDCWD) {
@@ -486,7 +510,7 @@ int fstatat(int dirfd, const char *restrict path, struct stat *restrict st, int 
     if ((flags & AT_EMPTY_PATH) && (!path || !*path)) return fstat(dirfd, st);
     char p[PATH_MAX];
     if (at_path(dirfd, path, p) < 0) return -1;
-    return stat(p, st);
+    return (flags & AT_SYMLINK_NOFOLLOW) ? lstat(p, st) : stat(p, st);
 }
 
 int unlinkat(int dirfd, const char *path, int flags) {
@@ -521,28 +545,85 @@ int fchdir(int fd) {
     return chdir(f->path);
 }
 
+// The path with every symbolic link replaced by its target, component by
+// component (".." is lexical, as everywhere in this library)
 char *realpath(const char *restrict path, char *restrict resolved) {
-    char rel[PATH_MAX];
+    char rel[PATH_MAX], done[PATH_MAX], rest[PATH_MAX], link[PATH_MAX];
     int r = resolve(path, rel);
     if (r < 0) { fail(r); return 0; }
     struct stat st;
     if (stat(path, &st) < 0) return 0;
-    if (strlen(rel) + 2 > PATH_MAX) { fail(-ENAMETOOLONG); return 0; }
+    strcpy(rest, rel);
+    done[0] = 0;
+    for (int hops = 0; rest[0];) {
+        // Move the first component of rest to done
+        char *slash = strchr(rest, '/');
+        size_t k = slash ? (size_t)(slash - rest) : strlen(rest);
+        size_t dl = strlen(done);
+        if (dl + 2 + k >= PATH_MAX) { fail(-ENAMETOOLONG); return 0; }
+        done[dl] = '/';
+        memcpy(done + dl + 1, rest, k);
+        done[dl + 1 + k] = 0;
+        memmove(rest, slash ? slash + 1 : rest + k, strlen(slash ? slash + 1 : rest + k) + 1);
+        ssize_t n = readlink(done, link, sizeof link - 1);
+        if (n < 0) continue;     // not a link
+        if (++hops > RX_FS_MAX_LINKS) { fail(-ELOOP); return 0; }
+        link[n] = 0;
+        // done = (its directory or the root) + link + rest, then resolved again
+        char next[PATH_MAX * 2];
+        if (link[0] == '/') snprintf(next, sizeof next, "%s%s%s", link, rest[0] ? "/" : "", rest);
+        else {
+            done[dl] = 0;
+            snprintf(next, sizeof next, "%s/%s%s%s", done, link, rest[0] ? "/" : "", rest);
+        }
+        if (strlen(next) >= PATH_MAX || resolve(next, rest) < 0) { fail(-ENAMETOOLONG); return 0; }
+        done[0] = 0;
+    }
     if (!resolved && !(resolved = malloc(PATH_MAX))) { fail(-ENOMEM); return 0; }
-    resolved[0] = '/';
-    strcpy(resolved + 1, rel);
+    strcpy(resolved, done[0] ? done : "/");
     return resolved;
 }
 
-// No symbolic links yet
 ssize_t readlink(const char *restrict path, char *restrict buf, size_t size) {
-    (void)buf; (void)size;
-    struct stat st;
-    if (stat(path, &st) < 0) return -1;
-    return fail(-EINVAL);
+    char rel[PATH_MAX], target[PATH_MAX];
+    size_t n = 0;
+    int r = resolve(path, rel);
+    if (r == 0) r = __fs_call(ns_root, RX_FS_OP_READLINK, rel, strlen(rel), 0, 0, 0, target, sizeof target, &n);
+    if (r < 0) return fail(r);
+    if (n > size) n = size;   // truncated, as POSIX says
+    memcpy(buf, target, n);
+    return (ssize_t)n;
 }
-int symlink(const char *target, const char *link) { (void)target; (void)link; return fail(-EPERM); }
-int link(const char *old, const char *new) { (void)old; (void)new; return fail(-EPERM); }
+
+int symlink(const char *target, const char *link) {
+    char rel[PATH_MAX], pre[4 + PATH_MAX];
+    if (!target || !*target) return fail(-ENOENT);
+    uint32_t tl = (uint32_t)strlen(target);
+    if (tl >= PATH_MAX) return fail(-ENAMETOOLONG);
+    int r = resolve(link, rel);
+    if (r < 0) return fail(r);
+    memcpy(pre, &tl, 4);
+    memcpy(pre + 4, target, tl);
+    r = __fs_call(ns_root, RX_FS_OP_SYMLINK, pre, 4 + tl, rel, strlen(rel), 0, 0, 0, 0);
+    return r < 0 ? fail(r) : 0;
+}
+
+int link(const char *old, const char *new) {
+    char a[PATH_MAX], b[PATH_MAX], pre[4 + PATH_MAX];
+    int r = resolve(old, a);
+    if (r == 0) r = resolve(new, b);
+    if (r < 0) return fail(r);
+    uint32_t al = (uint32_t)strlen(a);
+    memcpy(pre, &al, 4);
+    memcpy(pre + 4, a, al);
+    r = __fs_call(ns_root, RX_FS_OP_LINK, pre, 4 + al, b, strlen(b), 0, 0, 0, 0);
+    return r < 0 ? fail(r) : 0;
+}
+
+// The last step of poweroff and reboot (RX_FS_OP_SHUTDOWN_ALL)
+int rx_fs_shutdown_all(void) {
+    return __fs_call(ns_root, RX_FS_OP_SHUTDOWN_ALL, 0, 0, 0, 0, 0, 0, 0, 0);
+}
 
 // chmod and file times: users.c
 

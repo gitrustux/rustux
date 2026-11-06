@@ -94,3 +94,4 @@ sh shell
 # FAT tools (step 14)
 mkfs.vfat mkfs.fat
 fsck.vfat fsck.fat
+mke2fs mkfs.ext2
