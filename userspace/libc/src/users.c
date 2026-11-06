@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
 #include <sys/statfs.h>
 #include <sys/time.h>
 #include <time.h>
@@ -293,18 +294,42 @@ static int fill_statfs(const struct stat *st, const char *path, struct statfs *s
     return 0;
 }
 
-int statfs(const char *path, struct statfs *s) {
-    struct stat st;
-    if (stat(path, &st) < 0) return -1;
-    char real[PATH_MAX];
-    return fill_statfs(&st, realpath(path, real) ? real : path, s);
+// The filesystem's own figures (RX_FS_OP_STATFS, step 14); 0 if it has none
+static int ask_statfs(int fd, struct statfs *s) {
+    rx_fs_statfs_t r;
+    if (rx_statfs_fd(fd, &r) < 0) return 0;
+    memset(s, 0, sizeof *s);
+    s->f_bsize = s->f_frsize = (unsigned long)r.block_size;
+    s->f_blocks = r.blocks;
+    s->f_bfree = s->f_bavail = r.blocks_free;
+    s->f_files = r.files;
+    s->f_ffree = r.files_free;
+    s->f_namelen = r.name_max;
+    s->f_flags = (r.flags & RX_FS_MOUNT_RDONLY) ? 1 : 0; // ST_RDONLY
+    s->f_type = !strcmp(r.type, "vfat") ? MSDOS_SUPER_MAGIC : !strcmp(r.type, "ext2") || !strcmp(r.type, "ext4") ? EXT2_SUPER_MAGIC
+              : !strcmp(r.type, "bootfs") ? RAMFS_MAGIC : TMPFS_MAGIC;
+    return 1;
 }
 
 int fstatfs(int fd, struct statfs *s) {
+    if (ask_statfs(fd, s)) return 0;
     struct stat st;
     if (fstat(fd, &st) < 0) return -1;
     struct fd *f = __fd_get(fd);
     return fill_statfs(&st, f ? f->path : 0, s);
+}
+
+int statfs(const char *path, struct statfs *s) {
+    int fd = open(path, O_RDONLY);
+    if (fd >= 0) {
+        int ok = ask_statfs(fd, s);
+        close(fd);
+        if (ok) return 0;
+    }
+    struct stat st;
+    if (stat(path, &st) < 0) return -1;
+    char real[PATH_MAX];
+    return fill_statfs(&st, realpath(path, real) ? real : path, s);
 }
 
 // ---- file times and modes ----

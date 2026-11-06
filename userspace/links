@@ -90,3 +90,7 @@ xargs tools
 diff tools
 cmp tools
 sh shell
+
+# FAT tools (step 14)
+mkfs.vfat mkfs.fat
+fsck.vfat fsck.fat

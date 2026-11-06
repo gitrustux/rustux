@@ -1,0 +1,17 @@
+umount - detach a mounted filesystem
+
+USAGE
+    umount [-f] DIRECTORY | DEVICE
+    umount -a [-f]
+
+    Writes everything the filesystem has to the disk and detaches it; the
+    disk can be removed when umount returns. It refuses while files on it
+    are open ("busy"); -f detaches it all the same (those files then fail).
+    -a detaches every mounted disk filesystem.
+
+EXAMPLES
+    umount /mnt
+    umount sda1
+
+SEE ALSO
+    mount, sync

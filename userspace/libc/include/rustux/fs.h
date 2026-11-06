@@ -70,6 +70,42 @@ typedef struct { uint32_t txid; int32_t status; } rx_fs_reply_t;
 // protocol. ECONNREFUSED if the server has gone. Services live in /svc.
 #define RX_FS_OP_SERVE    17
 
+// Mounts (step 14). A filesystem other than fsd's own (FAT on a disk,
+// served by fatfs) is attached at a directory of fsd's tree; fsd then
+// forwards the path requests that go below it (OPEN, STAT_AT, MKDIR,
+// UNLINK, RENAME) to that filesystem's root connection, and the opened
+// files talk to its server directly.
+//
+// On a directory (fsd). Request: rx_fs_mount_t, the source (device name),
+// the type ("vfat"), the path; one handle: a connection to the root
+// directory of the filesystem. Reply: nothing. The path must be an
+// existing directory; EBUSY if something is mounted there.
+#define RX_FS_OP_MOUNT    18
+typedef struct {
+    uint32_t flags;         // RX_FS_MOUNT_*
+    uint16_t source_len, type_len;
+} rx_fs_mount_t;
+#define RX_FS_MOUNT_RDONLY 1u
+// On a directory (fsd). Request: u32 flags (RX_FS_UNMOUNT_FORCE), path.
+// fsd asks the filesystem to stop (SHUTDOWN) and detaches it. EINVAL: not
+// a mount point; EBUSY: files are still open on it (without FORCE).
+#define RX_FS_OP_UNMOUNT  19
+#define RX_FS_UNMOUNT_FORCE 1u
+// Sent by fsd to a mounted filesystem's root connection: write everything
+// out and end once its last connection closes. Request: u32 flags
+// (RX_FS_UNMOUNT_FORCE: even with files open). Reply: nothing, or EBUSY.
+#define RX_FS_OP_SHUTDOWN 20
+// Any connection. Reply: rx_fs_statfs_t (statfs, df)
+#define RX_FS_OP_STATFS   21
+typedef struct {
+    uint64_t block_size;
+    uint64_t blocks, blocks_free;
+    uint64_t files, files_free;  // 0 if the filesystem has no such limit
+    uint32_t name_max;
+    uint32_t flags;              // RX_FS_MOUNT_RDONLY
+    char type[16];               // "tmpfs", "bootfs", "vfat", ...
+} rx_fs_statfs_t;
+
 typedef struct {
     uint32_t op;        // RX_SVC_CONNECT
     uint32_t flags;     // the opener's O_* flags

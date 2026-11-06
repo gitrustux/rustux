@@ -1,0 +1,6 @@
+# /etc/fstab: what `mount -a` mounts; init runs it at boot (step 14).
+# SOURCE      DIRECTORY   TYPE   OPTIONS
+# SOURCE: a block device (sda1), LABEL=, UUID=, PARTLABEL=, or EFI: the
+# EFI system partition, preferably on a removable disk (the stick Rustux
+# started from). One on a fixed disk (Windows' own) is mounted read-only.
+EFI           /boot/efi   vfat   rw,nofail

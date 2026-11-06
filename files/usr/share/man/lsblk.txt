@@ -4,7 +4,7 @@ USAGE
     lsblk [-b] [-n] [-l] [-d] [-f] [-o COLUMNS] [-J] [NAME...]
 
     Lists the disks and their partitions as a tree: NAME, RM (removable),
-    SIZE, RO (read-only), TYPE (disk or part), MOUNTPOINTS (none yet).
+    SIZE, RO (read-only), TYPE (disk or part), MOUNTPOINTS (from /etc/mtab).
     Disks appear when their driver starts: vda (virtio), nvme0n1 (NVMe),
     ram0 ("ramdisk 16M &").
 

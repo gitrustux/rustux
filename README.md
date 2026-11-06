@@ -6,7 +6,7 @@ Rustux is the kernel of **Rustica OS**. The full OS (live USB image, shell, apps
 
 ## Status
 
-**Boots to an interactive shell in QEMU and on the test laptop.** Checklist steps 1-12 are done (phase A: a usable command line; userspace PCI drivers); step 13 (disk drivers: virtio-blk, NVMe read-only, USB storage; GPT partitions) passes on QEMU. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and the checklist in the Rustux project.
+**Boots to an interactive shell in QEMU and on the test laptop.** Checklist steps 1-13 are done (phase A: a usable command line; userspace PCI drivers; disk drivers: virtio-blk, NVMe read-only, USB storage; GPT partitions); step 14 (FAT12/16/32 read and write, `mount`, `mkfs.fat`, `fsck.fat`, the EFI partition at `/boot/efi`) passes on QEMU. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and the checklist in the Rustux project.
 
 | Area | State |
 |------|-------|

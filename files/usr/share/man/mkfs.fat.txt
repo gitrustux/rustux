@@ -1,0 +1,18 @@
+mkfs.fat - make a FAT filesystem (also mkfs.vfat)
+
+USAGE
+    mkfs.fat [-F 12|16|32] [-n LABEL] [-i SERIAL] [-s SECTORS] [-I] DEVICE
+
+    Makes an empty FAT filesystem on a block device (a partition, usually);
+    everything on it is lost. The size chooses the type unless -F does:
+    FAT12 below 8 MiB, FAT16 below 512 MiB, else FAT32. Cluster sizes are
+    those of Windows' format; -s sets the sectors per cluster. -n sets the
+    volume label (11 characters), -i the serial number (hex). A whole disk
+    with a partition table is refused unless -I; a mounted one always.
+
+EXAMPLES
+    gpt add -s 256M -t efi -l EFI sda && mkfs.fat -F 32 -n EFI sda5
+    mkfs.fat -n STICK sda1
+
+SEE ALSO
+    fsck.fat, mount, gpt

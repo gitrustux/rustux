@@ -22,7 +22,8 @@ for t in qemu-system-x86_64 mcopy mformat socat python3; do
 done
 
 W=$(mktemp -d)
-trap 'kill $Q 2>/dev/null; rm -rf "$W"' EXIT
+# KEEP_LOG=FILE keeps the console log
+trap 'kill $Q 2>/dev/null; [ -n "${KEEP_LOG:-}" ] && cp "$W/console.log" "$KEEP_LOG"; rm -rf "$W"' EXIT
 dd if=/dev/zero of="$W/boot.img" bs=1M count=64 status=none
 # The disk tests' disk (disks.sh), as virtio-blk and as NVMe; snapshot=on
 # keeps writes (and the firmware's NvVars file) out of the image
@@ -65,7 +66,7 @@ for _ in $(seq 600); do
     grep -aq "runtests: [0-9]* passed" "$W/console.log" && break
     sleep 1
 done
-sed -n '/> runtests/,/runtests: [0-9]* passed/p' "$W/console.log" | tr -d '\r'
+sed -n '/runtests -v/,/runtests: [0-9]* passed/p' "$W/console.log" | tr -d '\r'
 line=$(grep -a "runtests: [0-9]* passed" "$W/console.log" | tail -1)
 [ -n "$line" ] || { echo "no result (timed out)"; exit 1; }
 case $line in *", 0 failed"*) exit 0 ;; *) exit 1 ;; esac

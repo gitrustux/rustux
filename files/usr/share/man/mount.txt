@@ -1,0 +1,30 @@
+mount - attach a filesystem to the tree
+
+USAGE
+    mount
+    mount [-t TYPE] [-o OPTIONS] DEVICE DIRECTORY
+    mount DIRECTORY | DEVICE
+    mount -a [-w SECONDS]
+
+    Without arguments, lists what is mounted (/etc/mtab). With a device and
+    a directory, starts the filesystem's server (/bin/fatfs) on the device
+    and mounts it there; files below the directory are then the disk's.
+    With one argument, mounts as /etc/fstab says; -a mounts everything in
+    /etc/fstab that is not noauto and not mounted yet, waiting up to
+    SECONDS (default 5) for disks to appear. init runs mount -a at boot.
+
+    DEVICE: a block device name (sda1 or /dev/sda1), LABEL=name,
+    UUID=XXXX-XXXX, PARTLABEL=name, or EFI: the EFI system partition, on a
+    removable disk if there is one. One on a fixed disk (Windows' own) is
+    mounted read-only unless the options say rw!.
+    TYPE: vfat (also fat, msdos), or auto (default): what blkid finds.
+    OPTIONS: ro, rw, rw!, noauto, nofail, defaults (comma separated).
+
+EXAMPLES
+    mount sda1 /mnt                     a USB stick's first partition
+    mount -o ro LABEL=SYSTEM /mnt
+    mount /boot/efi                     as /etc/fstab says
+    mount | grep vfat
+
+SEE ALSO
+    umount, mkfs.fat, fsck.fat, df, lsblk, blkid

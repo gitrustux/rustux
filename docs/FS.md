@@ -17,10 +17,12 @@ library (`open`, `read`, `opendir`, ...; `docs/USERSPACE.md`).
 | `/usr` | bootfs | `/boot/usr` mounted again (`/usr/share/zoneinfo/zones`, `/usr/share/keymaps/`, `/usr/share/man/`, `/usr/share/tests/`) |
 | `/dev` | devices | `null` (reads nothing, takes every write) and `zero` (reads zeros); no new files here |
 | `/svc` | tmpfs | services: `devmgr`, `edu`, ... (step 12; see below) |
+| `/mnt` | tmpfs | an empty directory to mount disks on (step 14) |
+| `/boot/efi` | FAT | the EFI system partition, mounted at boot from `/etc/fstab` when there is one (step 14) |
 
 Writes, creates, renames and removals under `/boot`, `/bin` and `/usr` fail with
-`EROFS`. Files on disk come in phase B (FAT32 in step 14, ext2/ext4 in
-steps 15-16), mounted into this tree.
+`EROFS`. Filesystems on disks are mounted into this tree (see Mounts):
+FAT12/16/32 since step 14, ext2/ext4 in steps 15-16.
 
 Permissions are recorded (`ls -l` shows them) but not enforced until users
 exist (step 17).
@@ -82,6 +84,10 @@ the current directory; `fsd` rejects them with `EINVAL`).
 | `SETATTR` 15 | any | `rx_fs_setattr_t { u32 mask; u32 mode; i64 mtime_ns; }`; mask 1 sets the permission bits, 2 the modification time | — (`EROFS` on bootfs) |
 | `SERVE` 17 | directory | path; one handle: a channel to the server | — (makes or replaces a service node; `EEXIST` over something else) |
 | `GET_VMO` 16 | file | — | `u64 offset; u64 size;` and one handle: the boot image VMO, read-only. Boot-image files only (`ENOTSUP` otherwise); the loader maps programs straight from it |
+| `MOUNT` 18 | directory | `rx_fs_mount_t { u32 flags; u16 source_len; u16 type_len; }`, source, type, path; one handle: the root directory connection of the filesystem's server | — (`EBUSY` on `/` or a mount point, `ENOTDIR`) |
+| `UNMOUNT` 19 | directory | `u32 flags` (1 = force), path of the mount point | — (`EINVAL` if nothing is mounted there, `EBUSY` if files are open) |
+| `SHUTDOWN` 20 | root of a mounted filesystem | `u32 flags` (1 = force) | — : the server writes everything out and ends; `EBUSY` while other connections are open, unless forced. Sent by `fsd` on `UNMOUNT` |
+| `STATFS` 21 | any | — | `rx_fs_statfs_t { u64 block_size, blocks, blocks_free, files, files_free; u32 name_max; u32 flags; char type[16]; }` (`statfs`, `df`) |
 
 Types: 1 file, 2 directory, 3 device (`/dev/null`, `/dev/zero`; step 10),
 4 service (step 12; `stat` shows `S_IFSOCK`).
@@ -109,6 +115,64 @@ the server's protocol (`rx_service_connect`). If the server has ended,
 channel (a restarted driver does this). `open()` refuses services with
 `ENXIO`, since they do not speak the file protocol. `devmgr` publishes
 `/svc/devmgr`, the `edu` driver `/svc/edu` (`docs/DRIVERS.md`).
+
+## Mounts
+
+A filesystem on a disk is served by a program of its own (`/bin/fatfs`
+for FAT), speaking the same protocol. `mount` starts the server with the
+server end of a channel (`PA_USER0`) and the block device's name, checks
+that it answers a `STAT`, and hands the client end to `fsd` with `MOUNT`
+(`rx_mount()` in `<sys/mount.h>`). From then on:
+
+- **Path requests** (`OPEN`, `STAT_AT`, `MKDIR`, `UNLINK`, `RENAME`) whose
+  path runs through the mount point are forwarded by `fsd` to the server's
+  root connection with the rest of the path, and the reply is passed back.
+  `fsd` waits for the reply (at most 30 s, then `ETIMEDOUT`), so a server
+  must never use the filesystem itself while serving: `fatfs` reads the
+  time zone before it starts.
+- **Opened files** talk to the server directly: `OPEN`'s connection handle
+  goes to the server, so reads and writes do not pass through `fsd`.
+- `RENAME` across filesystems fails with `EXDEV` (`mv` then copies);
+  hard links, services and `GET_VMO` are not on disk filesystems.
+- `SYNC` on `fsd` is forwarded to every mounted filesystem (`sync`).
+- `/etc/mtab` gets a line per mount: `source dir type rw|ro 0 0`.
+
+`umount` sends `UNMOUNT`; `fsd` sends `SHUTDOWN` to the server, which
+refuses while files are open on it (`EBUSY`) unless forced, else writes
+out everything and ends. A server that has crashed can always be
+unmounted.
+
+At boot `init` runs `mount -a`, which mounts what `/etc/fstab` lists,
+waiting up to 5 seconds for disks to appear. The default `/etc/fstab`
+mounts the EFI system partition at `/boot/efi`: the one on a removable
+disk (a USB stick Rustux started from) if there is one; one on a fixed
+disk (Windows' own) is mounted read-only, unless its options say `rw!`.
+
+### FAT (`fatfs`)
+
+FAT12, FAT16 and FAT32, read and write, as Windows writes them:
+
+- Long file names (VFAT, UTF-16 on disk, UTF-8 to programs), with 8.3
+  short names made as Windows does (`LONGFI~1.TXT`); names that fit 8.3
+  get no long entries, lower case kept in the NT case bits. Lookups ignore
+  case (ASCII, Latin-1, Latin Extended-A, Greek, Cyrillic), so
+  `cat README.TXT` finds `readme.txt`; renaming only the case is a no-op,
+  as `mv` sees one file.
+- Names may not contain `\ / : * ? " < > |` or control characters
+  (`EINVAL`).
+- Times are kept in local time (FAT has no time zone; Windows does the
+  same), at 2-second resolution. The permission bits map to the
+  read-only attribute (`chmod a-w`); there are no owners or links.
+- Files are at most 4 GiB - 1 (`EFBIG`); there are no holes: growing a
+  file writes zeros.
+- Directory and FAT changes reach the disk before the request is
+  answered; file data within half a second, or when the file is closed.
+  The FSInfo free count is kept up to date. Clusters of a file removed
+  while open are freed when it is closed.
+- `statfs` gives cluster size and counts; `df` shows them.
+
+`mkfs.fat` makes FAT filesystems as Windows' format does, `fsck.fat`
+checks them (docs/COMMANDS.md).
 
 ## Limits
 

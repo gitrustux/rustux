@@ -28,7 +28,7 @@ static const struct { const char *name; int width; int right; const char *help; 
     { "SIZE", 7, 1, "size" },
     { "RO", 2, 1, "read-only" },
     { "TYPE", 4, 0, "disk or part" },
-    { "MOUNTPOINTS", 11, 0, "where it is mounted (none yet)" },
+    { "MOUNTPOINTS", 11, 0, "where it is mounted (/etc/mtab)" },
     { "FSTYPE", 9, 0, "filesystem (ntfs, vfat, ext4, ...)" },
     { "LABEL", 12, 0, "filesystem label" },
     { "UUID", 36, 0, "filesystem UUID" },
@@ -69,6 +69,25 @@ static int needs_probe(void) {
 }
 
 // The value of column c for device d ("" when empty); *num set for numbers
+// Where block device `name` is mounted ("" if nowhere): /etc/mtab
+static const char *mount_of(const char *name) {
+    static char at[256];
+    char line[600], want[48];
+    at[0] = 0;
+    FILE *f = fopen("/etc/mtab", "r");
+    if (!f) return at;
+    snprintf(want, sizeof want, "/dev/%s ", name);
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, want, strlen(want))) continue;
+        char *p = line + strlen(want), *e = p;
+        while (*e && *e != ' ' && *e != '\n') e++;
+        snprintf(at, sizeof at, "%.*s", (int)(e - p), p);
+        break;
+    }
+    fclose(f);
+    return at;
+}
+
 static const char *value(struct dev *d, int c, int *num) {
     static char v[128];
     rx_block_info_t *b = &d->info;
@@ -84,7 +103,7 @@ static const char *value(struct dev *d, int c, int *num) {
         else human(b->block_count * b->block_size, v, sizeof v);
         return v;
     case C_TYPE: return part ? "part" : "disk";
-    case C_MOUNT: return "";
+    case C_MOUNT: return mount_of(b->name);
     case C_FSTYPE: return d->fs.type;
     case C_LABEL: return d->fs.label;
     case C_UUID: return d->fs.uuid;

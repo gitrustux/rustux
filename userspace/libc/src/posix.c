@@ -695,7 +695,6 @@ int lsetxattr(const char *p, const char *name, const void *v, size_t n, int f) {
 
 ssize_t tee(int in, int out, size_t n, unsigned flags) { (void)in; (void)out; (void)n; (void)flags; return fail(ENOSYS); }
 int posix_fadvise(int fd, off_t off, off_t len, int advice) { (void)fd; (void)off; (void)len; (void)advice; return 0; }
-void sync(void) {}
 
 struct rlimit { unsigned long rlim_cur, rlim_max; };
 int getrlimit(int resource, struct rlimit *r) {

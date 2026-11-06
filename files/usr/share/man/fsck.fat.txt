@@ -1,0 +1,17 @@
+fsck.fat - check a FAT filesystem (also fsck.vfat)
+
+USAGE
+    fsck.fat [-a] [-v] DEVICE
+
+    Checks a FAT filesystem that is not mounted: the boot sector, that the
+    FAT copies agree, every directory and cluster chain (clusters in range,
+    no loops or shared clusters, sizes matching chains, "." and ".."),
+    long-name entries, clusters that no file owns, and FSInfo's free count.
+    It repairs nothing, except that -a corrects a wrong FSInfo free count.
+    -v lists every file. Exit status: 0 no errors, 1 corrected, 4 errors.
+
+EXAMPLES
+    umount /boot/efi; fsck.fat sda1; mount /boot/efi
+
+SEE ALSO
+    mkfs.fat, mount

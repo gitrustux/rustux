@@ -167,7 +167,11 @@ find nothing (no dynamic linking).
 Users and groups come from `/etc/passwd` and `/etc/group` (`getpwuid`,
 `getpwnam`, `getgrgid`, `getgrouplist` and the `_r` forms; one user,
 root). `setlocale` knows "C" and UTF-8 locales; `nl_langinfo(CODESET)` is
-UTF-8. `statfs`/`fstatfs` report memory for tmpfs. `chmod`, `utimensat`,
+UTF-8. `statfs`/`fstatfs` ask the file's filesystem (`STATFS`): memory for
+tmpfs, clusters for FAT. `<sys/mount.h>` has `rx_mount` (hand a
+filesystem server's root connection to `fsd`), `umount`, `umount2`
+(`MNT_FORCE`) and `rx_statfs_fd` (step 14, `FS.md` "Mounts"); `sync`
+asks every mounted filesystem to write out what it has. `chmod`, `utimensat`,
 `futimens`, `utimes` change modes and modification times (`fsd`'s
 `SETATTR`; owners are always root). `umask` (022) is applied to new files
 and directories. `<math.h>` has the usual functions on the x87 unit

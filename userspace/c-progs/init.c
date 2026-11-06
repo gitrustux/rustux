@@ -288,6 +288,19 @@ static void start_devmgr(void) {
     }
 }
 
+// Mount what /etc/fstab lists (step 14: the EFI partition at /boot/efi).
+// In the background: mount waits a few seconds for disks (USB sticks
+// appear a moment after devmgr starts) and the shell need not wait.
+static void start_mounts(void) {
+    rx_handle_t proc;
+    char *argv[] = { "mount", "-a", 0 };
+    rx_spawn_handle_t hs[] = {
+        { RX_PA_HND(RX_PA_FD, 1), console_copy() },
+        { RX_PA_HND(RX_PA_FD, 2), console_copy() },
+    };
+    if (rx_spawn("/bin/mount", argv, 0, RX_SPAWN_CLONE_NS, hs, 2, &proc) == RX_OK) rx_handle_close(proc);
+}
+
 static void start_driver(void) {
     rx_handle_t ours, theirs, res;
     if (!resource || driver_failures >= 5) return;
@@ -407,6 +420,7 @@ int main(void) {
     rx_timer_create(0, 0, &repeat_timer);
     km_load();
     start_devmgr();
+    start_mounts();
     start_driver();
     printf("Spawning shell...\n\n");
     start_shell();

@@ -20,6 +20,11 @@ if lsblk vda > /dev/null 2>&1; then
     rm /tmp/disk.txt
 fi
 if lsblk sda > /dev/null 2>&1 && test "$(lsblk -n -d -o MODEL sda)" = "QEMU QEMU HARDDISK"; then
+    # Its EFI partition is mounted at boot (/etc/fstab); a mounted
+    # partition keeps the table from being re-read
+    for i in 1 2 3 4 5 6; do grep -q '^/dev/sda1 ' /etc/mtab && break; sleep 1; done
+    check sda-mounted "$(grep '^/dev/sda1 ' /etc/mtab)" "/dev/sda1 /boot/efi vfat rw 0 0"
+    umount /boot/efi
     check sda "$(lsblk -n -l -o PARTN,PARTLABEL,PARTTYPENAME sda | tr -s ' ' | cut -d' ' -f2- | grep -v '^$')" "$want"
     check sda-rm "$(lsblk -n -d -o RM sda | tr -d ' ')" 1
     check sda-add "$(gpt add -t linux -l stick sda)" "sda: partition 5 added, blocks 86016-131038 (22M)"
@@ -27,6 +32,7 @@ if lsblk sda > /dev/null 2>&1 && test "$(lsblk -n -d -o MODEL sda)" = "QEMU QEMU
     blk write sda5 < /tmp/disk.txt
     check sda5 "$(blk read sda5 -n $(wc -c < /tmp/disk.txt) | md5sum)" "$(md5sum < /tmp/disk.txt)"
     rm /tmp/disk.txt
+    mount /boot/efi
 fi
 if lsblk nvme0n1 > /dev/null 2>&1; then
     check nvme "$(lsblk -n -l -o PARTN,PARTLABEL,PARTTYPENAME nvme0n1 | tr -s ' ' | cut -d' ' -f2- | grep -v '^$')" "$want"

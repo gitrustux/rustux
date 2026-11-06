@@ -1,0 +1,66 @@
+mkfs.fat: fa: FAT32, 80628 clusters of 512 bytes, 39 MiB, serial 1234-5678
+fa: LABEL="RUSTUX" UUID="1234-5678" TYPE="vfat"
+/dev/fa on /tmp/fat type vfat (rw)
+40314 1 40314
+hello fat
+/tmp/fat:
+A Long Directory Name
+MixedCase.Txt
+archive.tar.gz
+hello.txt
+lower.txt
+
+/tmp/fat/A Long Directory Name:
+Grüße und Ärger.txt
+umlaut
+short
+mixed
+big copy ok
+938895
+120
+77
+hello fat
+more
+hel
+70000
+mv: '/tmp/fat/archive.tar.gz' and '/tmp/fat/ARCHIVE.TAR.GZ' are the same file
+/tmp/fat:
+archive.tar.gz
+big.txt
+hello.txt
+lower.txt
+many
+
+/tmp/fat/many/inside:
+Grüße und Ärger.txt
+moved.txt
+89
+ Directory not empty
+hel
+ failed to create hard link '/tmp/fat/link' => '/tmp/fat/lower.txt': Permission denied
+2024-02-29_13:37:42 /tmp/fat/ARCHIVE.TAR.GZ
+-r--r--r--
+-rw-r--r--
+shell: /tmp/fat/a:b: Invalid argument
+40314 1044 39271
+umount: /tmp/fat: busy (files are open on it; -f unmounts anyway)
+0
+fa: FAT32, 80628 clusters of 512 bytes, 2 FATs of 630 sectors
+fa: 93 files, 3 directories, 2087/80628 clusters in use, no errors
+/dev/fa on /tmp/fat type vfat (ro)
+7489842b0541ae5fc3687cf5aaa26c66  -
+7489842b0541ae5fc3687cf5aaa26c66  -
+shell: /tmp/fat/new.txt: Read-only file system
+mkfs.fat: fb: FAT16, 10211 clusters of 2048 bytes, 19 MiB, serial 0000-ABCD
+deep
+fb: 2 files, 3 directories, 462/10211 clusters in use, no errors
+mkfs.fat: fc: FAT12, 4039 clusters of 512 bytes, 1 MiB, serial 0000-0012
+300
+fc: 1 files, 1 directories, 3/4039 clusters in use, no errors
+mkfs.fat: fd: 83886080 bytes is too small for FAT32
+mkfs.fat: fd: FAT16, 20455 clusters of 4096 bytes, 79 MiB, serial 0000-4096
+4k ok
+fd: 1 files, 1 directories, 230/20455 clusters in use, no errors
+mkfs.fat: nothing: no such block device
+mount: nothing: no such block device
+umount: /tmp/fat: not mounted

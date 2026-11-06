@@ -20,6 +20,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -576,4 +577,47 @@ int rx_service_publish(const char *path, rx_handle_t server) {
         return r;
     }
     return __fs_call(ns_root, RX_FS_OP_SERVE, 0, 0, rel, strlen(rel), server, 0, 0, 0);
+}
+
+// ---- mounts (step 14, <sys/mount.h>) ----
+
+int rx_mount(const char *source, const char *target, const char *type, unsigned flags, rx_handle_t root) {
+    char rel[PATH_MAX], req[sizeof(rx_fs_mount_t) + 256 + 32];
+    int r = resolve(target, rel);
+    size_t sl = strlen(source), tl = strlen(type);
+    if (r == 0 && (sl > 255 || tl > 31)) r = -EINVAL;
+    if (r < 0) {
+        rx_handle_close(root);
+        return r;
+    }
+    rx_fs_mount_t m = { flags, (uint16_t)sl, (uint16_t)tl };
+    memcpy(req, &m, sizeof m);
+    memcpy(req + sizeof m, source, sl);
+    memcpy(req + sizeof m + sl, type, tl);
+    return __fs_call(ns_root, RX_FS_OP_MOUNT, req, sizeof m + sl + tl, rel, strlen(rel), root, 0, 0, 0);
+}
+
+int umount2(const char *target, int flags) {
+    char rel[PATH_MAX];
+    int r = resolve(target, rel);
+    uint32_t f = (flags & MNT_FORCE) ? RX_FS_UNMOUNT_FORCE : 0;
+    if (r == 0) r = __fs_call(ns_root, RX_FS_OP_UNMOUNT, &f, 4, rel, strlen(rel), 0, 0, 0, 0);
+    if (r < 0) {
+        errno = -r;
+        return -1;
+    }
+    return 0;
+}
+
+int umount(const char *target) { return umount2(target, 0); }
+
+// Every mounted filesystem writes out what it has (fsd forwards SYNC)
+void sync(void) {
+    if (ns_root) __fs_call(ns_root, RX_FS_OP_SYNC, 0, 0, 0, 0, 0, 0, 0, 0);
+}
+
+int rx_statfs_fd(int fd, rx_fs_statfs_t *out) {
+    struct fd *f = __fd_get(fd);
+    if (!f || f->kind != RX_FD_FILE) return -EBADF;
+    return __fs_call(f->handle, RX_FS_OP_STATFS, 0, 0, 0, 0, 0, out, sizeof *out, 0);
 }

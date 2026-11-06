@@ -21,6 +21,8 @@ struct statfs {
 
 #define TMPFS_MAGIC 0x01021994
 #define RAMFS_MAGIC 0x858458f6
+#define MSDOS_SUPER_MAGIC 0x4d44
+#define EXT2_SUPER_MAGIC 0xEF53
 
 int statfs(const char *path, struct statfs *s);
 int fstatfs(int fd, struct statfs *s);

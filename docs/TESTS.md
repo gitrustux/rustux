@@ -74,6 +74,29 @@ script also checks a disk image after Rustux wrote to it
 (`make-test-disk.py check disk.img`), with its own GPT code.
 `docs/DRIVERS.md` explains the device mask and what each test covers.
 
+## FAT tests (step 14)
+
+`fat.sh` (in the command tests, on RAM disks, so it runs anywhere) makes
+FAT32, FAT16 and FAT12 filesystems with `mkfs.fat` (also on 4 KiB
+sectors), mounts them and checks file operations through `fsd`'s
+forwarding: long and non-ASCII names, case-insensitive lookups, a large
+copy, a directory of 120 files, append, truncate, renames and moves,
+removal, times, the read-only bit, refused names, `df`, `umount` while a
+file is open (busy), a read-only mount, and `fsck.fat` on each result.
+`disks.sh` also checks that the test disk's EFI partition on the USB
+stick was mounted at `/boot/efi` at boot.
+
+`scripts/run-fat-test.sh` checks Rustux's FAT against the host's tools:
+it boots QEMU with a FAT32 disk made by the host's `mkfs.fat` and an
+empty one, has Rustux run `/usr/share/fat/host-check.sh` (about 60 MiB
+of large files and the main programs copied, removals and renames,
+`mkfs.fat` on the empty disk, then filling it up), then runs the host's `fsck.fat -n` on both
+and reads every file back with mtools. It needs dosfstools and mtools.
+
+On a real machine: mount the stick's EFI partition (it is at `/boot/efi`
+after boot), write files, `umount`, then open them in Windows, or run
+`fsck.fat -n` on Linux.
+
 ## Run in QEMU
 
 ```bash
