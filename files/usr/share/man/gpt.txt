@@ -17,7 +17,9 @@ USAGE
     START is in blocks; SIZE in blocks, or bytes with K, M, G or T; without
     -s a partition takes the rest of the free space. New partitions start
     on a 1 MiB boundary. TYPE: efi, msdata, linux, swap, ... (gpt types)
-    or a GUID; the default is linux.
+    or a GUID; the default is linux. A table written for a smaller disk
+    (an image copied onto a larger USB stick) is extended to the end of
+    the disk when a partition is added.
 
     The NVMe driver is read-only until the installer (step 20), so its
     disks refuse every change.

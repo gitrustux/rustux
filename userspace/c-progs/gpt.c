@@ -166,6 +166,15 @@ static int add(int index, uint64_t start, uint64_t size, const uint8_t type[16],
     }
     uint64_t align = (1u << 20) / info.block_size;
     if (!align) align = 1;
+    // A table written for a smaller disk (an image copied onto a larger
+    // stick) ends early: writing it moves the backup to the real end, so
+    // the space after it is usable
+    uint64_t eblk = (RX_GPT_MAX_PARTS * 128 + info.block_size - 1) / info.block_size;
+    if (info.block_count > 2 + eblk && info.block_count - 2 - eblk > gpt.last_usable) {
+        printf("gpt: %s: the table covered %llu of %llu blocks; it now covers the whole disk\n", disk,
+               (unsigned long long)gpt.last_usable + eblk + 2, (unsigned long long)info.block_count);
+        gpt.last_usable = info.block_count - 2 - eblk;
+    }
     uint64_t first = 0, last = 0;
     if (start) {
         first = start;
