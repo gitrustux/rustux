@@ -641,6 +641,10 @@ struct Location {
     /// speed devices behind a high-speed hub; 0 = none
     tt_slot: u8,
     tt_port: u8,
+    /// Address in two steps (the retry for devices that time out on a
+    /// plain Address Device): BSR first, the device descriptor's first 8
+    /// bytes at address 0, then SET_ADDRESS (as Linux's "new scheme")
+    two_step: bool,
 }
 
 enum Kind {
@@ -706,8 +710,32 @@ unsafe fn enumerate_root_port(port: usize) {
     let speed = (c.portsc(port) >> PORTSC_SPEED_SHIFT) & 0xF;
     log(speed_name(speed));
     log("-speed device\n");
-    let loc = Location { root_port: port as u8, route: 0, depth: 0, speed, tt_slot: 0, tt_port: 0 };
-    let _ = attach(loc);
+    let loc = Location { root_port: port as u8, route: 0, depth: 0, speed, tt_slot: 0, tt_port: 0, two_step: false };
+    if attach(loc).is_ok() {
+        return;
+    }
+    // Some devices (seen: a USB stick on the test laptop) time out on the
+    // first Address Device. Like Linux: reset the port again and address
+    // in two steps.
+    let c = match xhci::controller() {
+        Some(c) if !c.is_dead() => c,
+        _ => return,
+    };
+    if c.portsc(port) & PORTSC_CCS == 0 {
+        return;
+    }
+    log("[USB] Port ");
+    log_dec(port as u64);
+    log(": PORTSC ");
+    log_hex(c.portsc(port) as u64, 8);
+    log("; resetting it and addressing in two steps\n");
+    delay_ms(100);
+    if speed < SPEED_SUPER && c.reset_port(port).is_err() {
+        log("port reset failed\n");
+        return;
+    }
+    let speed = (c.portsc(port) >> PORTSC_SPEED_SHIFT) & 0xF;
+    let _ = attach(Location { speed, two_step: true, ..loc });
 }
 
 unsafe fn attach(loc: Location) -> Result<Kind> {
@@ -799,8 +827,33 @@ unsafe fn setup_device(slot: u8, loc: &Location) -> Result<Kind> {
     *m.input_dw(cs, 2, 2) = ep0 as u32 | 1; // dequeue, DCS=1
     *m.input_dw(cs, 2, 3) = (ep0 >> 32) as u32;
     *m.input_dw(cs, 2, 4) = 8; // average TRB length
-    c.address_device(slot, m.input.phys)?;
-    delay_ms(2); // SET_ADDRESS recovery
+    if loc.two_step {
+        // Default state without an address, then the real packet size
+        c.address_device(slot, m.input.phys, true)?;
+        delay_ms(2);
+        ctrl(slot, m, get_descriptor(DT_DEVICE, 8))?;
+        let real = m.buf(8)[7] as u32;
+        if loc.speed < SPEED_SUPER && real != 0 {
+            mps0 = real;
+        }
+        // Now SET_ADDRESS: EP0 continues where its ring stands
+        let (next, cycle) = m.ep0.next();
+        m.clear_input();
+        *m.input_dw(cs, 0, 1) = 0x3;
+        write_slot_ctx(m, cs, loc, 1, None);
+        *m.input_dw(cs, 2, 1) = 3 << 1 | 4 << 3 | mps0 << 16;
+        *m.input_dw(cs, 2, 2) = next as u32 | cycle;
+        *m.input_dw(cs, 2, 3) = (next >> 32) as u32;
+        *m.input_dw(cs, 2, 4) = 8;
+        let c = xhci::controller().ok_or(UsbError::NoController)?;
+        c.address_device(slot, m.input.phys, false)?;
+        delay_ms(10); // SET_ADDRESS recovery, generously
+        indent(loc.depth);
+        log("addressed in two steps\n");
+    } else {
+        c.address_device(slot, m.input.phys, false)?;
+        delay_ms(2); // SET_ADDRESS recovery
+    }
 
     // ---- Device descriptor ----
     ctrl(slot, m, get_descriptor(DT_DEVICE, 8))?;
@@ -1011,6 +1064,7 @@ unsafe fn setup_hub(slot: u8, m: &mut SlotMem, loc: &Location, config_value: u8,
             speed,
             tt_slot,
             tt_port,
+            two_step: false,
         };
         let _ = attach(child);
         if xhci::controller().map_or(true, |c| c.is_dead()) {

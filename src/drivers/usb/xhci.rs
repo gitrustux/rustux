@@ -545,8 +545,10 @@ impl Controller {
         self.command("Disable Slot", 0, 0, (slot as u32) << 24 | TRB_DISABLE_SLOT << 10).map(|_| ())
     }
 
-    pub unsafe fn address_device(&mut self, slot: u8, input_ctx: u64) -> Result<()> {
-        self.command("Address Device", input_ctx, 0, (slot as u32) << 24 | TRB_ADDRESS_DEVICE << 10).map(|_| ())
+    /// Address Device; `bsr` (Block Set Address Request) sets the slot up
+    /// without sending SET_ADDRESS (the device stays at address 0)
+    pub unsafe fn address_device(&mut self, slot: u8, input_ctx: u64, bsr: bool) -> Result<()> {
+        self.command("Address Device", input_ctx, 0, (slot as u32) << 24 | (bsr as u32) << 9 | TRB_ADDRESS_DEVICE << 10).map(|_| ())
     }
 
     pub unsafe fn configure_endpoint(&mut self, slot: u8, input_ctx: u64) -> Result<()> {
