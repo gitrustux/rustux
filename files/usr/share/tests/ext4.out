@@ -1,0 +1,43 @@
+mkfs.ext4: e4: 24576 blocks of 4096 bytes, 24576 inodes, 1 groups
+mkfs.ext4: UUID 01234567-89ab-4cde-8f01-23456789abce
+mkfs.ext4: journal of 1024 blocks
+e4: LABEL="test4" UUID="01234567-89ab-4cde-8f01-23456789abce" TYPE="ext4"
+Filesystem features:       has_journal ext_attr dir_index filetype extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+Group descriptor size:     64
+Flex block group size:     16
+Journal inode:             8
+Checksum type:             crc32c
+/dev/e4 on /tmp/e type ext4 (rw)
+.
+..
+lost+found
+big copy ok
+6888896 13456
+7b4e5f18bf6e0eab93d15aa4b0afb76d  -
+5a61b3a6efca48e55c3d80700dca0e86  -
+26a8b24409e8358f43eea6442fa81c34  -
+301
+a-target-of-more-than-sixty-bytes-is-kept-in-a-block-of-its-own-xxxxxxxxxxxx
+2
+18796
+12068
+e4: ext4, 24576 blocks of 4096 bytes, 24576 inodes, 1 groups
+e4: 303 files, 4 directories, 3017/24576 blocks, 316/24576 inodes in use, no errors
+Filesystem features:       has_journal ext_attr dir_index filetype extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+Filesystem state:          clean
+shell: /tmp/e/new: Read-only file system
+5a61b3a6efca48e55c3d80700dca0e86  -
+mkfs.ext4: e5: 12288 blocks of 1024 bytes, 3072 inodes, 2 groups, no journal
+ No space left on device
+ No space left on device
+ No space left on device
+ No space left on device
+ No space left on device
+ No space left on device
+ No space left on device
+100%
+still writable
+first copy ok
+e5: 8 files, 2 directories, 7522/12287 blocks, 19/3072 inodes in use, no errors
+mkfs.ext4: nothing: no such block device
+tune2fs: nothing: no such block device

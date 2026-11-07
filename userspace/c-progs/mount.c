@@ -17,9 +17,9 @@
 // removable disk if there is one (the stick Rustux started from). An EFI
 // partition on a fixed disk (Windows' own) is mounted read-only unless
 // the options say "rw!".
-// TYPE: vfat (fat, msdos), ext2 (ext3 and ext4 without their new
-// features: read-only or refused, step 16), or auto (default): what blkid
-// finds.
+// TYPE: vfat (fat, msdos), ext2, ext3, ext4 (steps 15 and 16; features
+// the server does not keep up to date: read-only), or auto (default):
+// what blkid finds.
 // OPTS: ro, rw, rw!, noauto, nofail, defaults (comma separated).
 // With -a, devices that are not there yet are waited for (-w, default 10
 // seconds: USB sticks take a moment; EFI waits that long for one on a
@@ -52,7 +52,7 @@ static void usage(void) {
             "       mount [-t TYPE] [-o OPTS] DEV DIR  mount DEV (sda1, LABEL=x, UUID=x, EFI) at DIR\n"
             "       mount DIR|DEV                      as /etc/fstab says\n"
             "       mount -a [-w SECONDS]              everything in /etc/fstab\n"
-            "TYPE: vfat, ext2 or auto; OPTS: ro, rw, noauto, nofail, defaults\n");
+            "TYPE: vfat, ext2, ext3, ext4 or auto; OPTS: ro, rw, noauto, nofail, defaults\n");
 }
 
 // Split a line into whitespace-separated fields (in place)
@@ -205,7 +205,7 @@ static int do_mount(const char *src, const char *type, const char *opts, const c
         server_path = "/bin/ext2fs";
         server_name = "ext2fs";
     } else {
-        fprintf(stderr, "%s: %s: cannot mount %s filesystems (vfat and ext2)\n", prog, dev, type);
+        fprintf(stderr, "%s: %s: cannot mount %s filesystems (vfat, ext2, ext3, ext4)\n", prog, dev, type);
         return -ENOTSUP;
     }
     struct stat st;

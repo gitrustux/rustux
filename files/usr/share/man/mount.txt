@@ -18,8 +18,10 @@ USAGE
     UUID=XXXX-XXXX, PARTLABEL=name, or EFI: the EFI system partition, on a
     removable disk if there is one. One on a fixed disk (Windows' own) is
     mounted read-only unless the options say rw!.
-    TYPE: vfat (also fat, msdos), ext2 (ext3 and ext4: read-only or
-    refused until step 16), or auto (default): what blkid finds.
+    TYPE: vfat (also fat, msdos), ext2, ext3, ext4 (features the server
+    does not keep up to date: read-only), or auto (default): what blkid
+    finds. Mounting an ext3/ext4 filesystem that was not unmounted
+    replays its journal first.
     OPTIONS: ro, rw, rw!, noauto, nofail, defaults (comma separated).
 
 EXAMPLES

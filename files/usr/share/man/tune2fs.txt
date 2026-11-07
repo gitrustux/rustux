@@ -1,0 +1,18 @@
+tune2fs - show an ext2/3/4 filesystem's superblock, or relabel it
+
+USAGE
+    tune2fs -l DEVICE
+    tune2fs -L LABEL DEVICE
+
+    -l prints what the superblock says, as Linux's tune2fs -l: the
+    label, UUID, features, state, counts of blocks and inodes (and free
+    ones), sizes, times, the journal inode, the directory hash and the
+    checksum. -L gives the filesystem a new label (16 characters at
+    most); not while it is mounted.
+
+EXAMPLES
+    tune2fs -l sda2 | grep features
+    tune2fs -L backup sda2
+
+SEE ALSO
+    mkfs.ext4, fsck.ext4, blkid

@@ -4,25 +4,37 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-// ext2fs: the ext2 filesystem server (step 15). Serves an ext2 filesystem
-// on a block device with fsd's file protocol (<rustux/fs.h>), read and
-// write: block groups, block and inode bitmaps, inodes (128 or 256 bytes,
-// nanosecond times in the larger ones), direct and indirect blocks,
-// sparse files, directories (indexed ones are read as plain lists, and
-// lose the index when changed, as Linux's ext2 driver does), symbolic and
-// hard links, owners, permission bits.
+// ext2fs: the ext2, ext3 and ext4 filesystem server (steps 15 and 16).
+// Serves the filesystem on a block device with fsd's file protocol
+// (<rustux/fs.h>), read and write: block groups (flexible ones too, and
+// groups whose bitmaps are not made yet), 32- and 64-byte group
+// descriptors, inodes of 128 or 256 bytes (nanosecond times in the larger
+// ones), extents and the older direct and indirect blocks, sparse files,
+// directories (hashed ones are read as plain lists; adding a name to one
+// turns it into a plain list, which e2fsck -D can index again), symbolic
+// and hard links, owners, permission bits, metadata checksums (crc32c)
+// and the older group checksums, more than 65000 subdirectories
+// (dir_nlink), the orphan list.
 //
 //   ext2fs [-r] DEVICE      started by mount, with the server end of the
 //                           root directory's connection as PA_USER0
 //
-// Filesystems with ext3/ext4 features this server does not keep up to
-// date (a journal, checksums, ...) are served read-only; those it cannot
-// read (extents, 64-bit, ...) are refused (step 16). While mounted for
-// writing the superblock says "not clean"; SHUTDOWN marks it clean again,
-// so e2fsck checks a filesystem that was not unmounted. Metadata reaches
-// the disk before each reply, file data within half a second. Format:
-// "The Second Extended File System" (Dave Poirier), and Linux's
-// Documentation/filesystems/ext2.rst.
+// The journal (jbd2, in its inode): a filesystem that was not unmounted
+// is first brought up to date from it (replay). Then every change of
+// metadata goes through it, as a transaction of whole blocks (ordered
+// mode: file data is written before the transaction that makes it part of
+// a file): the journal copies, a flush, the commit block, a flush, then
+// the blocks at home and a flush. Each transaction is checkpointed at
+// once, so the journal never holds more than one, and nothing is ever
+// revoked. Without a journal (ext2): the superblock says "not clean"
+// while mounted, so e2fsck checks a filesystem that was not unmounted.
+//
+// Metadata reaches the disk before each reply, file data within half a
+// second. Filesystems with features this server does not keep up to date
+// (quotas, bigalloc, ...) are served read-only; those it cannot read
+// (inline data, more than 2^32 blocks, ...) are refused.
+// Format: Linux's Documentation/filesystems/ext4/ and "The Second
+// Extended File System" (Dave Poirier).
 
 #include <errno.h>
 #include <fcntl.h>
@@ -35,17 +47,12 @@
 #include <sys/random.h>
 #include <unistd.h>
 
+#include "ext4lib.h"
+
 #define MAX_CONNS 500
 #define IOBUF (256u * 1024u)
 #define CACHE 1024          // metadata blocks kept
 #define PATHMAX 4096
-
-// Features (superblock)
-#define COMPAT_HAS_JOURNAL   0x0004
-#define INCOMPAT_FILETYPE    0x0002
-#define RO_SPARSE_SUPER      0x0001
-#define RO_LARGE_FILE        0x0002
-#define INDEX_FL             0x1000   // inode flag: hashed directory
 
 #define S_IFMT_  0170000
 #define S_IFDIR_ 0040000
@@ -54,12 +61,7 @@
 #define S_IFCHR_ 0020000
 
 static const char *dev_name = "?";
-static int read_only;
-
-static uint16_t le16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
-static uint32_t le32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
-static void put16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
-static void put32(uint8_t *p, uint32_t v) { put16(p, v); put16(p + 2, v >> 16); }
+static int read_only, dev_read_only;
 
 // ---- the block device ----
 
@@ -80,23 +82,39 @@ static int dev_rw(int write, uint64_t block, uint32_t count) {
     return r == -EPIPE ? -EIO : r;   // the disk is gone
 }
 
+static void dev_flush(void) {
+    rx_block_req_t q = { 0 };
+    q.op = RX_BLOCK_OP_FLUSH;
+    rx_block_call(blk, &q, 0, 0, 0, 0, 0, 0);
+}
+
 // ---- the filesystem ----
 
 static uint8_t sb[1024];
 static int sb_dirty;
 static uint32_t bs, spb;          // block size; device blocks per block
-static uint32_t nblocks, ninodes, first_data, bpg, ipg, ngroups, isz, first_ino, gdt_block;
+static uint32_t nblocks, ninodes, first_data, bpg, ipg, ngroups, isz, first_ino, gdt_block, desc_size;
 static uint32_t feat_compat, feat_incompat, feat_ro;
 static uint32_t fsid;
+static struct x4 X;               // checksums
+static int csum;                  // metadata_csum
+static int uninit_ok;             // groups may be BLOCK_UNINIT / INODE_UNINIT (group checksums)
+static uint32_t sb_home, sb_off;  // the block holding the superblock, and where in it
+static uint8_t *sbblk;            // that block
 
 static uint64_t blk_dev(uint32_t b) { return (uint64_t)b * spb; }
 
 // ---- block cache (metadata and directories) ----
 
+// What a cached block is, for its checksum
+enum { K_NONE, K_GDT, K_BBM, K_IBM, K_ITAB, K_EXT, K_DIR, K_XATTR };
+
 struct cblk {
     uint32_t block;     // 0: empty (block 0 is never cached)
     uint64_t used;
     int dirty;
+    uint8_t kind;
+    uint32_t aux;       // group (bitmaps), first inode (inode tables), owner's checksum seed
     uint8_t *data;
 };
 
@@ -104,8 +122,62 @@ static struct cblk cache[CACHE];
 static uint64_t cache_clock;
 static int io_error;
 static int write_pending;
+static int journaling;            // metadata goes through the journal
+static int in_flush;
+static uint32_t max_dirty = CACHE - 32;
+
+static int flush(void);
+static uint8_t *gd(uint32_t g, struct cblk **cs);
+
+static int nonzero(const uint8_t *p, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) if (p[i]) return 1;
+    return 0;
+}
+
+// Checksums of a block about to be written
+static void seal(struct cblk *c) {
+    if (!csum && !(X.gdt_csum && c->kind == K_GDT)) return;
+    switch (c->kind) {
+    case K_GDT: {
+        uint32_t per = bs / desc_size, g0 = (c->block - gdt_block) * per;
+        for (uint32_t k = 0; k < per && g0 + k < ngroups; k++) {
+            uint8_t *d = c->data + k * desc_size;
+            put16(d + 0x1E, x4_gd_csum(&X, g0 + k, d));
+        }
+        break;
+    }
+    case K_BBM:
+    case K_IBM: {
+        uint32_t cs = x4_bitmap_csum(&X, c->data, c->kind == K_BBM ? X.cpg : ipg);
+        struct cblk *dc;
+        uint8_t *d = gd(c->aux, &dc);
+        if (!d) break;
+        uint32_t lo = c->kind == K_BBM ? 0x18 : 0x1A, hi = c->kind == K_BBM ? 0x38 : 0x3A;
+        put16(d + lo, cs);
+        if (desc_size >= hi + 2) put16(d + hi, cs >> 16);
+        dc->dirty = 1;
+        break;
+    }
+    case K_ITAB:
+        for (uint32_t k = 0; k < bs / isz; k++) {
+            uint8_t *p = c->data + k * isz;
+            if (nonzero(p, isz)) x4_inode_csum_set(&X, c->aux + k, p);
+        }
+        break;
+    case K_EXT:
+        if (le16(c->data) == XMAGIC && x4_ext_tail(c->data) + 4 <= bs) put32(c->data + x4_ext_tail(c->data), x4_ext_csum(c->aux, c->data));
+        break;
+    case K_DIR:
+        if (x4_dir_has_tail(bs, c->data)) put32(c->data + bs - 4, x4_dir_csum(c->aux, bs, c->data));
+        break;
+    case K_XATTR:
+        if (le32(c->data) == 0xEA020000u) put32(c->data + 0x10, x4_xattr_csum(&X, c->block, c->data));
+        break;
+    }
+}
 
 static int write_cblk(struct cblk *c) {
+    seal(c);
     memcpy(iobuf, c->data, bs);
     int r = dev_rw(1, blk_dev(c->block), spb);
     if (r == 0) c->dirty = 0;
@@ -113,8 +185,40 @@ static int write_cblk(struct cblk *c) {
     return r;
 }
 
+// A slot for another block: the least recently used. With a journal,
+// changed blocks stay until their transaction is written (a full cache
+// writes one first).
+static struct cblk *pick_victim(void) {
+    for (int attempt = 0;; attempt++) {
+        struct cblk *v = 0;
+        uint32_t dirty = 0;
+        for (int i = 0; i < CACHE; i++) {
+            if (cache[i].dirty) {
+                dirty++;
+                if (journaling) continue;
+            }
+            if (!v || cache[i].used < v->used) v = &cache[i];
+        }
+        if (journaling && !in_flush && attempt == 0 && (dirty >= max_dirty || !v)) {
+            flush();
+            continue;
+        }
+        if (!v) {
+            io_error = -EIO;
+            return 0;
+        }
+        if (v->dirty) {
+            v->used = ++cache_clock;   // not picked again while it is written
+            write_cblk(v);
+        }
+        v->block = 0;
+        v->kind = K_NONE;
+        v->dirty = 0;
+        return v;
+    }
+}
+
 static struct cblk *get_block(uint32_t block) {
-    struct cblk *victim = 0;
     if (block == 0 || block >= nblocks) {
         io_error = -EIO;
         return 0;
@@ -124,10 +228,9 @@ static struct cblk *get_block(uint32_t block) {
             cache[i].used = ++cache_clock;
             return &cache[i];
         }
-        if (!victim || cache[i].used < victim->used) victim = &cache[i];
     }
-    if (victim->dirty) write_cblk(victim);
-    victim->block = 0;
+    struct cblk *victim = pick_victim();
+    if (!victim) return 0;
     if (dev_rw(0, blk_dev(block), spb) < 0) {
         io_error = -EIO;
         return 0;
@@ -135,7 +238,6 @@ static struct cblk *get_block(uint32_t block) {
     memcpy(victim->data, iobuf, bs);
     victim->block = block;
     victim->used = ++cache_clock;
-    victim->dirty = 0;
     return victim;
 }
 
@@ -144,20 +246,21 @@ static struct cblk *new_block(uint32_t block) {
     struct cblk *c = 0;
     for (int i = 0; i < CACHE && !c; i++) if (cache[i].block == block) c = &cache[i];
     if (!c) {
-        for (int i = 0; i < CACHE; i++) if (!c || cache[i].used < c->used) c = &cache[i];
-        if (c->dirty) write_cblk(c);
+        c = pick_victim();
+        if (!c) return 0;
         c->block = block;
     }
     memset(c->data, 0, bs);
+    c->kind = K_NONE;
     c->used = ++cache_clock;
     c->dirty = 1;
     return c;
 }
 
-// A freed block is no longer metadata: drop it (dirty or not)
-static void forget_block(uint32_t block) {
+// Freed blocks are no longer metadata: drop them (changed or not)
+static void forget_range(uint32_t b, uint32_t n) {
     for (int i = 0; i < CACHE; i++) {
-        if (cache[i].block == block) {
+        if (cache[i].block >= b && cache[i].block - b < n) {
             cache[i].block = 0;
             cache[i].dirty = 0;
             cache[i].used = 0;
@@ -165,8 +268,15 @@ static void forget_block(uint32_t block) {
     }
 }
 
-// The superblock: bytes 1024-2047 of the device
+static void drop_cache(void) { forget_range(1, UINT32_MAX - 1); }
+
+static void seal_super(void) {
+    if (csum) put32(sb + 1020, x4_sb_csum(sb));
+}
+
+// The superblock: bytes 1024-2047 of the device, written in place
 static int write_super(void) {
+    seal_super();
     uint64_t first = 1024 / dev_bs, count = (1024 + dev_bs - 1) / dev_bs;
     uint32_t off = 1024 % dev_bs;
     if (count * dev_bs < off + 1024) count++;
@@ -177,19 +287,197 @@ static int write_super(void) {
     return r;
 }
 
-static int flush(void) {
-    write_pending = 0;
-    for (;;) {
-        struct cblk *lo = 0;
-        for (int i = 0; i < CACHE; i++)
-            if (cache[i].dirty && (!lo || cache[i].block < lo->block)) lo = &cache[i];
-        if (!lo) break;
-        if (write_cblk(lo) < 0) break;
+// ---- writing runs of blocks ----
+
+static uint32_t run_first, run_n;
+
+static int run_flush(void) {
+    if (!run_n) return 0;
+    int r = dev_rw(1, blk_dev(run_first), run_n * spb);
+    run_n = 0;
+    if (r < 0) io_error = -EIO;
+    return r;
+}
+
+// Write block `at` (with others next to it, at once)
+static int run_put(uint32_t at, const uint8_t *data) {
+    if (run_n && (at != run_first + run_n || (run_n + 1) * bs > IOBUF) && run_flush() < 0) return -EIO;
+    if (!run_n) run_first = at;
+    memcpy(iobuf + (size_t)run_n * bs, data, bs);
+    run_n++;
+    return 0;
+}
+
+// ---- the journal ----
+
+static struct jbd jb;
+static uint32_t j_seq;            // the next transaction's number
+static uint32_t j_ino;
+static uint8_t *jtmp;             // a descriptor, commit or escaped block
+
+struct item { uint32_t home; const uint8_t *data; };
+
+static int item_cmp(const void *a, const void *b) {
+    uint32_t x = ((const struct item *)a)->home, y = ((const struct item *)b)->home;
+    return x < y ? -1 : x > y;
+}
+
+// Tags per descriptor block
+static uint32_t j_per_desc(void) {
+    uint32_t space = bs - 12 - (jb.csum ? 4 : 0);
+    return 1 + (space - jb.tag_bytes - 16) / jb.tag_bytes;
+}
+
+// The most blocks one transaction can hold
+static uint32_t j_capacity(void) {
+    uint32_t avail = jb.maxlen - jb.first - 1, per = j_per_desc();   // less the commit block
+    return (uint32_t)((uint64_t)avail * per / (per + 1));
+}
+
+static void j_tag(uint8_t *t, uint32_t home, uint32_t flags, uint32_t cs) {
+    if (jb.csum == 3) {
+        putbe32(t, home);
+        putbe32(t + 4, flags);
+        putbe32(t + 8, 0);
+        putbe32(t + 12, cs);
+    } else {
+        putbe32(t, home);
+        putbe16(t + 4, jb.csum ? cs : 0);
+        putbe16(t + 6, flags);
+        if (jb.incompat & JBD_INCOMPAT_64BIT) putbe32(t + 8, 0);
     }
-    if (sb_dirty && write_super() < 0) io_error = -EIO;
-    rx_block_req_t q = { 0 };
-    q.op = RX_BLOCK_OP_FLUSH;
-    rx_block_call(blk, &q, 0, 0, 0, 0, 0, 0);
+}
+
+// One transaction: the journal superblock (pointing at it), descriptor and
+// copied blocks, a flush, the commit block, a flush; then the blocks at
+// home and a flush
+static int j_transaction(struct item *it, uint32_t n) {
+    uint32_t seq = j_seq;
+    putbe32(jb.sbb + 0x18, seq);
+    putbe32(jb.sbb + 0x1C, jb.first);
+    jbd_sb_seal(&jb);
+    if (run_put(jb.map[0], jb.sbb) < 0) return -EIO;
+    uint32_t at = jb.first, per = j_per_desc();
+    uint8_t sq[4];
+    putbe32(sq, seq);
+    for (uint32_t k = 0; k < n;) {
+        uint32_t m = n - k < per ? n - k : per;
+        uint8_t *d = jtmp;
+        memset(d, 0, bs);
+        putbe32(d, JBD_MAGIC);
+        putbe32(d + 4, JBD_DESCRIPTOR);
+        putbe32(d + 8, seq);
+        uint32_t off = 12;
+        for (uint32_t i = 0; i < m; i++) {
+            const uint8_t *data = it[k + i].data;
+            uint32_t flags = (i ? JBD_FLAG_SAME_UUID : 0) | (i == m - 1 ? JBD_FLAG_LAST_TAG : 0);
+            uint32_t cs = 0;
+            if (be32(data) == JBD_MAGIC) flags |= JBD_FLAG_ESCAPE;
+            if (jb.csum) {
+                cs = crc32c(jb.seed, sq, 4);
+                if (flags & JBD_FLAG_ESCAPE) {
+                    static const uint8_t z[4];
+                    cs = crc32c(cs, z, 4);
+                    cs = crc32c(cs, data + 4, bs - 4);
+                } else {
+                    cs = crc32c(cs, data, bs);
+                }
+                if (jb.csum == 2) cs &= 0xFFFF;
+            }
+            j_tag(d + off, it[k + i].home, flags, cs);
+            off += jb.tag_bytes;
+            if (!i) {
+                memcpy(d + off, jb.sbb + 0x30, 16);
+                off += 16;
+            }
+        }
+        if (jb.csum) putbe32(d + bs - 4, crc32c(jb.seed, d, bs));
+        if (run_put(jb.map[at++], d) < 0) return -EIO;
+        for (uint32_t i = 0; i < m; i++) {
+            const uint8_t *data = it[k + i].data;
+            if (be32(data) == JBD_MAGIC) {
+                memcpy(d, data, bs);
+                memset(d, 0, 4);
+                data = d;
+            }
+            if (run_put(jb.map[at++], data) < 0) return -EIO;
+        }
+        k += m;
+    }
+    if (run_flush() < 0) return -EIO;
+    dev_flush();
+    uint8_t *c = jtmp;
+    memset(c, 0, bs);
+    putbe32(c, JBD_MAGIC);
+    putbe32(c + 4, JBD_COMMIT);
+    putbe32(c + 8, seq);
+    int64_t t = rx_clock_get_utc();
+    putbe32(c + 0x30, (uint32_t)((uint64_t)(t / 1000000000) >> 32));
+    putbe32(c + 0x34, (uint32_t)(t / 1000000000));
+    putbe32(c + 0x38, (uint32_t)(t % 1000000000));
+    if (jb.csum) putbe32(c + 16, crc32c(jb.seed, c, bs));
+    if (run_put(jb.map[at], c) < 0 || run_flush() < 0) return -EIO;
+    dev_flush();
+    j_seq++;
+    for (uint32_t k = 0; k < n; k++)
+        if (run_put(it[k].home, it[k].data) < 0) return -EIO;
+    if (run_flush() < 0) return -EIO;
+    dev_flush();
+    return 0;
+}
+
+// Write the changed blocks (and the superblock) through the journal
+static int j_commit(void) {
+    static struct item it[CACHE + 1];
+    uint32_t n = 0;
+    for (int i = 0; i < CACHE; i++) if (cache[i].dirty) it[n++] = (struct item){ cache[i].block, cache[i].data };
+    if (sb_dirty) {
+        seal_super();
+        memcpy(sbblk + sb_off, sb, 1024);
+        it[n++] = (struct item){ sb_home, sbblk };
+    }
+    if (!n) {
+        dev_flush();   // file data written since
+        return 0;
+    }
+    qsort(it, n, sizeof it[0], item_cmp);
+    uint32_t cap = j_capacity();
+    for (uint32_t k = 0; k < n; k += cap) {
+        uint32_t m = n - k < cap ? n - k : cap;
+        if (j_transaction(it + k, m) < 0) return -EIO;
+    }
+    for (int i = 0; i < CACHE; i++) cache[i].dirty = 0;
+    sb_dirty = 0;
+    return 0;
+}
+
+// Write everything out: checksums first (bitmaps change their group
+// descriptors; descriptors last), then the blocks, in order
+static int flush(void) {
+    if (in_flush) return 0;
+    in_flush = 1;
+    write_pending = 0;
+    if (csum || X.gdt_csum) {
+        static const uint8_t order[] = { K_EXT, K_DIR, K_XATTR, K_BBM, K_IBM, K_ITAB, K_GDT };
+        for (unsigned k = 0; k < sizeof order; k++)
+            for (int i = 0; i < CACHE; i++)
+                if (cache[i].dirty && cache[i].kind == order[k]) seal(&cache[i]);
+    }
+    if (journaling) {
+        if (j_commit() < 0) io_error = -EIO;
+    } else {
+        static struct item it[CACHE];
+        uint32_t n = 0;
+        for (int i = 0; i < CACHE; i++) if (cache[i].dirty) it[n++] = (struct item){ cache[i].block, cache[i].data };
+        qsort(it, n, sizeof it[0], item_cmp);
+        int ok = 1;
+        for (uint32_t k = 0; k < n && ok; k++) ok = run_put(it[k].home, it[k].data) == 0;
+        if (ok && run_flush() == 0)
+            for (int i = 0; i < CACHE; i++) cache[i].dirty = 0;
+        if (sb_dirty && write_super() < 0) io_error = -EIO;
+        dev_flush();
+    }
+    in_flush = 0;
     int r = io_error;
     io_error = 0;
     return r;
@@ -200,10 +488,11 @@ static int64_t now_ns(void) { return rx_clock_get_utc(); }
 // ---- group descriptors ----
 
 static uint8_t *gd(uint32_t g, struct cblk **cs) {
-    struct cblk *c = get_block(gdt_block + g * 32 / bs);
+    struct cblk *c = get_block(gdt_block + g * desc_size / bs);
     if (!c) return 0;
+    c->kind = K_GDT;
     if (cs) *cs = c;
-    return c->data + (g * 32) % bs;
+    return c->data + (g * desc_size) % bs;
 }
 
 static void sb_add(int off, int delta) {
@@ -216,23 +505,33 @@ static void sb_add(int off, int delta) {
 static uint8_t *ino_ptr(uint32_t ino, struct cblk **cs) {
     if (ino == 0 || ino > ninodes) return 0;
     uint32_t g = (ino - 1) / ipg, i = (ino - 1) % ipg;
-    struct cblk *c;
-    uint8_t *d = gd(g, &c);
+    uint8_t *d = gd(g, 0);
     if (!d) return 0;
     uint32_t table = le32(d + 8);
     struct cblk *b = get_block(table + (uint32_t)((uint64_t)i * isz / bs));
     if (!b) return 0;
+    b->kind = K_ITAB;
+    b->aux = ino - i % (bs / isz);
     if (cs) *cs = b;
     return b->data + ((uint64_t)i * isz) % bs;
 }
 
+// The seed of an inode's own checksums
+static uint32_t iseed(uint32_t ino) {
+    if (!csum) return 0;
+    uint8_t *p = ino_ptr(ino, 0);
+    return p ? x4_inode_seed(&X, ino, le32(p + 100)) : 0;
+}
 
 static uint32_t i_mode(uint32_t ino) { uint8_t *p = ino_ptr(ino, 0); return p ? le16(p) : 0; }
+static uint32_t i_flags(uint32_t ino) { uint8_t *p = ino_ptr(ino, 0); return p ? le32(p + 32) : 0; }
+// ext4 keeps the size's high half for every file; ext2 only for regular files
+static int size_hi(const uint8_t *p) { return (le16(p) & S_IFMT_) == S_IFREG_ || (feat_incompat & INCOMPAT_EXTENTS); }
 static uint64_t i_size(uint32_t ino) {
     uint8_t *p = ino_ptr(ino, 0);
     if (!p) return 0;
     uint64_t s = le32(p + 4);
-    if ((le16(p) & S_IFMT_) == S_IFREG_) s |= (uint64_t)le32(p + 108) << 32;
+    if (size_hi(p)) s |= (uint64_t)le32(p + 108) << 32;
     return s;
 }
 static void set_size_field(uint32_t ino, uint64_t size) {
@@ -240,13 +539,11 @@ static void set_size_field(uint32_t ino, uint64_t size) {
     uint8_t *p = ino_ptr(ino, &c);
     if (!p) return;
     put32(p + 4, (uint32_t)size);
-    if ((le16(p) & S_IFMT_) == S_IFREG_) {
-        put32(p + 108, (uint32_t)(size >> 32));
-        if (size >= 0x80000000ull && !(feat_ro & RO_LARGE_FILE)) {
-            feat_ro |= RO_LARGE_FILE;
-            put32(sb + 100, feat_ro);
-            sb_dirty = 1;
-        }
+    if (size_hi(p)) put32(p + 108, (uint32_t)(size >> 32));
+    if ((le16(p) & S_IFMT_) == S_IFREG_ && size >= 0x80000000ull && !(feat_ro & RO_LARGE_FILE)) {
+        feat_ro |= RO_LARGE_FILE;
+        put32(sb + 100, feat_ro);
+        sb_dirty = 1;
     }
     c->dirty = 1;
 }
@@ -290,11 +587,65 @@ static void add_iblocks(uint32_t ino, int64_t sectors) {
     struct cblk *c;
     uint8_t *p = ino_ptr(ino, &c);
     if (!p) return;
+    if (le32(p + 32) & HUGE_FILE_FL) sectors /= bs / 512;   // counted in blocks
     uint64_t v = le32(p + 28) | (uint64_t)le16(p + 116) << 32;
     v += (uint64_t)sectors;
     put32(p + 28, (uint32_t)v);
     put16(p + 116, (uint32_t)(v >> 32));
     c->dirty = 1;
+}
+
+// ---- bitmaps ----
+
+static uint32_t in_group(uint32_t g) { return g == ngroups - 1 ? nblocks - first_data - g * bpg : bpg; }
+
+static void set_bits(uint8_t *m, uint32_t from, uint32_t to) {
+    for (uint32_t i = from; i < to; i++) m[i / 8] |= (uint8_t)(1u << (i % 8));
+}
+
+// A group's block bitmap as Linux makes it for a BLOCK_UNINIT group: its
+// superblock copy and descriptor blocks, its own bitmaps and inode table
+// (where they are in it), and the bits past its end
+static void init_block_bitmap(uint32_t g, uint8_t *m, const uint8_t *d) {
+    memset(m, 0, bs);
+    uint32_t start = first_data + g * bpg, n = in_group(g);
+    if (x4_has_super(sb, g)) {
+        uint32_t gdt_blocks = (ngroups * desc_size + bs - 1) / bs;
+        set_bits(m, 0, 1 + gdt_blocks + le16(sb + 206));
+    }
+    uint32_t tb = (ipg * isz + bs - 1) / bs, own[3] = { le32(d), le32(d + 4), le32(d + 8) };
+    for (int k = 0; k < 3; k++) {
+        uint32_t len = k == 2 ? tb : 1;
+        for (uint32_t b = own[k]; b < own[k] + len; b++)
+            if (b >= start && b - start < n) set_bits(m, b - start, b - start + 1);
+    }
+    set_bits(m, n, bs * 8);
+}
+
+// A group's bitmap (blocks, or inodes), made first if the group has none
+// yet (then it no longer is "uninit")
+static struct cblk *group_bitmap(uint32_t g, int inodes) {
+    struct cblk *dc;
+    uint8_t *d = gd(g, &dc);
+    if (!d) return 0;
+    uint32_t flag = inodes ? BG_INODE_UNINIT : BG_BLOCK_UNINIT, at = le32(d + (inodes ? 4 : 0));
+    struct cblk *b;
+    if (uninit_ok && (le16(d + 18) & flag)) {
+        if (read_only) return 0;
+        b = new_block(at);
+        if (!b) return 0;
+        d = gd(g, &dc);
+        if (inodes) set_bits(b->data, ipg, bs * 8);
+        else init_block_bitmap(g, b->data, d);
+        put16(d + 18, le16(d + 18) & ~flag);
+        dc->dirty = 1;
+    } else {
+        b = get_block(at);
+        if (!b) return 0;
+    }
+    b->kind = inodes ? K_IBM : K_BBM;
+    b->aux = g;
+    return b;
 }
 
 // ---- allocation ----
@@ -306,18 +657,24 @@ static uint32_t alloc_block(uint32_t goal) {
     uint32_t g0 = (goal - first_data) / bpg;
     for (uint32_t k = 0; k < ngroups; k++) {
         uint32_t g = (g0 + k) % ngroups;
-        struct cblk *dc;
-        uint8_t *d = gd(g, &dc);
+        uint8_t *d = gd(g, 0);
         if (!d || le16(d + 12) == 0) continue;
-        struct cblk *bm = get_block(le32(d));
+        struct cblk *bm = group_bitmap(g, 0);
         if (!bm) return 0;
-        uint32_t in_group = g == ngroups - 1 ? nblocks - first_data - g * bpg : bpg;
+        uint32_t n = in_group(g);
         uint32_t start = k == 0 ? (goal - first_data) % bpg : 0;
-        for (uint32_t step = 0; step < in_group; step++) {
-            uint32_t i = (start + step) % in_group;
+        for (uint32_t step = 0; step < n;) {
+            uint32_t i = (start + step) % n;
+            if (i % 8 == 0 && i + 8 <= n && step + 8 <= n && bm->data[i / 8] == 0xFF) {
+                step += 8;
+                continue;
+            }
+            step++;
             if (bm->data[i / 8] & (1u << (i % 8))) continue;
             bm->data[i / 8] |= (uint8_t)(1u << (i % 8));
             bm->dirty = 1;
+            struct cblk *dc;
+            d = gd(g, &dc);
             put16(d + 12, le16(d + 12) - 1u);
             dc->dirty = 1;
             sb_add(12, -1);
@@ -327,21 +684,37 @@ static uint32_t alloc_block(uint32_t goal) {
     return 0;
 }
 
-static void free_block(uint32_t b) {
-    if (b < first_data || b >= nblocks) return;
-    uint32_t g = (b - first_data) / bpg, i = (b - first_data) % bpg;
-    struct cblk *dc;
-    uint8_t *d = gd(g, &dc);
-    if (!d) return;
-    struct cblk *bm = get_block(le32(d));
-    if (!bm || !(bm->data[i / 8] & (1u << (i % 8)))) return;
-    bm->data[i / 8] &= (uint8_t)~(1u << (i % 8));
-    bm->dirty = 1;
-    put16(d + 12, le16(d + 12) + 1u);
-    dc->dirty = 1;
-    sb_add(12, 1);
-    forget_block(b);
+static void free_range(uint32_t b, uint32_t n) {
+    uint32_t b0 = b, n0 = n;
+    while (n) {
+        if (b < first_data || b >= nblocks) break;
+        uint32_t g = (b - first_data) / bpg, i = (b - first_data) % bpg;
+        uint32_t m = bpg - i < n ? bpg - i : n;
+        struct cblk *bm = group_bitmap(g, 0);
+        if (!bm) break;
+        uint32_t freed = 0;
+        for (uint32_t k = i; k < i + m; k++) {
+            if (!(bm->data[k / 8] & (1u << (k % 8)))) continue;
+            bm->data[k / 8] &= (uint8_t)~(1u << (k % 8));
+            freed++;
+        }
+        if (freed) {
+            bm->dirty = 1;
+            struct cblk *dc;
+            uint8_t *d = gd(g, &dc);
+            if (d) {
+                put16(d + 12, le16(d + 12) + freed);
+                dc->dirty = 1;
+            }
+            sb_add(12, (int)freed);
+        }
+        b += m;
+        n -= m;
+    }
+    forget_range(b0, n0);
 }
+
+static void free_block(uint32_t b) { free_range(b, 1); }
 
 // A free inode: directories in the group with the most free inodes,
 // other files near their directory
@@ -358,10 +731,9 @@ static uint32_t alloc_inode(uint32_t parent, int dir) {
     }
     for (uint32_t k = 0; k < ngroups; k++) {
         uint32_t g = (g0 + k) % ngroups;
-        struct cblk *dc;
-        uint8_t *d = gd(g, &dc);
+        uint8_t *d = gd(g, 0);
         if (!d || le16(d + 14) == 0) continue;
-        struct cblk *bm = get_block(le32(d + 4));
+        struct cblk *bm = group_bitmap(g, 1);
         if (!bm) return 0;
         for (uint32_t i = 0; i < ipg; i++) {
             uint32_t ino = g * ipg + i + 1;
@@ -369,8 +741,17 @@ static uint32_t alloc_inode(uint32_t parent, int dir) {
             if (bm->data[i / 8] & (1u << (i % 8))) continue;
             bm->data[i / 8] |= (uint8_t)(1u << (i % 8));
             bm->dirty = 1;
+            // Linux makes the block bitmap of a group it puts inodes in
+            if (uninit_ok) group_bitmap(g, 0);
+            struct cblk *dc;
+            d = gd(g, &dc);
             put16(d + 14, le16(d + 14) - 1u);
             if (dir) put16(d + 16, le16(d + 16) + 1u);
+            if (uninit_ok) {
+                // Inodes from the end of the table on were never used
+                uint32_t unused = le16(d + 0x1C);
+                if (i >= ipg - unused) put16(d + 0x1C, ipg - i - 1);
+            }
             dc->dirty = 1;
             sb_add(16, -1);
             return ino;
@@ -381,20 +762,358 @@ static uint32_t alloc_inode(uint32_t parent, int dir) {
 
 static void free_inode_bit(uint32_t ino, int dir) {
     uint32_t g = (ino - 1) / ipg, i = (ino - 1) % ipg;
-    struct cblk *dc;
-    uint8_t *d = gd(g, &dc);
-    if (!d) return;
-    struct cblk *bm = get_block(le32(d + 4));
+    struct cblk *bm = group_bitmap(g, 1);
     if (!bm || !(bm->data[i / 8] & (1u << (i % 8)))) return;
     bm->data[i / 8] &= (uint8_t)~(1u << (i % 8));
     bm->dirty = 1;
+    struct cblk *dc;
+    uint8_t *d = gd(g, &dc);
+    if (!d) return;
     put16(d + 14, le16(d + 14) + 1u);
     if (dir) put16(d + 16, le16(d + 16) - 1u);
     dc->dirty = 1;
     sb_add(16, 1);
 }
 
-// ---- block map (direct and indirect blocks) ----
+static uint32_t ino_goal(uint32_t ino) { return first_data + ((ino - 1) / ipg) * bpg; }
+
+// ---- extents ----
+//
+// A tree: the root (up to 4 entries) in the inode's block pointers, other
+// nodes in blocks. Index nodes: (first logical block, child node); leaves:
+// (first logical block, length, first physical block); an unwritten
+// extent (fallocate) reads as zeros.
+
+#define XMAXD 6
+
+struct xlev { uint32_t blk; int i; };   // blk 0: the root; i: the entry taken (-1: before the first)
+
+static uint8_t *xnode(uint32_t ino, uint32_t blk, struct cblk **cs) {
+    if (!blk) {
+        uint8_t *p = ino_ptr(ino, cs);
+        return p ? p + 40 : 0;
+    }
+    uint32_t seed = iseed(ino);
+    struct cblk *c = get_block(blk);
+    if (!c) return 0;
+    c->kind = K_EXT;
+    c->aux = seed;
+    *cs = c;
+    return c->data;
+}
+
+static uint32_t x_len(const uint8_t *e) { uint32_t l = le16(e + 4); return l > 32768 ? l - 32768 : l; }
+static int x_unwritten(const uint8_t *e) { return le16(e + 4) > 32768; }
+
+// The path from the root to the leaf where logical block lb is (or would be)
+static int x_path(uint32_t ino, uint32_t lb, struct xlev *pt, int *depth) {
+    uint32_t blk = 0;
+    for (int lv = 0; lv < XMAXD; lv++) {
+        struct cblk *c;
+        uint8_t *h = xnode(ino, blk, &c);
+        if (!h || le16(h) != XMAGIC) return -EIO;
+        uint32_t n = le16(h + 2), d = le16(h + 6);
+        if (lv == 0) {
+            if (d >= XMAXD) return -EIO;
+            *depth = (int)d;
+        } else if (d != (uint32_t)(*depth - lv)) {
+            return -EIO;
+        }
+        if (n > le16(h + 4) || 12u + 12u * le16(h + 4) > (blk ? bs : 60u)) return -EIO;
+        int i = -1;
+        for (uint32_t k = 0; k < n && le32(h + 12 + 12 * k) <= lb; k++) i = (int)k;
+        pt[lv].blk = blk;
+        if (d == 0) {
+            pt[lv].i = i;
+            return 0;
+        }
+        if (n == 0) return -EIO;
+        if (i < 0) i = 0;
+        pt[lv].i = i;
+        uint8_t *e = h + 12 + 12 * i;
+        if (le16(e + 8)) return -EIO;   // beyond 32 bits
+        blk = le32(e + 4);
+    }
+    return -EIO;
+}
+
+// Logical block lb: its physical block (0: a hole), -1 on error.
+// *unwritten for an unwritten extent; *hint: the block that would follow
+// the extent before it
+static int64_t x_lookup(uint32_t ino, uint32_t lb, int *unwritten, uint32_t *hint) {
+    struct xlev pt[XMAXD];
+    int d;
+    *unwritten = 0;
+    if (hint) *hint = 0;
+    if (x_path(ino, lb, pt, &d) < 0) return -1;
+    struct cblk *c;
+    uint8_t *h = xnode(ino, pt[d].blk, &c);
+    if (!h || pt[d].i < 0) return 0;
+    uint8_t *e = h + 12 + 12 * pt[d].i;
+    uint32_t eb = le32(e), len = x_len(e);
+    if (le16(e + 6)) return -1;
+    if (hint) *hint = le32(e + 8) + (lb - eb);
+    if ((uint64_t)lb >= (uint64_t)eb + len) return 0;
+    *unwritten = x_unwritten(e);
+    return (int64_t)le32(e + 8) + (lb - eb);
+}
+
+// Lower the keys on the path to lb (a new first entry of the leftmost leaf)
+static void x_fix_keys(uint32_t ino, struct xlev *pt, int d, uint32_t lb) {
+    for (int lv = 0; lv < d; lv++) {
+        struct cblk *c;
+        uint8_t *h = xnode(ino, pt[lv].blk, &c);
+        if (!h) return;
+        uint8_t *e = h + 12 + 12 * pt[lv].i;
+        if (le32(e) > lb) {
+            put32(e, lb);
+            c->dirty = 1;
+        }
+    }
+}
+
+// Make room in the full node at level lv of the path: a full root moves
+// into a new block below it; another node splits in two (or, for the last
+// leaf when adding past its end, gets an empty one after it). The caller
+// looks its path up again.
+static int x_make_room(uint32_t ino, struct xlev *pt, int d, int lv, uint32_t lb) {
+    struct cblk *c, *pc = 0;
+    uint8_t *h = xnode(ino, pt[lv].blk, &c), *ph;
+    if (!h) return -EIO;
+    uint32_t n = le16(h + 2), cap = (bs - 12) / 12;
+    if (n < le16(h + 4)) return 0;
+    if (lv > 0) {
+        ph = xnode(ino, pt[lv - 1].blk, &pc);
+        if (!ph) return -EIO;
+        if (le16(ph + 2) >= le16(ph + 4)) return x_make_room(ino, pt, d, lv - 1, lb);
+    }
+    uint32_t nb = alloc_block(pt[lv].blk ? pt[lv].blk + 1 : ino_goal(ino));
+    if (!nb) return -ENOSPC;
+    add_iblocks(ino, bs / 512);
+    uint32_t seed = iseed(ino);
+    struct cblk *nc = new_block(nb);
+    if (!nc) return -EIO;
+    nc->kind = K_EXT;
+    nc->aux = seed;
+    h = xnode(ino, pt[lv].blk, &c);
+    if (lv == 0) {
+        memcpy(nc->data, h, 12 + 12 * n);
+        put16(nc->data + 4, cap);
+        uint8_t *e = h + 12;
+        put32(e, n ? le32(nc->data + 12) : lb);
+        put32(e + 4, nb);
+        put16(e + 8, 0);
+        put16(e + 10, 0);
+        put16(h + 2, 1);
+        put16(h + 6, le16(h + 6) + 1u);
+        c->dirty = 1;
+        return 0;
+    }
+    int append = lv == d;
+    for (int k = 0; k <= lv && append; k++) {
+        struct cblk *kc;
+        uint8_t *kh = xnode(ino, pt[k].blk, &kc);
+        append = kh && pt[k].i == (int)le16(kh + 2) - 1;
+    }
+    h = xnode(ino, pt[lv].blk, &c);
+    uint32_t move = append ? 0 : n / 2;
+    memcpy(nc->data, h, 12);
+    put16(nc->data + 2, move);
+    put16(nc->data + 4, cap);
+    memcpy(nc->data + 12, h + 12 + 12 * (n - move), 12 * move);
+    put16(h + 2, n - move);
+    c->dirty = 1;
+    uint32_t key = move ? le32(nc->data + 12) : lb;
+    ph = xnode(ino, pt[lv - 1].blk, &pc);
+    uint32_t pn = le16(ph + 2), at = (uint32_t)pt[lv - 1].i + 1;
+    memmove(ph + 12 + 12 * (at + 1), ph + 12 + 12 * at, 12 * (pn - at));
+    uint8_t *e = ph + 12 + 12 * at;
+    put32(e, key);
+    put32(e + 4, nb);
+    put16(e + 8, 0);
+    put16(e + 10, 0);
+    put16(ph + 2, pn + 1);
+    pc->dirty = 1;
+    return 0;
+}
+
+// Map `count` logical blocks from lb (a hole) to physical blocks from pb
+static int x_insert(uint32_t ino, uint32_t lb, uint32_t pb, uint32_t count, int unwritten) {
+    uint32_t maxlen = unwritten ? 32767 : 32768;
+    for (int tries = 0; tries < 20; tries++) {
+        struct xlev pt[XMAXD];
+        int d;
+        if (x_path(ino, lb, pt, &d) < 0) return -EIO;
+        struct cblk *c;
+        uint8_t *h = xnode(ino, pt[d].blk, &c);
+        if (!h) return -EIO;
+        uint32_t n = le16(h + 2);
+        int i = pt[d].i;
+        if (i >= 0) {
+            // Grow the extent before it
+            uint8_t *e = h + 12 + 12 * i;
+            uint32_t len = x_len(e);
+            if (x_unwritten(e) == unwritten && le32(e) + len == lb && le32(e + 8) + len == pb && len + count <= maxlen && !le16(e + 6)) {
+                put16(e + 4, le16(e + 4) + count);
+                c->dirty = 1;
+                return 0;
+            }
+        }
+        if ((uint32_t)(i + 1) < n) {
+            // Or the one after it
+            uint8_t *e = h + 12 + 12 * (i + 1);
+            uint32_t len = x_len(e);
+            if (x_unwritten(e) == unwritten && le32(e) == lb + count && le32(e + 8) == pb + count && len + count <= maxlen && !le16(e + 6)) {
+                put32(e, lb);
+                put32(e + 8, pb);
+                put16(e + 4, le16(e + 4) + count);
+                c->dirty = 1;
+                if (i + 1 == 0) x_fix_keys(ino, pt, d, lb);
+                return 0;
+            }
+        }
+        if (n < le16(h + 4)) {
+            uint8_t *e = h + 12 + 12 * (i + 1);
+            memmove(e + 12, e, 12 * (n - (uint32_t)(i + 1)));
+            put32(e, lb);
+            put16(e + 4, (unwritten ? 32768 : 0) + count);
+            put16(e + 6, 0);
+            put32(e + 8, pb);
+            put16(h + 2, n + 1);
+            c->dirty = 1;
+            if (i + 1 == 0) x_fix_keys(ino, pt, d, lb);
+            return 0;
+        }
+        int r = x_make_room(ino, pt, d, d, lb);
+        if (r < 0) return r;
+    }
+    return -EIO;
+}
+
+// Take block lb out of the unwritten extent it is in (which shrinks or splits)
+static int x_punch1(uint32_t ino, uint32_t lb) {
+    struct xlev pt[XMAXD];
+    int d;
+    if (x_path(ino, lb, pt, &d) < 0 || pt[d].i < 0) return -EIO;
+    struct cblk *c;
+    uint8_t *h = xnode(ino, pt[d].blk, &c);
+    if (!h) return -EIO;
+    uint8_t *e = h + 12 + 12 * pt[d].i;
+    uint32_t eb = le32(e), len = x_len(e), start = le32(e + 8), un = le16(e + 4) - len;
+    c->dirty = 1;
+    if (len == 1) {
+        uint32_t n = le16(h + 2);
+        memmove(e, e + 12, 12 * (n - (uint32_t)pt[d].i - 1));
+        put16(h + 2, n - 1);
+    } else if (lb == eb) {
+        put32(e, eb + 1);
+        put32(e + 8, start + 1);
+        put16(e + 4, un + len - 1);
+    } else if (lb == eb + len - 1) {
+        put16(e + 4, un + len - 1);
+    } else {
+        uint32_t before = lb - eb;
+        put16(e + 4, un + before);
+        return x_insert(ino, lb + 1, start + before + 1, len - before - 1, 1);
+    }
+    return 0;
+}
+
+static int64_t x_map(uint32_t ino, uint64_t lb64, int alloc, uint32_t goal, int *fresh) {
+    if (lb64 >= 0xFFFFFFFFull) return alloc ? -1 : 0;
+    uint32_t lb = (uint32_t)lb64, hint;
+    int unw;
+    int64_t pb = x_lookup(ino, lb, &unw, &hint);
+    if (pb < 0) return -1;
+    if (pb && !unw) return pb;
+    if (!alloc) return 0;   // holes and unwritten extents read as zeros
+    if (read_only) return -1;
+    if (pb) {
+        if (x_punch1(ino, lb) < 0 || x_insert(ino, lb, (uint32_t)pb, 1, 0) < 0) return -1;
+        if (fresh) *fresh = 1;
+        return pb;
+    }
+    uint32_t nb = alloc_block(goal ? goal : hint ? hint : ino_goal(ino));
+    if (!nb) return -1;
+    add_iblocks(ino, bs / 512);
+    if (x_insert(ino, lb, nb, 1, 0) < 0) {
+        free_block(nb);
+        add_iblocks(ino, -(int64_t)(bs / 512));
+        return -1;
+    }
+    if (fresh) *fresh = 1;
+    return nb;
+}
+
+// Free the blocks from logical block `from` on below node blk; 1 if the
+// node is empty then
+static int x_trunc_node(uint32_t ino, uint32_t blk, uint32_t from, int guard) {
+    struct cblk *c;
+    uint8_t *h = xnode(ino, blk, &c);
+    if (!h || le16(h) != XMAGIC || guard > XMAXD) return 0;
+    uint32_t d = le16(h + 6);
+    for (int k = (int)le16(h + 2) - 1; k >= 0; k--) {
+        h = xnode(ino, blk, &c);
+        if (!h) return 0;
+        uint8_t *e = h + 12 + 12 * k;
+        uint32_t key = le32(e);
+        if (d == 0) {
+            uint32_t len = x_len(e), start = le32(e + 8), un = le16(e + 4) - len;
+            if (key + len <= from) break;
+            uint32_t keep = key >= from ? 0 : from - key;
+            free_range(start + keep, len - keep);
+            add_iblocks(ino, -(int64_t)(len - keep) * (bs / 512));
+            h = xnode(ino, blk, &c);
+            e = h + 12 + 12 * k;
+            if (keep) {
+                put16(e + 4, un + keep);
+            } else {
+                uint32_t n = le16(h + 2);
+                memmove(e, e + 12, 12 * (n - (uint32_t)k - 1));
+                put16(h + 2, n - 1);
+            }
+            c->dirty = 1;
+            if (keep) break;
+        } else {
+            uint32_t child = le32(e + 4);
+            if (x_trunc_node(ino, child, from, guard + 1)) {
+                free_block(child);
+                add_iblocks(ino, -(int64_t)(bs / 512));
+                h = xnode(ino, blk, &c);
+                e = h + 12 + 12 * k;
+                uint32_t n = le16(h + 2);
+                memmove(e, e + 12, 12 * (n - (uint32_t)k - 1));
+                put16(h + 2, n - 1);
+                c->dirty = 1;
+            }
+            if (key <= from) break;
+        }
+    }
+    h = xnode(ino, blk, &c);
+    return h && le16(h + 2) == 0;
+}
+
+static void x_free_from(uint32_t ino, uint64_t from) {
+    if (from >= 0xFFFFFFFFull) return;
+    if (x_trunc_node(ino, 0, (uint32_t)from, 0)) {
+        // Nothing left: a leaf again
+        struct cblk *c;
+        uint8_t *h = xnode(ino, 0, &c);
+        if (h && le16(h + 6)) {
+            put16(h + 6, 0);
+            c->dirty = 1;
+        }
+    }
+}
+
+static void x_init_root(uint8_t *p) {
+    put32(p + 32, le32(p + 32) | EXTENTS_FL);
+    memset(p + 40, 0, 60);
+    put16(p + 40, XMAGIC);
+    put16(p + 44, 4);
+}
+
+// ---- block map ----
 
 static uint32_t per_block(void) { return bs / 4; }
 
@@ -408,7 +1127,8 @@ static int64_t bmap(uint32_t ino, uint64_t lb, int alloc, uint32_t goal, int *fr
     struct cblk *ic;
     uint8_t *p = ino_ptr(ino, &ic);
     if (!p) return -1;
-    if (!goal) goal = first_data + ((ino - 1) / ipg) * bpg;
+    if (le32(p + 32) & EXTENTS_FL) return x_map(ino, lb, alloc, goal, fresh);
+    if (!goal) goal = ino_goal(ino);
     // Which pointer chain: direct, single, double or triple indirect
     int depth;
     uint32_t idx[4];
@@ -503,6 +1223,10 @@ static void free_from(uint32_t ino, uint64_t from) {
     struct cblk *ic;
     uint8_t *p = ino_ptr(ino, &ic);
     if (!p) return;
+    if (le32(p + 32) & EXTENTS_FL) {
+        x_free_from(ino, from);
+        return;
+    }
     for (uint32_t i = 0; i < 12; i++) {
         uint32_t b = le32(p + 40 + 4 * i);
         if (b && i >= from) {
@@ -527,6 +1251,13 @@ static void free_from(uint32_t ino, uint64_t from) {
         base += span;
         span *= per;
     }
+}
+
+// The largest file: 2^32 blocks with extents, the indirect blocks' reach without
+static uint64_t max_size(uint32_t ino) {
+    if (i_flags(ino) & EXTENTS_FL) return 0xFFFFFFFFull * bs;
+    uint64_t per = per_block();
+    return (12 + per + per * per + per * per * per) * bs;
 }
 
 // ---- file data ----
@@ -603,6 +1334,7 @@ static int file_io(uint32_t ino, uint64_t off, uint8_t *buf, size_t len, int wri
 // zeroed (so growing it later shows zeros); growing makes a hole
 static int truncate_ino(uint32_t ino, uint64_t size) {
     uint64_t old = i_size(ino);
+    if (size > max_size(ino)) return -EFBIG;
     if (size < old) {
         uint64_t keep = (size + bs - 1) / bs;
         free_from(ino, keep);
@@ -644,6 +1376,31 @@ static uint8_t type_of_mode(uint32_t mode) {
 
 static uint32_t name_len_of(const uint8_t *e) { return (feat_incompat & INCOMPAT_FILETYPE) ? e[6] : le16(e + 6); }
 
+// A block of directory `dir` (its checksum tail, if any, is kept up to date)
+static struct cblk *dir_block(uint32_t dir, uint32_t pb) {
+    uint32_t seed = iseed(dir);
+    struct cblk *c = get_block(pb);
+    if (c) {
+        c->kind = K_DIR;
+        c->aux = seed;
+    }
+    return c;
+}
+
+static struct cblk *dir_new_block(uint32_t dir, uint32_t pb) {
+    uint32_t seed = iseed(dir);
+    struct cblk *c = new_block(pb);
+    if (c) {
+        c->kind = K_DIR;
+        c->aux = seed;
+        if (csum) x4_dir_init_tail(bs, c->data);
+    }
+    return c;
+}
+
+// Where the entries of a block end (before the checksum tail)
+static uint32_t dir_end(const struct cblk *c) { return x4_dir_has_tail(bs, c->data) ? bs - 12 : bs; }
+
 // The next entry at or after *pos: 1 (d filled, *pos past it), 0 at the end
 static int dir_next(uint32_t dir, uint32_t *pos, struct dent *d) {
     uint64_t size = i_size(dir);
@@ -651,7 +1408,7 @@ static int dir_next(uint32_t dir, uint32_t *pos, struct dent *d) {
         uint32_t lb = *pos / bs, in = *pos % bs;
         int64_t pb = bmap(dir, lb, 0, 0, 0);
         if (pb <= 0) { *pos = (lb + 1) * bs; continue; }
-        struct cblk *c = get_block((uint32_t)pb);
+        struct cblk *c = dir_block(dir, (uint32_t)pb);
         if (!c) return -EIO;
         uint8_t *e = c->data + in;
         uint32_t rec = le16(e + 4);
@@ -678,31 +1435,64 @@ static int dir_find(uint32_t dir, const char *name, size_t len, struct dent *d) 
     return r < 0 ? r : -ENOENT;
 }
 
-// A changed directory: no longer indexed (we do not keep the index)
-static void dir_changed(uint32_t dir) {
-    struct cblk *c;
-    uint8_t *p = ino_ptr(dir, &c);
-    if (p && (le32(p + 32) & INDEX_FL)) {
-        put32(p + 32, le32(p + 32) & ~INDEX_FL);
+// A hashed directory becomes a plain list: the index root (block 0) keeps
+// "." and "..", the other index nodes become empty blocks; the leaves stay
+static int dir_unindex(uint32_t dir) {
+    struct cblk *ic;
+    uint8_t *p = ino_ptr(dir, &ic);
+    if (!p || !(le32(p + 32) & INDEX_FL)) return 0;
+    uint64_t size = i_size(dir);
+    for (uint32_t lb = 0; (uint64_t)lb * bs < size; lb++) {
+        int64_t pb = bmap(dir, lb, 0, 0, 0);
+        if (pb <= 0) continue;
+        struct cblk *c = dir_block(dir, (uint32_t)pb);
+        if (!c) return -EIO;
+        uint8_t *b = c->data;
+        uint32_t end = csum ? bs - 12 : bs;
+        if (lb == 0) {
+            if (le16(b + 4) != 12 || le16(b + 12 + 4) < 12) return -EIO;
+            memset(b + 24, 0, bs - 24);
+            put16(b + 16, end - 12);
+        } else if (le32(b) == 0 && le16(b + 4) == bs && b[6] == 0) {
+            memset(b, 0, bs);
+            put16(b + 4, end);
+        } else {
+            continue;
+        }
+        if (csum) x4_dir_init_tail(bs, b);
         c->dirty = 1;
     }
-    touch(dir, 1, 1);
+    p = ino_ptr(dir, &ic);
+    put32(p + 32, le32(p + 32) & ~(uint32_t)INDEX_FL);
+    ic->dirty = 1;
+    return 0;
 }
 
 static uint32_t rec_need(uint32_t nl) { return (8 + nl + 3) & ~3u; }
 
+static void put_entry(uint8_t *n, uint32_t rec, const char *name, size_t len, uint32_t ino, uint8_t type) {
+    put32(n, ino);
+    put16(n + 4, rec);
+    if (feat_incompat & INCOMPAT_FILETYPE) { n[6] = (uint8_t)len; n[7] = type; }
+    else put16(n + 6, (uint32_t)len);
+    memcpy(n + 8, name, len);
+}
+
 static int dir_add(uint32_t dir, const char *name, size_t len, uint32_t ino, uint8_t type) {
+    int r = dir_unindex(dir);
+    if (r < 0) return r;
     uint32_t need = rec_need((uint32_t)len);
     uint64_t size = i_size(dir);
     for (uint32_t lb = 0; (uint64_t)lb * bs < size; lb++) {
         int64_t pb = bmap(dir, lb, 0, 0, 0);
         if (pb <= 0) continue;
-        struct cblk *c = get_block((uint32_t)pb);
+        struct cblk *c = dir_block(dir, (uint32_t)pb);
         if (!c) return -EIO;
-        for (uint32_t in = 0; in < bs;) {
+        uint32_t end = dir_end(c);
+        for (uint32_t in = 0; in < end;) {
             uint8_t *e = c->data + in;
             uint32_t rec = le16(e + 4);
-            if (rec < 8 || in + rec > bs) break;
+            if (rec < 8 || in + rec > end) break;
             uint32_t used = le32(e) ? rec_need(name_len_of(e)) : 0;
             if (rec - used >= need) {
                 uint8_t *n = e;
@@ -710,13 +1500,9 @@ static int dir_add(uint32_t dir, const char *name, size_t len, uint32_t ino, uin
                     put16(e + 4, used);
                     n = e + used;
                 }
-                put32(n, ino);
-                put16(n + 4, rec - used);
-                if (feat_incompat & INCOMPAT_FILETYPE) { n[6] = (uint8_t)len; n[7] = type; }
-                else put16(n + 6, (uint32_t)len);
-                memcpy(n + 8, name, len);
+                put_entry(n, rec - used, name, len, ino, type);
                 c->dirty = 1;
-                dir_changed(dir);
+                touch(dir, 1, 1);
                 return 0;
             }
             in += rec;
@@ -727,24 +1513,22 @@ static int dir_add(uint32_t dir, const char *name, size_t len, uint32_t ino, uin
     int fresh;
     int64_t pb = bmap(dir, lb, 1, 0, &fresh);
     if (pb <= 0) return -ENOSPC;
-    struct cblk *c = new_block((uint32_t)pb);
-    put32(c->data, ino);
-    put16(c->data + 4, bs);
-    if (feat_incompat & INCOMPAT_FILETYPE) { c->data[6] = (uint8_t)len; c->data[7] = type; }
-    else put16(c->data + 6, (uint32_t)len);
-    memcpy(c->data + 8, name, len);
+    struct cblk *c = dir_new_block(dir, (uint32_t)pb);
+    if (!c) return -EIO;
+    put_entry(c->data, csum ? bs - 12 : bs, name, len, ino, type);
     set_size_field(dir, (uint64_t)(lb + 1) * bs);
-    dir_changed(dir);
+    touch(dir, 1, 1);
     return 0;
 }
 
 // Remove the entry at byte offset `off`: the one before it in the block
-// takes its space (or, first in the block, it is marked unused)
+// takes its space (or, first in the block, it is marked unused). A hashed
+// directory keeps its index (the names left are where it says).
 static int dir_remove(uint32_t dir, uint32_t off) {
     uint32_t lb = off / bs, at = off % bs;
     int64_t pb = bmap(dir, lb, 0, 0, 0);
     if (pb <= 0) return -EIO;
-    struct cblk *c = get_block((uint32_t)pb);
+    struct cblk *c = dir_block(dir, (uint32_t)pb);
     if (!c) return -EIO;
     uint32_t prev = UINT32_MAX;
     for (uint32_t in = 0; in < at;) {
@@ -757,7 +1541,7 @@ static int dir_remove(uint32_t dir, uint32_t off) {
     if (prev != UINT32_MAX) put16(c->data + prev + 4, le16(c->data + prev + 4) + le16(e + 4));
     else put32(e, 0);
     c->dirty = 1;
-    dir_changed(dir);
+    touch(dir, 1, 1);
     return 0;
 }
 
@@ -765,13 +1549,13 @@ static int dir_remove(uint32_t dir, uint32_t off) {
 static int dir_retarget(uint32_t dir, uint32_t off, uint32_t ino, uint8_t type) {
     int64_t pb = bmap(dir, off / bs, 0, 0, 0);
     if (pb <= 0) return -EIO;
-    struct cblk *c = get_block((uint32_t)pb);
+    struct cblk *c = dir_block(dir, (uint32_t)pb);
     if (!c) return -EIO;
     uint8_t *e = c->data + off % bs;
     put32(e, ino);
     if (feat_incompat & INCOMPAT_FILETYPE) e[7] = type;
     c->dirty = 1;
-    dir_changed(dir);
+    touch(dir, 1, 1);
     return 0;
 }
 
@@ -784,24 +1568,47 @@ static int dir_empty(uint32_t dir) {
     return r < 0 ? r : 1;
 }
 
+// A directory's link count: 2 + its subdirectories; past 65000 (with
+// dir_nlink) it is 1, which means "many"
+static int dir_link_inc(uint32_t dir) {
+    uint32_t l = i_links(dir);
+    if (l == 1 && (feat_ro & RO_DIR_NLINK)) return 0;
+    if (l >= 65000) {
+        if (!(feat_ro & RO_DIR_NLINK)) return -EMLINK;
+        set_links(dir, 1);
+        return 0;
+    }
+    set_links(dir, l + 1);
+    return 0;
+}
+
+static int dir_link_ok(uint32_t dir) { return i_links(dir) < 65000 || (feat_ro & RO_DIR_NLINK); }
+
+static void dir_link_dec(uint32_t dir) {
+    uint32_t l = i_links(dir);
+    if (l > 2) set_links(dir, l - 1);
+}
+
 // ---- open inodes ----
 
 struct onode {
     uint32_t ino;
     int refs;
+    int orphan;          // on the orphan list (no names left, still open)
     struct onode *next;
 };
 
 static struct onode *onodes;
 
-static int open_count(uint32_t ino) {
-    for (struct onode *n = onodes; n; n = n->next) if (n->ino == ino) return n->refs;
+static struct onode *onode_of(uint32_t ino) {
+    for (struct onode *n = onodes; n; n = n->next) if (n->ino == ino) return n;
     return 0;
 }
 
 static void ino_ref(uint32_t ino) {
-    for (struct onode *n = onodes; n; n = n->next) if (n->ino == ino) { n->refs++; return; }
-    struct onode *n = calloc(1, sizeof *n);
+    struct onode *n = onode_of(ino);
+    if (n) { n->refs++; return; }
+    n = calloc(1, sizeof *n);
     if (!n) return;
     n->ino = ino;
     n->refs = 1;
@@ -809,23 +1616,105 @@ static void ino_ref(uint32_t ino) {
     onodes = n;
 }
 
-// An inode without names or openers goes: its blocks and its bitmap bit
-static void maybe_free_inode(uint32_t ino) {
-    if (i_links(ino) || open_count(ino) || read_only) return;
-    uint32_t mode = i_mode(ino);
-    if (!mode) return;
+// The orphan list: inodes without names that are still open (or, after a
+// crash, half truncated), so that the next mount (or e2fsck) frees them.
+// The superblock names the first; each inode's dtime field the next.
+static void orphan_add(uint32_t ino) {
+    struct cblk *c;
+    uint8_t *p = ino_ptr(ino, &c);
+    if (!p) return;
+    put32(p + 20, le32(sb + 232));
+    c->dirty = 1;
+    put32(sb + 232, ino);
+    sb_dirty = 1;
+}
+
+static void orphan_remove(uint32_t ino) {
+    struct cblk *c;
+    uint8_t *p = ino_ptr(ino, &c);
+    if (!p) return;
+    uint32_t next = le32(p + 20);
+    if (le32(sb + 232) == ino) {
+        put32(sb + 232, next);
+        sb_dirty = 1;
+        return;
+    }
+    uint32_t cur = le32(sb + 232);
+    for (int guard = 0; cur && guard < 100000; guard++) {
+        struct cblk *cc;
+        uint8_t *q = ino_ptr(cur, &cc);
+        if (!q) return;
+        if (le32(q + 20) == ino) {
+            put32(q + 20, next);
+            cc->dirty = 1;
+            return;
+        }
+        cur = le32(q + 20);
+    }
+}
+
+// The extended attribute block goes with its last inode
+static void xattr_release(uint32_t ino) {
+    struct cblk *ic;
+    uint8_t *p = ino_ptr(ino, &ic);
+    if (!p) return;
+    uint32_t b = le32(p + 104);
+    if (!b || le16(p + 118)) return;
+    put32(p + 104, 0);
+    ic->dirty = 1;
+    add_iblocks(ino, -(int64_t)(bs / 512));
+    struct cblk *c = get_block(b);
+    if (!c || le32(c->data) != 0xEA020000u) return;
+    uint32_t refs = le32(c->data + 4);
+    if (refs > 1) {
+        put32(c->data + 4, refs - 1);
+        c->kind = K_XATTR;
+        c->dirty = 1;
+    } else {
+        free_block(b);
+    }
+}
+
+// Fast symbolic links keep their target in the block pointers
+static int is_fast_link(const uint8_t *p) {
+    if ((le16(p) & S_IFMT_) != S_IFLNK_ || (le32(p + 32) & EXTENTS_FL)) return 0;
+    uint64_t blocks = le32(p + 28);
+    return blocks == 0 || (le32(p + 104) && blocks == bs / 512);
+}
+
+// An inode's blocks and its bitmap bit go
+static void release_inode(uint32_t ino) {
     uint8_t *p = ino_ptr(ino, 0);
-    // Fast symbolic links keep their target in the block pointers
-    int fast_link = (mode & S_IFMT_) == S_IFLNK_ && p && le32(p + 28) == 0;
-    if (!fast_link) free_from(ino, 0);
+    if (!p) return;
+    uint32_t mode = le16(p), type = mode & S_IFMT_;
+    int fast_link = is_fast_link(p);
+    xattr_release(ino);
+    if ((type == S_IFREG_ || type == S_IFDIR_ || type == S_IFLNK_) && !fast_link) free_from(ino, 0);
     struct cblk *c;
     p = ino_ptr(ino, &c);
     if (!p) return;
     put32(p + 20, (uint32_t)(now_ns() / 1000000000));   // dtime
     if (fast_link) memset(p + 40, 0, 60);
     put32(p + 4, 0);
+    put32(p + 108, 0);
     c->dirty = 1;
-    free_inode_bit(ino, (mode & S_IFMT_) == S_IFDIR_);
+    free_inode_bit(ino, type == S_IFDIR_);
+}
+
+// An inode without names or openers goes; without names but open, it
+// waits on the orphan list
+static void maybe_free_inode(uint32_t ino) {
+    if (i_links(ino) || read_only) return;
+    if (!i_mode(ino)) return;
+    struct onode *n = onode_of(ino);
+    if (n && n->refs) {
+        if (!n->orphan) {
+            orphan_add(ino);
+            n->orphan = 1;
+        }
+        return;
+    }
+    release_inode(ino);
 }
 
 static void ino_unref(uint32_t ino) {
@@ -833,15 +1722,42 @@ static void ino_unref(uint32_t ino) {
         struct onode *n = *pp;
         if (n->ino != ino) continue;
         if (--n->refs == 0) {
+            int orphan = n->orphan;
             *pp = n->next;
             free(n);
+            if (orphan && !read_only) orphan_remove(ino);
             maybe_free_inode(ino);
         }
         return;
     }
 }
 
-// A new inode: mode, owner root, times now, one link (two for directories)
+// After a crash: the orphan list's inodes are freed (or, with names still,
+// truncated to their size)
+static void process_orphans(void) {
+    uint32_t ino = le32(sb + 232), done = 0;
+    while (ino && done < 100000) {
+        struct cblk *c;
+        uint8_t *p = ino_ptr(ino, &c);
+        if (!p || ino < first_ino) break;
+        uint32_t next = le32(p + 20);
+        put32(p + 20, 0);
+        c->dirty = 1;
+        if (!le16(p + 26)) {
+            if (le16(p)) release_inode(ino);
+        } else if ((le16(p) & S_IFMT_) == S_IFREG_) {
+            free_from(ino, (i_size(ino) + bs - 1) / bs);
+        }
+        done++;
+        ino = next;
+    }
+    put32(sb + 232, 0);
+    sb_dirty = 1;
+    if (done) fprintf(stderr, "ext2fs: %s: %u orphan inode%s cleaned up\n", dev_name, done, done == 1 ? "" : "s");
+}
+
+// A new inode: mode, owner root, times now, one link (two for directories);
+// files and directories use extents where the filesystem has them
 static uint32_t make_inode(uint32_t parent, uint32_t mode) {
     int dir = (mode & S_IFMT_) == S_IFDIR_;
     uint32_t ino = alloc_inode(parent, dir);
@@ -866,6 +1782,7 @@ static uint32_t make_inode(uint32_t parent, uint32_t mode) {
     uint32_t gen;
     if (getrandom(&gen, 4, 0) != 4) gen = (uint32_t)t;
     put32(p + 100, gen);
+    if ((feat_incompat & INCOMPAT_EXTENTS) && (mode & S_IFMT_) != S_IFLNK_) x_init_root(p);
     c->dirty = 1;
     return ino;
 }
@@ -883,9 +1800,7 @@ static int read_link(uint32_t ino, char *out, size_t cap, size_t *len) {
     if (size >= cap || size >= PATHMAX) return -ENAMETOOLONG;
     uint8_t *p = ino_ptr(ino, 0);
     if (!p) return -EIO;
-    uint64_t blocks = le32(p + 28);
-    uint32_t acl = le32(p + 104);
-    if (blocks == 0 || (acl && blocks == bs / 512)) {
+    if (is_fast_link(p)) {
         if (size > 60) return -EIO;
         memcpy(out, p + 40, size);
     } else {
@@ -1000,6 +1915,7 @@ static void attr_of(uint32_t ino, rx_fs_attr_t *a) {
     a->uid = le16(p + 2) | (uint32_t)le16(p + 120) << 16;
     a->gid = le16(p + 24) | (uint32_t)le16(p + 122) << 16;
     a->blocks = le32(p + 28) | (uint64_t)le16(p + 116) << 32;
+    if (le32(p + 32) & HUGE_FILE_FL) a->blocks *= bs / 512;
     a->read_only = (uint32_t)read_only;
     a->fsid = fsid;
 }
@@ -1172,7 +2088,7 @@ static int do_write(struct ofd *o, const char *data, size_t k, uint64_t *wrote) 
     if (read_only) return -EROFS;
     uint64_t size = i_size(o->ino);
     if (o->flags & O_APPEND) o->offset = size;
-    uint64_t max = (uint64_t)per_block() * per_block() * per_block() * bs;
+    uint64_t max = max_size(o->ino);
     if (o->offset + k > max || o->offset + k < o->offset) return -EFBIG;
     if (k) {
         int r = file_io(o->ino, o->offset, (uint8_t *)data, k, 1);
@@ -1236,7 +2152,7 @@ static int do_mkdir(struct ofd *dir, const char *path, size_t plen, uint32_t mod
     if (!valid_name(last, ll)) return -EINVAL;
     struct dent d;
     if (dir_find(parent, last, ll, &d) == 0) return -EEXIST;
-    if (i_links(parent) >= 65000) return -EMLINK;
+    if (!dir_link_ok(parent)) return -EMLINK;
     uint32_t ino = make_inode(parent, S_IFDIR_ | (mode & 07777));
     if (!ino) return -ENOSPC;
     int fresh;
@@ -1246,18 +2162,14 @@ static int do_mkdir(struct ofd *dir, const char *path, size_t plen, uint32_t mod
         maybe_free_inode(ino);
         return -ENOSPC;
     }
-    struct cblk *c = new_block((uint32_t)pb);
-    put32(c->data, ino);
-    put16(c->data + 4, 12);
-    c->data[6] = 1;
-    c->data[7] = (feat_incompat & INCOMPAT_FILETYPE) ? 2 : 0;
-    c->data[8] = '.';
-    put32(c->data + 12, parent);
-    put16(c->data + 16, bs - 12);
-    c->data[18] = 2;
-    c->data[19] = (feat_incompat & INCOMPAT_FILETYPE) ? 2 : 0;
-    c->data[20] = '.';
-    c->data[21] = '.';
+    struct cblk *c = dir_new_block(ino, (uint32_t)pb);
+    if (!c) {
+        set_links(ino, 0);
+        maybe_free_inode(ino);
+        return -EIO;
+    }
+    put_entry(c->data, 12, ".", 1, ino, 2);
+    put_entry(c->data + 12, (csum ? bs - 12 : bs) - 12, "..", 2, parent, 2);
     set_size_field(ino, bs);
     r = dir_add(parent, last, ll, ino, 2);
     if (r < 0) {
@@ -1265,7 +2177,7 @@ static int do_mkdir(struct ofd *dir, const char *path, size_t plen, uint32_t mod
         maybe_free_inode(ino);
         return r;
     }
-    set_links(parent, i_links(parent) + 1);
+    dir_link_inc(parent);
     return 0;
 }
 
@@ -1274,7 +2186,7 @@ static int do_mkdir(struct ofd *dir, const char *path, size_t plen, uint32_t mod
 static void drop_name(uint32_t parent, uint32_t ino, int isdir) {
     if (isdir) {
         set_links(ino, 0);
-        set_links(parent, i_links(parent) > 2 ? i_links(parent) - 1 : 2);
+        dir_link_dec(parent);
     } else {
         uint32_t l = i_links(ino);
         set_links(ino, l ? l - 1 : 0);
@@ -1349,7 +2261,7 @@ static int do_rename(struct ofd *dir, const char *a, size_t alen, const char *b,
         if (r < 0) return r;
         drop_name(pb, dd.ino, ddir);
     } else {
-        if (isdir && pa != pb && i_links(pb) >= 65000) return -EMLINK;
+        if (isdir && pa != pb && !dir_link_ok(pb)) return -EMLINK;
         r = dir_add(pb, nb, lb, ds.ino, type);
         if (r < 0) return r;
     }
@@ -1359,8 +2271,8 @@ static int do_rename(struct ofd *dir, const char *a, size_t alen, const char *b,
         // Its ".." now names the new parent
         struct dent dot;
         if (dir_find(ds.ino, "..", 2, &dot) == 0) dir_retarget(ds.ino, dot.off, pb, 2);
-        set_links(pb, i_links(pb) + 1);
-        set_links(pa, i_links(pa) > 2 ? i_links(pa) - 1 : 2);
+        dir_link_inc(pb);
+        dir_link_dec(pa);
     }
     touch(ds.ino, 0, 1);
     return 0;
@@ -1409,7 +2321,16 @@ static int do_symlink(struct ofd *dir, const char *body, size_t blen) {
         uint8_t *p = ino_ptr(ino, &c);
         memcpy(p + 40, target, tl);
         c->dirty = 1;
-    } else if ((r = file_io(ino, 0, (uint8_t *)target, tl, 1)) < 0) {
+    } else {
+        if (feat_incompat & INCOMPAT_EXTENTS) {
+            struct cblk *c;
+            uint8_t *p = ino_ptr(ino, &c);
+            x_init_root(p);
+            c->dirty = 1;
+        }
+        r = file_io(ino, 0, (uint8_t *)target, tl, 1);
+    }
+    if (r < 0) {
         set_links(ino, 0);
         maybe_free_inode(ino);
         return r;
@@ -1432,10 +2353,32 @@ static void statfs_of(rx_fs_statfs_t *s) {
     s->files_free = le32(sb + 16);
     s->name_max = 255;
     s->flags = read_only ? RX_FS_MOUNT_RDONLY : 0;
-    strcpy(s->type, "ext2");
+    strcpy(s->type, (feat_incompat & (INCOMPAT_EXTENTS | INCOMPAT_64BIT | INCOMPAT_FLEX_BG)) ? "ext4" : (feat_compat & COMPAT_HAS_JOURNAL) ? "ext3" : "ext2");
 }
 
 static int shutting_down;
+
+// Cleanly unmounted: everything written, the journal empty, the
+// superblock says so
+static int unmount_clean(void) {
+    int r = flush();
+    if (read_only) return r;
+    if (journaling) {
+        putbe32(jb.sbb + 0x18, j_seq);
+        putbe32(jb.sbb + 0x1C, 0);
+        jbd_sb_seal(&jb);
+        memcpy(iobuf, jb.sbb, bs);
+        if (dev_rw(1, blk_dev(jb.map[0]), spb) < 0) r = -EIO;
+        dev_flush();
+        feat_incompat &= ~(uint32_t)INCOMPAT_RECOVER;
+        put32(sb + 96, feat_incompat);
+    }
+    put16(sb + 58, le16(sb + 58) | 1);
+    put32(sb + 48, (uint32_t)(now_ns() / 1000000000));
+    if (write_super() < 0) r = -EIO;
+    dev_flush();
+    return r;
+}
 
 static int serve(int i) {
     rx_handle_t h = 0;
@@ -1604,13 +2547,7 @@ static int serve(int i) {
         if (blen >= 4) memcpy(&u32, body, 4);
         else u32 = 0;
         if (nconns > 1 && !(u32 & RX_FS_UNMOUNT_FORCE)) { st = -EBUSY; break; }
-        if (!read_only) {
-            // Cleanly unmounted
-            put16(sb + 58, le16(sb + 58) | 1);
-            put32(sb + 48, (uint32_t)(now_ns() / 1000000000));
-            sb_dirty = 1;
-        }
-        if (flush() < 0) {
+        if (unmount_clean() < 0) {
             fprintf(stderr, "ext2fs: %s: could not write everything out\n", dev_name);
             st = -EIO;
         }
@@ -1643,11 +2580,52 @@ static int serve(int i) {
 
 // ---- mounting ----
 
-static int load(void) {
-    // The superblock: 1024 bytes at byte 1024
+static int jrd(void *ctx, uint32_t b, uint8_t *buf) {
+    (void)ctx;
+    if (b >= nblocks || dev_rw(0, blk_dev(b), spb) < 0) return -EIO;
+    memcpy(buf, iobuf, bs);
+    return 0;
+}
+
+static int jwr(void *ctx, uint32_t b, const uint8_t *buf) {
+    (void)ctx;
+    if (b >= nblocks) return -EIO;
+    memcpy(iobuf, buf, bs);
+    return dev_rw(1, blk_dev(b), spb);
+}
+
+// The journal inode's blocks
+static int journal_map(void) {
+    j_ino = le32(sb + 224);
+    if (!j_ino || j_ino > ninodes) return -EINVAL;
+    uint64_t len = i_size(j_ino) / bs;
+    if (len < 1024 || len > (1u << 24)) return -EINVAL;
+    free(jb.map);
+    jb.map = malloc(len * 4);
+    if (!jb.map) return -ENOMEM;
+    for (uint32_t k = 0; k < len; k++) {
+        int64_t pb = bmap(j_ino, k, 0, 0, 0);
+        if (pb <= 0) return -EINVAL;
+        jb.map[k] = (uint32_t)pb;
+    }
+    jb.len = (uint32_t)len;
+    jb.bs = bs;
+    jb.rd = jrd;
+    jb.wr = jwr;
+    free(jb.buf);
+    free(jb.sbb);
+    return jbd_open(&jb);
+}
+
+static int read_super(void) {
     uint64_t first = 1024 / dev_bs, count = (2048 + dev_bs - 1) / dev_bs - first;
     if (dev_rw(0, first, (uint32_t)count) < 0) return -EIO;
     memcpy(sb, iobuf + 1024 % dev_bs, 1024);
+    return 0;
+}
+
+// What the superblock says; -EINVAL if it is not one we can use
+static int parse_super(void) {
     if (le16(sb + 56) != 0xEF53) return -EINVAL;
     if (le32(sb + 76) > 1) return -EINVAL;   // revision
     uint32_t log = le32(sb + 24);
@@ -1663,10 +2641,6 @@ static int load(void) {
     first_data = le32(sb + 20);
     bpg = le32(sb + 32);
     ipg = le32(sb + 40);
-    if (!bpg || !ipg || bpg > bs * 8 || ipg > bs * 8 || nblocks <= first_data) return -EINVAL;
-    if ((uint64_t)nblocks * spb > dev_blocks) return -EINVAL;
-    ngroups = (nblocks - first_data + bpg - 1) / bpg;
-    if ((uint64_t)ngroups * ipg < ninodes) return -EINVAL;
     if (le32(sb + 76) >= 1) {
         isz = le16(sb + 88);
         first_ino = le32(sb + 84);
@@ -1676,38 +2650,165 @@ static int load(void) {
     } else {
         isz = 128;
         first_ino = 11;
+        feat_compat = feat_incompat = feat_ro = 0;
     }
+    if (feat_incompat & INCOMPAT_64BIT) {
+        if (le32(sb + 336)) {
+            fprintf(stderr, "ext2fs: %s: more than 2^32 blocks: not served here\n", dev_name);
+            return -ENOTSUP;
+        }
+        desc_size = le16(sb + 254);
+        if (desc_size < 32 || desc_size > 1024 || (desc_size & (desc_size - 1))) return -EINVAL;
+    } else {
+        desc_size = 32;
+    }
+    if (!bpg || !ipg || bpg > bs * 8 || ipg > bs * 8 || nblocks <= first_data) return -EINVAL;
+    if ((uint64_t)nblocks * spb > dev_blocks) return -EINVAL;
+    ngroups = (nblocks - first_data + bpg - 1) / bpg;
+    if ((uint64_t)ngroups * ipg < ninodes) return -EINVAL;
     if (isz < 128 || isz > bs || (isz & (isz - 1))) return -EINVAL;
     gdt_block = first_data + 1;
-    uint32_t unknown = feat_incompat & ~INCOMPAT_FILETYPE;
-    if (unknown) {
-        fprintf(stderr, "ext2fs: %s: has features this server cannot read (incompat %#x: ext4, step 16)\n", dev_name, unknown);
+    sb_home = 1024 / bs;
+    sb_off = 1024 % bs;
+    x4_setup(&X, sb);
+    csum = X.csum;
+    uninit_ok = X.csum || X.gdt_csum;
+    uint32_t known = INCOMPAT_FILETYPE | INCOMPAT_RECOVER | INCOMPAT_EXTENTS | INCOMPAT_64BIT | INCOMPAT_FLEX_BG |
+                     INCOMPAT_CSUM_SEED | INCOMPAT_LARGEDIR;
+    if (feat_incompat & ~known) {
+        fprintf(stderr, "ext2fs: %s: has features this server cannot read (incompat %#x)\n", dev_name, feat_incompat & ~known);
         return -ENOTSUP;
     }
-    if ((feat_ro & ~(RO_SPARSE_SUPER | RO_LARGE_FILE)) || (feat_compat & COMPAT_HAS_JOURNAL)) {
-        if (!read_only) fprintf(stderr, "ext2fs: %s: has ext3/ext4 features (a journal, checksums, ...): read-only\n", dev_name);
-        read_only = 1;
+    if (csum && le32(sb + 1020) != x4_sb_csum(sb)) {
+        fprintf(stderr, "ext2fs: %s: the superblock's checksum is wrong (run e2fsck)\n", dev_name);
+        return -EINVAL;
     }
-    for (int i = 0; i < CACHE; i++) {
-        cache[i].data = malloc(bs);
-        if (!cache[i].data) return -ENOMEM;
+    return 0;
+}
+
+static int load(void) {
+    int replayed = 0;
+again:
+    if (read_super() < 0) return -EIO;
+    int r = parse_super();
+    if (r < 0) return r;
+    if (!cache[0].data) {
+        for (int i = 0; i < CACHE; i++) {
+            cache[i].data = malloc(4096);
+            if (!cache[i].data) return -ENOMEM;
+        }
+        sbblk = malloc(4096);
+        jtmp = malloc(4096);
+        if (!sbblk || !jtmp) return -ENOMEM;
     }
+    drop_cache();
     uint8_t *d = gd(0, 0);
     if (!d || le32(d + 8) >= nblocks) return -EINVAL;
     if (!is_dir_ino(2)) return -EINVAL;
+    // Features this server does not keep up to date: read-only
+    uint32_t ro_known = RO_SPARSE_SUPER | RO_LARGE_FILE | RO_HUGE_FILE | RO_GDT_CSUM | RO_DIR_NLINK | RO_EXTRA_ISIZE |
+                        RO_METADATA_CSUM;
+    const char *why = 0;
+    if (feat_ro & ~ro_known & ~(uint32_t)RO_ORPHAN_PRESENT) why = "features this server does not keep up to date";
+    else if (feat_ro & RO_ORPHAN_PRESENT) why = "inodes in its orphan file (e2fsck cleans them up)";
+    else if (feat_compat & COMPAT_SPARSE_SUPER2) why = "sparse_super2";
+    // The journal
+    int has_journal = (feat_compat & COMPAT_HAS_JOURNAL) != 0;
+    if (has_journal) {
+        r = journal_map();
+        if (r < 0) {
+            fprintf(stderr, "ext2fs: %s: its journal cannot be used (%s)\n", dev_name, strerror(-r));
+            if (feat_incompat & INCOMPAT_RECOVER) return -ENOTSUP;
+            if (!why) why = "a journal this server cannot use";
+            has_journal = 0;
+        } else if (jbd_unknown(&jb) || (jb.incompat & JBD_INCOMPAT_FAST)) {
+            if (feat_incompat & INCOMPAT_RECOVER) {
+                fprintf(stderr, "ext2fs: %s: its journal has features this server cannot replay (%#x)\n", dev_name, jb.incompat);
+                return -ENOTSUP;
+            }
+            if (!why) why = "journal features this server does not know";
+            has_journal = 0;
+        }
+    }
+    if (feat_incompat & INCOMPAT_RECOVER) {
+        if (!has_journal) return -ENOTSUP;
+        if (dev_read_only) {
+            fprintf(stderr, "ext2fs: %s: needs its journal replayed, but the disk is read-only\n", dev_name);
+            return -EROFS;
+        }
+        if (jb.start && !replayed) {
+            r = jbd_replay(&jb);
+            if (r < 0) {
+                fprintf(stderr, "ext2fs: %s: replaying the journal failed (%s)\n", dev_name, strerror(-r));
+                return r;
+            }
+            dev_flush();
+            fprintf(stderr, "ext2fs: %s: journal replayed: %u transaction%s, %u blocks%s\n", dev_name, jb.transactions,
+                    jb.transactions == 1 ? "" : "s", jb.replayed, jb.bad_blocks ? " (some damaged: run e2fsck)" : "");
+            replayed = 1;
+            goto again;   // the superblock itself may have come from the journal
+        }
+        // Brought up to date: no longer needs recovery
+        feat_incompat &= ~(uint32_t)INCOMPAT_RECOVER;
+        put32(sb + 96, feat_incompat);
+        if (write_super() < 0) return -EIO;
+        dev_flush();
+    }
+    if (why && !read_only) {
+        fprintf(stderr, "ext2fs: %s: has %s: read-only\n", dev_name, why);
+        read_only = 1;
+    }
     // A filesystem id from the UUID (not 1-3: fsd's own)
     fsid = le32(sb + 104) ^ le32(sb + 108) ^ le32(sb + 112) ^ le32(sb + 116);
     if (fsid < 16) fsid += 16;
-    if (!read_only) {
-        uint32_t state = le16(sb + 58);
+    if (read_only) return 0;
+    uint32_t state = le16(sb + 58);
+    if (has_journal) {
+        // Journal checksums as Linux sets them for this filesystem
+        uint32_t inc = jb.incompat;
+        if (csum) inc = (inc & ~(uint32_t)JBD_INCOMPAT_CSUM_V2) | JBD_INCOMPAT_CSUM_V3;
+        if (feat_incompat & INCOMPAT_64BIT) inc |= JBD_INCOMPAT_64BIT;
+        if (inc != jb.incompat && be32(jb.sbb + 4) == JBD_SB_V2) {
+            putbe32(jb.sbb + 0x28, inc);
+            if (inc & JBD_INCOMPAT_CSUM_V3) {
+                putbe32(jb.sbb + 0x24, be32(jb.sbb + 0x24) & ~(uint32_t)JBD_COMPAT_CHECKSUM);
+                jb.sbb[0x50] = 4;   // crc32c
+            }
+            jbd_features(&jb);
+        }
+        jb.start = 0;
+        putbe32(jb.sbb + 0x1C, 0);
+        jbd_sb_seal(&jb);
+        if (jwr(0, jb.map[0], jb.sbb) < 0) return -EIO;
+        j_seq = jb.seq;
+        uint32_t cap = j_capacity();
+        if (cap < 64) return -EINVAL;
+        max_dirty = cap - 2 < CACHE - 32 ? cap - 2 : CACHE - 32;
+        journaling = 1;
+        if (!(state & 1) || (state & 2))
+            fprintf(stderr, "ext2fs: %s: %s (run fsck.ext4 or e2fsck)\n", dev_name, (state & 2) ? "has errors" : "was not checked after an error");
+        // Needs recovery while mounted (until it is unmounted cleanly)
+        feat_incompat |= INCOMPAT_RECOVER;
+        put32(sb + 96, feat_incompat);
+    } else {
         if (!(state & 1) || (state & 2))
             fprintf(stderr, "ext2fs: %s: was not cleanly unmounted%s (run fsck.ext2 or e2fsck)\n", dev_name,
                     (state & 2) ? " and has errors" : "");
-        // Not clean while mounted; one more mount
+        // Not clean while mounted
         put16(sb + 58, state & ~1u);
-        put16(sb + 52, le16(sb + 52) + 1u);
-        put32(sb + 44, (uint32_t)(now_ns() / 1000000000));
-        if (write_super() < 0) return -EIO;
+    }
+    // One more mount
+    put16(sb + 52, le16(sb + 52) + 1u);
+    put32(sb + 44, (uint32_t)(now_ns() / 1000000000));
+    if (write_super() < 0) return -EIO;
+    // The superblock's block, for the journal
+    if (journaling) {
+        if (dev_rw(0, blk_dev(sb_home), spb) < 0) return -EIO;
+        memcpy(sbblk, iobuf, bs);
+    }
+    if (le32(sb + 232)) {
+        process_orphans();
+        if (flush() < 0) return -EIO;
     }
     return 0;
 }
@@ -1735,7 +2836,7 @@ int main(int argc, char **argv) {
     }
     dev_bs = info.block_size;
     dev_blocks = info.block_count;
-    if (info.flags & RX_BLOCK_FLAG_READONLY) read_only = 1;
+    if (info.flags & RX_BLOCK_FLAG_READONLY) read_only = dev_read_only = 1;
     rx_handle_t vmo, dup;
     uint64_t va;
     if (rx_vmo_create(IOBUF, 0, &vmo) != RX_OK ||
@@ -1755,7 +2856,7 @@ int main(int argc, char **argv) {
     }
     r = load();
     if (r < 0) {
-        if (r == -EINVAL || r == -EIO) fprintf(stderr, "ext2fs: %s: not an ext2 filesystem%s\n", dev_name, r == -EIO ? " (read error)" : "");
+        if (r == -EINVAL || r == -EIO) fprintf(stderr, "ext2fs: %s: not an ext2/3/4 filesystem%s\n", dev_name, r == -EIO ? " (read error)" : "");
         return 1;
     }
     struct ofd *o = new_ofd(2, O_RDONLY | O_DIRECTORY, "", 0);
@@ -1765,11 +2866,7 @@ int main(int argc, char **argv) {
     for (;;) {
         int n = nconns;
         if (n == 0 || shutting_down) {
-            if (!read_only) {
-                put16(sb + 58, le16(sb + 58) | 1);
-                sb_dirty = 1;
-            }
-            flush();
+            if (!shutting_down) unmount_clean();
             return 0;
         }
         for (int k = 0; k < n; k++) items[k] = (rx_wait_item_t){ conns[k].ch, RX_CHANNEL_READABLE | RX_PEER_CLOSED, 0 };

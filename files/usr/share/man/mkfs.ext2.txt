@@ -19,4 +19,4 @@ EXAMPLES
     mount sda2 /mnt
 
 SEE ALSO
-    fsck.ext2, mount, gpt, blkid
+    fsck.ext2, mkfs.ext4, mount, gpt, blkid

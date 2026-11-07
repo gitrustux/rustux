@@ -1,19 +1,24 @@
-fsck.ext2 - check an ext2 filesystem
+fsck.ext2 - check an ext2, ext3 or ext4 filesystem (also fsck.ext3, fsck.ext4)
 
 USAGE
-    fsck.ext2 [-a] [-v] DEVICE
+    fsck.ext4 [-a|-y|-p] [-n] [-v] DEVICE
 
-    Checks an ext2 filesystem that is not mounted, in e2fsck's five
-    passes: every inode in use (its type; its blocks in range, used once,
-    counted right, none past its size), every directory (entries, "." and
-    "..", file types), that every directory can be reached from the root,
-    link counts and inodes no directory names, and the block and inode
-    bitmaps with the free counts. It repairs nothing, except that -a
-    corrects wrong free counts. -v lists the directories. Exit status:
-    0 no errors, 1 corrected, 4 errors left: then run e2fsck -f on Linux.
+    Checks an ext2, ext3 or ext4 filesystem that is not mounted. First
+    the journal: a filesystem that was not unmounted cleanly is brought
+    up to date from it (with -n this is only reported). Then e2fsck's
+    five passes: every inode in use (its type; its blocks, direct and
+    indirect or extents, in range, used once, counted right, none past
+    its size), every directory (entries, "." and "..", file types),
+    that every directory can be reached from the root, link counts and
+    inodes no directory names (the orphan list's are expected), and the
+    block and inode bitmaps with the free counts; with metadata_csum,
+    every checksum too. It repairs nothing, except that -a (-y, -p)
+    replays the journal and corrects wrong free counts. -v lists the
+    directories. Exit status: 0 no errors, 1 corrected or replayed,
+    4 errors left: then run e2fsck -f on Linux.
 
 EXAMPLES
-    umount /mnt; fsck.ext2 sda2
+    umount /mnt; fsck.ext4 sda2
 
 SEE ALSO
-    mkfs.ext2, mount
+    mkfs.ext4, mkfs.ext2, tune2fs, mount

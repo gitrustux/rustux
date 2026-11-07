@@ -119,6 +119,44 @@ them; the third, with no command line and no disks, runs from memory.
 Then the host's `e2fsck -f -n` checks the three disks (all must be clean
 and marked clean) and `debugfs` reads the files back. It needs e2fsprogs.
 
+## ext4 tests (step 16)
+
+`ext4.sh` (in the command tests, on RAM disks): `mkfs.ext4` and `tune2fs
+-l`, a large copy, two files appended to in turns (many extents) and
+truncated, a directory of 300 names, a slow symbolic link, a hard link,
+a file removed while open (its space comes back at close), `fsck.ext4`,
+a read-only mount; then 1 KiB blocks without a journal, filled up.
+
+`scripts/run-ext4-test.sh` boots QEMU with `root=UUID=...`: the root
+filesystem is ext4 made by the host's `mkfs.ext4` with its defaults.
+`/usr/share/ext4/boot1.sh` copies about 30 MiB and the main programs onto
+a second host-made ext4 disk (`-O orphan_file,metadata_csum_seed`, with
+links, a sparse file and a directory `e2fsck -D` has indexed: names are
+added to and removed from it), removes, renames and links, runs
+`mkfs.ext4` on a third disk, fills it, `fsck.ext4` and `tune2fs -l`; the
+second boot finds what the first wrote on the root. The host's `e2fsck
+-f -n` checks the disks (clean, marked clean, no recovery needed),
+`debugfs` reads the files back, and the third disk must have Linux's
+default features.
+
+Then the power-loss test, `POWERLOSS_RUNS` times (6): `load.sh` writes
+hard on an ext4 disk and on the root (copies, appends, small files,
+renames, removals, truncation, links) until QEMU is killed, 3 to 20
+seconds in. Copies of both disks go to the host's `e2fsck -fy`, which
+must replay the journal Rustux wrote and find nothing else to fix; then
+Rustux boots again, replays it itself at mount, unmounts, and the host's
+`e2fsck -f -n` must find both disks clean.
+
+The server's own code was also tested on the host (not in the tree): the
+same ext2fs.c driven by a random workload (files, appends, overwrites,
+truncation, removal while open, renames, links, symbolic links,
+directories, full disks) against images from Linux's `mkfs.ext2`,
+`mkfs.ext3` and `mkfs.ext4` (defaults, 1 KiB blocks, without a journal,
+`uninit_bg` without 64-bit, `orphan_file`), checked by e2fsck and against
+a model of the files; and cut off at a random write, with each unflushed
+write kept or lost at random, then replayed (by ext2fs and by e2fsck)
+and checked.
+
 ## Run in QEMU
 
 ```bash

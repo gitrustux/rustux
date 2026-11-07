@@ -1,0 +1,27 @@
+mkfs.ext4 - make an ext4 filesystem
+
+USAGE
+    mkfs.ext4 [-b BLOCKSIZE] [-i BYTES-PER-INODE] [-J size=MiB] [-L LABEL]
+              [-U UUID] [-m PERCENT] [-O ^has_journal] [-I] DEVICE
+
+    Makes an empty ext4 filesystem on a block device (a partition,
+    usually); everything on it is lost. As Linux's mkfs.ext4 makes it,
+    without the resize inode: features has_journal, ext_attr, dir_index,
+    filetype, extent, 64bit, flex_bg, sparse_super, large_file,
+    huge_file, dir_nlink, extra_isize, metadata_csum; 4 KiB blocks (1 KiB
+    below 4 MiB), 256-byte inodes, one inode per 16 KiB (4 KiB below
+    512 MiB), 5% of the blocks reserved for root, groups in flexible
+    groups of 16, a root directory and lost+found. The journal is 4 to
+    512 MiB, by the filesystem's size (-J size= sets it; -O ^has_journal
+    makes none). Groups nothing uses yet are left "uninit". -L sets the
+    label (16 characters), -U the UUID (else a random one), -m the
+    reserved percentage. A whole disk with a partition table is refused
+    unless -I; a mounted one always. Linux mounts it, and e2fsck checks
+    it.
+
+EXAMPLES
+    mkfs.ext4 -L data sda2
+    mount sda2 /mnt
+
+SEE ALSO
+    fsck.ext4, tune2fs, mkfs.ext2, mount, gpt, blkid

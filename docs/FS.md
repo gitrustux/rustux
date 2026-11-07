@@ -23,7 +23,7 @@ library (`open`, `read`, `opendir`, ...; `docs/USERSPACE.md`).
 
 Writes, creates, renames and removals under `/boot`, `/bin` and `/usr` fail with
 `EROFS`. Filesystems on disks are mounted into this tree (see Mounts):
-FAT12/16/32 since step 14, ext2 since step 15, ext4 in step 16.
+FAT12/16/32 since step 14, ext2 since step 15, ext3 and ext4 since step 16.
 
 ### The root filesystem on a disk (step 15)
 
@@ -264,15 +264,82 @@ directories, direct, indirect, double and triple indirect blocks.
   clean"; unmounting (or `poweroff`) marks it clean, so a crash makes
   `e2fsck` check it, and mounting a filesystem that was not clean prints
   a warning.
-- Filesystems with ext3/ext4 features this server does not keep (a
-  journal, checksums, ...) are served read-only; those it cannot read
-  (extents, 64-bit, inline data, ...) are refused until step 16.
+- ext3 and ext4: see below; features the server does not keep up to
+  date are served read-only, those it cannot read are refused.
 - Not kept up to date: the backup superblocks and descriptors (Linux does
   not either, except when resizing); extended attributes are left as they
   are.
 
 `mkfs.ext2` and `fsck.ext2` make and check ext2 filesystems
 (docs/COMMANDS.md).
+
+### ext3 and ext4 (`ext2fs`, step 16)
+
+The same server serves ext3 and ext4 as Linux's `mkfs.ext4` makes them
+with its defaults (`has_journal ext_attr resize_inode dir_index filetype
+extent 64bit flex_bg sparse_super large_file huge_file dir_nlink
+extra_isize metadata_csum`), read and write, and the variants
+`orphan_file`, `metadata_csum_seed`, `uninit_bg` (older checksums),
+without a journal, or with 1 KiB blocks.
+
+- Extents: a tree of extents (the root's 4 in the inode, more levels in
+  blocks: split when full, grown in depth when the root is full), new
+  files and directories use them; unwritten extents (fallocate) read as
+  zeros and become written where they are written. Files up to 2^32
+  blocks (16 TiB with 4 KiB blocks).
+- 64-byte group descriptors (filesystems of up to 2^32 blocks; larger
+  ones are refused), flexible block groups (one group's bitmaps and
+  inode table may be in another), groups whose bitmaps were never made
+  (`BLOCK_UNINIT`, `INODE_UNINIT`: made as Linux makes them when first
+  used) and the never-used part of inode tables.
+- Checksums (crc32c, `metadata_csum`): superblock, group descriptors,
+  block and inode bitmaps, inodes, extent blocks, directory blocks,
+  extended attribute blocks; worked out when the blocks are written.
+  The older `uninit_bg` descriptor checksums (crc16) too.
+- Hashed directories (htree, `dir_index`): names are found by a scan;
+  removing a name keeps the index (it stays right); adding one turns the
+  directory into a plain list (the index nodes become empty blocks),
+  which Linux reads as well and `e2fsck -D` indexes again.
+- More than 65000 subdirectories (`dir_nlink`: the count becomes 1);
+  `huge_file` block counts; the orphan list (`s_last_orphan`): files
+  removed while open stay until closed, and a crash leaves them for the
+  next mount (or e2fsck) to free. An orphan file (`orphan_file`) that
+  holds inodes after a crash of Linux makes the filesystem read-only
+  until e2fsck has cleaned it.
+
+#### The journal
+
+ext3 and ext4 keep a journal (jbd2, in inode 8). Mounting a filesystem
+that says "needs recovery" first replays it: the transactions it holds
+that were committed are written to their places (revoked blocks and
+checksums as Linux's jbd2 does; journal checksum versions 2 and 3,
+64-bit block numbers, escaped blocks); then the superblock is read
+again, since it may have been one of them.
+
+While mounted for writing, every change of metadata goes through the
+journal, in ordered mode (file data is written in place before the
+transaction that makes it part of a file):
+
+1. the journal's superblock (pointing at the transaction), a descriptor
+   block with a tag per block, and copies of the changed blocks
+   (checksummed, `csum_v3`, as Linux sets for `metadata_csum`); a flush;
+2. the commit block; a flush (from here the transaction counts);
+3. the blocks at their places; a flush.
+
+So a transaction is replayed whole or not at all, and the journal never
+holds more than the last one: nothing is ever revoked, and replaying it
+again changes nothing. Transactions are written before each reply that
+changed metadata (and half a second after file writes); one is as
+large as the changed blocks (at most what the journal holds; a cache of
+1024 blocks writes one early when full). The filesystem says "needs
+recovery" while mounted; a clean unmount (or `poweroff`) empties the
+journal and clears it. A power loss leaves at most the last
+transaction to replay: Rustux's mount and Linux's e2fsck (or mount)
+both replay it (scripts/run-ext4-test.sh tests both).
+
+`mkfs.ext4` makes ext4 as Linux's `mkfs.ext4` does (without the resize
+inode), `fsck.ext4` (`fsck.ext2`, `fsck.ext3`) replays the journal and
+checks, `tune2fs -l` shows the superblock (docs/COMMANDS.md).
 
 ## Limits
 

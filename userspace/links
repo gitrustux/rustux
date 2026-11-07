@@ -95,3 +95,5 @@ sh shell
 mkfs.vfat mkfs.fat
 fsck.vfat fsck.fat
 mke2fs mkfs.ext2
+fsck.ext3 fsck.ext2
+fsck.ext4 fsck.ext2
