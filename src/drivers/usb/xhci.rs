@@ -597,10 +597,15 @@ impl Controller {
                 Err(UsbError::TransferFailed(cc))
             }
             Err(e) => {
-                // What the controller was doing: the endpoint's state and
-                // where its dequeue pointer is (on our TRB: the device did
-                // not take or give the data), the controller's status
-                // (HSE/HCE: the controller itself failed), the port
+                // What happened, after stopping the endpoint (its context
+                // is only up to date when it is not running): its state,
+                // where its dequeue pointer is, how many bytes of ours
+                // moved (from the "stopped" event: 0 means the device never
+                // took or gave any, it answered NAK), the controller's
+                // status (HSE/HCE: the controller itself failed), the port
+                let running = core::ptr::read_volatile(ep_ctx) & 7;
+                let _ = self.stop_endpoint(slot, dci);
+                let stopped = self.take_stopped(slot, dci, trb);
                 let state = core::ptr::read_volatile(ep_ctx) & 7;
                 let deq = (core::ptr::read_volatile(ep_ctx.add(2)) as u64 | (core::ptr::read_volatile(ep_ctx.add(3)) as u64) << 32) & !0xF;
                 log("[USB] bulk transfer timed out (slot ");
@@ -610,6 +615,18 @@ impl Controller {
                 log(", ");
                 log_dec(len as u64);
                 log(" bytes): endpoint state ");
+                log_dec(running as u64);
+                log(", stopped: ");
+                match stopped {
+                    Some((cc, residual)) => {
+                        log_dec(len.saturating_sub(residual as usize) as u64);
+                        log(" bytes moved (code ");
+                        log_dec(cc as u64);
+                        log(")");
+                    }
+                    None => log("no event"),
+                }
+                log(", state ");
                 log_dec(state as u64);
                 log(", dequeue ");
                 log_hex(deq, 8);
@@ -621,7 +638,6 @@ impl Controller {
                     log_hex(self.portsc(port) as u64, 8);
                 }
                 log("\n");
-                let _ = self.stop_endpoint(slot, dci);
                 ring.reset();
                 let _ = self.set_tr_dequeue(slot, dci, ring.phys());
                 Err(e)
@@ -632,6 +648,23 @@ impl Controller {
     // ------------------------------------------------------------------
     // Control transfers
     // ------------------------------------------------------------------
+
+    /// The "stopped" Transfer Event of our TRB after a Stop Endpoint: in
+    /// the stash (stop_endpoint's wait may have set it aside) or soon
+    /// after: (completion code, residual bytes)
+    unsafe fn take_stopped(&mut self, slot: u8, dci: u8, trb: u64) -> Option<(u8, u32)> {
+        for i in 0..self.stashed {
+            let ev = self.stash[i];
+            let ty = (ev.control >> 10) & 0x3F;
+            if ty == EVT_TRANSFER && (ev.control >> 24) as u8 == slot && ((ev.control >> 16) & 0x1F) as u8 == dci
+                && ev.param & !0xF == trb {
+                self.stash.copy_within(i + 1..self.stashed, i);
+                self.stashed -= 1;
+                return Some(((ev.status >> 24) as u8, ev.status & 0xFF_FFFF));
+            }
+        }
+        self.wait_transfer_trb(slot, dci, trb, 100).ok()
+    }
 
     /// Wait for the Transfer Event of the TRB at `trb` (endpoint `dci` of
     /// `slot`): (completion code, residual bytes). Other events of this
