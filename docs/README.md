@@ -90,6 +90,8 @@ docs/
 ├── OBJECTS.md                    # Kernel object reference
 ├── SYSCALL.md                    # System call reference
 ├── TESTS.md                      # Build, QEMU testing and debugging
+├── USERS.md                      # Users, permissions, login, su, sudo (step 17)
+├── SERVICES.md                   # Services (init, svc) and the system log (step 18)
 ├── ROADMAP.md                    # Architecture checklist (Jan 2026 plan)
 ├── HISTORY.md                    # Project history and decisions
 ├── usb-keyboard.md               # USB keyboard status and debugging history

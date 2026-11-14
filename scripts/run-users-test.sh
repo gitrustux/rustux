@@ -141,7 +141,7 @@ expect "alice was here"
 expect "touch: cannot touch '/etc/x': Permission denied"
 expect "ls: cannot open directory '/root': Permission denied"
 expect "Europe/Berlin"
-expect "init: power-off: ending the session, writing out the disks"
+expect "init: power-off: stopping the services, writing out the disks"
 host_check "boot 2 (sudo poweroff)"
 
 # The files on the disk, with their owners and modes

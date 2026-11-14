@@ -15,6 +15,11 @@
 //     off or the computer restarts (there is no reply then).
 //   RX_SYSTEM_OP_SET_TIME: i64 ns since 1970 (UTC): the clock.
 //   RX_SYSTEM_OP_RELOAD_KEYMAP: the console reads /etc/keymap again (anyone).
+//   RX_SYSTEM_OP_SVC (step 18): the service manager. rx_svc_req_t: a
+//     command and a unit name (or a target for ISOLATE). Reply: i32 status,
+//     then text: for LIST and STATUS one line per unit (RX_SVC_LIST_FIELDS,
+//     tab-separated; LIST starts with "target\tNAME"); for the others a
+//     message to show, if any. LIST, STATUS: anyone; the rest: root.
 //
 // /svc/auth (authd): running a program as another user (su, sudo).
 //   RX_AUTH_OP_RUN: rx_auth_run_t, then NUL-terminated strings: the target
@@ -41,6 +46,28 @@
 #define RX_SYSTEM_OP_REBOOT        2u
 #define RX_SYSTEM_OP_SET_TIME      3u
 #define RX_SYSTEM_OP_RELOAD_KEYMAP 4u
+#define RX_SYSTEM_OP_SVC           5u
+
+#define RX_SVC_LIST         1u
+#define RX_SVC_STATUS       2u
+#define RX_SVC_START        3u
+#define RX_SVC_STOP         4u
+#define RX_SVC_RESTART      5u
+#define RX_SVC_ENABLE       6u
+#define RX_SVC_DISABLE      7u
+#define RX_SVC_RELOAD       8u   // read /etc/svc again
+#define RX_SVC_RESET_FAILED 9u   // a failed unit (or all: name "") back to inactive
+#define RX_SVC_ISOLATE      10u  // switch to a target: rescue or multi-user
+
+typedef struct {
+    uint32_t op;    // RX_SYSTEM_OP_SVC
+    uint32_t cmd;   // RX_SVC_*
+    char name[64];
+} rx_svc_req_t;
+
+// NAME STATE ENABLED PID SINCE(ms, UTC) STARTS LAST_EXIT TARGETS USER TYPE
+// RESTART EXEC DESCRIPTION REASON
+#define RX_SVC_LIST_FIELDS 14
 
 #define RX_AUTH_OP_RUN   1u
 #define RX_AUTH_OP_CHECK 2u

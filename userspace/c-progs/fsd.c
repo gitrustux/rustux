@@ -511,6 +511,20 @@ static void update_mtab(void) {
 
 static struct node *boot_etc;     // the boot image's etc/
 
+// A writable copy of a directory of the boot image's etc/ (step 18: svc/)
+static void copy_etc_dir(const struct node *src, struct node *parent) {
+    struct node *d = new_node(RX_FS_TYPE_DIR, src->name, parent, 0755);
+    if (!d) return;
+    for (struct node *f = src->first; f; f = f->next) {
+        if (f->type == RX_FS_TYPE_DIR) {
+            copy_etc_dir(f, d);
+        } else if (f->type == RX_FS_TYPE_FILE) {
+            struct node *c = new_node(RX_FS_TYPE_FILE, f->name, d, etc_mode(f->name));
+            if (c && set_size(c, f->size) == 0) memcpy(c->data, f->rodata, f->size);
+        }
+    }
+}
+
 // ---- the root filesystem (step 15) ----
 
 static void seed_mkdir(const char *p, uint32_t mode) {
@@ -535,6 +549,17 @@ static void seed_file(const char *p, const char *data, size_t n, uint32_t mode) 
     rx_handle_close(c);
 }
 
+// The boot image's etc/ directory `d` (and what is in it) at `p` on the disk
+static void seed_tree(const struct node *d, const char *p) {
+    seed_mkdir(p, 0755);
+    for (struct node *f = d->first; f; f = f->next) {
+        char q[300];
+        snprintf(q, sizeof q, "%s/%s", p, f->name);
+        if (f->type == RX_FS_TYPE_DIR) seed_tree(f, q);
+        else if (f->type == RX_FS_TYPE_FILE) seed_file(q, f->rodata, f->size, etc_mode(f->name));
+    }
+}
+
 // What a root filesystem needs from us: the top directories, /etc/mtab as
 // a link, and on a fresh one (step 17) the settings of the boot image's /etc
 static void seed_root(void) {
@@ -548,10 +573,17 @@ static void seed_root(void) {
     // (step 17: /etc/autologin, accounts)
     rx_fs_attr_t pa;
     int fresh = forward(root, RX_FS_OP_LSTAT_AT, 0, 0, "etc/passwd", 10, 0, (char *)&pa, sizeof pa, 0) == -ENOENT;
-    for (struct node *f = boot_etc && fresh ? boot_etc->first : 0; f; f = f->next) {
-        if (f->type != RX_FS_TYPE_FILE || !strcmp(f->name, "mtab")) continue;
+    // A directory of settings the disk has none of (step 18: /etc/svc on a
+    // disk made before it) arrives whole, on old disks too
+    for (struct node *f = boot_etc ? boot_etc->first : 0; f; f = f->next) {
         char p[300];
         snprintf(p, sizeof p, "etc/%s", f->name);
+        if (f->type == RX_FS_TYPE_DIR) {
+            if (fresh || forward(root, RX_FS_OP_LSTAT_AT, 0, 0, p, strlen(p), 0, (char *)&pa, sizeof pa, 0) == -ENOENT)
+                seed_tree(f, p);
+            continue;
+        }
+        if (!fresh || f->type != RX_FS_TYPE_FILE || !strcmp(f->name, "mtab")) continue;
         seed_file(p, f->rodata, f->size, etc_mode(f->name));
     }
     char t[64];
@@ -1449,6 +1481,10 @@ int main(void) {
         struct node *src = child(boot_top, "etc", 3);
         boot_etc = src;
         for (struct node *f = src ? src->first : 0; f; f = f->next) {
+            if (f->type == RX_FS_TYPE_DIR) {
+                copy_etc_dir(f, etc);
+                continue;
+            }
             if (f->type != RX_FS_TYPE_FILE) continue;
             if (!strcmp(f->name, "mtab")) {
                 // The fixed lines; the file itself is /run/mtab

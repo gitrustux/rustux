@@ -288,7 +288,9 @@ unmounting and SHUTDOWN_ALL are root's.
 
 A disk root filesystem gets the boot image's `/etc` files only when it is
 fresh (no `/etc/passwd` yet); `/etc/shadow` is made 0600 and
-`/etc/sudoers` 0440.
+`/etc/sudoers` 0440. A directory of the image's `/etc` that the disk has
+none of comes whole, on old disks too (step 18: `/etc/svc`, the units);
+on tmpfs `/etc` copies the image's directories as well.
 
 ### ext3 and ext4 (`ext2fs`, step 16)
 

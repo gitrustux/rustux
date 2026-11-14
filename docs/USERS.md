@@ -137,8 +137,8 @@ Each use (and refusal) goes to `/var/log/auth.log`.
 
 ## Not done (yet)
 
-- Services run as root; the service manager (step 18) will run them as
-  other users.
+- The services of the image run as root (logd, authd and login need to);
+  units may name another user (step 18, `SERVICES.md`).
 - No access control lists, no capabilities split from root, no PAM; the
   shadow file's ageing fields are kept but not enforced.
 - The sudo timestamp is per user, not per terminal; there is no

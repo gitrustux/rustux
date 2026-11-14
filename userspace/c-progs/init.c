@@ -7,16 +7,19 @@
 //! Init Process (PID 1)
 //!
 //! The first userspace process (root). It starts the filesystem service
-//! (fsd) from the boot image, the device manager, the PS/2 keyboard
-//! driver, authd (su, sudo, passwd: /svc/auth), and the console's session
-//! (step 17): `login` in a job of its own, which asks for a user name and
-//! password (or, with autologin, does not: /etc/autologin, autologin=USER
-//! on the kernel command line; `login` there asks anyway) and starts that
-//! user's shell. It restarts the driver, authd or the session when one
-//! ends. It serves /svc/system: power-off and reboot (the session and
-//! authd end, the disks are written out and marked clean, then the power),
-//! setting the clock (root only), reloading the keyboard layout. And it is
-//! the console service:
+//! (fsd) from the boot image, the device manager, the PS/2 keyboard driver
+//! and the root filesystem, then the services (step 18: svcmgr.h, units in
+//! /etc/svc): the system log (logd), authd (su, sudo, passwd), the mounts
+//! of /etc/fstab and, on the console, `login` (autologin from
+//! /etc/autologin or autologin=USER on the kernel command line; `login`
+//! there asks anyway). `rescue` on the command line starts the rescue
+//! target instead: logd, the mounts and a root shell. Services run as their
+//! users, are restarted as their units say, and their output goes to logd.
+//! It serves /svc/system: power-off and reboot (the services end, logd
+//! last, the disks are written out and marked clean, then the power),
+//! setting the clock (root only), reloading the keyboard layout, and the
+//! service manager's requests (svc, systemctl). And it is the console
+//! service:
 //!
 //! - Key events (HID usages) arrive from the PS/2 driver and from the
 //!   kernel (USB keyboards) over channels. Init turns them into characters
@@ -55,10 +58,7 @@ static rx_handle_t kernel_input; // USB keystrokes from the kernel
 static rx_handle_t con_server;   // console: our end
 static rx_handle_t con_client;   // console: the programs' end (copied to each)
 static rx_handle_t drv_proc, drv_chan; // keyboard driver
-static rx_handle_t sh_proc, sh_ctl;    // the console's session: login, then the user's shell
-static rx_handle_t sh_job;             // its job (ended at power-off)
-static rx_handle_t auth_proc, auth_job; // authd (/svc/auth), and what it starts
-static int auth_restarts;
+static rx_handle_t sh_ctl;             // the console's session (login, then the user's shell): its control channel
 static rx_handle_t sys_listen;         // /svc/system: connection requests
 #define MAX_SYS_CLIENTS 16
 static rx_handle_t sys_clients[MAX_SYS_CLIENTS];
@@ -361,19 +361,6 @@ static void mount_root(int argc, char **argv) {
     if (code != 0) printf("init: the root filesystem %s is not mounted: running from memory\n", spec);
 }
 
-// Mount what /etc/fstab lists (step 14: the EFI partition at /boot/efi).
-// In the background: mount waits a few seconds for disks (USB sticks
-// appear a moment after devmgr starts) and the shell need not wait.
-static void start_mounts(void) {
-    rx_handle_t proc;
-    char *argv[] = { "mount", "-a", 0 };
-    rx_spawn_handle_t hs[] = {
-        { RX_PA_HND(RX_PA_FD, 1), console_copy() },
-        { RX_PA_HND(RX_PA_FD, 2), console_copy() },
-    };
-    if (rx_spawn("/bin/mount", argv, 0, RX_SPAWN_CLONE_NS, hs, 2, &proc) == RX_OK) rx_handle_close(proc);
-}
-
 static void start_driver(void) {
     rx_handle_t ours, theirs, res;
     if (!resource || driver_failures >= 5) return;
@@ -415,50 +402,7 @@ static void choose_autologin(void) {
     if (!ask) snprintf(autologin, sizeof autologin, "%s", buf);
 }
 
-// The console's session: login (which starts the user's shell), in a job
-// of its own
-static void start_shell(void) {
-    rx_handle_t ours, theirs;
-    rx_channel_create(0, &ours, &theirs);
-    rx_spawn_handle_t hs[] = {
-        { RX_PA_HND(RX_PA_FD, 0), console_copy() },
-        { RX_PA_HND(RX_PA_FD, 1), console_copy() },
-        { RX_PA_HND(RX_PA_FD, 2), console_copy() },
-        { RX_PA_USER0, theirs },
-        { RX_PA_JOB_SYSTEM, 0 },
-    };
-    rx_handle_duplicate(rx_job_default, RX_RIGHT_SAME_RIGHTS, &hs[4].handle);
-    char *argv[] = { "login", "-f", autologin, 0 };
-    if (!autologin[0]) argv[1] = 0;
-    char *envp[] = { "PATH=/bin", "TERM=linux", 0 };
-    // A fresh session starts with no leftover interrupt
-    rx_object_signal(con_client, RX_CONSOLE_SIGNAL_INTERRUPT, 0);
-    if (sh_job) rx_handle_close(sh_job);
-    if (rx_job_create(rx_job_default, 0, &sh_job) != RX_OK) sh_job = 0;
-    if (rx_spawn_etc(sh_job ? sh_job : rx_job_default, "/bin/login", argv, envp, RX_SPAWN_CLONE_NS, hs, 5, &sh_proc) != RX_OK) {
-        printf("init: failed to start login!\n");
-        rx_exit(1);
-    }
-    sh_ctl = ours;
-}
-
-// authd: su, sudo, passwd (/svc/auth)
-static void start_authd(void) {
-    rx_spawn_handle_t hs[] = {
-        { RX_PA_HND(RX_PA_FD, 1), console_copy() },
-        { RX_PA_HND(RX_PA_FD, 2), console_copy() },
-        { RX_PA_JOB_SYSTEM, 0 },
-    };
-    rx_handle_duplicate(rx_job_default, RX_RIGHT_SAME_RIGHTS, &hs[2].handle);
-    char *argv[] = { "authd", 0 };
-    char *envp[] = { "PATH=/bin", 0 };
-    if (auth_job) rx_handle_close(auth_job);
-    if (rx_job_create(rx_job_default, 0, &auth_job) != RX_OK) auth_job = 0;
-    if (rx_spawn_etc(auth_job ? auth_job : rx_job_default, "/bin/authd", argv, envp, RX_SPAWN_CLONE_NS, hs, 3, &auth_proc) != RX_OK) {
-        printf("init: cannot start authd (su, sudo and passwd will not work)\n");
-        auth_proc = 0;
-    }
-}
+#include "svcmgr.h"
 
 // ---- /svc/system (step 17) ----
 
@@ -483,14 +427,12 @@ static void sys_accept(void) {
     }
 }
 
-// Power off or restart: the session and authd end, every disk is written
-// out and marked clean, then the power
+// Power off or restart: the services end (logd last), every disk is
+// written out and marked clean, then the power
 static void shut_down(uint32_t how) {
-    printf("init: %s: ending the session, writing out the disks\n", how == RX_SYSTEM_POWERCTL_REBOOT ? "reboot" : "power-off");
-    if (sh_job) rx_task_kill(sh_job);
-    if (auth_job) rx_task_kill(auth_job);
-    else if (auth_proc) rx_task_kill(auth_proc);
-    if (sh_proc) rx_object_wait_one(sh_proc, RX_PROCESS_TERMINATED, rx_clock_get_monotonic() + 2000000000ull, 0);
+    printf("init: %s: stopping the services, writing out the disks\n", how == RX_SYSTEM_POWERCTL_REBOOT ? "reboot" : "power-off");
+    ulog(LOG_NOTICE, "%s requested", how == RX_SYSTEM_POWERCTL_REBOOT ? "reboot" : "power-off");
+    svc_stop_all();
     sync();
     rx_fs_shutdown_all();
     usleep(200000); // let the console print it
@@ -502,7 +444,7 @@ static void shut_down(uint32_t how) {
 
 static void sys_request(int k) {
     rx_handle_t ch = sys_clients[k];
-    char msg[64];
+    char msg[sizeof(rx_svc_req_t) + 8];
     uint32_t nb = 0;
     rx_sender_t who;
     rx_status_t s = rx_channel_read_creds(ch, msg, 0, sizeof msg, 0, &nb, 0, &who);
@@ -515,6 +457,11 @@ static void sys_request(int k) {
     uint32_t op = 0;
     if (nb >= 4) memcpy(&op, msg, 4);
     int32_t st = 0;
+    if (op == RX_SYSTEM_OP_SVC) {
+        svc_request((const rx_svc_req_t *)msg, nb, &who);
+        rx_channel_write(ch, 0, svc_reply, (uint32_t)svc_rlen, 0, 0);
+        return;
+    }
     if (op == RX_SYSTEM_OP_RELOAD_KEYMAP) {
         km_load();
     } else if (who.euid != 0) {
@@ -607,43 +554,47 @@ int main(int argc, char **argv) {
     km_load();
     start_devmgr();
     mount_root(argc, argv);
-    start_mounts();
     start_driver();
     publish_system();
-    start_authd();
     boot_argc = argc;
     boot_argv = argv;
     choose_autologin();
-    printf("Starting %s...\n\n", autologin[0] ? "the session" : "login");
-    start_shell();
+    svc_boot(argc, argv);
 
     for (;;) {
-        rx_wait_item_t items[12 + MAX_SYS_CLIENTS];
+        rx_wait_item_t items[12 + MAX_SYS_CLIENTS + MAX_UNITS];
         int n = 0, i_drv = -1, i_kin = -1, i_dproc = -1, i_fsd = -1;
         int i_rep = -1, i_dm = -1;
         if (repeating) { i_rep = n; items[n++] = (rx_wait_item_t){ repeat_timer, RX_TIMER_SIGNALED, 0 }; }
         int i_out = n; items[n++] = (rx_wait_item_t){ con_server, RX_CHANNEL_READABLE, 0 };
         if (drv_chan) { i_drv = n; items[n++] = (rx_wait_item_t){ drv_chan, RX_CHANNEL_READABLE, 0 }; }
         if (kernel_input) { i_kin = n; items[n++] = (rx_wait_item_t){ kernel_input, RX_CHANNEL_READABLE, 0 }; }
-        int i_sh = n; items[n++] = (rx_wait_item_t){ sh_ctl, RX_CHANNEL_READABLE, 0 };
+        int i_sh = -1;
+        if (sh_ctl) { i_sh = n; items[n++] = (rx_wait_item_t){ sh_ctl, RX_CHANNEL_READABLE, 0 }; }
         if (drv_proc) { i_dproc = n; items[n++] = (rx_wait_item_t){ drv_proc, RX_PROCESS_TERMINATED, 0 }; }
-        int i_sproc = n; items[n++] = (rx_wait_item_t){ sh_proc, RX_PROCESS_TERMINATED, 0 };
         if (fsd_proc) { i_fsd = n; items[n++] = (rx_wait_item_t){ fsd_proc, RX_PROCESS_TERMINATED, 0 }; }
         if (dm_proc) { i_dm = n; items[n++] = (rx_wait_item_t){ dm_proc, RX_PROCESS_TERMINATED, 0 }; }
-        int i_auth = -1, i_sys = -1, i_cl = n;
-        if (auth_proc) { i_auth = n; items[n++] = (rx_wait_item_t){ auth_proc, RX_PROCESS_TERMINATED, 0 }; }
+        int i_sys = -1, i_cl = n;
         if (sys_listen) { i_sys = n; items[n++] = (rx_wait_item_t){ sys_listen, RX_CHANNEL_READABLE, 0 }; }
         i_cl = n;
         for (int k = 0; k < nsys_clients; k++) items[n++] = (rx_wait_item_t){ sys_clients[k], RX_CHANNEL_READABLE | RX_PEER_CLOSED, 0 };
+        int i_units = n, unit_of[MAX_UNITS], nu = 0;
+        rx_handle_t proc_of[MAX_UNITS];
+        for (int k = 0; k < nunits; k++)
+            if (units[k].proc) { proc_of[nu] = units[k].proc; unit_of[nu++] = k; items[n++] = (rx_wait_item_t){ units[k].proc, RX_PROCESS_TERMINATED, 0 }; }
 
-        if (rx_object_wait_many(items, n, RX_TIME_INFINITE) != RX_OK) continue;
+        rx_status_t ws = rx_object_wait_many(items, n, svc_deadline());
+        if (ws != RX_OK) {
+            svc_tick();
+            continue;
+        }
 
         if (i_rep >= 0 && repeating && (items[i_rep].pending & RX_TIMER_SIGNALED)) repeat_fired();
         // Output first, so a prompt appears before the echo of what is typed
         if (items[i_out].pending & RX_CHANNEL_READABLE) console_output();
         if (i_drv >= 0 && (items[i_drv].pending & RX_CHANNEL_READABLE)) keys_from(drv_chan);
         if (i_kin >= 0 && (items[i_kin].pending & RX_CHANNEL_READABLE)) keys_from(kernel_input);
-        if (items[i_sh].pending & RX_CHANNEL_READABLE) command();
+        if (i_sh >= 0 && (items[i_sh].pending & RX_CHANNEL_READABLE)) command();
         if (i_dproc >= 0 && (items[i_dproc].pending & RX_PROCESS_TERMINATED)) driver_ended();
         if (i_fsd >= 0 && (items[i_fsd].pending & RX_PROCESS_TERMINATED)) {
             printf("init: the filesystem service ended (code %lld); files are gone until a reboot\n",
@@ -664,21 +615,10 @@ int main(int argc, char **argv) {
         for (int k = nsys_clients - 1; k >= 0; k--)
             if (i_cl + k < n && (items[i_cl + k].pending & (RX_CHANNEL_READABLE | RX_PEER_CLOSED))) sys_request(k);
         if (i_sys >= 0 && (items[i_sys].pending & RX_CHANNEL_READABLE)) sys_accept();
-        if (i_auth >= 0 && (items[i_auth].pending & RX_PROCESS_TERMINATED)) {
-            long long code = (long long)rx_wait_process(auth_proc);
-            auth_proc = 0;
-            if (++auth_restarts <= 3) {
-                printf("init: authd ended (code %lld); starting it again\n", code);
-                start_authd();
-            }
-        }
-        if (items[i_sproc].pending & RX_PROCESS_TERMINATED) {
-            console_output(); // its last words
-            rx_handle_close(sh_proc);
-            rx_handle_close(sh_ctl);
-            if (sh_job) rx_task_kill(sh_job);   // what the session left running
-            printf("\nSession ended; starting %s again\n\n", autologin[0] ? "it" : "login");
-            start_shell();
-        }
+        // A unit's process has ended (a request may have changed the units: check it is still the same)
+        for (int k = 0; k < nu; k++)
+            if ((items[i_units + k].pending & RX_PROCESS_TERMINATED) && unit_of[k] < nunits && units[unit_of[k]].proc == proc_of[k])
+                unit_ended(&units[unit_of[k]]);
+        svc_tick();
     }
 }

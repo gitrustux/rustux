@@ -1,0 +1,36 @@
+logs - show the system log (journalctl)
+
+USAGE
+    logs [-u UNIT]... [-k] [-b [N]] [-p PRIO] [-g TEXT] [--since TIME]
+         [--until TIME] [-n [N]] [-r] [-f] [-o short|short-iso|json|cat]
+    logs --list-boots | --disk-usage
+
+    logd keeps what the services print, what programs send with logger
+    or syslog(), init's own messages and the kernel's in
+    /var/log/system.log (and system.log.1 to .4 before it; each is at
+    most 1 MiB). logs shows them, oldest first. journalctl is the same.
+    Root and the members of group adm may read the log.
+
+OPTIONS
+    -u, -t UNIT     only this unit or tag (repeatable)
+    -k              only the kernel's messages, this boot
+    -b [N]          this boot; -b -1 the one before; -b 3 boot 3
+    -p PRIO         PRIO and more urgent: 0-7, or emerg alert crit err
+                    warning notice info debug
+    -g TEXT         messages containing TEXT
+    -S, --since T   from T: YYYY-MM-DD [HH:MM[:SS]], today, yesterday,
+    -U, --until T   now, -30s, -10min, -2h, -1d (local time)
+    -n [N]          the last N (10)
+    -r              newest first
+    -f              keep showing new messages (Ctrl+C ends it)
+    -o FORMAT       short (default), short-iso, json (one object a line),
+                    cat (the messages only)
+
+EXAMPLES
+    logs -b -p err          this boot's errors
+    logs -u authd -n 20     su and sudo
+    logs -f                 follow
+    logs -b -1 -n 30        how the last boot ended
+
+SEE ALSO
+    logger, svc, dmesg

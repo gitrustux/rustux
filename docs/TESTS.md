@@ -183,6 +183,28 @@ password at sudo's prompt. The host's `e2fsck -f -n` finds the disk clean
 owners and modes, the SHA-512 hash in `/etc/shadow` and no
 `/etc/autologin`.
 
+## Services tests (step 18)
+
+`services.sh` (in the command tests): the image's units and their states,
+`logger` and `logs -u` (text and JSON), `logs -k`; a unit that fails
+(run as nobody, `restart=on-failure`, 0.2 s apart) is failed after its
+three starts, with its output and init's messages in the log; a unit that
+is killed is started again; `svc restart`, `stop`, `enable`, `disable`;
+a user may look but not stop, enable or read the log; the log file is
+root's and adm's, 0640. It removes its units again.
+
+`scripts/run-services-test.sh` boots QEMU three times with the root
+filesystem on an ext4 disk: first `boot1.sh` lists the units, checks the
+built-in ones (no `/etc/svc`), runs a oneshot unit as another user and
+finds its output in the log, then disables the login and enables a
+console unit whose program is missing; the second boot must start the
+emergency root shell, whose `logs -b -1` shows how the first boot ended;
+then the host removes `/etc/svc` from the disk (a disk from before step
+18), and the third boot, in rescue mode, has it back, a root shell and no
+authd or login. `e2fsck -f` finds the disk clean after each boot, and the
+log on the disk has the three boots, kernel lines, the unit's line with
+uid 1000, mode 0640 root:adm.
+
 ## Run in QEMU
 
 ```bash

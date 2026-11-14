@@ -138,10 +138,16 @@ with the shell).
 A program runs as the user its starter runs as, and only if that user
 may execute the file (an x bit for it; root: any x bit) (step 17).
 `rx_spawn_as(job, &creds, ...)` (root only) starts it as another user:
-`login`, and `authd` for `su` and `sudo`, do. `getuid`, `setuid`,
+`login`, `authd` for `su` and `sudo`, and init for services, do. `getuid`, `setuid`,
 `setresuid`, `getgroups`, `setgroups`, `initgroups`, `umask` work on the
 kernel's credentials; `crypt` (SHA-512, `$6$`), `getspnam` and the other
 `<shadow.h>` calls, and `getpass` are there (docs/USERS.md).
+
+`syslog()`, `vsyslog()`, `openlog()`, `closelog()` and `setlogmask()`
+(`<syslog.h>`, step 18) send messages to logd over `/svc/log`; the tag is
+the `openlog` ident or `program_invocation_short_name` (argv[0]'s last
+part, as glibc has it). A service's stdout and stderr are already in the
+log (docs/SERVICES.md).
 
 ## Threads
 

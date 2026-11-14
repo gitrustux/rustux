@@ -1,0 +1,6 @@
+# The filesystems in /etc/fstab (the EFI partition at /boot/efi)
+description=Mount the filesystems in /etc/fstab
+type=oneshot
+exec=/bin/mount -a
+after=logd
+target=multi-user rescue

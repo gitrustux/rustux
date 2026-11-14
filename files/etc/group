@@ -1,4 +1,5 @@
 root:x:0:
+adm:x:4:
 disk:x:6:
 sudo:x:27:
 users:x:100:

@@ -66,4 +66,7 @@ int *__errno_location(void);
 #define EOPNOTSUPP 95
 #define ECANCELED 125
 
+// The name the program was started by (argv[0]), and its last part (GNU)
+extern char *program_invocation_name, *program_invocation_short_name;
+
 #endif

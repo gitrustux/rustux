@@ -1,0 +1,9 @@
+# Rescue mode (rescue on the kernel command line): a root shell, no login
+description=Root shell on the console (rescue mode)
+exec=/bin/shell
+after=logd
+console=yes
+restart=always
+restart_delay=0
+start_limit=0
+target=rescue

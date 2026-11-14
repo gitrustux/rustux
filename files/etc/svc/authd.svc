@@ -1,0 +1,8 @@
+# su, sudo and passwd ask authd (man sudo)
+description=Authentication: su, sudo, passwd (/svc/auth)
+exec=/bin/authd
+after=logd
+restart=always
+# it ends what a sudo started when the sudo is ended (ps, kill need the system job)
+system_job=yes
+target=multi-user

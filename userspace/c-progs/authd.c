@@ -23,7 +23,7 @@
 // or %group; HOST is not checked (ALL); RUNAS ALL, ALL:ALL or user names
 // (default root); COMMANDS ALL or full paths, comma-separated. Defaults
 // lines and #includedir are ignored. Each use is logged in
-// /var/log/auth.log.
+// /var/log/auth.log and the system log (logs -u authd).
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -64,18 +65,23 @@ static void stamp_set(uint32_t uid) {
 
 static void log_line(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void log_line(const char *fmt, ...) {
-    FILE *f = fopen("/var/log/auth.log", "a");
-    if (!f) return;
-    char when[32];
-    time_t t = time(0);
-    strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&t));
-    fprintf(f, "%s ", when);
+    static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
+    char msg[600];
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(f, fmt, ap);
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    fputc('\n', f);
-    fclose(f);
+    pthread_mutex_lock(&log_lock);
+    syslog(LOG_AUTHPRIV | LOG_NOTICE, "%s", msg); // the system log too (step 18)
+    FILE *f = fopen("/var/log/auth.log", "a");
+    if (f) {
+        char when[32];
+        time_t t = time(0);
+        strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&t));
+        fprintf(f, "%s %s\n", when, msg);
+        fclose(f);
+    }
+    pthread_mutex_unlock(&log_lock);
 }
 
 // ---- the caller's terminal ----

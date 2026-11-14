@@ -1,0 +1,58 @@
+running
+running
+running
+exited
+enabled
+static
+multi-user
+UNIT STATE ENABLED
+authd running enabled
+console running enabled
+logd running enabled
+mounts exited enabled
+rescue-shell inactive enabled
+emergency inactive static
+Target multi-user; 6
+hello from the test
+"priority":4,"unit":"svctest","message":"hello from the test"}
+1
+Read /etc/svc: 7 units
+failed
+State=failed
+Starts=3
+LastExit=3
+User=nobody
+Reason=it exited with code 3, after 3 starts in 30 s (svc reset-failed crashy, then svc start)
+65534
+crashing
+65534
+crashing
+65534
+crashing
+3
+ 2 crashy exited with code 3
+    Reason: it exited with code 3, after 3 starts in 30 s (svc reset-failed crashy, then svc start)
+    Starts: 3   Last exit: 3
+inactive
+Read /etc/svc: 8 units
+running
+State=running
+Starts=2
+LastExit=-1024
+sleeper was killed
+State=running
+Starts=3
+inactive
+disabled
+Enabled sleeper (/etc/svc/enabled/sleeper)
+sleeper
+Disabled sleeper (removed /etc/svc/enabled/sleeper)
+disabled
+No unit nosuch (svc list shows them; files are /etc/svc/NAME.svc)
+running
+svc: only root may do that (try sudo svc)
+svc: only root may do that (try sudo svc)
+logs: /var/log/system.log: Permission denied (root and group adm may read the log)
+-rw-r----- root adm
+Read /etc/svc: 6 units
+unknown

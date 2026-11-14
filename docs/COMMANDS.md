@@ -12,7 +12,7 @@ otherwise. `help` at the shell gives a short list.
 |---------|--------|----------|
 | `coreutils` | [uutils coreutils](https://github.com/uutils/coreutils) 0.12 (MIT), built for Rustux: `userspace/rust/coreutils` | `basename cat chgrp chmod chown cksum comm cp cut date dd df dirname du echo env expand expr false fmt fold groups head id join link ln ls md5sum mkdir mktemp mv nl nproc numfmt od paste printenv printf pwd readlink realpath rm rmdir seq sha256sum shuf sleep sort split stat sync tac tail tee test [ touch tr true truncate tsort uname unexpand uniq unlink wc whoami yes base64` |
 | `tools` | Rustux, `userspace/rust/tools` (Rust), with uutils findutils 0.11 and diffutils 0.6 and the kibi editor | `grep egrep fgrep less more man edit nano tar gzip gunzip zcat find xargs diff cmp` |
-| C programs | Rustux, `userspace/c-progs/` | `shell` (also `sh`), `ps kill top free uptime dmesg hostname reboot poweroff`, `lspci lsblk ramdisk` (step 12), `gpt blkid fdisk blk` (step 13), `mount umount mkfs.fat fsck.fat` and the FAT server `fatfs` (step 14), `mkfs.ext2 fsck.ext2` and the ext2 server `ext2fs` (step 15), `mkfs.ext4 tune2fs` (`fsck.ext2` also as `fsck.ext3 fsck.ext4`; `ext2fs` serves ext3 and ext4, step 16), `login su sudo passwd useradd userdel usermod groupadd groupdel chpasswd timedatectl localectl` and the services `authd` (and init's `/svc/system`) (step 17), tests |
+| C programs | Rustux, `userspace/c-progs/` | `shell` (also `sh`), `ps kill top free uptime dmesg hostname reboot poweroff`, `lspci lsblk ramdisk` (step 12), `gpt blkid fdisk blk` (step 13), `mount umount mkfs.fat fsck.fat` and the FAT server `fatfs` (step 14), `mkfs.ext2 fsck.ext2` and the ext2 server `ext2fs` (step 15), `mkfs.ext4 tune2fs` (`fsck.ext2` also as `fsck.ext3 fsck.ext4`; `ext2fs` serves ext3 and ext4, step 16), `login su sudo passwd useradd userdel usermod groupadd groupdel chpasswd timedatectl localectl` and the services `authd` (and init's `/svc/system`) (step 17), `svc logs logger` and the services `logd` and init's service manager (step 18), tests |
 | scripts | `userspace/bin/` | `runtests` |
 
 One program serves many names: the boot image stores each name in
@@ -82,7 +82,11 @@ uses).
 | `chpasswd` | lines `USER:PASSWORD` on stdin (root) |
 | `timedatectl` | `status`, `list-timezones`, `set-timezone ZONE`, `set-time "YYYY-MM-DD HH:MM:SS"`, `set-local-rtc 0|1`; no NTP |
 | `localectl` | `status`, `list-keymaps`, `set-keymap NAME` (the console changes at once); the locale is always `C.UTF-8` |
-| `poweroff`, `reboot` | root (or `sudo poweroff`): init ends the session, writes out and marks clean every filesystem, then the power |
+| `poweroff`, `reboot` | root (or `sudo poweroff`): init stops the services (logd last), writes out and marks clean every filesystem, then the power |
+| `svc` (`systemctl`) | the service manager (step 18, `SERVICES.md`): `list` (`list-units`, `list-unit-files`), `status [UNIT]` (with the unit's last log lines), `start stop restart`, `enable disable [--now]`, `reload` (`daemon-reload`), `reset-failed`, `isolate rescue|multi-user`, `is-active is-enabled is-failed`, `cat`, `show`, `get-default`, `poweroff`, `reboot`; `--json`; units are `/etc/svc/NAME.svc`; no `mask`, timers, sockets |
+| `logs` (`journalctl`) | the system log (`/var/log/system.log`): `-u -t -k -b [N] -p -g -S/--since -U/--until -n -r -f -o short|short-iso|json|cat --list-boots --disk-usage`; root and group adm; no `--vacuum`, `--rotate`, `-D` |
+| `logger` | `-t TAG -p [FACILITY.]PRIO -s -f FILE [MESSAGE]`; to logd (`/svc/log`); no `--journald`, `-u` |
+| `dmesg` | the kernel's log since boot (the last 64 KiB); `logs -k` has it with times |
 | `hostname` | `hostname NAME` writes `/etc/hostname` (root) |
 | `shell` | no `fork`: see `USERSPACE.md`, "The shell", for how pipelines with built-ins run |
 

@@ -1,0 +1,8 @@
+# The system log: /svc/log, written to /var/log/system.log (man logs)
+description=System log (/svc/log)
+exec=/bin/logd
+ready=/svc/log
+restart=always
+# its own output goes to the screen: there is no log to write it to
+log=console
+target=multi-user rescue

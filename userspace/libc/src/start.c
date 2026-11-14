@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+char *program_invocation_name = "", *program_invocation_short_name = "";
+
 int main(int argc, char **argv, char **envp);
 
 rx_handle_t rx_proc_self, rx_thread_self, rx_job_default, rx_vmar_root;
@@ -91,6 +93,11 @@ void __libc_start(rx_handle_t bootstrap) {
     char **argv = split(boot_msg + pa->args_off, end, pa->args_num);
     char **envp = split(boot_msg + pa->environ_off, end, pa->environ_num);
     __env_init(envp);
+    if (argv && argv[0]) {
+        program_invocation_name = argv[0];
+        const char *sl = strrchr(argv[0], '/');
+        program_invocation_short_name = sl ? (char *)sl + 1 : argv[0];
+    }
     __fs_init();
     __stdio_init();
     __run_init_array((int)pa->args_num, argv, environ);

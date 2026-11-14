@@ -1,0 +1,17 @@
+logger - put a message in the system log
+
+USAGE
+    logger [-t TAG] [-p [FACILITY.]PRIO] [-s] [-f FILE] [MESSAGE...]
+
+    Sends MESSAGE (or each line of stdin, or of FILE) to logd. The tag
+    is TAG, or your user name; the priority notice unless -p says
+    (0-7, emerg ... debug; the facility is accepted and ignored). -s
+    prints it on stderr too. logd records your pid and user.
+
+EXAMPLES
+    logger backup done
+    logger -t backup -p err "the disk is full"
+    logs -t backup
+
+SEE ALSO
+    logs

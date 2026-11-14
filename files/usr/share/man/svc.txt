@@ -1,0 +1,69 @@
+svc - start, stop and look at the services (systemctl)
+
+USAGE
+    svc [list]
+    svc status [UNIT...]
+    svc start|stop|restart UNIT...
+    svc enable|disable [--now] UNIT...
+    svc reload                     read /etc/svc again (systemctl daemon-reload);
+                                   reload UNIT restarts it
+    svc reset-failed [UNIT]
+    svc isolate rescue|multi-user
+    svc is-active|is-enabled|is-failed UNIT
+    svc cat UNIT | show UNIT | get-default
+    svc poweroff | reboot
+    --json (or -o json): JSON instead of tables
+
+    init is the service manager. Each service is a unit, a file
+    /etc/svc/NAME.svc of key=value lines; it starts at boot when
+    /etc/svc/enabled/NAME exists and the boot's target is one of its
+    targets. systemctl is the same program, with systemd's command names
+    (list-units, list-unit-files, daemon-reload).
+
+    Anyone may look (list, status, is-active, ...); starting, stopping,
+    enabling and reload need root (sudo svc ...). status shows the unit's
+    last log lines to root and group adm.
+
+UNIT FILES
+    description=TEXT       what svc list shows
+    exec=PROGRAM ARGS      what to run (a name without / is in /bin);
+                           "..." and '...' quote, as in the shell
+    user=NAME              run as NAME (default root)
+    type=simple|oneshot    simple runs until stopped; oneshot runs once
+                           and counts as done when it exits with 0
+    restart=no|on-failure|always    when it ends (default no)
+    restart_delay=SECONDS  before a restart (default 1; 0.2 works)
+    start_limit=N          fail after N starts in 30 s (default 5; 0: never)
+    needs=UNIT...          start those first; fail if they fail
+    after=UNIT...          start after those, if they start at all
+    ready=/svc/NAME        up once that service answers (others wait)
+    target=multi-user rescue    the targets it belongs to (default multi-user)
+    env=NAME=VALUE         an environment variable (repeatable)
+    dir=PATH               working directory (default /)
+    log=console            output on the screen, not in the log
+    console=yes            holds the console (login, a shell)
+    system_job=yes         gets the system job (to look at and end processes)
+
+    The unit's stdout and stderr go to the system log under its name
+    (logs -u NAME); a line starting <N> (0-7) has priority N. It runs in
+    a job of its own: when its program ends, everything it started ends.
+
+TARGETS
+    multi-user (the default): every enabled unit, a login on the console.
+    rescue (rescue or single on the kernel command line): logd, the
+    mounts and a root shell, no login. svc isolate switches between them.
+    If nothing can run on the console, init starts the emergency unit,
+    a root shell.
+
+EXAMPLES
+    svc                              every unit and its state
+    svc status authd                 one unit, with its log
+    sudo svc restart authd
+    sudo svc enable --now myservice  start it now and at every boot
+    systemctl is-active logd
+
+FILES
+    /etc/svc/*.svc, /etc/svc/enabled/
+
+SEE ALSO
+    logs, logger, rustux (docs/SERVICES.md)

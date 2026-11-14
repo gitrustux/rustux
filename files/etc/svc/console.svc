@@ -1,0 +1,10 @@
+# The login prompt on the screen (autologin: /etc/autologin or autologin=USER
+# on the kernel command line). It starts again when the session ends.
+description=Login on the console
+exec=/bin/login
+after=logd authd
+console=yes
+restart=always
+restart_delay=0
+start_limit=0
+target=multi-user

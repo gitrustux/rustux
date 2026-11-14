@@ -2,9 +2,11 @@ rustux - the system: what runs, where things are
 
 PROCESSES
     The kernel starts init, which runs the console, the keyboard driver,
-    the file system service (fsd), the device manager, authd (su, sudo,
-    passwd) and login, which starts your shell. Programs run in jobs, as
-    the user who started them; ps lists them, kill ends one, top shows
+    the file system service (fsd) and the device manager, then the
+    services of /etc/svc: logd (the system log), authd (su, sudo, passwd),
+    the mounts and login, which starts your shell. svc lists and controls
+    them (man svc), logs shows the log (man logs). Programs run in jobs,
+    as the user who started them; ps lists them, kill ends one, top shows
     what is busy.
 
 THE FILE TREE
@@ -12,9 +14,10 @@ THE FILE TREE
     /tmp        scratch files
     /root       root's home directory; /home/NAME for other users
     /etc        settings: hostname, timezone, keymap, passwd, group,
-                shadow, sudoers, mtab (copied from the boot image at start;
-                on a disk root the first time only)
-    /var/log    auth.log (su, sudo)
+                shadow, sudoers, svc/ (the services), mtab (copied from
+                the boot image at start; on a disk root the first time
+                only, and a directory such as svc/ when it is missing)
+    /var/log    system.log (logs), auth.log (su, sudo)
     /bin        programs (read-only, from the boot image)
     /usr        read-only data: share/man (manual pages), share/keymaps,
                 share/zoneinfo, share/tests (the command tests)
@@ -31,4 +34,4 @@ USERS
     that are enforced. man users.
 
 SEE ALSO
-    man intro, man shell, man top, man users, uname -a
+    man intro, man shell, man top, man users, man svc, man logs, uname -a
