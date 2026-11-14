@@ -273,6 +273,23 @@ directories, direct, indirect, double and triple indirect blocks.
 `mkfs.ext2` and `fsck.ext2` make and check ext2 filesystems
 (docs/COMMANDS.md).
 
+### Permissions (step 17)
+
+Every server checks each request against who sent it: the kernel puts
+the sender's credentials on every message (`rx_channel_read_creds`),
+and fsd, forwarding a path request to a mounted filesystem, adds the
+original sender (`RX_FS_OP_AS`; taken from root senders only). The rules
+(read, write, search bits; the sticky bit; chmod, chown, utimes; new
+files owned by the creator, or a setgid directory's group) are in
+`c-progs/perm.h` and docs/USERS.md. tmpfs keeps owners and modes in
+memory, ext2/3/4 in the inodes; FAT files are root's (directories 0755,
+files 0644), so only root may change a FAT filesystem. Mounting,
+unmounting and SHUTDOWN_ALL are root's.
+
+A disk root filesystem gets the boot image's `/etc` files only when it is
+fresh (no `/etc/passwd` yet); `/etc/shadow` is made 0600 and
+`/etc/sudoers` 0440.
+
 ### ext3 and ext4 (`ext2fs`, step 16)
 
 The same server serves ext3 and ext4 as Linux's `mkfs.ext4` makes them

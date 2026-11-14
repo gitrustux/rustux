@@ -234,9 +234,13 @@ int getgrouplist(const char *user, gid_t group, gid_t *groups, int *ngroups) {
     return n > cap ? -1 : n;
 }
 
-int getgroups(int n, gid_t list[]) {
-    if (n > 0) list[0] = 0;
-    return 1;
+// The groups /etc/group lists `user` in, and `group`, become the
+// process's supplementary groups (login, su, sudo)
+int initgroups(const char *user, gid_t group) {
+    gid_t list[RX_MAX_GROUPS];
+    int n = RX_MAX_GROUPS;
+    if (getgrouplist(user, group, list, &n) < 0) n = RX_MAX_GROUPS;
+    return setgroups((size_t)n, list);
 }
 
 char *getlogin(void) {

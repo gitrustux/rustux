@@ -50,6 +50,9 @@ int main(int argc, char **argv) {
         if (!f.found) {
             fprintf(stderr, "kill: %s: no such process\n", argv[i]);
             status = 1;
+        } else if (f.r == RX_ERR_ACCESS_DENIED) {
+            fprintf(stderr, "kill: %s: Operation not permitted\n", argv[i]);   // another user's (step 17)
+            status = 1;
         } else if (f.r != RX_OK) {
             fprintf(stderr, "kill: %s: error %lld\n", argv[i], (long long)f.r);
             status = 1;

@@ -4,8 +4,11 @@ USAGE
     ps [--json]
 
     PID   the process id (kill PID ends it)
+    USER  the user it runs as (step 17)
     JOB   the job it runs in (each command line gets one)
     THR   threads; MEM  memory in KiB; TIME  CPU time used; NAME
 
+    Everyone sees every process; only root may end another user's.
+
 SEE ALSO
-    top, kill
+    top, kill, users

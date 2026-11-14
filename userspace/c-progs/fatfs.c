@@ -30,6 +30,13 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "perm.h"
+
+// Who sent the request being served (step 17). FAT has no owners: its
+// files are root's (0755 directories, 0644 files), so others may read
+// and only root may change anything.
+static rx_sender_t who;
+
 #define MAX_CONNS 500
 #define IOBUF (256u * 1024u)
 #define CACHE 512           // metadata sectors kept
@@ -1342,7 +1349,7 @@ static int shutting_down;
 static int serve(int i) {
     rx_handle_t h = 0;
     uint32_t nb = 0, nh = 0;
-    rx_status_t s = rx_channel_read(conns[i].ch, 0, req, &h, sizeof req, 1, &nb, &nh);
+    rx_status_t s = rx_channel_read_creds(conns[i].ch, req, &h, sizeof req, 1, &nb, &nh, &who);
     if (s == RX_ERR_SHOULD_WAIT) return 0;
     if (s != RX_OK) {
         drop_conn(i);
@@ -1353,6 +1360,18 @@ static int serve(int i) {
         if (h) rx_handle_close(h);
         return 0;
     }
+    // A request fsd forwards carries who asked (step 17)
+    int perm = perm_unwrap(req, &nb, &who);
+    if (perm == 0 && who.euid != 0 && nb >= 8) {
+        uint32_t op, fl = 0;
+        memcpy(&op, req + 4, 4);
+        if (op == RX_FS_OP_OPEN && nb >= 12) memcpy(&fl, req + 8, 4);
+        if (op == RX_FS_OP_MKDIR || op == RX_FS_OP_UNLINK || op == RX_FS_OP_RENAME || op == RX_FS_OP_SYMLINK ||
+            op == RX_FS_OP_LINK || op == RX_FS_OP_SETATTR || op == RX_FS_OP_TRUNCATE ||
+            (op == RX_FS_OP_OPEN && ((fl & O_ACCMODE) != O_RDONLY || (fl & (O_CREAT | O_TRUNC)))))
+            perm = op == RX_FS_OP_SETATTR ? -EPERM : -EACCES;
+    }
+    if (perm < 0) memset(req + 4, 0xFF, 4);   // no such op: answered with EPERM below
     rx_fs_hdr_t hdr;
     memcpy(&hdr, req, sizeof hdr);
     const char *body = req + sizeof hdr;
@@ -1496,6 +1515,7 @@ static int serve(int i) {
         olen = sizeof(rx_fs_statfs_t);
         break;
     case RX_FS_OP_SHUTDOWN:
+        if (who.euid != 0) { st = -EPERM; break; }
         if (blen >= 4) memcpy(&u32, body, 4);
         else u32 = 0;
         // Busy while other connections than this one are open
@@ -1508,7 +1528,7 @@ static int serve(int i) {
         shutting_down = 1;
         break;
     default:
-        st = -ENOSYS;
+        st = perm < 0 ? perm : -ENOSYS;
         break;
     }
     if (changed == 2 && !read_only) {

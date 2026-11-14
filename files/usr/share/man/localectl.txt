@@ -1,0 +1,14 @@
+localectl - the keyboard layout
+
+USAGE
+    localectl [status]
+    localectl list-keymaps
+    localectl set-keymap NAME
+
+    set-keymap writes /etc/keymap and the console uses the layout at
+    once (as loadkeys does). Layouts: us and those in
+    /usr/share/keymaps. Changes are root's: sudo localectl set-keymap de.
+    The locale is always C.UTF-8.
+
+SEE ALSO
+    loadkeys, timedatectl

@@ -1,0 +1,16 @@
+passwd - change a password
+
+USAGE
+    passwd [USER]
+
+    Changes your password: the current one first, then the new one
+    twice. root may change anyone's (no current password asked). The
+    password is kept as a SHA-512 hash in /etc/shadow. passwd asks authd,
+    which prompts on your terminal.
+
+    A new account's password is locked until it is set; usermod -L and
+    -U lock and unlock one; chpasswd sets many (as root, USER:PASSWORD
+    lines on standard input).
+
+SEE ALSO
+    useradd, chpasswd, users

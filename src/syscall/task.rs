@@ -7,7 +7,7 @@
 //! Task syscalls: jobs, processes, threads. Signatures are in
 //! docs/SYSCALL.md.
 
-use super::object::{install, lookup, ret, take, R};
+use super::object::{current_process, install, lookup, ret, take, R};
 use super::{user, SyscallArgs, SyscallRet};
 use crate::arch::amd64::mm::RxStatus;
 use crate::kobj::task::{self, Job, Process, Thread};
@@ -52,7 +52,9 @@ pub fn sys_process_create(args: SyscallArgs) -> SyscallRet {
         let name = read_name(name, name_len)?;
         user::check(out_p, 4, true)?;
         user::check(out_v, 4, true)?;
-        let process = launch::new_process(&job, &name)?;
+        // The new process acts as its creator does (step 17)
+        let creds = *current_process()?.creds.lock();
+        let process = launch::new_process(&job, &name, creds)?;
         let vmar = Vmar::root(process.aspace.clone());
         let hp = install(KObject::Process(process), Rights::PROCESS)?;
         let hv = match install(KObject::Vmar(vmar), Rights::VMAR) {
@@ -156,6 +158,82 @@ fn kill_thread(t: Arc<Thread>) {
 ///
 /// Every reference is moved into the call that may not return, so none is
 /// left on this kernel stack.
+// The credentials of a process (step 17). `process_get_creds(h, out)`:
+// h 0 for the calling process, else a process handle (INSPECT); out gets
+// a `Creds`. `process_set_creds(in)`: the calling process changes its own,
+// as `Creds::may_become` allows (root anything; others only among their
+// own ids, and the umask). `process_set_creds(in, h)` with a process handle
+// (WRITE) sets those of a process not started yet: root only (how login,
+// su and sudo start a program as another user).
+pub fn sys_process_get_creds(args: SyscallArgs) -> SyscallRet {
+    let (h, out) = (args.arg_u32(0), args.arg(1));
+    ret((|| {
+        let size = core::mem::size_of::<task::Creds>();
+        user::check(out, size, true)?;
+        let c = if h == 0 {
+            *current_process()?.creds.lock()
+        } else {
+            match lookup(h, Rights::INSPECT)?.0 {
+                KObject::Process(p) => *p.creds.lock(),
+                _ => return Err(RxStatus::ERR_WRONG_TYPE),
+            }
+        };
+        let bytes = unsafe { core::slice::from_raw_parts(&c as *const task::Creds as *const u8, size) };
+        user::write_bytes(out, bytes)?;
+        Ok(0)
+    })())
+}
+
+pub fn sys_process_set_creds(args: SyscallArgs) -> SyscallRet {
+    let (inp, h) = (args.arg(0), args.arg_u32(1));
+    ret((|| {
+        let size = core::mem::size_of::<task::Creds>();
+        let raw = user::read_bytes(inp, size)?;
+        let mut new: task::Creds = unsafe { core::ptr::read_unaligned(raw.as_ptr() as *const task::Creds) };
+        if new.ngroups as usize > task::MAX_GROUPS {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        for g in new.ngroups as usize..task::MAX_GROUPS {
+            new.groups[g] = 0;
+        }
+        new.umask &= 0o777;
+        let me = current_process()?;
+        if h != 0 {
+            let p = match lookup(h, Rights::WRITE)?.0 {
+                KObject::Process(p) => p,
+                _ => return Err(RxStatus::ERR_WRONG_TYPE),
+            };
+            if !me.creds.lock().is_root() {
+                return Err(RxStatus::ERR_ACCESS_DENIED);
+            }
+            if p.state() != task::ProcState::Initial {
+                return Err(RxStatus::ERR_BAD_STATE);
+            }
+            *p.creds.lock() = new;
+            return Ok(0);
+        }
+        let p = me;
+        let mut c = p.creds.lock();
+        if !c.may_become(&new) {
+            return Err(RxStatus::ERR_ACCESS_DENIED);
+        }
+        *c = new;
+        Ok(0)
+    })())
+}
+
+/// May the caller act on (kill, manage) process p? root may; others only
+/// on processes that act as the same user
+fn may_manage(p: &Arc<Process>) -> bool {
+    match current_process() {
+        Ok(me) => {
+            let mine = *me.creds.lock();
+            mine.is_root() || Arc::ptr_eq(&me, p) || mine.euid == p.creds.lock().euid
+        }
+        Err(_) => true, // the kernel itself
+    }
+}
+
 pub fn sys_task_kill(args: SyscallArgs) -> SyscallRet {
     let h = args.arg_u32(0);
     let (obj, rights) = match lookup(h, 0) {
@@ -166,6 +244,16 @@ pub fn sys_task_kill(args: SyscallArgs) -> SyscallRet {
         return ret(Err(RxStatus::ERR_WRONG_TYPE));
     }
     if !rights.has(Rights::DESTROY) {
+        return ret(Err(RxStatus::ERR_ACCESS_DENIED));
+    }
+    // Another user's processes: only root (step 17)
+    let allowed = match &obj {
+        KObject::Process(p) => may_manage(p),
+        KObject::Thread(t) => may_manage(&t.process),
+        KObject::Job(j) => j.processes_in_tree().iter().all(may_manage),
+        _ => true,
+    };
+    if !allowed {
         return ret(Err(RxStatus::ERR_ACCESS_DENIED));
     }
     match obj {
@@ -362,9 +450,18 @@ pub fn sys_object_get_child(args: SyscallArgs) -> SyscallRet {
             _ => return Err(RxStatus::ERR_WRONG_TYPE),
         };
         // No more rights than the parent handle has
-        let want = if rights & Rights::SAME_RIGHTS != 0 { base } else { rights };
+        let mut want = if rights & Rights::SAME_RIGHTS != 0 { base } else { rights };
         if want & !base != 0 {
             return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        // Another user's process or thread: to look at and wait for only
+        let foreign = match &child {
+            KObject::Process(p) => !may_manage(p),
+            KObject::Thread(t) => !may_manage(&t.process),
+            _ => false,
+        };
+        if foreign {
+            want &= Rights::BASIC | Rights::ENUMERATE | Rights::GET_PROPERTY;
         }
         let v = install(child, want)?;
         user::write_u32(out, v)?;

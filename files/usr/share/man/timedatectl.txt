@@ -1,0 +1,16 @@
+timedatectl - the clock and the time zone
+
+USAGE
+    timedatectl [status]
+    timedatectl list-timezones
+    timedatectl set-timezone ZONE
+    timedatectl set-time "YYYY-MM-DD HH:MM:SS"     (or "HH:MM:SS"; local time)
+    timedatectl set-local-rtc 0|1
+
+    status shows the local and universal time and the zone. The zone is
+    in /etc/timezone (names from list-timezones). set-local-rtc 1 says
+    the hardware clock keeps local time, as Windows does (/etc/adjtime;
+    read at boot). Changes are root's: sudo timedatectl ...
+
+SEE ALSO
+    date, localectl

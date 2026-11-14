@@ -468,7 +468,12 @@ pub fn sys_channel_write(args: SyscallArgs) -> SyscallRet {
             }
         }
         let data = user::read_bytes(bytes, nbytes)?;
-        chan.write(channel::Message { data, handles: taken }).map_err(|(e, _msg)| e)?;
+        let sender = {
+            let p = current_process()?;
+            let c = *p.creds.lock();
+            channel::Sender::of(p.koid, &c)
+        };
+        chan.write(channel::Message { data, handles: taken, sender }).map_err(|(e, _msg)| e)?;
         Ok(0)
     })())
 }
@@ -485,11 +490,16 @@ pub fn sys_channel_read(args: SyscallArgs) -> SyscallRet {
     let actual = args.arg(5);
     ret((|| {
         let chan = channel_of(h, Rights::READ)?;
-        if opts != 0 {
+        if opts & !channel::READ_CREDS != 0 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        let creds = opts & channel::READ_CREDS != 0;
+        let sender_size = core::mem::size_of::<channel::Sender>();
+        if creds && actual == 0 {
             return Err(RxStatus::ERR_INVALID_ARGS);
         }
         if actual != 0 {
-            user::check(actual, 8, true)?;
+            user::check(actual, 8 + if creds { sender_size } else { 0 }, true)?;
         }
         let Some((nb, nh)) = chan.peek_size() else {
             return Err(if chan.peer().is_some() { RxStatus::ERR_SHOULD_WAIT } else { RxStatus::ERR_PEER_CLOSED });
@@ -523,6 +533,11 @@ pub fn sys_channel_read(args: SyscallArgs) -> SyscallRet {
         user::write_bytes(bytes, &msg.data)?;
         for (i, v) in values.iter().enumerate() {
             user::write_u32(hptr + i * 4, *v)?;
+        }
+        if creds {
+            let s = msg.sender;
+            let raw = unsafe { core::slice::from_raw_parts(&s as *const channel::Sender as *const u8, sender_size) };
+            user::write_bytes(actual + 8, raw)?;
         }
         Ok(0)
     })())

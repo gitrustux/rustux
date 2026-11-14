@@ -1,0 +1,19 @@
+login - sign in on the console
+
+USAGE
+    login
+    login -f USER     (root only) without a password
+
+    init runs login on the console, and again when the session ends. It
+    asks for a user name and the password (three tries), shows /etc/motd,
+    and starts the user's shell (from /etc/passwd) in the home directory,
+    with HOME, USER, LOGNAME, SHELL and PATH set. Leaving that shell
+    (exit, Ctrl+D) brings the prompt back.
+
+    Autologin, without a password: /etc/autologin names the user (the
+    live image: root), or the kernel command line says autologin=USER.
+    "login" on the kernel command line always asks. Remove
+    /etc/autologin to be asked.
+
+SEE ALSO
+    users, su, passwd

@@ -131,7 +131,7 @@ pub fn tick() {
         return;
     }
     if let Some(ch) = input.channel.as_ref() {
-        let _ = ch.write(crate::kobj::channel::Message { data, handles: alloc::vec::Vec::new() });
+        let _ = ch.write(crate::kobj::channel::Message { data, handles: alloc::vec::Vec::new(), sender: crate::kobj::channel::Sender::KERNEL });
     }
 }
 

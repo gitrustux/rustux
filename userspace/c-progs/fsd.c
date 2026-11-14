@@ -53,6 +53,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "perm.h"
+
 #define MAX_CONNS 1000
 // A walk reached a mounted filesystem: g_remote and g_rest say where
 #define EREMOTE_FS 10000
@@ -66,6 +68,7 @@ struct node {
     rx_handle_t svc;        // services: channel to the server
     int dev;                // devices: DEV_NULL or DEV_ZERO
     uint32_t mode;
+    uint32_t uid, gid;      // owner (step 17)
     int read_only;          // bootfs
     uint32_t fsid;          // which filesystem: 1 tmpfs, 2 bootfs, 3 devices (st_dev)
     char *name;
@@ -92,6 +95,7 @@ struct ofd {
     uint64_t offset;
     int flags;              // O_* from open
     int refs;
+    int can_read;           // a directory opened by someone who may list it
     uint32_t dir_pos;       // READDIR position (entries returned so far)
     rx_handle_t rdir;       // "/" with a root filesystem: its root directory, for READDIR
     int rphase;             // READDIR of "/": 1 once fsd's own entries are done
@@ -103,6 +107,8 @@ struct conn {
 };
 
 static struct conn conns[MAX_CONNS];
+// Who sent the request being served (step 17): its permissions
+static rx_sender_t who;
 static int nconns;
 static uint64_t next_ino = 1;
 // The boot image: its VMO and where we mapped it (GET_VMO)
@@ -196,6 +202,8 @@ static struct node *new_node(uint32_t type, const char *name, struct node *paren
     n->ino = next_ino++;
     n->mtime = now();
     n->fsid = 1;
+    n->uid = who.euid;
+    n->gid = parent && (parent->mode & 02000) ? parent->gid : who.egid;
     if (parent) {
         n->parent = parent;
         n->read_only = parent->read_only;
@@ -225,6 +233,17 @@ static void maybe_free(struct node *n) {
     free(n->data);
     free(n->name);
     free(n);
+}
+
+static int may(const struct node *n, int want) {
+    return perm_may(&who, n->mode, n->uid, n->gid, n->type == RX_FS_TYPE_DIR, want);
+}
+
+// Files of /etc only root may read (or write)
+static uint32_t etc_mode(const char *name) {
+    if (!strcmp(name, "shadow") || !strcmp(name, "gshadow")) return 0600;
+    if (!strcmp(name, "sudoers")) return 0440;
+    return 0644;
 }
 
 static struct node *follow(struct node *n) {
@@ -263,6 +282,7 @@ static int walk_f(struct node *dir, const char *path, size_t len, struct node **
         if (j - i > 255) return -ENAMETOOLONG;
         if ((j - i == 1 && path[i] == '.') || (j - i == 2 && path[i] == '.' && path[i + 1] == '.')) return -EINVAL;
         if (n->type != RX_FS_TYPE_DIR) return -ENOTDIR;
+        if (!may(n, MAY_EXEC)) return -EACCES;
         struct node *c = child(n, path + i, j - i);
         if (n == root && root->remote && !c) {
             // Not one of ours: on the root filesystem
@@ -310,6 +330,8 @@ static void attr_of(struct node *n, rx_fs_attr_t *a) {
     a->mtime_ns = n->mtime;
     a->read_only = (uint32_t)n->read_only;
     a->fsid = n->fsid;
+    a->uid = n->uid;
+    a->gid = n->gid;
 }
 
 // ---- connections ----
@@ -330,6 +352,7 @@ static struct ofd *new_ofd(struct node *n, int flags) {
     if (!o) return 0;
     o->node = n;
     o->flags = flags;
+    o->can_read = 1;
     n->open++;
     return o;
 }
@@ -358,15 +381,18 @@ static int forward_ch(rx_handle_t ch, uint32_t op, const void *pre, size_t prele
     if (olen) *olen = 0;
     if (g_fwd_handle) rx_handle_close(g_fwd_handle);
     g_fwd_handle = 0;
-    if (sizeof(rx_fs_hdr_t) + prelen + plen > sizeof msg) {
+    if (sizeof(rx_fs_hdr_t) + sizeof who + prelen + plen > sizeof msg) {
         if (h) rx_handle_close(h);
         return -ENAMETOOLONG;
     }
-    rx_fs_hdr_t hd = { next_txid++, op };
+    // On behalf of who asked us (step 17)
+    rx_fs_hdr_t hd = { next_txid++, op | RX_FS_OP_AS };
     memcpy(msg, &hd, sizeof hd);
-    if (prelen) memcpy(msg + sizeof hd, pre, prelen);
-    if (plen) memcpy(msg + sizeof hd + prelen, path, plen);
-    if (rx_channel_write(ch, 0, msg, (uint32_t)(sizeof hd + prelen + plen), h ? &h : 0, h ? 1 : 0) != RX_OK) {
+    memcpy(msg + sizeof hd, &who, sizeof who);
+    size_t at = sizeof hd + sizeof who;
+    if (prelen) memcpy(msg + at, pre, prelen);
+    if (plen) memcpy(msg + at + prelen, path, plen);
+    if (rx_channel_write(ch, 0, msg, (uint32_t)(at + prelen + plen), h ? &h : 0, h ? 1 : 0) != RX_OK) {
         if (h) rx_handle_close(h);
         return -EIO;
     }
@@ -492,12 +518,12 @@ static void seed_mkdir(const char *p, uint32_t mode) {
 }
 
 // A file of the boot image's /etc that the disk does not have yet
-static void seed_file(const char *p, const char *data, size_t n) {
+static void seed_file(const char *p, const char *data, size_t n, uint32_t mode) {
     rx_fs_attr_t a;
     if (forward(root, RX_FS_OP_LSTAT_AT, 0, 0, p, strlen(p), 0, (char *)&a, sizeof a, 0) != -ENOENT) return;
     rx_handle_t c, s;
     if (rx_channel_create(0, &c, &s) != RX_OK) return;
-    uint32_t f[2] = { O_WRONLY | O_CREAT | O_EXCL, 0644 }, t;
+    uint32_t f[2] = { O_WRONLY | O_CREAT | O_EXCL, mode }, t;
     if (forward(root, RX_FS_OP_OPEN, f, sizeof f, p, strlen(p), s, (char *)&t, sizeof t, 0) == 0) {
         for (size_t off = 0; off < n;) {
             size_t k = n - off < RX_FS_MAX_IO ? n - off : RX_FS_MAX_IO;
@@ -509,18 +535,24 @@ static void seed_file(const char *p, const char *data, size_t n) {
     rx_handle_close(c);
 }
 
-// What a fresh root filesystem needs from us: the top directories, the
-// settings of the boot image's /etc it does not have, /etc/mtab as a link
+// What a root filesystem needs from us: the top directories, /etc/mtab as
+// a link, and on a fresh one (step 17) the settings of the boot image's /etc
 static void seed_root(void) {
     seed_mkdir("etc", 0755);
     seed_mkdir("root", 0700);
     seed_mkdir("home", 0755);
     seed_mkdir("var", 0755);
-    for (struct node *f = boot_etc ? boot_etc->first : 0; f; f = f->next) {
+    seed_mkdir("var/log", 0755);
+    // The boot image's settings go onto a fresh disk only (no /etc/passwd
+    // yet): from then on its /etc is its own, files removed stay removed
+    // (step 17: /etc/autologin, accounts)
+    rx_fs_attr_t pa;
+    int fresh = forward(root, RX_FS_OP_LSTAT_AT, 0, 0, "etc/passwd", 10, 0, (char *)&pa, sizeof pa, 0) == -ENOENT;
+    for (struct node *f = boot_etc && fresh ? boot_etc->first : 0; f; f = f->next) {
         if (f->type != RX_FS_TYPE_FILE || !strcmp(f->name, "mtab")) continue;
         char p[300];
         snprintf(p, sizeof p, "etc/%s", f->name);
-        seed_file(p, f->rodata, f->size);
+        seed_file(p, f->rodata, f->size, etc_mode(f->name));
     }
     char t[64];
     size_t n = 0;
@@ -666,7 +698,7 @@ static int do_open(struct ofd *dir, const char *path, size_t plen, uint32_t flag
     struct node *n = 0, *parent;
     const char *last;
     size_t last_len;
-    int follow = !(flags & O_NOFOLLOW) && !((flags & O_CREAT) && (flags & O_EXCL));
+    int follow = !(flags & O_NOFOLLOW) && !((flags & O_CREAT) && (flags & O_EXCL)), created = 0;
     int r = walk_f(dir->node, path, plen, &n, 0, 0, 0, follow);
     if (r == -EREMOTE_FS) {
         // On a mounted filesystem: it opens the file and gets the connection
@@ -687,6 +719,7 @@ static int do_open(struct ofd *dir, const char *path, size_t plen, uint32_t flag
     if (r == 0 && n->type == RX_FS_TYPE_SERVICE) {
         if ((flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
         if (flags & O_DIRECTORY) return -ENOTDIR;
+        if (!may(n, MAY_READ | MAY_WRITE)) return -EACCES;
         *consumed = 1;
         *type = RX_FS_TYPE_SERVICE;
         return connect_service(n, flags, server);
@@ -695,11 +728,13 @@ static int do_open(struct ofd *dir, const char *path, size_t plen, uint32_t flag
         r = walk(dir->node, path, plen, 0, &parent, &last, &last_len);
         if (r < 0) return r;
         if (parent->read_only) return -EROFS;
+        if (!may(parent, MAY_WRITE | MAY_EXEC)) return -EACCES;
         char name[256];
         memcpy(name, last, last_len);
         name[last_len] = 0;
         n = new_node(RX_FS_TYPE_FILE, name, parent, mode & 07777);
         if (!n) return -ENOSPC;
+        created = 1;
     } else if (r < 0) {
         return r;
     } else if ((flags & O_CREAT) && (flags & O_EXCL)) {
@@ -709,9 +744,16 @@ static int do_open(struct ofd *dir, const char *path, size_t plen, uint32_t flag
     if (n->type == RX_FS_TYPE_DIR && writing) return -EISDIR;
     if ((flags & O_DIRECTORY) && n->type != RX_FS_TYPE_DIR) return -ENOTDIR;
     if ((writing || (flags & O_TRUNC)) && n->read_only) return -EROFS;
+    int can_read = may(n, MAY_READ);
+    if (n->type == RX_FS_TYPE_DIR) {
+        if (!can_read && !may(n, MAY_EXEC)) return -EACCES;
+    } else if (!created && !may(n, perm_open_want(flags))) {
+        return -EACCES;   // (a file this open made is its creator's to write)
+    }
     if ((flags & O_TRUNC) && writing && n->type == RX_FS_TYPE_FILE) set_size(n, 0);
     struct ofd *o = new_ofd(n, (int)flags);
     if (!o) return -ENOMEM;
+    o->can_read = can_read;
     r = add_conn(server, o);
     if (r < 0) {
         n->open--;
@@ -854,10 +896,14 @@ static int do_rename(struct ofd *dir, const char *a, size_t alen, const char *b,
     r = rb;
     if (r < 0) return r;
     if (src_dir->read_only || dst_dir->read_only) return -EROFS;
+    if (!may(src_dir, MAY_WRITE | MAY_EXEC) || !may(dst_dir, MAY_WRITE | MAY_EXEC)) return -EACCES;
     // The entry itself, not what is mounted on it
     for (struct node *c = src_dir->first; c; c = c->next) {
         if (strlen(c->name) == snl && !memcmp(c->name, sn, snl)) { src = c; break; }
     }
+    if (!perm_sticky_ok(&who, src_dir->mode, src_dir->uid, src->uid)) return -EPERM;
+    // A directory that moves gets a new ".."
+    if (src->type == RX_FS_TYPE_DIR && src_dir != dst_dir && !may(src, MAY_WRITE)) return -EACCES;
     if (src->mount || src->remote) return -EBUSY;
     if (src->type == RX_FS_TYPE_DIR && is_ancestor(src, dst_dir)) return -EINVAL;
     for (struct node *c = dst_dir->first; c; c = c->next) {
@@ -866,6 +912,7 @@ static int do_rename(struct ofd *dir, const char *a, size_t alen, const char *b,
     if (existing == src) return 0;
     if (existing) {
         if (existing->mount || existing->remote) return -EBUSY;
+        if (!perm_sticky_ok(&who, dst_dir->mode, dst_dir->uid, existing->uid)) return -EPERM;
         if (existing->type == RX_FS_TYPE_DIR && src->type != RX_FS_TYPE_DIR) return -EISDIR;
         if (existing->type != RX_FS_TYPE_DIR && src->type == RX_FS_TYPE_DIR) return -ENOTDIR;
         if (existing->type == RX_FS_TYPE_DIR && existing->first) return -ENOTEMPTY;
@@ -900,6 +947,8 @@ static int do_unlink(struct ofd *dir, const char *path, size_t plen, uint32_t fl
     }
     if (!n) return -ENOENT;
     if (parent->read_only) return -EROFS;
+    if (!may(parent, MAY_WRITE | MAY_EXEC)) return -EACCES;
+    if (!perm_sticky_ok(&who, parent->mode, parent->uid, n->uid)) return -EPERM;
     if (n->mount || n->remote) return -EBUSY;
     if (flags & RX_FS_UNLINK_DIR) {
         if (n->type != RX_FS_TYPE_DIR) return -ENOTDIR;
@@ -960,6 +1009,7 @@ static int do_symlink(struct ofd *dir, const char *body, size_t blen) {
     for (struct node *c = parent->first; c; c = c->next)
         if (strlen(c->name) == last_len && !memcmp(c->name, last, last_len)) return -EEXIST;
     if (parent->read_only) return -EROFS;
+    if (!may(parent, MAY_WRITE | MAY_EXEC)) return -EACCES;
     char name[256];
     memcpy(name, last, last_len);
     name[last_len] = 0;
@@ -1019,6 +1069,7 @@ static int do_serve(struct ofd *dir, const char *path, size_t plen, rx_handle_t 
     if (r == -EREMOTE_FS) return -ENOTSUP;
     if (r < 0) return r;
     if (parent->read_only) return -EROFS;
+    if (!may(parent, MAY_WRITE | MAY_EXEC)) return -EACCES;
     if (last_len == 0 || last_len > 255) return -EINVAL;
     for (struct node *c = parent->first; c; c = c->next) {
         if (strlen(c->name) == last_len && !memcmp(c->name, last, last_len)) { n = c; break; }
@@ -1044,7 +1095,7 @@ static struct ofd root_ofd;    // the root, for requests a link sent there
 static int serve(int i) {
     rx_handle_t h = 0;
     uint32_t nb = 0, nh = 0;
-    rx_status_t s = rx_channel_read(conns[i].ch, 0, req, &h, sizeof req, 1, &nb, &nh);
+    rx_status_t s = rx_channel_read_creds(conns[i].ch, req, &h, sizeof req, 1, &nb, &nh, &who);
     if (s == RX_ERR_SHOULD_WAIT) return 0;
     if (s != RX_OK) {
         drop_conn(i);
@@ -1054,6 +1105,7 @@ static int serve(int i) {
         if (nh) rx_handle_close(h);
         return 0;
     }
+    int perm = perm_unwrap(req, &nb, &who);
     rx_fs_hdr_t hdr;
     memcpy(&hdr, req, sizeof hdr);
     const char *body = req + sizeof hdr;
@@ -1066,6 +1118,10 @@ static int serve(int i) {
     rx_handle_t reply_handle = 0; // sent with the reply (GET_VMO)
     static char rbuf[2][FSD_PATH_MAX * 3 + 64];
     int hops = 0;
+    if (perm < 0) {
+        st = perm;
+        goto reply;
+    }
 
 again:
     switch (hdr.op) {
@@ -1161,13 +1217,25 @@ again:
         if (blen < sizeof sa) { st = -EINVAL; break; }
         memcpy(&sa, body, sizeof sa);
         if (o->node->read_only) { st = -EROFS; break; }
-        if (sa.mask & RX_FS_SETATTR_MODE) o->node->mode = sa.mode & 07777;
-        if (sa.mask & RX_FS_SETATTR_MTIME) o->node->mtime = sa.mtime_ns;
+        struct node *n = o->node;
+        uint32_t mode = sa.mode & 07777;
+        int times = (sa.mask & (RX_FS_SETATTR_MTIME | RX_FS_SETATTR_ATIME)) != 0;
+        int64_t t = now(), dt = sa.mtime_ns - t;
+        if ((sa.mask & RX_FS_SETATTR_MODE) && (st = perm_chmod(&who, n->uid, n->gid, &mode)) < 0) break;
+        if ((st = perm_chown(&who, n->uid, sa.uid, sa.gid, sa.mask & RX_FS_SETATTR_UID, sa.mask & RX_FS_SETATTR_GID)) < 0) break;
+        if (times && (st = perm_utimes(&who, n->mode, n->uid, n->gid, dt > -2000000000ll && dt < 2000000000ll)) < 0) break;
+        if (sa.mask & RX_FS_SETATTR_MODE) n->mode = mode;
+        if (sa.mask & RX_FS_SETATTR_UID) n->uid = sa.uid;
+        if (sa.mask & RX_FS_SETATTR_GID) n->gid = sa.gid;
+        // A changed owner loses the setuid/setgid bits (unless root sets them again)
+        if ((sa.mask & (RX_FS_SETATTR_UID | RX_FS_SETATTR_GID)) && !(sa.mask & RX_FS_SETATTR_MODE)) n->mode &= ~06000u;
+        if (sa.mask & RX_FS_SETATTR_MTIME) n->mtime = sa.mtime_ns;
         st = 0;
         break;
     }
     case RX_FS_OP_READDIR:
         if (blen < 4) { st = -EINVAL; break; }
+        if (!o->can_read) { st = -EACCES; break; }
         memcpy(&u32, body, 4);
         st = do_readdir(o, u32, out, &olen);
         break;
@@ -1190,6 +1258,7 @@ again:
         if (st < 0) break;
         if (child(parent, last, last_len)) { st = -EEXIST; break; }
         if (parent->read_only) { st = -EROFS; break; }
+        if (!may(parent, MAY_WRITE | MAY_EXEC)) { st = -EACCES; break; }
         char name[256];
         memcpy(name, last, last_len);
         name[last_len] = 0;
@@ -1217,11 +1286,13 @@ again:
         if (st == 0) h = 0;
         break;
     case RX_FS_OP_MOUNT:
+        if (who.euid != 0) { st = -EPERM; break; }
         if (o->node->type != RX_FS_TYPE_DIR) { st = -ENOTDIR; break; }
         st = do_mount(o, body, blen, nh ? h : 0);
         if (st == 0) h = 0;
         break;
     case RX_FS_OP_UNMOUNT:
+        if (who.euid != 0) { st = -EPERM; break; }
         if (o->node->type != RX_FS_TYPE_DIR) { st = -ENOTDIR; break; }
         st = do_unmount(o, body, blen);
         break;
@@ -1257,6 +1328,7 @@ again:
         st = do_link(o, body + 4, u32, body + 4 + u32, blen - 4 - u32);
         break;
     case RX_FS_OP_SHUTDOWN_ALL: {
+        if (who.euid != 0) { st = -EPERM; break; }
         // Mounted filesystems first, the root filesystem (the first mount) last
         struct node *list[64];
         int k = 0;
@@ -1283,6 +1355,7 @@ again:
             goto again;
         }
     }
+reply:
     if (h) rx_handle_close(h);
     rx_fs_reply_t r = { hdr.txid, st };
     memcpy(rep, &r, sizeof r);
@@ -1345,6 +1418,9 @@ int main(void) {
     root = new_node(RX_FS_TYPE_DIR, "", 0, 0755);
     new_node(RX_FS_TYPE_DIR, "tmp", root, 01777);
     new_node(RX_FS_TYPE_DIR, "root", root, 0700);
+    new_node(RX_FS_TYPE_DIR, "home", root, 0755);
+    struct node *var = new_node(RX_FS_TYPE_DIR, "var", root, 0755);
+    if (var) new_node(RX_FS_TYPE_DIR, "log", var, 0755);
     new_node(RX_FS_TYPE_DIR, "svc", root, 0755);
     new_node(RX_FS_TYPE_DIR, "mnt", root, 0755);
     struct node *run = new_node(RX_FS_TYPE_DIR, "run", root, 0755);
@@ -1384,7 +1460,7 @@ int main(void) {
                 if (l && set_size(l, 9) == 0) memcpy(l->data, "/run/mtab", 9);
                 continue;
             }
-            struct node *c = new_node(RX_FS_TYPE_FILE, f->name, etc, 0644);
+            struct node *c = new_node(RX_FS_TYPE_FILE, f->name, etc, etc_mode(f->name));
             if (c && set_size(c, f->size) == 0) memcpy(c->data, f->rodata, f->size);
         }
     }

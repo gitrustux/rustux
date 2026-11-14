@@ -194,7 +194,7 @@ if result < 0 {
 |---------|--------|-------------|--------|
 | `PROCESS_CREATE` | 0x01 | Create an empty process in a job | ✅ |
 | `PROCESS_START` | 0x02 | Start a process's first thread | ✅ |
-| ~~`SPAWN`~~ | 0x03 | Removed in step 8 (programs are loaded by the C library) | — |
+| `PROCESS_GET_CREDS` | 0x03 | A process's credentials: user, groups, umask (step 17; was `SPAWN`, removed in step 8) | ✅ |
 | `THREAD_START` | 0x04 | Start another thread in a running process | ✅ |
 | `THREAD_EXIT` | 0x05 | Exit the current thread | ✅ |
 | `PROCESS_EXIT` | 0x06 | Exit the current process | ✅ |
@@ -202,7 +202,7 @@ if result < 0 {
 | `THREAD_CREATE` | 0x08 | Create a thread object in a process | ✅ |
 | `TASK_KILL` | 0x09 | Kill a job, process or thread | ✅ |
 | `OBJECT_GET_INFO` | 0x0A | Query an object (see topics below) | ✅ |
-| ~~`SPAWN_PROCESS`~~ | 0x0B | Removed in step 8 | — |
+| `PROCESS_SET_CREDS` | 0x0B | Change one's own credentials, or (root) those of a process not started yet (step 17; was `SPAWN_PROCESS`) | ✅ |
 | `OBJECT_GET_CHILD` | 0x0C | A job's child job or process, or a process's thread, by koid | ✅ |
 | `OBJECT_GET_PROPERTY` | 0x0D | Read a property (only `NAME`) | ✅ |
 | `OBJECT_SET_PROPERTY` | 0x0E | Set a property (only a thread's `REGISTER_FS`) | ✅ |
@@ -306,7 +306,38 @@ the process are killed. The return code can be read with
 no new processes can be created in it), a process (return code `-1024`,
 `ZX_TASK_RETCODE_SYSCALL_KILL`) or a thread. Needs `DESTROY`. Killing a
 task that has already ended does nothing. A process killed by a CPU
-exception ends with `-1025`.
+exception ends with `-1025`. Since step 17 only root (effective uid 0)
+may kill another user's process (or a job holding one):
+`ERR_ACCESS_DENIED`.
+
+#### PROCESS_GET_CREDS (0x03), PROCESS_SET_CREDS (0x0B)
+
+`process_get_creds(rx_handle_t h, rx_creds_t *out)`,
+`process_set_creds(const rx_creds_t *in, rx_handle_t h)` (step 17)
+
+Each process acts as a user: `rx_creds_t` holds the real, effective and
+saved user and group ids, up to 16 supplementary groups and the file
+mode creation mask (`umask`). A new process gets a copy of its creator's
+(`process_create`); the first one (init) is root.
+
+- `get`: `h` 0 is the calling process; otherwise a process handle
+  (`INSPECT`), e.g. for `ps`.
+- `set` with `h` 0 changes the caller's own: root may set anything;
+  others may only choose among their own real, effective and saved ids
+  (and must keep their groups), and may always set the umask.
+  `ERR_ACCESS_DENIED` otherwise.
+- `set` with a process handle (`WRITE`) sets those of a process that has
+  not started yet; only root may (`ERR_ACCESS_DENIED`), and only before
+  `process_start` (`ERR_BAD_STATE`). This is how `login`, `su` and
+  `sudo` start a program as another user (`rx_spawn_as()` in the C
+  library) without changing their own.
+
+The C library's `getuid`, `setuid`, `setresuid`, `getgroups`,
+`setgroups`, `initgroups`, `umask` (and the rest) use these.
+
+Handles to another user's process or thread (from `object_get_child` on
+a job) get at most `BASIC | ENUMERATE | GET_PROPERTY` (look and wait;
+not kill, write or manage), unless the caller is root.
 
 #### OBJECT_GET_INFO (0x0A)
 
@@ -692,6 +723,14 @@ Needs `READ`. `capacity` packs the buffer sizes: `num_bytes | (num_handles << 32
 The C wrapper `rx_channel_read()` in `rx.h` has the Zircon signature
 (`num_bytes, num_handles, *actual_bytes, *actual_handles`) and does the
 packing.
+
+With `options` `CHANNEL_READ_CREDS` (1, step 17), `actual` must have
+room for the two counts and an `rx_sender_t` after them: who wrote the
+message (its process koid, real and effective user and group ids, and
+supplementary groups, as they were when it wrote it; pid 0 for messages
+the kernel writes). Servers decide what a request may do by it
+(`rx_channel_read_creds()`): the filesystem servers, devmgr, init's
+`/svc/system`, authd.
 
 - `ERR_SHOULD_WAIT`: nothing queued (wait for `CHANNEL_READABLE`)
 - `ERR_PEER_CLOSED`: nothing queued and the other end is gone

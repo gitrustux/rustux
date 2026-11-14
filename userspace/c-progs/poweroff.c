@@ -4,32 +4,28 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-// poweroff: turn off the computer. Needs the power resource, which init gives the
-// shell and the shell passes on to the programs it starts.
+// poweroff: turn the computer off (root only; others: sudo poweroff). init (/svc/system)
+// ends the sessions, writes every disk out and marks it clean, then does
+// it (step 17; before that the shell held a power resource).
 
-#include <rustux/process.h>
-#include <sys/mount.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
+#include "sysreq.h"
+
 int main(int argc, char **argv) {
     if (argc > 1) {
-        printf("Usage: poweroff\nTo turn the computer off (needs the power resource the shell passes on).\n");
+        printf("Usage: poweroff\nTo turn the computer off (as root: sudo poweroff).\n");
         return strcmp(argv[1], "--help") ? 2 : 0;
     }
-    rx_handle_t power = rx_take_startup_handle(RX_PA_POWER_RESOURCE);
-    if (!power) {
-        fprintf(stderr, "poweroff: not allowed (no power resource)\n");
+    if (geteuid() != 0) {
+        fprintf(stderr, "poweroff: must be root (try: sudo poweroff)\n");
         return 1;
     }
-    // Every mounted filesystem written out and marked clean (step 15)
     printf("poweroff: writing out the disks...\n");
     fflush(stdout);
-    sync();
-    rx_fs_shutdown_all();
-    usleep(200000); // let the console print it
-    rx_status_t r = rx_system_powerctl(power, RX_SYSTEM_POWERCTL_POWEROFF);
-    fprintf(stderr, "poweroff: failed (error %lld)\n", (long long)r);
+    int r = sysreq(RX_SYSTEM_OP_POWEROFF, 0, 0);
+    fprintf(stderr, "poweroff: failed: %s\n", strerror(-r));
     return 1;
 }

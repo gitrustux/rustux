@@ -87,9 +87,9 @@ fn alloc_table_page() -> Option<u64> {
 }
 
 /// A new process with an empty address space, in `job`
-pub fn new_process(job: &Arc<Job>, name: &str) -> Result<Arc<Process>, RxStatus> {
+pub fn new_process(job: &Arc<Job>, name: &str, creds: crate::kobj::task::Creds) -> Result<Arc<Process>, RxStatus> {
     let pml4 = unsafe { kernel_map::new_user_pml4(alloc_table_page) }.map_err(|_| RxStatus::ERR_NO_MEMORY)?;
-    match Process::new(job, pml4, name) {
+    match Process::new(job, pml4, name, creds) {
         Ok(p) => Ok(p),
         Err(e) => {
             unsafe { kernel_map::free_user_tables(pml4, |p| { pmm::pmm_free_page(p); }) };
@@ -269,7 +269,7 @@ pub fn boot_image_find<'a>(image: &'a [u8], name: &str) -> Option<&'a [u8]> {
 /// `extra`. With no arguments, argv is just `path`.
 pub fn spawn_init(path: &str, elf: &[u8], job: &Arc<Job>, extra: Vec<(u32, KObject, Rights)>, mut args: ProcArgs) -> Result<(Arc<Process>, u32), RxStatus> {
     let name = path.rsplit('/').next().unwrap_or(path);
-    let process = new_process(job, name)?;
+    let process = new_process(job, name, crate::kobj::task::Creds::ROOT)?;
     let entry = load_elf(&process, elf).map_err(|e| {
         crate::kobj::debugcon("[SPAWN] ");
         crate::kobj::debugcon(e);
@@ -306,7 +306,7 @@ pub fn spawn_init(path: &str, elf: &[u8], job: &Arc<Job>, extra: Vec<(u32, KObje
     let mut data: Vec<u8> = header.iter().chain(tags.iter()).flat_map(|t| t.to_le_bytes()).collect();
     data.extend_from_slice(&args.args);
     data.extend_from_slice(&args.env);
-    ours.write(crate::kobj::channel::Message { data, handles }).map_err(|(e, _)| e)?;
+    ours.write(crate::kobj::channel::Message { data, handles, sender: crate::kobj::channel::Sender::KERNEL }).map_err(|(e, _)| e)?;
     drop(ours);
     let boot = process.handles.lock()
         .add(KObject::Channel(theirs), Rights(Rights::CHANNEL))

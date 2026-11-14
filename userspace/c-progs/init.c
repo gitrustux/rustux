@@ -6,10 +6,17 @@
 
 //! Init Process (PID 1)
 //!
-//! The first userspace process. It starts the filesystem service (fsd)
-//! from the boot image, then the PS/2 keyboard driver and the shell,
-//! restarts the driver or the shell if either ends, and is the console
-//! service:
+//! The first userspace process (root). It starts the filesystem service
+//! (fsd) from the boot image, the device manager, the PS/2 keyboard
+//! driver, authd (su, sudo, passwd: /svc/auth), and the console's session
+//! (step 17): `login` in a job of its own, which asks for a user name and
+//! password (or, with autologin, does not: /etc/autologin, autologin=USER
+//! on the kernel command line; `login` there asks anyway) and starts that
+//! user's shell. It restarts the driver, authd or the session when one
+//! ends. It serves /svc/system: power-off and reboot (the session and
+//! authd end, the disks are written out and marked clean, then the power),
+//! setting the clock (root only), reloading the keyboard layout. And it is
+//! the console service:
 //!
 //! - Key events (HID usages) arrive from the PS/2 driver and from the
 //!   kernel (USB keyboards) over channels. Init turns them into characters
@@ -29,8 +36,12 @@
 //! restart ("restart-kbd") or a new layout ("reload-keymap") on its
 //! control channel.
 
+#include <errno.h>
+#include <rustux/auth.h>
 #include <rustux/console.h>
 #include <rustux/process.h>
+#include <rustux/service.h>
+#include <sys/mount.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -44,7 +55,17 @@ static rx_handle_t kernel_input; // USB keystrokes from the kernel
 static rx_handle_t con_server;   // console: our end
 static rx_handle_t con_client;   // console: the programs' end (copied to each)
 static rx_handle_t drv_proc, drv_chan; // keyboard driver
-static rx_handle_t sh_proc, sh_ctl;    // shell
+static rx_handle_t sh_proc, sh_ctl;    // the console's session: login, then the user's shell
+static rx_handle_t sh_job;             // its job (ended at power-off)
+static rx_handle_t auth_proc, auth_job; // authd (/svc/auth), and what it starts
+static int auth_restarts;
+static rx_handle_t sys_listen;         // /svc/system: connection requests
+#define MAX_SYS_CLIENTS 16
+static rx_handle_t sys_clients[MAX_SYS_CLIENTS];
+static int nsys_clients;
+static char autologin[64];             // a user logged in without a password, or ""
+static int boot_argc;
+static char **boot_argv;
 static rx_handle_t fsd_proc;           // filesystem service
 static rx_handle_t dm_proc;            // device manager
 static int driver_failures;
@@ -375,27 +396,140 @@ static void start_driver(void) {
     drv_chan = ours;
 }
 
+// Who logs in without a password (step 17): the kernel command line's
+// autologin=USER, or /etc/autologin (the live image: root); "login" on the
+// command line asks even then
+static void choose_autologin(void) {
+    int ask = 0;
+    autologin[0] = 0;
+    char buf[64] = "";
+    FILE *f = fopen("/etc/autologin", "r");
+    if (f) {
+        if (fgets(buf, sizeof buf, f)) buf[strcspn(buf, " \t\r\n")] = 0;
+        fclose(f);
+    }
+    for (int i = 1; i < boot_argc; i++) {
+        if (!strncmp(boot_argv[i], "autologin=", 10)) snprintf(buf, sizeof buf, "%s", boot_argv[i] + 10);
+        else if (!strcmp(boot_argv[i], "login")) ask = 1;
+    }
+    if (!ask) snprintf(autologin, sizeof autologin, "%s", buf);
+}
+
+// The console's session: login (which starts the user's shell), in a job
+// of its own
 static void start_shell(void) {
     rx_handle_t ours, theirs;
     rx_channel_create(0, &ours, &theirs);
-    rx_handle_t power = 0;
-    if (resource) rx_resource_create(resource, RX_RSRC_KIND_POWER, &power);
     rx_spawn_handle_t hs[] = {
         { RX_PA_HND(RX_PA_FD, 0), console_copy() },
         { RX_PA_HND(RX_PA_FD, 1), console_copy() },
         { RX_PA_HND(RX_PA_FD, 2), console_copy() },
         { RX_PA_USER0, theirs },
-        { RX_PA_POWER_RESOURCE, power },
+        { RX_PA_JOB_SYSTEM, 0 },
     };
-    char *argv[] = { "shell", 0 };
-    char *envp[] = { "PATH=/bin", "HOME=/root", "PWD=/root", "SHELL=/bin/shell", "USER=root", 0 };
-    // A fresh shell starts with no leftover interrupt
+    rx_handle_duplicate(rx_job_default, RX_RIGHT_SAME_RIGHTS, &hs[4].handle);
+    char *argv[] = { "login", "-f", autologin, 0 };
+    if (!autologin[0]) argv[1] = 0;
+    char *envp[] = { "PATH=/bin", "TERM=linux", 0 };
+    // A fresh session starts with no leftover interrupt
     rx_object_signal(con_client, RX_CONSOLE_SIGNAL_INTERRUPT, 0);
-    if (rx_spawn("/bin/shell", argv, envp, RX_SPAWN_CLONE_NS, hs, power ? 5 : 4, &sh_proc) != RX_OK) {
-        printf("init: failed to spawn shell!\n");
+    if (sh_job) rx_handle_close(sh_job);
+    if (rx_job_create(rx_job_default, 0, &sh_job) != RX_OK) sh_job = 0;
+    if (rx_spawn_etc(sh_job ? sh_job : rx_job_default, "/bin/login", argv, envp, RX_SPAWN_CLONE_NS, hs, 5, &sh_proc) != RX_OK) {
+        printf("init: failed to start login!\n");
         rx_exit(1);
     }
     sh_ctl = ours;
+}
+
+// authd: su, sudo, passwd (/svc/auth)
+static void start_authd(void) {
+    rx_spawn_handle_t hs[] = {
+        { RX_PA_HND(RX_PA_FD, 1), console_copy() },
+        { RX_PA_HND(RX_PA_FD, 2), console_copy() },
+        { RX_PA_JOB_SYSTEM, 0 },
+    };
+    rx_handle_duplicate(rx_job_default, RX_RIGHT_SAME_RIGHTS, &hs[2].handle);
+    char *argv[] = { "authd", 0 };
+    char *envp[] = { "PATH=/bin", 0 };
+    if (auth_job) rx_handle_close(auth_job);
+    if (rx_job_create(rx_job_default, 0, &auth_job) != RX_OK) auth_job = 0;
+    if (rx_spawn_etc(auth_job ? auth_job : rx_job_default, "/bin/authd", argv, envp, RX_SPAWN_CLONE_NS, hs, 3, &auth_proc) != RX_OK) {
+        printf("init: cannot start authd (su, sudo and passwd will not work)\n");
+        auth_proc = 0;
+    }
+}
+
+// ---- /svc/system (step 17) ----
+
+static void publish_system(void) {
+    rx_handle_t theirs;
+    if (rx_channel_create(0, &sys_listen, &theirs) != RX_OK) return;
+    if (rx_service_publish("/svc/system", theirs) < 0) {
+        printf("init: cannot publish /svc/system\n");
+        rx_handle_close(sys_listen);
+        sys_listen = 0;
+    }
+}
+
+static void sys_accept(void) {
+    rx_svc_connect_t m;
+    rx_handle_t h = 0;
+    uint32_t nb = 0, nh = 0;
+    while (rx_channel_read(sys_listen, 0, &m, &h, sizeof m, 1, &nb, &nh) == RX_OK) {
+        if (!nh) continue;
+        if (nsys_clients == MAX_SYS_CLIENTS) rx_handle_close(h);
+        else sys_clients[nsys_clients++] = h;
+    }
+}
+
+// Power off or restart: the session and authd end, every disk is written
+// out and marked clean, then the power
+static void shut_down(uint32_t how) {
+    printf("init: %s: ending the session, writing out the disks\n", how == RX_SYSTEM_POWERCTL_REBOOT ? "reboot" : "power-off");
+    if (sh_job) rx_task_kill(sh_job);
+    if (auth_job) rx_task_kill(auth_job);
+    else if (auth_proc) rx_task_kill(auth_proc);
+    if (sh_proc) rx_object_wait_one(sh_proc, RX_PROCESS_TERMINATED, rx_clock_get_monotonic() + 2000000000ull, 0);
+    sync();
+    rx_fs_shutdown_all();
+    usleep(200000); // let the console print it
+    rx_handle_t power = 0;
+    if (resource) rx_resource_create(resource, RX_RSRC_KIND_POWER, &power);
+    rx_system_powerctl(power, how);
+    printf("init: the power control failed\n");
+}
+
+static void sys_request(int k) {
+    rx_handle_t ch = sys_clients[k];
+    char msg[64];
+    uint32_t nb = 0;
+    rx_sender_t who;
+    rx_status_t s = rx_channel_read_creds(ch, msg, 0, sizeof msg, 0, &nb, 0, &who);
+    if (s == RX_ERR_SHOULD_WAIT) return;
+    if (s != RX_OK) {
+        rx_handle_close(ch);
+        sys_clients[k] = sys_clients[--nsys_clients];
+        return;
+    }
+    uint32_t op = 0;
+    if (nb >= 4) memcpy(&op, msg, 4);
+    int32_t st = 0;
+    if (op == RX_SYSTEM_OP_RELOAD_KEYMAP) {
+        km_load();
+    } else if (who.euid != 0) {
+        st = -EPERM;
+    } else if (op == RX_SYSTEM_OP_POWEROFF || op == RX_SYSTEM_OP_REBOOT) {
+        shut_down(op == RX_SYSTEM_OP_REBOOT ? RX_SYSTEM_POWERCTL_REBOOT : RX_SYSTEM_POWERCTL_POWEROFF);
+        st = -EIO;
+    } else if (op == RX_SYSTEM_OP_SET_TIME && nb >= 12) {
+        int64_t ns;
+        memcpy(&ns, msg + 4, 8);
+        st = rx_clock_set_utc(resource, ns) == RX_OK ? 0 : -EIO;
+    } else {
+        st = -ENOSYS;
+    }
+    rx_channel_write(ch, 0, &st, sizeof st, 0, 0);
 }
 
 // The real-time clock holds local time when /etc/adjtime says LOCAL (as
@@ -475,11 +609,16 @@ int main(int argc, char **argv) {
     mount_root(argc, argv);
     start_mounts();
     start_driver();
-    printf("Spawning shell...\n\n");
+    publish_system();
+    start_authd();
+    boot_argc = argc;
+    boot_argv = argv;
+    choose_autologin();
+    printf("Starting %s...\n\n", autologin[0] ? "the session" : "login");
     start_shell();
 
     for (;;) {
-        rx_wait_item_t items[10];
+        rx_wait_item_t items[12 + MAX_SYS_CLIENTS];
         int n = 0, i_drv = -1, i_kin = -1, i_dproc = -1, i_fsd = -1;
         int i_rep = -1, i_dm = -1;
         if (repeating) { i_rep = n; items[n++] = (rx_wait_item_t){ repeat_timer, RX_TIMER_SIGNALED, 0 }; }
@@ -491,6 +630,11 @@ int main(int argc, char **argv) {
         int i_sproc = n; items[n++] = (rx_wait_item_t){ sh_proc, RX_PROCESS_TERMINATED, 0 };
         if (fsd_proc) { i_fsd = n; items[n++] = (rx_wait_item_t){ fsd_proc, RX_PROCESS_TERMINATED, 0 }; }
         if (dm_proc) { i_dm = n; items[n++] = (rx_wait_item_t){ dm_proc, RX_PROCESS_TERMINATED, 0 }; }
+        int i_auth = -1, i_sys = -1, i_cl = n;
+        if (auth_proc) { i_auth = n; items[n++] = (rx_wait_item_t){ auth_proc, RX_PROCESS_TERMINATED, 0 }; }
+        if (sys_listen) { i_sys = n; items[n++] = (rx_wait_item_t){ sys_listen, RX_CHANNEL_READABLE, 0 }; }
+        i_cl = n;
+        for (int k = 0; k < nsys_clients; k++) items[n++] = (rx_wait_item_t){ sys_clients[k], RX_CHANNEL_READABLE | RX_PEER_CLOSED, 0 };
 
         if (rx_object_wait_many(items, n, RX_TIME_INFINITE) != RX_OK) continue;
 
@@ -517,11 +661,23 @@ int main(int argc, char **argv) {
                 printf("init: the device manager ended (code %lld); not starting it again\n", code);
             }
         }
+        for (int k = nsys_clients - 1; k >= 0; k--)
+            if (i_cl + k < n && (items[i_cl + k].pending & (RX_CHANNEL_READABLE | RX_PEER_CLOSED))) sys_request(k);
+        if (i_sys >= 0 && (items[i_sys].pending & RX_CHANNEL_READABLE)) sys_accept();
+        if (i_auth >= 0 && (items[i_auth].pending & RX_PROCESS_TERMINATED)) {
+            long long code = (long long)rx_wait_process(auth_proc);
+            auth_proc = 0;
+            if (++auth_restarts <= 3) {
+                printf("init: authd ended (code %lld); starting it again\n", code);
+                start_authd();
+            }
+        }
         if (items[i_sproc].pending & RX_PROCESS_TERMINATED) {
             console_output(); // its last words
             rx_handle_close(sh_proc);
             rx_handle_close(sh_ctl);
-            printf("\nShell exited; starting a new one\n\n");
+            if (sh_job) rx_task_kill(sh_job);   // what the session left running
+            printf("\nSession ended; starting %s again\n\n", autologin[0] ? "it" : "login");
             start_shell();
         }
     }

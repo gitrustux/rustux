@@ -1,0 +1,27 @@
+useradd, userdel, usermod, groupadd, groupdel, chpasswd - accounts
+
+USAGE
+    useradd [-m] [-d HOME] [-s SHELL] [-u UID] [-g GROUP] [-G G1,G2] [-c COMMENT] NAME
+    userdel [-r] NAME
+    usermod [-a] [-G G1,G2] [-g GROUP] [-s SHELL] [-d HOME] [-c COMMENT] [-L | -U] NAME
+    groupadd [-g GID] NAME
+    groupdel NAME
+    chpasswd           (USER:PASSWORD lines on standard input)
+
+    They change /etc/passwd, /etc/group and /etc/shadow, so they are
+    root's (use sudo). useradd gives a new user the first free uid from
+    1000 and a group of its own (unless -g), with the password locked
+    until passwd or chpasswd sets one; -m makes its home (/home/NAME,
+    mode 0750, with the files of /etc/skel), -G adds it to more groups
+    (sudo: it may use sudo). userdel -r removes the home too. usermod -G
+    sets the extra groups (-a adds to them), -L locks the password, -U
+    unlocks it.
+
+EXAMPLES
+    sudo useradd -m -G sudo alice
+    echo alice:secret | sudo chpasswd
+    sudo usermod -aG disk alice      may open disks (blkid, mkfs)
+    sudo userdel -r alice
+
+SEE ALSO
+    passwd, users

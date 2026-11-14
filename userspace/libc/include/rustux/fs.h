@@ -126,6 +126,12 @@ typedef struct {
 // that is redirected sends the connection's server end back with the
 // reply.
 #define RX_FS_REDIRECT 1
+// Who asked (step 17). A server checks a request against its sender (the
+// kernel says who wrote each message: rx_channel_read_creds). fsd, which
+// forwards path requests to mounted filesystems, sets this bit in the op
+// and puts the original sender's rx_sender_t right after the header;
+// servers take it from root senders only (others: EPERM).
+#define RX_FS_OP_AS 0x80000000u
 #define RX_FS_MAX_LINKS 40
 typedef struct {
     uint64_t block_size;

@@ -749,12 +749,14 @@ static void drop_block(int k) {
 // ---- /svc/devmgr clients ----
 
 static rx_handle_t clients[MAX_CLIENTS];
+#define DISK_GID 6   // group "disk" (/etc/group)
 static int nclients;
 
 static void client_request(int c) {
     rx_handle_t ch = clients[c], h = 0;
     uint32_t nb = 0, nh = 0;
-    rx_status_t s = rx_channel_read(ch, 0, req, &h, sizeof req, 1, &nb, &nh);
+    rx_sender_t who;
+    rx_status_t s = rx_channel_read_creds(ch, req, &h, sizeof req, 1, &nb, &nh, &who);
     if (s == RX_ERR_SHOULD_WAIT) return;
     if (s != RX_OK || nb < sizeof(rx_dev_hdr_t)) {
         if (nh) rx_handle_close(h);
@@ -794,6 +796,12 @@ static void client_request(int c) {
         break;
     }
     case RX_DM_OP_CONNECT_BLOCK: {
+        // Whole disks and partitions: root's, and group disk's (step 17)
+        if (who.euid != 0 && !rx_sender_in_group(&who, DISK_GID)) {
+            if (h) rx_handle_close(h);
+            reply(ch, hdr.txid, -EACCES, 0, 0, 0);
+            break;
+        }
         char name[32] = { 0 };
         memcpy(name, body, blen < 31 ? blen : 31);
         int found = -1;
@@ -810,6 +818,11 @@ static void client_request(int c) {
     }
     case RX_DM_OP_PUBLISH_BLOCK: {
         rx_block_info_t in, res;
+        if (who.euid != 0) {
+            if (h) rx_handle_close(h);
+            reply(ch, hdr.txid, -EPERM, 0, 0, 0);
+            break;
+        }
         if (blen < sizeof in || !h) {
             if (h) rx_handle_close(h);
             reply(ch, hdr.txid, -EINVAL, 0, 0, 0);

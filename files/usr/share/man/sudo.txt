@@ -1,0 +1,30 @@
+sudo - run a command as root (or another user)
+
+USAGE
+    sudo [-u USER] [-S] COMMAND [ARG...]
+    sudo [-u USER] -s | -i      a shell
+    sudo -l                     may I use sudo?
+
+    Runs COMMAND as root (or USER) if /etc/sudoers allows it, after your
+    own password (remembered for 5 minutes). -S reads the password from
+    standard input. -s runs USER's shell, -i its login shell (with
+    COMMAND, the shell runs it). The environment is reset: PATH=/bin,
+    USER's HOME, USER, LOGNAME and SHELL, your TERM, and SUDO_USER,
+    SUDO_UID, SUDO_GID. Ctrl+C ends the command.
+
+    /etc/sudoers (root only):
+        WHO HOST=(RUNAS) [NOPASSWD:] COMMANDS
+    WHO is a user or %group; HOST is not checked (ALL); RUNAS is ALL or
+    user names (root if left out); COMMANDS is ALL or full paths,
+    separated by commas. The image allows root and the group sudo:
+        %sudo   ALL=(ALL:ALL) ALL
+    Add a user to it: usermod -aG sudo NAME. Every use, and every
+    refusal, is logged in /var/log/auth.log.
+
+EXAMPLES
+    sudo poweroff
+    sudo -u bob ls /home/bob
+    echo secret | sudo -S id
+
+SEE ALSO
+    su, users

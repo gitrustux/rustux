@@ -1,0 +1,30 @@
+users - users, groups and permissions on Rustica (step 17)
+
+    Every process acts as a user, files have owners and permission bits,
+    and the filesystems enforce them. root (uid 0) may do anything.
+
+    The accounts are in /etc/passwd, /etc/group and /etc/shadow (only
+    root may read it; SHA-512 password hashes). People sign in at the
+    login prompt; the live system logs root in by itself (/etc/autologin).
+
+COMMANDS
+    id, whoami, groups      who you are
+    login                   sign in (init runs it on the console)
+    su [-] [USER]           another user's shell (its password)
+    sudo CMD                CMD as root (your password; /etc/sudoers)
+    passwd [USER]           change a password
+    useradd, userdel, usermod, groupadd, groupdel, chpasswd
+    chmod, chown, chgrp     modes and owners (ls -l shows them)
+
+EXAMPLES
+    useradd -m -G sudo alice     a user who may use sudo
+    passwd alice                 her password
+    su - alice                   become her
+    sudo poweroff                as her: root's command
+
+FILES
+    /etc/passwd /etc/group /etc/shadow /etc/sudoers /etc/autologin
+    /var/log/auth.log (su and sudo)
+
+SEE ALSO
+    sudo, su, passwd, useradd, login; docs/USERS.md

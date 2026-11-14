@@ -25,6 +25,49 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+/// Who a process acts as (step 17): real, effective and saved user and
+/// group ids, supplementary groups, and the file mode creation mask.
+/// A new process gets a copy of its creator's. Filesystem and other
+/// servers learn a request's sender from the message (`channel_read` with
+/// `CHANNEL_READ_CREDS`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Creds {
+    pub ruid: u32,
+    pub euid: u32,
+    pub suid: u32,
+    pub rgid: u32,
+    pub egid: u32,
+    pub sgid: u32,
+    pub umask: u32,
+    pub ngroups: u32,
+    pub groups: [u32; MAX_GROUPS],
+}
+
+pub const MAX_GROUPS: usize = 16;
+
+impl Creds {
+    /// root: the first process, and what the kernel itself is
+    pub const ROOT: Creds = Creds { ruid: 0, euid: 0, suid: 0, rgid: 0, egid: 0, sgid: 0, umask: 0o022, ngroups: 0, groups: [0; MAX_GROUPS] };
+
+    pub fn is_root(&self) -> bool {
+        self.euid == 0
+    }
+
+    /// May a process with these credentials change to `new`? root may
+    /// change anything; others may only pick among their own real,
+    /// effective and saved ids, keep their groups, and set the umask.
+    pub fn may_become(&self, new: &Creds) -> bool {
+        if self.is_root() {
+            return true;
+        }
+        let u = |x: u32| x == self.ruid || x == self.euid || x == self.suid;
+        let g = |x: u32| x == self.rgid || x == self.egid || x == self.sgid;
+        u(new.ruid) && u(new.euid) && u(new.suid) && g(new.rgid) && g(new.egid) && g(new.sgid)
+            && new.ngroups == self.ngroups && new.groups[..self.ngroups as usize] == self.groups[..self.ngroups as usize]
+    }
+}
+
 /// Return code of a task killed with `task_kill` (Zircon value)
 pub const RETCODE_KILLED: i64 = -1024;
 /// Return code of a process killed by a CPU exception (Zircon value)
@@ -98,6 +141,15 @@ impl Job {
         (c.jobs.iter().filter_map(|w| w.upgrade()).collect(), c.processes.iter().filter_map(|w| w.upgrade()).collect())
     }
 
+    /// Every live process in the tree (nothing marked)
+    pub fn processes_in_tree(&self) -> Vec<Arc<Process>> {
+        let (jobs, mut procs) = self.children();
+        for j in jobs {
+            procs.extend(j.processes_in_tree());
+        }
+        procs
+    }
+
     /// Mark this job and its child jobs killed (no new children) and return
     /// every live process in the tree
     pub fn kill_tree(&self) -> Vec<Arc<Process>> {
@@ -150,6 +202,8 @@ pub struct Process {
     pub io_map: SpinMutex<Option<alloc::boxed::Box<[u8; crate::arch::amd64::descriptor::IO_MAP_BYTES]>>>,
     /// CPU time used by all its threads, ns
     pub runtime_ns: AtomicU64,
+    /// Who it acts as (step 17)
+    pub creds: SpinMutex<Creds>,
     inner: SpinMutex<ProcInner>,
 }
 
@@ -173,7 +227,7 @@ pub const INFO_PROCESS_STARTED: u32 = 1 << 0;
 pub const INFO_PROCESS_EXITED: u32 = 1 << 1;
 
 impl Process {
-    pub fn new(job: &Arc<Job>, pml4: u64, name: &str) -> Result<Arc<Self>, RxStatus> {
+    pub fn new(job: &Arc<Job>, pml4: u64, name: &str, creds: Creds) -> Result<Arc<Self>, RxStatus> {
         let p = Arc::new(Self {
             signals: SignalState::new(0),
             koid: new_koid(),
@@ -184,6 +238,7 @@ impl Process {
             name: alloc::string::String::from(name),
             io_map: SpinMutex::new(None),
             runtime_ns: AtomicU64::new(0),
+            creds: SpinMutex::new(creds),
             inner: SpinMutex::new(ProcInner { state: ProcState::Initial, threads: Vec::new(), return_code: 0, start_time: 0 }),
         });
         job.add_process(&p)?;

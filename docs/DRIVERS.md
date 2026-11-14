@@ -33,7 +33,8 @@ below). devmgr leaves display and USB controllers alone.
 ## Start-up
 
 1. `init` starts `fsd`, then `devmgr` with a copy of the root resource
-   (nobody else gets it; the shell gets only the power resource).
+   (nobody else gets it; since step 17 the shell gets no resource at all:
+   power-off and reboot are requests to init's `/svc/system`).
 2. `devmgr` reads the ACPI MCFG table (`acpi_table_read`) and maps the PCI
    configuration space (ECAM) as an uncached physical VMO, one 1 MiB bus
    window at a time. Without MCFG it uses ports 0xCF8/0xCFC
@@ -48,6 +49,12 @@ below). devmgr leaves display and USB controllers alone.
    the address of a buffer it just pinned); a warning is printed if not.
 6. It publishes `/svc/devmgr` and starts the drivers named in
    `/etc/drivers`. It prints nothing unless something goes wrong.
+
+Who may use a disk (step 17): devmgr connects a client to a block device
+(`CONNECT_BLOCK`) only if the request's sender is root or in group `disk`
+(gid 6): others get "Permission denied" (so `blkid`, `mkfs`, `fsck` and
+`blk` are root's, and `mount` is root's anyway). Publishing a block device
+(drivers, `ramdisk`) is root's. Listing devices is anyone's.
 
 `init` restarts `devmgr` if it ends (three times at most).
 

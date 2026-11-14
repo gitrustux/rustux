@@ -60,6 +60,12 @@ static void release(struct fd *f) {
     memset(f, 0, sizeof *f);
 }
 
+rx_handle_t rx_fd_export(int fd, int *kind) {
+    struct fd *f = __fd_get(fd);
+    if (kind) *kind = f ? f->kind : RX_FD_NONE;
+    return f && f->kind != RX_FD_LOG ? __fd_export(fd) : 0;
+}
+
 int rx_fd_bind(int fd, int kind, rx_handle_t h) {
     if (fd < 0 || fd >= MAX_FDS || kind == RX_FD_NONE) {
         errno = EINVAL;

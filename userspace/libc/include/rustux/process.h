@@ -38,6 +38,9 @@ void rx_ns_set_root(rx_handle_t root);
 int rx_fd_bind(int fd, int kind, rx_handle_t h);
 // The handle behind `fd` (0 if none); the fd keeps owning it
 rx_handle_t rx_fd_handle(int fd);
+// A new handle for what `fd` refers to (a copy, or for a file a connection
+// sharing its offset), to pass to another process; *kind gets its RX_FD_*
+rx_handle_t rx_fd_export(int fd, int *kind);
 // Errno value for a negative rx_status_t
 int rx_status_to_errno(rx_status_t s);
 
@@ -66,6 +69,12 @@ rx_status_t rx_spawn_etc(rx_handle_t job, const char *path, char *const argv[], 
 rx_status_t rx_spawn_image(rx_handle_t job, const char *name, const void *elf, size_t len,
                            char *const argv[], char *const envp[], uint32_t flags,
                            const rx_spawn_handle_t *handles, uint32_t nhandles, rx_handle_t *proc_out);
+
+// As rx_spawn_etc, the child acting as `creds` (root only: login, su,
+// sudo). The program must be one those credentials may run.
+rx_status_t rx_spawn_as(rx_handle_t job, const rx_creds_t *creds, const char *path, char *const argv[],
+                        char *const envp[], uint32_t flags, const rx_spawn_handle_t *handles, uint32_t nhandles,
+                        rx_handle_t *proc_out);
 
 // Wait for a process to end and return its exit code (closes `proc`)
 int64_t rx_wait_process(rx_handle_t proc);

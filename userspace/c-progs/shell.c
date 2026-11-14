@@ -41,6 +41,7 @@
 #include <rustux/console.h>
 #include <rustux/process.h>
 #include <stdarg.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,7 +60,6 @@
 
 static rx_handle_t init_ctl; // control channel to init (restart-kbd)
 static rx_handle_t console;  // our console handle (for Ctrl+C and draining)
-static rx_handle_t power;    // power resource, passed on to programs (reboot, poweroff)
 static int last_status;
 static int interactive;
 static const char *script_name = "shell";
@@ -1804,12 +1804,13 @@ static char **child_env(char **assigns, int nassign) {
 
 // Start a program with our fds 0-2. A text file without #! runs as a
 // shell script (the C library handles #!).
+static rx_handle_t sys_job;   // the system job (step 17: from login), for ps and kill
+
 static rx_status_t start_program(rx_handle_t job, const char *path, char **argv, char **env, rx_handle_t *proc) {
     rx_spawn_handle_t extra[2];
     uint32_t nextra = 0;
-    if (power && rx_handle_duplicate(power, RX_RIGHT_SAME_RIGHTS, &extra[nextra].handle) == RX_OK)
-        extra[nextra++].info = RX_PA_POWER_RESOURCE;
-    if (rx_handle_duplicate(rx_job_default, RX_RIGHT_SAME_RIGHTS, &extra[nextra].handle) == RX_OK)
+    // The system job login gave us (ps, kill), else our own
+    if (rx_handle_duplicate(sys_job ? sys_job : rx_job_default, RX_RIGHT_SAME_RIGHTS, &extra[nextra].handle) == RX_OK)
         extra[nextra++].info = RX_PA_JOB_SYSTEM;
     char head[4] = { 0 };
     int fd = open(path, O_RDONLY);
@@ -2528,7 +2529,9 @@ static void cmd_help(void) {
            "         fold fmt join comm od printf seq tac expand base64 md5sum sha256sum\n"
            "  more:  tar gzip gunzip zcat xargs basename dirname env printenv date sleep yes\n"
            "         id whoami uname nproc expr man\n"
-           "  system: ps top kill uptime free dmesg hostname reboot poweroff\n"
+           "  system: ps top kill uptime free dmesg hostname reboot poweroff timedatectl localectl\n"
+           "  users: id whoami groups su sudo passwd useradd userdel usermod groupadd groupdel\n"
+           "         chpasswd chmod chown chgrp (man users)\n"
            "  tests: runtests systest fstest libctest threadtest objtest ipctest spawntest\n"
            "         drvtest smptest hello-std termtest\n"
            "\n" ANSI_CYAN "Shell (man shell):" ANSI_RESET "\n"
@@ -3208,7 +3211,10 @@ static int interactive_loop(void) {
             strcpy(prompt, "> ");
         } else {
             if (!getcwd(cwd, sizeof cwd)) strcpy(cwd, "?");
-            snprintf(prompt, sizeof prompt, ANSI_MAGENTA "rustux" ANSI_RESET ":" ANSI_CYAN "%s" ANSI_RESET " > ", cwd);
+            // root: "rustux:/dir > "; others "name@rustux:/dir $ " (step 17)
+            struct passwd *me = geteuid() ? getpwuid(geteuid()) : 0;
+            if (me) snprintf(prompt, sizeof prompt, ANSI_GREEN "%s" ANSI_RESET "@" ANSI_MAGENTA "rustux" ANSI_RESET ":" ANSI_CYAN "%s" ANSI_RESET " $ ", me->pw_name, cwd);
+            else snprintf(prompt, sizeof prompt, ANSI_MAGENTA "rustux" ANSI_RESET ":" ANSI_CYAN "%s" ANSI_RESET " > ", cwd);
         }
         int n;
         if (le_raw()) {
@@ -3266,7 +3272,7 @@ static void usage(void) {
 
 int main(int argc, char **argv) {
     init_ctl = rx_take_startup_handle(RX_PA_USER0);
-    power = rx_take_startup_handle(RX_PA_POWER_RESOURCE);
+    sys_job = rx_take_startup_handle(RX_PA_JOB_SYSTEM);
     if (rx_fd_handle(0) && isatty(0)) rx_handle_duplicate(rx_fd_handle(0), RX_RIGHT_SAME_RIGHTS, &console);
     import_environment();
     if (!get_var("PATH")) {

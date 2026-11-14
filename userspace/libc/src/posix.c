@@ -517,15 +517,76 @@ int pause(void) {
 
 unsigned int alarm(unsigned int seconds) { (void)seconds; return 0; }
 
-// ---- users and sessions (one user, root, until step 17) ----
+// ---- users and groups (step 17): the kernel keeps them per process ----
 
-uid_t getuid(void) { return 0; }
-uid_t geteuid(void) { return 0; }
-gid_t getgid(void) { return 0; }
-gid_t getegid(void) { return 0; }
-int setuid(uid_t u) { return u == 0 ? 0 : fail(EPERM); }
-int setgid(gid_t g) { return g == 0 ? 0 : fail(EPERM); }
-int setgroups(size_t n, const gid_t *list) { (void)n; (void)list; return 0; }
+static rx_creds_t creds_now(void) {
+    rx_creds_t c;
+    if (rx_process_get_creds(0, &c) != RX_OK) memset(&c, 0, sizeof c);
+    return c;
+}
+static int creds_set(const rx_creds_t *c) { return rx_process_set_creds(c) == RX_OK ? 0 : fail(EPERM); }
+
+uid_t getuid(void) { return creds_now().ruid; }
+uid_t geteuid(void) { return creds_now().euid; }
+gid_t getgid(void) { return creds_now().rgid; }
+gid_t getegid(void) { return creds_now().egid; }
+
+int getresuid(uid_t *r, uid_t *e, uid_t *s) {
+    rx_creds_t c = creds_now();
+    *r = c.ruid; *e = c.euid; *s = c.suid;
+    return 0;
+}
+int getresgid(gid_t *r, gid_t *e, gid_t *s) {
+    rx_creds_t c = creds_now();
+    *r = c.rgid; *e = c.egid; *s = c.sgid;
+    return 0;
+}
+// (uid_t)-1 leaves one unchanged
+int setresuid(uid_t r, uid_t e, uid_t s) {
+    rx_creds_t c = creds_now();
+    if (r != (uid_t)-1) c.ruid = r;
+    if (e != (uid_t)-1) c.euid = e;
+    if (s != (uid_t)-1) c.suid = s;
+    return creds_set(&c);
+}
+int setresgid(gid_t r, gid_t e, gid_t s) {
+    rx_creds_t c = creds_now();
+    if (r != (gid_t)-1) c.rgid = r;
+    if (e != (gid_t)-1) c.egid = e;
+    if (s != (gid_t)-1) c.sgid = s;
+    return creds_set(&c);
+}
+// POSIX: root sets all three; others only the effective id (to the real or saved one)
+int setuid(uid_t u) {
+    rx_creds_t c = creds_now();
+    if (c.euid == 0) c.ruid = c.euid = c.suid = u;
+    else c.euid = u;
+    return creds_set(&c);
+}
+int setgid(gid_t g) {
+    rx_creds_t c = creds_now();
+    if (c.euid == 0) c.rgid = c.egid = c.sgid = g;
+    else c.egid = g;
+    return creds_set(&c);
+}
+int seteuid(uid_t u) { return setresuid((uid_t)-1, u, (uid_t)-1); }
+int setegid(gid_t g) { return setresgid((gid_t)-1, g, (gid_t)-1); }
+int setreuid(uid_t r, uid_t e) { return setresuid(r, e, (uid_t)-1); }
+int setregid(gid_t r, gid_t e) { return setresgid(r, e, (gid_t)-1); }
+int setgroups(size_t n, const gid_t *list) {
+    if (n > RX_MAX_GROUPS) return fail(EINVAL);
+    rx_creds_t c = creds_now();
+    c.ngroups = (uint32_t)n;
+    for (size_t i = 0; i < n; i++) c.groups[i] = list[i];
+    return creds_set(&c);
+}
+int getgroups(int n, gid_t list[]) {
+    rx_creds_t c = creds_now();
+    if (n == 0) return (int)c.ngroups;
+    if ((uint32_t)n < c.ngroups) return fail(EINVAL);
+    for (uint32_t i = 0; i < c.ngroups; i++) list[i] = c.groups[i];
+    return (int)c.ngroups;
+}
 pid_t setsid(void) { return getpid(); }
 int setpgid(pid_t p, pid_t g) { (void)p; (void)g; return 0; }
 pid_t getppid(void) { return 0; }

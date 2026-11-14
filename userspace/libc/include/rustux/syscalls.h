@@ -58,10 +58,15 @@ typedef int64_t rx_status_t;
 #define RX_RIGHT_WRITE       (1u << 3)
 #define RX_RIGHT_EXECUTE     (1u << 4)
 #define RX_RIGHT_MAP         (1u << 5)
+#define RX_RIGHT_ENUMERATE   (1u << 8)
 #define RX_RIGHT_DESTROY     (1u << 9)
 #define RX_RIGHT_SIGNAL      (1u << 12)
 #define RX_RIGHT_SIGNAL_PEER (1u << 13)
 #define RX_RIGHT_WAIT        (1u << 14)
+#define RX_RIGHT_INSPECT     (1u << 15)
+// What a non-root user gets of the system job: to list and wait on processes
+#define RX_RIGHT_GET_PROPERTY (1u << 6)
+#define RX_RIGHTS_LOOK (RX_RIGHT_DUPLICATE | RX_RIGHT_TRANSFER | RX_RIGHT_WAIT | RX_RIGHT_INSPECT | RX_RIGHT_ENUMERATE | RX_RIGHT_GET_PROPERTY)
 #define RX_RIGHT_SAME_RIGHTS (1u << 31)
 
 // Object types
@@ -199,6 +204,53 @@ static inline rx_status_t rx_channel_read(rx_handle_t h, uint32_t options, void 
     if (actual_bytes) *actual_bytes = actual[0];
     if (actual_handles) *actual_handles = actual[1];
     return r;
+}
+// Credentials (step 17). Each process acts as a user: real, effective and
+// saved user and group ids, up to 16 supplementary groups, and the file
+// mode creation mask; a new process gets a copy of its creator's.
+// process_set_creds changes the caller's own: root (euid 0) may set
+// anything, others only pick among their own ids (and set the umask).
+#define RX_MAX_GROUPS 16
+typedef struct {
+    uint32_t ruid, euid, suid;
+    uint32_t rgid, egid, sgid;
+    uint32_t umask;
+    uint32_t ngroups;
+    uint32_t groups[RX_MAX_GROUPS];
+} rx_creds_t;
+// h 0: the calling process; else a process handle
+static inline rx_status_t rx_process_get_creds(rx_handle_t h, rx_creds_t *out) { return RX_SYS(0x03, h, out, 0, 0); }
+static inline rx_status_t rx_process_set_creds(const rx_creds_t *c) { return RX_SYS(0x0B, c, 0, 0, 0); }
+// Those of a process not started yet (root only): to start a program as
+// another user
+static inline rx_status_t rx_process_set_creds_of(rx_handle_t proc, const rx_creds_t *c) { return RX_SYS(0x0B, c, proc, 0, 0); }
+// Who wrote a message: a copy of the writer's credentials when it wrote
+// it (pid: its process koid; 0 for the kernel). Servers use it to decide
+// what a request may do.
+typedef struct {
+    uint64_t pid;
+    uint32_t uid, gid, euid, egid;
+    uint32_t ngroups, _pad;
+    uint32_t groups[RX_MAX_GROUPS];
+} rx_sender_t;
+#define RX_CHANNEL_READ_CREDS 1u
+static inline rx_status_t rx_channel_read_creds(rx_handle_t h, void *bytes, rx_handle_t *handles,
+                                                uint32_t num_bytes, uint32_t num_handles,
+                                                uint32_t *actual_bytes, uint32_t *actual_handles, rx_sender_t *sender) {
+    struct { uint32_t n[2]; rx_sender_t s; } a;
+    a.n[0] = a.n[1] = 0;
+    rx_status_t r = RX_SYS6(0x22, h, RX_CHANNEL_READ_CREDS, bytes, handles,
+                            (uint64_t)num_bytes | ((uint64_t)num_handles << 32), &a);
+    if (actual_bytes) *actual_bytes = a.n[0];
+    if (actual_handles) *actual_handles = a.n[1];
+    if (r == 0 && sender) *sender = a.s;
+    return r;
+}
+// Is the sender in group g (effective or supplementary)?
+static inline int rx_sender_in_group(const rx_sender_t *s, uint32_t g) {
+    if (s->egid == g) return 1;
+    for (uint32_t i = 0; i < s->ngroups && i < RX_MAX_GROUPS; i++) if (s->groups[i] == g) return 1;
+    return 0;
 }
 // Sockets: byte streams (pipes). Write takes as much as fits (64 KiB wait
 // in each direction); both return SHOULD_WAIT when they can't proceed and

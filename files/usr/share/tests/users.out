@@ -1,0 +1,57 @@
+tst1:x:1000:1000::/home/tst1:/bin/shell
+tst2:x:1001:1001::/home/tst2:/bin/shell
+sudo:x:27:tst1
+tst1
+tst2
+tst1:$6$
+drwxr-x--- tst1 tst1
+uid=1000(tst1) gid=1000(tst1) groups=1000(tst1),27(sudo)
+cat: /etc/shadow: Permission denied
+shell: /etc/passwd: Permission denied
+ls: cannot open directory '/root': Permission denied
+-rw------- tst1 tst1
+cat: /tmp/t1: Permission denied
+rm: cannot remove '/tmp/t1': Operation not permitted
+mv: Operation not permitted (os error 1)
+chmod: changing permissions of '/tmp/t1': Permission denied
+chown: changing ownership of '/tmp/t1': Permission denied
+shell: /tmp/t1: Permission denied
+chown: changing ownership of '/tmp/t1': Operation not permitted
+-rw------- tst1 sudo
+removed
+-rw-------
+poweroff: must be root (try: sudo poweroff)
+reboot: must be root (try: sudo reboot)
+hostname: /etc/hostname: Permission denied
+timedatectl: /etc/timezone: Permission denied (try sudo)
+localectl: /etc/keymap: Permission denied (try sudo)
+kill: Operation not permitted
+root
+root
+tst1
+Sorry, try again.
+sudo: incorrect password
+uid=0(root) gid=0(root) groups=0(root)
+uid=0(root) gid=0(root) groups=0(root)
+tst2 is not in the sudoers file (or may not run that). This incident has been logged.
+uid=1001(tst2) gid=1001(tst2) groups=1001(tst2)
+You may not use sudo (as root).
+su: root : USER=tst1 ; PWD=/root ; COMMAND=/bin/shell
+sudo: tst1 : USER=tst2 ; PWD=/root ; COMMAND=/bin/id
+su: root : USER=tst2 ; PWD=/root ; COMMAND=/bin/shell
+sudo: tst2 : NOT ALLOWED ; USER=root ; COMMAND=/bin/shell
+ls: cannot open directory '/tmp/u4/private': Permission denied
+touch: cannot touch '/tmp/u4/x': Permission denied
+-rw-r--r-- tst1 tst1 /tmp/u4/shared/a
+drwxr-xr-x tst1 tst1 /tmp/u4/shared/d
+umount: /tmp/u4: Operation not permitted
+mkfs.ext4: u4: Permission denied
+rm: cannot remove '/tmp/u4/shared/a': Operation not permitted
+rmdir: failed to remove '/tmp/u4/shared/d': Operation not permitted
+cat: /tmp/u4/shared/b: Permission denied
+b
+-rw-r----- tst2 tst2 /tmp/u4/shared/b
+u4: 2 files, 5 directories, 1294/4096 blocks, 16/4096 inodes in use, no errors
+/etc/passwd:0
+/etc/group:0
+/etc/shadow:0

@@ -135,6 +135,14 @@ A file that starts with `#!` is a script: `rx_spawn` (and so
 optional argument, the file's path and the arguments (`#!/bin/sh` runs it
 with the shell).
 
+A program runs as the user its starter runs as, and only if that user
+may execute the file (an x bit for it; root: any x bit) (step 17).
+`rx_spawn_as(job, &creds, ...)` (root only) starts it as another user:
+`login`, and `authd` for `su` and `sudo`, do. `getuid`, `setuid`,
+`setresuid`, `getgroups`, `setgroups`, `initgroups`, `umask` work on the
+kernel's credentials; `crypt` (SHA-512, `$6$`), `getspnam` and the other
+`<shadow.h>` calls, and `getpass` are there (docs/USERS.md).
+
 ## Threads
 
 `<pthread.h>`: `pthread_create`/`join`/`detach`/`exit`/`self`, attributes

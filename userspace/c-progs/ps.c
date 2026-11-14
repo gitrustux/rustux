@@ -12,6 +12,7 @@
 //   TIME   CPU time used           NAME  program name
 
 #include "tasks.h"
+#include <pwd.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -31,14 +32,21 @@ static void show(rx_handle_t p, uint64_t koid, uint64_t job, void *ctx) {
     rx_object_get_info(p, RX_INFO_PROCESS_THREADS, threads, sizeof threads, &nt, &avail);
     if (info.flags & RX_INFO_PROCESS_FLAG_EXITED) return;
     long long ms = rt.cpu_time / 1000000;
+    // Who it runs as (step 17)
+    rx_creds_t cr;
+    char user[16];
+    uint32_t uid = rx_process_get_creds(p, &cr) == RX_OK ? cr.euid : 0;
+    struct passwd *pw = getpwuid(uid);
+    if (pw) snprintf(user, sizeof user, "%.8s", pw->pw_name);
+    else snprintf(user, sizeof user, "%u", uid);
     if (json) {
-        printf("{\"pid\":%llu,\"job\":%llu,\"threads\":%llu,\"memory\":%llu,\"cpu_ns\":%llu,\"name\":\"%s\"}\n",
-               (unsigned long long)koid, (unsigned long long)job, (unsigned long long)avail,
+        printf("{\"pid\":%llu,\"user\":\"%s\",\"uid\":%u,\"job\":%llu,\"threads\":%llu,\"memory\":%llu,\"cpu_ns\":%llu,\"name\":\"%s\"}\n",
+               (unsigned long long)koid, user, uid, (unsigned long long)job, (unsigned long long)avail,
                (unsigned long long)st.mem_private_bytes, (unsigned long long)rt.cpu_time, name);
         count++;
         return;
     }
-    printf("%6llu %6llu %3llu %8llu %4lld:%02lld.%03lld %s\n", (unsigned long long)koid, (unsigned long long)job,
+    printf("%6llu %-8s %6llu %3llu %8llu %4lld:%02lld.%03lld %s\n", (unsigned long long)koid, user, (unsigned long long)job,
            (unsigned long long)avail, (unsigned long long)(st.mem_private_bytes / 1024),
            ms / 60000, ms / 1000 % 60, ms % 1000, name);
     count++;
@@ -52,7 +60,7 @@ int main(int argc, char **argv) {
                "TIME (CPU time), NAME. --json: one object per process.\n");
         return strcmp(argv[1], "--help") ? 2 : 0;
     }
-    if (!json) printf("%6s %6s %3s %8s %12s %s\n", "PID", "JOB", "THR", "MEM(KiB)", "TIME", "NAME");
+    if (!json) printf("%6s %-8s %6s %3s %8s %12s %s\n", "PID", "USER", "JOB", "THR", "MEM(KiB)", "TIME", "NAME");
     rx_walk_job(rx_system_job(), rx_koid_of(rx_system_job()), show, 0);
     return count ? 0 : 1;
 }

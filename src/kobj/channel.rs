@@ -28,7 +28,37 @@ pub const MAX_PENDING: usize = 1024;
 pub struct Message {
     pub data: Vec<u8>,
     pub handles: Vec<(KObject, Rights)>,
+    /// Who wrote it (step 17): a copy of the writer's credentials
+    pub sender: Sender,
 }
+
+/// The sender of a message, as `channel_read` with `CHANNEL_READ_CREDS`
+/// returns it after the two counts
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Sender {
+    /// The writing process's koid (0: the kernel)
+    pub pid: u64,
+    pub uid: u32,
+    pub gid: u32,
+    pub euid: u32,
+    pub egid: u32,
+    pub ngroups: u32,
+    pub _pad: u32,
+    pub groups: [u32; crate::kobj::task::MAX_GROUPS],
+}
+
+impl Sender {
+    /// Messages the kernel itself writes
+    pub const KERNEL: Sender = Sender { pid: 0, uid: 0, gid: 0, euid: 0, egid: 0, ngroups: 0, _pad: 0, groups: [0; crate::kobj::task::MAX_GROUPS] };
+
+    pub fn of(koid: u64, c: &crate::kobj::task::Creds) -> Sender {
+        Sender { pid: koid, uid: c.ruid, gid: c.rgid, euid: c.euid, egid: c.egid, ngroups: c.ngroups, _pad: 0, groups: c.groups }
+    }
+}
+
+/// `channel_read` option: also return the sender
+pub const READ_CREDS: usize = 1;
 
 pub struct Channel {
     pub signals: SignalState,

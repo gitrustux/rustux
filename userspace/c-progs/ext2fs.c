@@ -48,6 +48,7 @@
 #include <unistd.h>
 
 #include "ext4lib.h"
+#include "perm.h"
 
 #define MAX_CONNS 500
 #define IOBUF (256u * 1024u)
@@ -70,6 +71,9 @@ static uint32_t dev_bs;
 static uint64_t dev_blocks;
 static uint8_t *iobuf;
 static uint32_t vmoid;
+
+// Who sent the request being served (step 17)
+static rx_sender_t who;
 
 static int dev_rw(int write, uint64_t block, uint32_t count) {
     rx_block_req_t q = { 0 };
@@ -1779,6 +1783,17 @@ static uint32_t make_inode(uint32_t parent, uint32_t mode) {
     put_time(p, T_MTIME, t);
     if (isz > 128 && has_extra(p, 152)) put_time(p, 144, 148, t);   // creation time
     put16(p + 26, dir ? 2 : 1);
+    // Owned by who made it; in a setgid directory, by its group (and a
+    // directory made there is setgid too)
+    uint8_t *pp = ino_ptr(parent, 0);
+    uint32_t pmode = pp ? le16(pp) : 0, pgid = pp ? (le16(pp + 24) | (uint32_t)le16(pp + 122) << 16) : 0;
+    p = ino_ptr(ino, &c);
+    uint32_t gid = (pmode & 02000) ? pgid : who.egid;
+    if ((pmode & 02000) && dir) put16(p, le16(p) | 02000);
+    put16(p + 2, who.euid);
+    put16(p + 120, who.euid >> 16);
+    put16(p + 24, gid);
+    put16(p + 122, gid >> 16);
     uint32_t gen;
     if (getrandom(&gen, 4, 0) != 4) gen = (uint32_t)t;
     put32(p + 100, gen);
@@ -1845,6 +1860,26 @@ static const char *ofd_path(struct ofd *o, size_t *len);
 // Walk `path` from directory `start` (whose path from our root is
 // `base`). Links on the way are followed (a redirect), and at the end if
 // `follow`. With `parent`: stop before the last component.
+static uint32_t i_uid(const uint8_t *p) { return le16(p + 2) | (uint32_t)le16(p + 120) << 16; }
+static uint32_t i_gid(const uint8_t *p) { return le16(p + 24) | (uint32_t)le16(p + 122) << 16; }
+
+// May the request's sender do `want` (MAY_*) to inode ino?
+static int may_i(uint32_t ino, int want) {
+    uint8_t *p = ino_ptr(ino, 0);
+    if (!p) return 0;
+    return perm_may(&who, le16(p) & 07777, i_uid(p), i_gid(p), (le16(p) & S_IFMT_) == S_IFDIR_, want);
+}
+
+// Removing a name of `ino` from directory `dir`: write and search there,
+// and the sticky bit's rule
+static int may_remove(uint32_t dir, uint32_t ino) {
+    if (!may_i(dir, MAY_WRITE | MAY_EXEC)) return -EACCES;
+    uint8_t *d = ino_ptr(dir, 0);
+    uint32_t dmode = d ? le16(d) : 0, duid = d ? i_uid(d) : 0;
+    uint8_t *f = ino_ptr(ino, 0);
+    return perm_sticky_ok(&who, dmode, duid, f ? i_uid(f) : 0) ? 0 : -EPERM;
+}
+
 static int walk(uint32_t start, const char *base, size_t blen, const char *path, size_t len, int follow,
                 uint32_t *out, uint32_t *parent, const char **last, size_t *last_len, int which) {
     uint32_t cur = start;
@@ -1870,6 +1905,7 @@ static int walk(uint32_t start, const char *base, size_t blen, const char *path,
         if (nl > 255) return -ENAMETOOLONG;
         if ((nl == 1 && path[i] == '.') || (nl == 2 && path[i] == '.' && path[i + 1] == '.')) return -EINVAL;
         if (!is_dir_ino(cur)) return -ENOTDIR;
+        if (!may_i(cur, MAY_EXEC)) return -EACCES;
         if (final && parent) {
             *parent = cur;
             *last = path + i;
@@ -1928,6 +1964,7 @@ struct ofd {
     int flags;
     uint32_t dir_pos;
     int refs;
+    int can_read;        // a directory opened by someone who may list it
     char *path;          // from our root (for links met below a directory)
 };
 
@@ -1949,6 +1986,7 @@ static struct ofd *new_ofd(uint32_t ino, int flags, const char *path, size_t ple
     if (!o) return 0;
     o->ino = ino;
     o->flags = flags;
+    o->can_read = 1;
     o->path = strndup(path, plen);
     ino_ref(ino);
     return o;
@@ -1994,7 +2032,7 @@ static int do_open(struct ofd *dir, const char *path, size_t plen, uint32_t flag
     uint32_t ino = 0, parent;
     const char *last;
     size_t ll;
-    int follow = !(flags & O_NOFOLLOW) && !((flags & O_CREAT) && (flags & O_EXCL));
+    int follow = !(flags & O_NOFOLLOW) && !((flags & O_CREAT) && (flags & O_EXCL)), created = 0;
     int r = WALK(dir, path, plen, follow, &ino, 0, 0, 0, 0);
     if (r == RX_FS_REDIRECT) return r;
     if (r == -ENOENT && (flags & O_CREAT)) {
@@ -2003,6 +2041,8 @@ static int do_open(struct ofd *dir, const char *path, size_t plen, uint32_t flag
         if (r) return r;
         struct dent d;
         if (dir_find(parent, last, ll, &d) == 0) return -EEXIST;
+        if (!may_i(parent, MAY_WRITE | MAY_EXEC)) return -EACCES;
+        created = 1;
         ino = make_inode(parent, S_IFREG_ | (mode & 07777));
         if (!ino) return -ENOSPC;
         r = dir_add(parent, last, ll, ino, 1);
@@ -2023,9 +2063,16 @@ static int do_open(struct ofd *dir, const char *path, size_t plen, uint32_t flag
     if (isdir && writing) return -EISDIR;
     if ((flags & O_DIRECTORY) && !isdir) return -ENOTDIR;
     if ((writing || (flags & O_TRUNC)) && read_only) return -EROFS;
+    int can_read = may_i(ino, MAY_READ);
+    if (isdir) {
+        if (!can_read && !may_i(ino, MAY_EXEC)) return -EACCES;
+    } else if (!created && !may_i(ino, perm_open_want(flags))) {
+        return -EACCES;
+    }
     if ((flags & O_TRUNC) && writing && !isdir && i_size(ino)) truncate_ino(ino, 0);
     struct ofd *o = new_ofd(ino, (int)flags, path, plen);
     if (!o) return -ENOMEM;
+    o->can_read = can_read;
     // Its path from our root: the directory's, then the path
     size_t dl;
     const char *dp = ofd_path(dir, &dl);
@@ -2152,6 +2199,7 @@ static int do_mkdir(struct ofd *dir, const char *path, size_t plen, uint32_t mod
     if (!valid_name(last, ll)) return -EINVAL;
     struct dent d;
     if (dir_find(parent, last, ll, &d) == 0) return -EEXIST;
+    if (!may_i(parent, MAY_WRITE | MAY_EXEC)) return -EACCES;
     if (!dir_link_ok(parent)) return -EMLINK;
     uint32_t ino = make_inode(parent, S_IFDIR_ | (mode & 07777));
     if (!ino) return -ENOSPC;
@@ -2214,6 +2262,7 @@ static int do_unlink(struct ofd *dir, const char *path, size_t plen, uint32_t fl
     } else if (isdir) {
         return -EISDIR;
     }
+    if ((r = may_remove(parent, d.ino)) < 0) return r;
     r = dir_remove(parent, d.off);
     if (r < 0) return r;
     drop_name(parent, d.ino, isdir);
@@ -2249,7 +2298,11 @@ static int do_rename(struct ofd *dir, const char *a, size_t alen, const char *b,
     if (ds.ino == 2) return -EBUSY;
     int isdir = is_dir_ino(ds.ino);
     if (isdir && is_ancestor(ds.ino, pb)) return -EINVAL;
+    if ((r = may_remove(pa, ds.ino)) < 0) return r;
+    if (!may_i(pb, MAY_WRITE | MAY_EXEC)) return -EACCES;
+    if (isdir && pa != pb && !may_i(ds.ino, MAY_WRITE)) return -EACCES;   // its ".." changes
     int exists = dir_find(pb, nb, lb, &dd) == 0;
+    if (exists && dd.ino != ds.ino && (r = may_remove(pb, dd.ino)) < 0) return r;
     uint8_t type = type_of_mode(i_mode(ds.ino));
     if (exists) {
         if (dd.ino == ds.ino) return 0;   // two names of one file: nothing to do
@@ -2292,6 +2345,7 @@ static int do_link(struct ofd *dir, const char *a, size_t alen, const char *b, s
     if (i_links(ino) >= 65000) return -EMLINK;
     struct dent d;
     if (dir_find(pb, nb, lb, &d) == 0) return -EEXIST;
+    if (!may_i(pb, MAY_WRITE | MAY_EXEC)) return -EACCES;
     r = dir_add(pb, nb, lb, ino, type_of_mode(i_mode(ino)));
     if (r < 0) return r;
     set_links(ino, i_links(ino) + 1);
@@ -2313,6 +2367,7 @@ static int do_symlink(struct ofd *dir, const char *body, size_t blen) {
     if (!valid_name(last, ll)) return -EINVAL;
     struct dent d;
     if (dir_find(parent, last, ll, &d) == 0) return -EEXIST;
+    if (!may_i(parent, MAY_WRITE | MAY_EXEC)) return -EACCES;
     uint32_t ino = make_inode(parent, S_IFLNK_ | 0777);
     if (!ino) return -ENOSPC;
     if (tl < 60) {
@@ -2383,7 +2438,7 @@ static int unmount_clean(void) {
 static int serve(int i) {
     rx_handle_t h = 0;
     uint32_t nb = 0, nh = 0;
-    rx_status_t s = rx_channel_read(conns[i].ch, 0, req, &h, sizeof req, 1, &nb, &nh);
+    rx_status_t s = rx_channel_read_creds(conns[i].ch, req, &h, sizeof req, 1, &nb, &nh, &who);
     if (s == RX_ERR_SHOULD_WAIT) return 0;
     if (s != RX_OK) {
         drop_conn(i);
@@ -2394,6 +2449,9 @@ static int serve(int i) {
         if (h) rx_handle_close(h);
         return 0;
     }
+    // A request fsd forwards carries who asked (step 17)
+    int perm = perm_unwrap(req, &nb, &who);
+    if (perm < 0) memset(req + 4, 0xFF, 4);   // no such op: answered with EPERM below
     rx_fs_hdr_t hdr;
     memcpy(&hdr, req, sizeof hdr);
     const char *body = req + sizeof hdr;
@@ -2493,7 +2551,16 @@ static int serve(int i) {
         struct cblk *c;
         uint8_t *p = ino_ptr(o->ino, &c);
         if (!p) { st = -EIO; break; }
-        if (sa.mask & RX_FS_SETATTR_MODE) put16(p, (le16(p) & S_IFMT_) | (sa.mode & 07777));
+        uint32_t mode = sa.mode & 07777, cur = le16(p) & 07777, uid = i_uid(p), gid = i_gid(p);
+        int times = (sa.mask & (RX_FS_SETATTR_MTIME | RX_FS_SETATTR_ATIME)) != 0;
+        int64_t dt = sa.mtime_ns - now_ns();
+        if ((sa.mask & RX_FS_SETATTR_MODE) && (st = perm_chmod(&who, uid, gid, &mode)) < 0) break;
+        if ((st = perm_chown(&who, uid, sa.uid, sa.gid, sa.mask & RX_FS_SETATTR_UID, sa.mask & RX_FS_SETATTR_GID)) < 0) break;
+        if (times && (st = perm_utimes(&who, cur, uid, gid, dt > -2000000000ll && dt < 2000000000ll)) < 0) break;
+        p = ino_ptr(o->ino, &c);
+        if ((sa.mask & (RX_FS_SETATTR_UID | RX_FS_SETATTR_GID)) && !(sa.mask & RX_FS_SETATTR_MODE))
+            put16(p, le16(p) & ~06000u);   // a new owner: no setuid/setgid
+        if (sa.mask & RX_FS_SETATTR_MODE) put16(p, (le16(p) & S_IFMT_) | mode);
         if (sa.mask & RX_FS_SETATTR_MTIME) put_time(p, T_MTIME, sa.mtime_ns);
         if (sa.mask & RX_FS_SETATTR_ATIME) put_time(p, T_ATIME, sa.atime_ns);
         if (sa.mask & RX_FS_SETATTR_UID) { put16(p + 2, sa.uid); put16(p + 120, sa.uid >> 16); }
@@ -2505,6 +2572,7 @@ static int serve(int i) {
     }
     case RX_FS_OP_READDIR:
         if (blen < 4) { st = -EINVAL; break; }
+        if (!o->can_read) { st = -EACCES; break; }
         memcpy(&u32, body, 4);
         st = do_readdir(o, u32, out, &olen);
         break;
@@ -2544,6 +2612,7 @@ static int serve(int i) {
         olen = sizeof(rx_fs_statfs_t);
         break;
     case RX_FS_OP_SHUTDOWN:
+        if (who.euid != 0) { st = -EPERM; break; }
         if (blen >= 4) memcpy(&u32, body, 4);
         else u32 = 0;
         if (nconns > 1 && !(u32 & RX_FS_UNMOUNT_FORCE)) { st = -EBUSY; break; }
@@ -2555,7 +2624,7 @@ static int serve(int i) {
         shutting_down = 1;
         break;
     default:
-        st = -ENOSYS;
+        st = perm < 0 ? perm : -ENOSYS;
         break;
     }
     if (st == RX_FS_REDIRECT) {

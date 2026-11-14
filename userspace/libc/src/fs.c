@@ -36,7 +36,11 @@ void rx_ns_set_root(rx_handle_t root) {
     ns_root = root;
 }
 
+static mode_t cur_umask = 022;
+
 void __fs_init(void) {
+    rx_creds_t cr;
+    if (rx_process_get_creds(0, &cr) == RX_OK) cur_umask = cr.umask & 0777;
     const char *pwd = getenv("PWD");
     if (pwd && pwd[0] == '/' && strlen(pwd) < sizeof cwd) strcpy(cwd, pwd);
 }
@@ -47,7 +51,6 @@ static volatile int fs_lock;
 
 // Applied to the modes of new files and directories (as the kernel does
 // on Unix); permissions are recorded, not enforced, until step 17
-static mode_t cur_umask = 022;
 
 static int fs_call(rx_handle_t ch, uint32_t op, const void *a, size_t alen, const void *b, size_t blen,
                    rx_handle_t h, void *out, size_t cap, size_t *len, rx_handle_t *hout);
@@ -383,7 +386,13 @@ int fsync(int fd) {
     return r < 0 ? fail(r) : 0;
 }
 
+// The kernel keeps the umask with the credentials, so children inherit it
 mode_t umask(mode_t mask) {
+    rx_creds_t c;
+    if (rx_process_get_creds(0, &c) == RX_OK) {
+        c.umask = mask & 0777;
+        rx_process_set_creds(&c);
+    }
     mode_t old = cur_umask;
     cur_umask = mask & 0777;
     return old;

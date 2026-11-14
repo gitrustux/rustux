@@ -154,6 +154,23 @@ static size_t put_strings(char *p, char *const v[], uint32_t *count) {
     return n;
 }
 
+// rx_spawn_as: the credentials of the child being started
+static const rx_creds_t *spawn_as;
+
+// May `c` (or we) run the file? (root: if any x bit is set)
+static int may_run(const struct stat *st, const rx_creds_t *c) {
+    rx_creds_t me;
+    if (!c) {
+        if (rx_process_get_creds(0, &me) != RX_OK) return 1;
+        c = &me;
+    }
+    if (c->euid == 0) return (st->st_mode & 0111) != 0;
+    int in_group = c->egid == st->st_gid;
+    for (uint32_t i = 0; i < c->ngroups && !in_group; i++) in_group = c->groups[i] == st->st_gid;
+    mode_t bit = c->euid == st->st_uid ? 0100 : in_group ? 0010 : 0001;
+    return (st->st_mode & bit) != 0;
+}
+
 static rx_status_t spawn_image(rx_handle_t job, const char *name, const void *elf, size_t len,
                                rx_handle_t src, uint64_t src_off, char *const argv[], char *const envp[],
                                uint32_t flags, const rx_spawn_handle_t *extra, uint32_t nextra,
@@ -191,6 +208,7 @@ static rx_status_t spawn_image(rx_handle_t job, const char *name, const void *el
     const char *base = strrchr(name, '/') ? strrchr(name, '/') + 1 : name;
     r = rx_process_create(job, base, strlen(base), 0, &proc, &vmar);
     if (r != RX_OK) goto fail;
+    if (spawn_as && (r = rx_process_set_creds_of(proc, spawn_as)) != RX_OK) { errno = EPERM; goto fail_errno; }
     uint64_t entry = load_elf(vmar, elf, len, src, src_off);
     if (!entry) { r = RX_ERR_NOT_SUPPORTED; errno = ENOEXEC; goto fail_errno; }
 
@@ -293,6 +311,7 @@ rx_status_t rx_spawn_etc(rx_handle_t job, const char *path, char *const argv[], 
     rx_status_t r = RX_ERR_NOT_FOUND;
     if (fd < 0) goto fail;
     if (fstat(fd, &st) < 0 || S_ISDIR(st.st_mode)) { r = RX_ERR_ACCESS_DENIED; errno = EACCES; goto fail; }
+    if (!may_run(&st, spawn_as)) { r = RX_ERR_ACCESS_DENIED; errno = EACCES; goto fail; }
     if ((uint64_t)st.st_size > MAX_IMAGE) { r = RX_ERR_OUT_OF_RANGE; errno = E2BIG; goto fail; }
     // A script: "#!INTERPRETER [ARG]" starts INTERPRETER [ARG] PATH ARGS...
     {
@@ -379,6 +398,15 @@ fail:
 rx_status_t rx_spawn(const char *path, char *const argv[], char *const envp[], uint32_t flags,
                      const rx_spawn_handle_t *handles, uint32_t nhandles, rx_handle_t *proc_out) {
     return rx_spawn_etc(rx_job_default, path, argv, envp, flags, handles, nhandles, proc_out);
+}
+
+rx_status_t rx_spawn_as(rx_handle_t job, const rx_creds_t *creds, const char *path, char *const argv[],
+                        char *const envp[], uint32_t flags, const rx_spawn_handle_t *handles, uint32_t nhandles,
+                        rx_handle_t *proc_out) {
+    spawn_as = creds;
+    rx_status_t r = rx_spawn_etc(job, path, argv, envp, flags, handles, nhandles, proc_out);
+    spawn_as = 0;
+    return r;
 }
 
 int64_t rx_wait_process(rx_handle_t proc) {

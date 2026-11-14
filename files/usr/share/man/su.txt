@@ -1,0 +1,21 @@
+su - become another user
+
+USAGE
+    su [-] [-l] [USER] [-c COMMAND]
+
+    Starts USER's shell (root's if no USER), or runs COMMAND with it,
+    after USER's password (root needs none). With - or -l the shell gets
+    USER's login environment and starts in its home; without, your
+    environment is kept (HOME, SHELL, USER, LOGNAME are USER's) and the
+    working directory too. Exit the shell to come back.
+
+    su asks authd, the system's authentication service, which checks
+    the password on your terminal. Uses are logged in /var/log/auth.log.
+
+EXAMPLES
+    su                    root's shell (root's password)
+    su - alice            alice's login shell
+    su alice -c 'id'      one command as alice
+
+SEE ALSO
+    sudo, users

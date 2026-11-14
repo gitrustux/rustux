@@ -157,6 +157,32 @@ a model of the files; and cut off at a random write, with each unflushed
 write kept or lost at random, then replayed (by ext2fs and by e2fsck)
 and checked.
 
+## Users tests (step 17)
+
+`users.sh` (in the command tests): makes two users with `useradd` and
+`chpasswd`, and checks as them, with `su -c`, what they may and may not
+do: `/etc/shadow`, `/etc/passwd`, `/root`; a private file in the sticky
+`/tmp` (the other user can neither read, remove, rename, chmod nor chown
+it; its owner may change its group to one of its own); the umask
+inherited by a child; root-only commands (`poweroff`, `reboot`,
+`hostname`, `timedatectl`, `localectl`); killing root's fsd; `ps`
+showing owners; `sudo -S` (a wrong password, a right one, remembered,
+another target user, a user not in the sudoers file, `sudo -l`) and
+`/var/log/auth.log`; then on an ext4 RAM disk owners and modes, a sticky
+and a private directory, `blkid`, `umount` and `mkfs.ext4` refused to a
+user; then removes the users (`userdel -r`).
+
+`scripts/run-users-test.sh` boots QEMU twice with the root filesystem on
+an ext4 disk: first (autologin) `boot1.sh` makes the user alice in group
+sudo, passwords, the host name, time zone and keyboard layout, files of
+alice's, and removes `/etc/autologin`; then with `login` on the kernel
+command line the host types at the login prompt: a wrong password
+(refused), alice's, commands she may not run, and `sudo poweroff` with her
+password at sudo's prompt. The host's `e2fsck -f -n` finds the disk clean
+(and marked clean) after each boot, and `debugfs` the files with their
+owners and modes, the SHA-512 hash in `/etc/shadow` and no
+`/etc/autologin`.
+
 ## Run in QEMU
 
 ```bash

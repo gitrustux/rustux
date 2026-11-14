@@ -1,0 +1,6 @@
+# /etc/sudoers: who may run what as whom with sudo (step 17).
+# WHO HOST=(RUNAS) [NOPASSWD:] COMMANDS   (see man sudo)
+Defaults env_reset
+root    ALL=(ALL:ALL) ALL
+# Members of group sudo (useradd -G sudo NAME, usermod -aG sudo NAME)
+%sudo   ALL=(ALL:ALL) ALL

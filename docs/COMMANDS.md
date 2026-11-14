@@ -10,9 +10,9 @@ otherwise. `help` at the shell gives a short list.
 
 | Program | Source | Commands |
 |---------|--------|----------|
-| `coreutils` | [uutils coreutils](https://github.com/uutils/coreutils) 0.12 (MIT), built for Rustux: `userspace/rust/coreutils` | `basename cat chmod cksum comm cp cut date dd df dirname du echo env expand expr false fmt fold head id join link ln ls md5sum mkdir mktemp mv nl nproc numfmt od paste printenv printf pwd readlink realpath rm rmdir seq sha256sum shuf sleep sort split stat sync tac tail tee test [ touch tr true truncate tsort uname unexpand uniq unlink wc whoami yes base64` |
+| `coreutils` | [uutils coreutils](https://github.com/uutils/coreutils) 0.12 (MIT), built for Rustux: `userspace/rust/coreutils` | `basename cat chgrp chmod chown cksum comm cp cut date dd df dirname du echo env expand expr false fmt fold groups head id join link ln ls md5sum mkdir mktemp mv nl nproc numfmt od paste printenv printf pwd readlink realpath rm rmdir seq sha256sum shuf sleep sort split stat sync tac tail tee test [ touch tr true truncate tsort uname unexpand uniq unlink wc whoami yes base64` |
 | `tools` | Rustux, `userspace/rust/tools` (Rust), with uutils findutils 0.11 and diffutils 0.6 and the kibi editor | `grep egrep fgrep less more man edit nano tar gzip gunzip zcat find xargs diff cmp` |
-| C programs | Rustux, `userspace/c-progs/` | `shell` (also `sh`), `ps kill top free uptime dmesg hostname reboot poweroff`, `lspci lsblk ramdisk` (step 12), `gpt blkid fdisk blk` (step 13), `mount umount mkfs.fat fsck.fat` and the FAT server `fatfs` (step 14), `mkfs.ext2 fsck.ext2` and the ext2 server `ext2fs` (step 15), `mkfs.ext4 tune2fs` (`fsck.ext2` also as `fsck.ext3 fsck.ext4`; `ext2fs` serves ext3 and ext4, step 16), tests |
+| C programs | Rustux, `userspace/c-progs/` | `shell` (also `sh`), `ps kill top free uptime dmesg hostname reboot poweroff`, `lspci lsblk ramdisk` (step 12), `gpt blkid fdisk blk` (step 13), `mount umount mkfs.fat fsck.fat` and the FAT server `fatfs` (step 14), `mkfs.ext2 fsck.ext2` and the ext2 server `ext2fs` (step 15), `mkfs.ext4 tune2fs` (`fsck.ext2` also as `fsck.ext3 fsck.ext4`; `ext2fs` serves ext3 and ext4, step 16), `login su sudo passwd useradd userdel usermod groupadd groupdel chpasswd timedatectl localectl` and the services `authd` (and init's `/svc/system`) (step 17), tests |
 | scripts | `userspace/bin/` | `runtests` |
 
 One program serves many names: the boot image stores each name in
@@ -41,16 +41,16 @@ uses).
 | Command | Difference |
 |---------|------------|
 | `ln` | symbolic links (`-s`) on tmpfs and ext2/3/4; hard links on ext2/3/4 only (tmpfs and FAT: "Permission denied", across filesystems: "Cross-device link") |
-| `chmod`, `touch` | change the recorded mode and time; permissions are not enforced until users exist (step 17); `chown` is not provided |
+| `chmod`, `chown`, `chgrp`, `touch` | permissions are enforced by the filesystem servers (step 17, `USERS.md`): `chmod` by the owner or root, `chown` by root (the owner may change the group to one of its own); FAT files are root's and cannot be changed |
 | `df` | lists the file systems in `/etc/mtab` (`tmpfs` or the root disk for `/`, the boot image, `/dev`, mounted disks); tmpfs sizes are memory |
-| `id`, `whoami` | always root (`/etc/passwd`, `/etc/group`) |
+| `id`, `whoami`, `groups` | the process's credentials from the kernel, names from `/etc/passwd` and `/etc/group` |
 | `uname -o` | `Rustux` |
-| `date` | time zones from `$TZ` or `/etc/timezone` as the C library reads them; `date -s` fails (setting the clock needs the root resource) |
+| `date` | time zones from `$TZ` or `/etc/timezone` as the C library reads them; `date -s` fails (the clock is set by root with `timedatectl set-time`, through init) |
 | `tail -f` | polls once a second (no inotify; patched to fall back quietly) |
-| `find` | `-user`, `-group`: everything is root's |
+| `find` | `-user`, `-group` work (owners are kept on tmpfs and ext2/3/4; FAT files are root's) |
 | `xargs` | looks programs up in `$PATH` itself (patched, `rust/vendor/README.md`); `-P` works |
-| `kill` | ends the process: there are no signals, so `-9`, `-TERM` etc. all mean the same |
-| `ps`, `top` | PID is the process's koid; JOB is the job it runs in |
+| `kill` | ends the process: there are no signals, so `-9`, `-TERM` etc. all mean the same; another user's process only as root ("Operation not permitted") |
+| `ps`, `top` | PID is the process's koid; USER the user it acts as; JOB is the job it runs in |
 | `edit` / `nano` | kibi, not GNU nano: Ctrl+S save, Ctrl+Q quit, Ctrl+F find (`man edit`) |
 | `less` | keys come from the console even when the text comes through a pipe |
 | `grep` | basic (-G), extended (-E) and fixed (-F) patterns on the `regex` crate; no back-references (`\1`) |
@@ -72,6 +72,18 @@ uses).
 | `fsck.ext2` (`fsck.ext3`, `fsck.ext4`) | replays the journal (`-a`, `-y`, `-p`; with `-n` only reports that it needs it), then checks: the five passes of `e2fsck` (inodes and blocks, direct and indirect or extents; directories; connectivity; link counts, the orphan list; bitmaps, as Linux makes them for "uninit" groups, and counts) and the checksums (superblock, descriptors, bitmaps, inodes, extent and directory blocks); `-a` corrects the free counts, nothing else; `-v` lists directories. Exit 0 clean, 1 corrected (or replayed), 4 errors (repair with `e2fsck -f` on Linux) |
 | `mkfs.ext4` | as Linux's `mkfs.ext4` without the resize inode: features `has_journal ext_attr dir_index filetype extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum`, 4 KiB blocks (1 KiB below 4 MiB), 256-byte inodes, one per 16 KiB (4 KiB below 512 MiB), flexible groups of 16, a journal of 4 to 512 MiB by size (`-J size=MiB`, `-O ^has_journal` for none); `-b -i -L -U -m -I` as `mkfs.ext2` |
 | `tune2fs` | `-l DEV`: the superblock as Linux's `tune2fs -l` (features, counts, times, journal, checksum); `-L LABEL DEV`: a new label (not while mounted) |
+| `login` | init runs it on the console (step 17): user name and password (three tries), then the user's shell; `login -f USER` (root only) without a password (autologin: `/etc/autologin`, `autologin=USER` on the kernel command line) |
+| `su` | `su [-] [-l] [USER] [-c CMD]`: through authd (`USERS.md`); the target's password, none when root asks |
+| `sudo` | `sudo [-u USER] [-i | -s] [-S] CMD...`, `sudo -l`: through authd; `/etc/sudoers` (users, `%group`, RUNAS, `NOPASSWD:`, full command paths); the caller's password, remembered 5 minutes; no `-k`, `-e`, `-b`; logged in `/var/log/auth.log` |
+| `passwd` | `passwd [USER]`: through authd (one's own after the current password; root any); SHA-512 in `/etc/shadow`; no `-l -u -d -e` (see `usermod -L/-U`) |
+| `useradd` | `-m -d -s -u -g -G -c`; uids from 1000, a group of its own, the password locked until set; `-m` copies `/etc/skel` |
+| `userdel`, `usermod` | `userdel [-r]`; `usermod [-a] -G GROUPS`, `-g -s -d -c`, `-L` / `-U` (lock, unlock) |
+| `groupadd`, `groupdel` | `groupadd [-g GID]`; a group that is someone's primary group is not removed |
+| `chpasswd` | lines `USER:PASSWORD` on stdin (root) |
+| `timedatectl` | `status`, `list-timezones`, `set-timezone ZONE`, `set-time "YYYY-MM-DD HH:MM:SS"`, `set-local-rtc 0|1`; no NTP |
+| `localectl` | `status`, `list-keymaps`, `set-keymap NAME` (the console changes at once); the locale is always `C.UTF-8` |
+| `poweroff`, `reboot` | root (or `sudo poweroff`): init ends the session, writes out and marks clean every filesystem, then the power |
+| `hostname` | `hostname NAME` writes `/etc/hostname` (root) |
 | `shell` | no `fork`: see `USERSPACE.md`, "The shell", for how pipelines with built-ins run |
 
 ## Tests
