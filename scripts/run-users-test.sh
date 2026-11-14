@@ -8,7 +8,8 @@
 #   2. with "login" on the command line: a wrong password (refused), then
 #      alice logs in at the login prompt, cannot touch /etc or /root, and
 #      powers the computer off with sudo (her password typed at sudo's
-#      prompt).
+#      prompt); everything is typed for the de layout boot 1 chose, which
+#      the input service applies from the root filesystem's /etc/keymap.
 # Then the host's e2fsck -f finds the disk clean, and debugfs shows the
 # files with their owners and modes. Exit status 0 if all is well.
 #
@@ -41,14 +42,16 @@ boot_image() { # with a command line
     echo "$1" > "$W/cmdline.txt"
     mcopy -i "$W/boot.img" "$W/cmdline.txt" ::/EFI/BOOT/cmdline.txt
 }
-keys() {
-    python3 - "$1" <<'PY'
+keys() { # text (KEYMAP=de: for the de layout, which boot 1 sets and boot 2 uses)
+    python3 - "$1" "${KEYMAP:-us}" <<'PY'
 import sys
+de={';':'shift-comma',':':'shift-dot','/':'shift-7','-':'slash','_':'shift-slash','y':'z','z':'y','Y':'shift-z','Z':'shift-y'}
 m={' ':'spc','\n':'ret','-':'minus','=':'equal','[':'bracket_left',']':'bracket_right',';':'semicolon',"'":'apostrophe','`':'grave_accent','\\':'backslash',',':'comma','.':'dot','/':'slash'}
 sh={'!':'1','@':'2','#':'3','$':'4','%':'5','^':'6','&':'7','*':'8','(':'9',')':'0','_':'minus','+':'equal','{':'bracket_left','}':'bracket_right',':':'semicolon','"':'apostrophe','~':'grave_accent','|':'backslash','<':'comma','>':'dot','?':'slash'}
 out=[]
 for c in sys.argv[1]:
-    if c.isupper(): out.append('shift-'+c.lower())
+    if sys.argv[2]=='de' and c in de: out.append(de[c])
+    elif c.isupper(): out.append('shift-'+c.lower())
     elif c.isalnum(): out.append(c)
     elif c in m: out.append(m[c])
     elif c in sh: out.append('shift-'+m.get(sh[c],sh[c]))
@@ -117,7 +120,8 @@ expect "touch: cannot touch '/etc/x': Permission denied"
 expect "-rw-r--r-- root root"
 host_check "boot 1"
 
-echo "== boot 2 (the login prompt)"
+echo "== boot 2 (the login prompt; the de keyboard layout set in boot 1)"
+export KEYMAP=de
 boot_image "root=UUID=$ROOT_UUID login"
 start_qemu
 if wait_for "testbox login: " 1 120; then

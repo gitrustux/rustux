@@ -178,7 +178,9 @@ sudo, passwords, the host name, time zone and keyboard layout, files of
 alice's, and removes `/etc/autologin`; then with `login` on the kernel
 command line the host types at the login prompt: a wrong password
 (refused), alice's, commands she may not run, and `sudo poweroff` with her
-password at sudo's prompt. The host's `e2fsck -f -n` finds the disk clean
+password at sudo's prompt, all typed for the `de` layout boot 1 chose
+(the input service reads it from the root filesystem, step F3). The host's
+`e2fsck -f -n` finds the disk clean
 (and marked clean) after each boot, and `debugfs` the files with their
 owners and modes, the SHA-512 hash in `/etc/shadow` and no
 `/etc/autologin`.
@@ -255,6 +257,17 @@ computes; Ctrl+Alt+F1 (the console), Ctrl+Alt+F7 (the pattern again), `q`
 (passed to fbtest, which ends: the console is back as it was); `fbtest -n
 200` (200 frames, all shown, with the frame times); and the display service
 killed (the console shows, devmgr restarts it, `fbtest --check` passes).
+
+## Input test (step F3)
+
+`scripts/run-input-test.sh` (`INPUT.md`): two QEMU boots. With the PS/2
+keyboard and mouse: typing reaches the shell through `inputd`; `evtest`
+takes the focus and sees keys with their text, mouse motion, a button and
+the wheel, and Esc gives the focus back; `fbtest`'s cursor follows the
+mouse and a click is reported where it is; killing `inputd` (init starts
+it again, typing works); `localectl set-keymap de` (the key labelled Y
+gives z). With a USB keyboard, mouse and tablet: the kernel finds all
+three, typing works, `evtest` sees relative motion and absolute positions.
 
 ## Run in QEMU
 

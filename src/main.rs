@@ -232,6 +232,8 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     debug_print("[3.5/5] Installing keyboard handler...\n");
     unsafe { idt::idt_set_gate(33, keyboard_handler as u64, 0x08, 0x8E); }
     debug_print("      ✓ Keyboard handler at vector 33\n");
+    // PS/2 mouse (IRQ 12, desktop step F3): for the userspace driver too
+    unsafe { idt::idt_set_gate(44, mouse_handler as u64, 0x08, 0x8E); }
 
     // Install syscall handler (int 0x80). Type 0xEE = present, DPL 3,
     // 64-bit interrupt gate: DPL 3 lets ring-3 code execute `int 0x80`.
@@ -252,6 +254,7 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     debug_print("[4.5/5] Configuring keyboard IRQ...\n");
     unsafe { apic::apic_io_init(1, 33); }
     debug_print("      ✓ IRQ1 → Vector 33\n");
+    apic::apic_io_init(12, 44);
 
     // Initialize keyboard controller
     debug_print("[4.6/5] Initializing keyboard controller...\n");
@@ -450,6 +453,16 @@ pub extern "x86-interrupt" fn keyboard_handler(_sf: idt::X86Iframe) {
         // debug_print("[K]\n");
 
         // Send EOI to LAPIC (write 0 to EOI register at offset 0xB0)
+        let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
+        write_volatile((lapic + 0xB0) as *mut u32, 0);
+    }
+}
+
+// PS/2 mouse (IRQ 12 = vector 44): like the keyboard, for /bin/ps2kbd
+#[no_mangle]
+pub extern "x86-interrupt" fn mouse_handler(_sf: idt::X86Iframe) {
+    unsafe {
+        rustux::kobj::interrupt::Interrupt::dispatch(12);
         let lapic = rustux::arch::amd64::mm::kernel_map::phys_to_virt(0xFEE0_0000) as usize;
         write_volatile((lapic + 0xB0) as *mut u32, 0);
     }

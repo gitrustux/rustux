@@ -1,0 +1,14 @@
+evtest - print input events
+
+USAGE
+    evtest [-t SECONDS]
+
+    Takes the focus from the input service, so what is typed goes to
+    evtest alone, and prints every event: keys (HID usage, down, up or
+    repeat, the modifiers, and the text the keyboard layout makes of a
+    press) and the pointer (relative motion or an absolute position,
+    buttons, wheel). Esc ends it (or SECONDS passing); the focus goes back
+    to where it was. Root only.
+
+SEE ALSO
+    fbtest, localectl, rustux (the input service, docs/INPUT.md)

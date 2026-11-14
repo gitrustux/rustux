@@ -95,6 +95,7 @@ docs/
 ├── BOOT.md                       # The boot manager rboot, efibootmgr, bootctl (step 19)
 ├── INSTALL.md                    # The installer, rustica-install (step 20)
 ├── DISPLAY.md                    # The display service on the GOP framebuffer (desktop step F2)
+├── INPUT.md                      # The input service, mice and keyboards (desktop step F3)
 ├── ROADMAP.md                    # Architecture checklist (Jan 2026 plan)
 ├── HISTORY.md                    # Project history and decisions
 ├── usb-keyboard.md               # USB keyboard status and debugging history

@@ -63,9 +63,16 @@ typedef struct {
 // a = usage | mods << 8 | flags << 16, as init's key events (init)
 #define RX_DISPLAY_OP_KEY       7u
 
+// A pointer event for the owner (init, step F3): a = buttons (bit 0 left,
+// 1 right, 2 middle) | wheel (i8, + away from the user) << 8 | flags << 16
+// (bit 0: absolute), b = x | y << 16: absolute 0..32767 across the screen,
+// or relative (i16, y down)
+#define RX_DISPLAY_OP_POINTER   8u
+
 // Events to the owner (op), with no reply
 #define RX_DISPLAY_EV_KEY       (RX_DISPLAY_EVENT | 1u)   // a as for OP_KEY
 #define RX_DISPLAY_EV_VISIBLE   (RX_DISPLAY_EVENT | 2u)   // a = 1 shown, 0 not
+#define RX_DISPLAY_EV_POINTER   (RX_DISPLAY_EVENT | 3u)   // a, b as for OP_POINTER
 
 // Client side (libc display.c)
 typedef struct {

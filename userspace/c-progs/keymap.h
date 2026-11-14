@@ -5,7 +5,8 @@
 // https://opensource.org/licenses/MIT
 
 // Keyboard layouts: key events (HID usages from the PS/2 driver and the
-// kernel's USB driver) to the bytes a terminal sends. Used by init.
+// kernel's USB driver) to the bytes a terminal sends. Used by inputd
+// (DESKTOP.md step F3).
 //
 // The US layout is built in. Others are text files in
 // /usr/share/keymaps/NAME, chosen in /etc/keymap; each line changes one

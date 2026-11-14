@@ -26,6 +26,7 @@
 
 pub mod device;
 pub mod hid;
+pub mod hidparse;
 pub mod pci;
 pub mod ring;
 pub mod xhci;

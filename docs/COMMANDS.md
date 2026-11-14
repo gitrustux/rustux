@@ -81,14 +81,15 @@ uses).
 | `groupadd`, `groupdel` | `groupadd [-g GID]`; a group that is someone's primary group is not removed |
 | `chpasswd` | lines `USER:PASSWORD` on stdin (root) |
 | `timedatectl` | `status`, `list-timezones`, `set-timezone ZONE`, `set-time "YYYY-MM-DD HH:MM:SS"`, `set-local-rtc 0|1`; no NTP |
-| `localectl` | `status`, `list-keymaps`, `set-keymap NAME` (the console changes at once); the locale is always `C.UTF-8` |
+| `localectl` | `status`, `list-keymaps`, `set-keymap NAME` (the input service changes layout at once, for the console and graphics alike); the locale is always `C.UTF-8` |
 | `poweroff`, `reboot` | root (or `sudo poweroff`): init stops the services (logd last), writes out and marks clean every filesystem, then the power |
 | `svc` (`systemctl`) | the service manager (step 18, `SERVICES.md`): `list` (`list-units`, `list-unit-files`), `status [UNIT]` (with the unit's last log lines), `start stop restart`, `enable disable [--now]`, `reload` (`daemon-reload`), `reset-failed`, `isolate rescue|multi-user`, `is-active is-enabled is-failed`, `cat`, `show`, `get-default`, `poweroff`, `reboot`; `--json`; units are `/etc/svc/NAME.svc`; no `mask`, timers, sockets |
 | `logs` (`journalctl`) | the system log (`/var/log/system.log`): `-u -t -k -b [N] -p -g -S/--since -U/--until -n -r -f -o short|short-iso|json|cat --list-boots --disk-usage`; root and group adm; no `--vacuum`, `--rotate`, `-D` |
 | `efibootmgr` | the firmware's boot entries (step 19, `BOOT.md`): list (`-v`), `-o` order, `-n`/`-N` BootNext, `-b N -B` delete, `-a`/`-A`, `-t`/`-T` timeout, `-c [-d DISK -p PART] [-l LOADER] [-L LABEL]` (default: rboot on the ESP this boot came from); changes: root; no `-r` (driver entries), `-e`, `-@` |
 | `bootctl` | the boot manager rboot through systemd's loader variables (step 19): `status`, `list`, `set-default`, `set-oneshot`, `set-timeout`, `set-timeout-oneshot`, `reboot-to-firmware`, `is-installed`, `--esp-path=`; no `install`, `update`, `remove` yet (step 20) |
 | `rustica-install` | the installer (step 20, `INSTALL.md`): asks (keyboard, host, time zone, user, root, disk, erase/alongside/replace/manual), shows every change, writes after `install`; `--disk NAME|auto --mode ... --user ... --yes --dry-run` for scripts; log `/var/log/install.log` |
-| `fbtest` | draws through the display service (step F2, `DISPLAY.md`): `-n FRAMES` animation with frame times, `--pattern S` a still test pattern, `--check` snapshot equals what was drawn; Esc or q ends it; root |
+| `fbtest` | draws through the display service (step F2, `DISPLAY.md`): `-n FRAMES` animation with frame times (0: until Esc or q), a cursor that follows the mouse with its clicks and wheel printed (step F3), `--pattern S` a still test pattern, `--check` snapshot equals what was drawn; Esc or q ends it; root |
+| `evtest` | prints input events (step F3, `INPUT.md`): takes the focus from the input service and prints keys (usage, modifiers, the layout's text) and pointer motion, buttons and wheel until Esc (or `-t SECONDS`); root |
 | `screenshot` | `screenshot FILE.png`: the screen (text console or graphics) as a PNG, with the CRC-32 of its pixels; root |
 | `logger` | `-t TAG -p [FACILITY.]PRIO -s -f FILE [MESSAGE]`; to logd (`/svc/log`); no `--journald`, `-u` |
 | `dmesg` | the kernel's log since boot (the last 64 KiB); `logs -k` has it with times |

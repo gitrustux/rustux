@@ -21,10 +21,11 @@
 //! service manager's requests (svc, systemctl). And it is the console
 //! service:
 //!
-//! - Key events (HID usages) arrive from the PS/2 driver and from the
-//!   kernel (USB keyboards) over channels. Init turns them into characters
-//!   and escape sequences with the keyboard layout (keymap.h, /etc/keymap)
-//!   and repeats held USB keys.
+//! - Key presses arrive from the input service, /bin/inputd (DESKTOP.md
+//!   step F3), which init starts and restarts: it reads the keyboards
+//!   (and mice) with the PS/2 driver and the kernel, applies the layout
+//!   and repeats held keys, and sends the console the bytes of each press
+//!   while the console has the focus.
 //! - In cooked mode (the default) it edits the typed line (echo,
 //!   Backspace, Ctrl+U, Ctrl+W) and sends it to whoever reads the console
 //!   when Enter is pressed; Ctrl+D sends end of input. In raw mode (set
@@ -32,20 +33,17 @@
 //! - Ctrl+C (with ISIG) clears the line and raises the interrupt signal,
 //!   which the shell uses to end the program in the foreground.
 //! - Shift+PgUp / Shift+PgDn scroll the screen back and forth.
-//! - Ctrl+Alt+F1 shows the text console, Ctrl+Alt+F7 the graphics of the
-//!   display service's owner (DESKTOP.md step F2); while the graphics are
-//!   shown, keys go to the display service instead of the console.
 //! - Programs print by writing to the console channel; init prints what
 //!   they write on the screen through the kernel's debug log.
 //!
 //! The protocol is in <rustux/console.h>. The shell can ask for a driver
 //! restart ("restart-kbd") or a new layout ("reload-keymap") on its
-//! control channel.
+//! control channel; init passes both on to inputd.
 
 #include <errno.h>
 #include <rustux/auth.h>
 #include <rustux/console.h>
-#include <rustux/display.h>
+#include <rustux/input.h>
 #include <rustux/process.h>
 #include <rustux/service.h>
 #include <sys/mount.h>
@@ -55,13 +53,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "keymap.h"
-
-static rx_handle_t resource;     // root resource, passed to the driver
-static rx_handle_t kernel_input; // USB keystrokes from the kernel
+static rx_handle_t resource;     // root resource, passed to devmgr and inputd
+static rx_handle_t kernel_input; // the kernel's input (USB), a copy of which inputd reads
 static rx_handle_t con_server;   // console: our end
 static rx_handle_t con_client;   // console: the programs' end (copied to each)
-static rx_handle_t drv_proc, drv_chan; // keyboard driver
+static rx_handle_t input_proc, input_keys; // the input service and the key presses it sends
 static rx_handle_t sh_ctl;             // the console's session (login, then the user's shell): its control channel
 static rx_handle_t sys_listen;         // /svc/system: connection requests
 #define MAX_SYS_CLIENTS 16
@@ -72,7 +68,7 @@ static int boot_argc;
 static char **boot_argv;
 static rx_handle_t fsd_proc;           // filesystem service
 static rx_handle_t dm_proc;            // device manager
-static int driver_failures;
+static int input_failures;
 
 // ---- console ----
 
@@ -175,50 +171,11 @@ static void key_bytes(char *s, int n) {
     cooked(s, n);
 }
 
-// Held keys repeat: the PS/2 keyboard does it itself; for USB keyboards
-// init does, 500 ms after the press, then 30 times a second
-static rx_handle_t repeat_timer;
-static uint8_t repeat_usage, repeat_mods;
-static int repeating;
-
-// The display service (step F2), connected when first needed; one-way
-// messages (SWITCH, KEY), so init never waits for it
-static rx_handle_t display_ch;
-
-static void to_display(uint32_t op, uint32_t a) {
-    rx_display_msg_t m = { op, 0, a, 0 };
-    for (int tries = 0; tries < 2; tries++) {
-        if (!display_ch && rx_service_connect("/svc/display", &display_ch) < 0) {
-            display_ch = 0;
-            return;
-        }
-        if (rx_channel_write(display_ch, 0, &m, sizeof m, 0, 0) == RX_OK) return;
-        rx_handle_close(display_ch);  // the service was restarted: connect again
-        display_ch = 0;
-    }
-}
-
-static void key_event(uint8_t usage, uint8_t mods, uint8_t flags) {
-    int pressed = flags & 1;
-    // Ctrl+Alt+F1: the text console; Ctrl+Alt+F7: graphics
-    if ((mods & KM_CTRL) && (mods & (KM_LALT | KM_RALT)) && (usage == 0x3A || usage == 0x40)) {
-        if (pressed) to_display(RX_DISPLAY_OP_SWITCH, usage == 0x3A ? RX_DISPLAY_TEXT : RX_DISPLAY_GRAPHICS);
-        return;
-    }
-    if (rx_display_console(0, RX_DISPLAY_QUERY) == RX_DISPLAY_GRAPHICS) {
-        repeating = 0;
-        to_display(RX_DISPLAY_OP_KEY, usage | (uint32_t)mods << 8 | (uint32_t)flags << 16);
-        return;
-    }
-    if (usage >= 0xE0) return; // modifiers: their state comes with every event
-    if (!pressed) {
-        if (usage == repeat_usage) repeating = 0;
-        return;
-    }
-    repeating = 0;
+// A key press from the input service
+static void console_key(const rx_input_console_t *k) {
     // Shift+PgUp / Shift+PgDn: the console's scrollback, not for programs
-    if ((mods & KM_SHIFT) && (usage == 0x4B || usage == 0x4E)) {
-        echo(usage == 0x4B ? "\033[1^" : "\033[2^", 4);
+    if ((k->mods & (RX_INPUT_MOD_LSHIFT | RX_INPUT_MOD_RSHIFT)) && (k->usage == 0x4B || k->usage == 0x4E)) {
+        echo(k->usage == 0x4B ? "\033[1^" : "\033[2^", 4);
         scrolled = 1;
         return;
     }
@@ -226,31 +183,28 @@ static void key_event(uint8_t usage, uint8_t mods, uint8_t flags) {
         echo("\033[0^", 4);
         scrolled = 0;
     }
-    char out[16];
-    int n = km_translate(usage, mods, !(iflag & IF_ICRNL), out);
+    char out[sizeof k->text];
+    int n = k->len <= sizeof out ? k->len : (int)sizeof out;
+    memcpy(out, k->text, (size_t)n);
+    // Enter comes as CR: a newline unless the terminal wants CR (ICRNL off)
+    if ((iflag & IF_ICRNL) && (k->usage == 0x28 || k->usage == 0x58) && n == 1) out[0] = '\n';
     if (n > 0) key_bytes(out, n);
-    if (!(flags & 2) && n > 0) {
-        repeating = 1;
-        repeat_usage = usage;
-        repeat_mods = mods;
-        rx_timer_set(repeat_timer, rx_clock_get_monotonic() + 500000000ull, 0);
-    }
 }
 
-static void repeat_fired(void) {
-    char out[16];
-    int n = km_translate(repeat_usage, repeat_mods, !(iflag & IF_ICRNL), out);
-    if (n > 0) key_bytes(out, n);
-    rx_timer_set(repeat_timer, rx_clock_get_monotonic() + 33000000ull, 0);
-}
-
-// Key events from the driver or the kernel: 4 bytes each
-static void keys_from(rx_handle_t from) {
-    unsigned char buf[256];
+static void keys_from_input(void) {
+    rx_input_console_t k;
     uint32_t n = 0;
-    while (rx_channel_read(from, 0, buf, 0, sizeof buf, 0, &n, 0) == RX_OK) {
-        for (uint32_t i = 0; i + 4 <= n; i += 4) key_event(buf[i], buf[i + 1], buf[i + 2]);
-    }
+    while (rx_channel_read(input_keys, 0, &k, 0, sizeof k, 0, &n, 0) == RX_OK)
+        if (n == sizeof k) console_key(&k);
+}
+
+// Ask the input service something, without waiting for its answer
+static void to_input(uint32_t op) {
+    rx_handle_t ch;
+    if (rx_service_connect("/svc/input", &ch) < 0) return;
+    rx_input_req_t r = { op, 0 };
+    rx_channel_write(ch, 0, &r, sizeof r, 0, 0);
+    rx_handle_close(ch);
 }
 
 // Output and mode changes from programs
@@ -392,26 +346,31 @@ static void mount_root(int argc, char **argv) {
     if (code != 0) printf("init: the root filesystem %s is not mounted: running from memory\n", spec);
 }
 
-static void start_driver(void) {
-    rx_handle_t ours, theirs, res;
-    if (!resource || driver_failures >= 5) return;
+// The input service (step F3): the kernel's input channel (a copy, so a
+// restarted service gets it again), a channel for the key presses and the
+// root resource for the PS/2 driver
+static void start_input(void) {
+    rx_handle_t ours, theirs, res, kin = 0;
+    if (!resource || input_failures >= 5) return;
     rx_channel_create(0, &ours, &theirs);
     rx_handle_duplicate(resource, RX_RIGHT_SAME_RIGHTS, &res);
+    if (kernel_input) rx_handle_duplicate(kernel_input, RX_RIGHT_SAME_RIGHTS, &kin);
     rx_spawn_handle_t hs[] = {
         { RX_PA_ROOT_RESOURCE, res },
-        { RX_PA_USER0, theirs },
+        { RX_PA_USER1, theirs },
         { RX_PA_HND(RX_PA_FD, 1), console_copy() },
         { RX_PA_HND(RX_PA_FD, 2), console_copy() },
+        { RX_PA_USER0, kin },
     };
-    char *argv[] = { "ps2kbd", 0 };
-    if (rx_spawn("/bin/ps2kbd", argv, 0, 0, hs, 4, &drv_proc) != RX_OK) {
-        printf("init: cannot start /bin/ps2kbd\n");
+    char *argv[] = { "inputd", 0 };
+    if (rx_spawn("/bin/inputd", argv, 0, RX_SPAWN_CLONE_NS, hs, kin ? 5 : 4, &input_proc) != RX_OK) {
+        printf("init: cannot start /bin/inputd: no keyboard\n");
         rx_handle_close(ours);
-        drv_proc = 0;
-        driver_failures = 5;
+        input_proc = 0;
+        input_failures = 5;
         return;
     }
-    drv_chan = ours;
+    input_keys = ours;
 }
 
 // Who logs in without a password (step 17): the kernel command line's
@@ -494,7 +453,7 @@ static void sys_request(int k) {
         return;
     }
     if (op == RX_SYSTEM_OP_RELOAD_KEYMAP) {
-        km_load();
+        to_input(RX_INPUT_OP_RELOAD_KEYMAP);
     } else if (who.euid != 0) {
         st = -EPERM;
     } else if (op == RX_SYSTEM_OP_POWEROFF || op == RX_SYSTEM_OP_REBOOT) {
@@ -537,32 +496,19 @@ static void command(void) {
     uint32_t n = 0;
     while (rx_channel_read(sh_ctl, 0, buf, 0, sizeof buf - 1, 0, &n, 0) == RX_OK) {
         buf[n] = 0;
-        if (!strcmp(buf, "reload-keymap")) {
-            km_load(); // quietly: the shell has its prompt up already
-        } else if (!strcmp(buf, "restart-kbd")) {
-            if (drv_proc) {
-                printf("init: killing the keyboard driver\n");
-                rx_task_kill(drv_proc);
-            } else {
-                printf("init: no keyboard driver is running\n");
-            }
-        }
+        if (!strcmp(buf, "reload-keymap")) to_input(RX_INPUT_OP_RELOAD_KEYMAP);
+        else if (!strcmp(buf, "restart-kbd")) to_input(RX_INPUT_OP_RESTART_KBD);
     }
 }
 
-static void driver_ended(void) {
-    rx_info_process_t info = { 0, 0, 0, 0 };
-    rx_object_get_info(drv_proc, RX_INFO_PROCESS, &info, sizeof info, 0, 0);
-    rx_handle_close(drv_proc);
-    rx_handle_close(drv_chan);
-    drv_proc = drv_chan = 0;
-    if (info.return_code == 2) {
-        printf("init: no PS/2 controller; keyboard driver not needed\n");
-        return;
-    }
-    printf("init: keyboard driver exited (code %lld); starting it again\n", (long long)info.return_code);
-    if (info.return_code != RX_TASK_RETCODE_SYSCALL_KILL) driver_failures++;
-    start_driver();
+static void input_ended(void) {
+    int64_t code = rx_wait_process(input_proc);
+    rx_handle_close(input_proc);
+    rx_handle_close(input_keys);
+    input_proc = input_keys = 0;
+    printf("init: the input service ended (code %lld); starting it again\n", (long long)code);
+    if (code != RX_TASK_RETCODE_SYSCALL_KILL) input_failures++;
+    start_input();
 }
 
 int main(int argc, char **argv) {
@@ -582,11 +528,9 @@ int main(int argc, char **argv) {
     rx_handle_t bootfs = rx_take_startup_handle(RX_PA_VMO_BOOTFS);
     if (bootfs) start_fsd(bootfs);
     adjust_clock();
-    rx_timer_create(0, 0, &repeat_timer);
-    km_load();
     start_devmgr();
     mount_root(argc, argv);
-    start_driver();
+    start_input();
     publish_system();
     boot_argc = argc;
     boot_argv = argv;
@@ -595,15 +539,13 @@ int main(int argc, char **argv) {
 
     for (;;) {
         rx_wait_item_t items[12 + MAX_SYS_CLIENTS + MAX_UNITS];
-        int n = 0, i_drv = -1, i_kin = -1, i_dproc = -1, i_fsd = -1;
-        int i_rep = -1, i_dm = -1;
-        if (repeating) { i_rep = n; items[n++] = (rx_wait_item_t){ repeat_timer, RX_TIMER_SIGNALED, 0 }; }
+        int n = 0, i_keys = -1, i_iproc = -1, i_fsd = -1;
+        int i_dm = -1;
         int i_out = n; items[n++] = (rx_wait_item_t){ con_server, RX_CHANNEL_READABLE, 0 };
-        if (drv_chan) { i_drv = n; items[n++] = (rx_wait_item_t){ drv_chan, RX_CHANNEL_READABLE, 0 }; }
-        if (kernel_input) { i_kin = n; items[n++] = (rx_wait_item_t){ kernel_input, RX_CHANNEL_READABLE, 0 }; }
+        if (input_keys) { i_keys = n; items[n++] = (rx_wait_item_t){ input_keys, RX_CHANNEL_READABLE, 0 }; }
         int i_sh = -1;
         if (sh_ctl) { i_sh = n; items[n++] = (rx_wait_item_t){ sh_ctl, RX_CHANNEL_READABLE, 0 }; }
-        if (drv_proc) { i_dproc = n; items[n++] = (rx_wait_item_t){ drv_proc, RX_PROCESS_TERMINATED, 0 }; }
+        if (input_proc) { i_iproc = n; items[n++] = (rx_wait_item_t){ input_proc, RX_PROCESS_TERMINATED, 0 }; }
         if (fsd_proc) { i_fsd = n; items[n++] = (rx_wait_item_t){ fsd_proc, RX_PROCESS_TERMINATED, 0 }; }
         if (dm_proc) { i_dm = n; items[n++] = (rx_wait_item_t){ dm_proc, RX_PROCESS_TERMINATED, 0 }; }
         int i_sys = -1, i_cl = n;
@@ -621,13 +563,11 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if (i_rep >= 0 && repeating && (items[i_rep].pending & RX_TIMER_SIGNALED)) repeat_fired();
         // Output first, so a prompt appears before the echo of what is typed
         if (items[i_out].pending & RX_CHANNEL_READABLE) console_output();
-        if (i_drv >= 0 && (items[i_drv].pending & RX_CHANNEL_READABLE)) keys_from(drv_chan);
-        if (i_kin >= 0 && (items[i_kin].pending & RX_CHANNEL_READABLE)) keys_from(kernel_input);
+        if (i_keys >= 0 && (items[i_keys].pending & RX_CHANNEL_READABLE)) keys_from_input();
         if (i_sh >= 0 && (items[i_sh].pending & RX_CHANNEL_READABLE)) command();
-        if (i_dproc >= 0 && (items[i_dproc].pending & RX_PROCESS_TERMINATED)) driver_ended();
+        if (i_iproc >= 0 && (items[i_iproc].pending & RX_PROCESS_TERMINATED)) input_ended();
         if (i_fsd >= 0 && (items[i_fsd].pending & RX_PROCESS_TERMINATED)) {
             printf("init: the filesystem service ended (code %lld); files are gone until a reboot\n",
                    (long long)rx_wait_process(fsd_proc));

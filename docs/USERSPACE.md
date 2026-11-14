@@ -12,7 +12,7 @@ programs in `RUST.md`, the commands in `/bin` in `COMMANDS.md`.
 | `userspace/libc/include/` | Headers: `stdio.h`, `stdlib.h`, `string.h`, `ctype.h`, `errno.h`, `unistd.h`, `fcntl.h`, `dirent.h`, `limits.h`, `assert.h`, `time.h`, `pthread.h`, `sched.h`, `signal.h`, `spawn.h`, `termios.h`, `poll.h`, `getopt.h`, `dlfcn.h`, `sys/` (`types`, `stat`, `time`, `utsname`, `wait`, `mman`, `ioctl`, `uio`, `random`, `syscall`), and `rustux/` (system calls, processargs, console and file protocols, spawning, services, the device and block protocols) |
 | `userspace/libc/src/` | The library: startup, file descriptors, files and directories (`fs.c`), the ELF loader (`spawn.c`), threads and TLS (`thread.c`), `posix_spawn`/`waitpid` (`pspawn.c`), the rest of POSIX (`posix.c`), stdio, `printf`, `malloc`, environment, strings, numbers, time |
 | `userspace/libc/rustux.ld` | Linker script for programs (static, loaded at 1 MiB with their ELF headers) |
-| `userspace/c-progs/` | One program per `.c` file: `init`, `shell`, commands, tests; `keymap.h` (layouts, for `init`) and `lineedit.h` (the shell's line editor) |
+| `userspace/c-progs/` | One program per `.c` file: `init`, `shell`, commands, tests; `keymap.h` (layouts, for `inputd`) and `lineedit.h` (the shell's line editor) |
 | `userspace/rust/` | Rust programs, one Cargo package each (`RUST.md`) |
 | `userspace/bin/` | The built programs (committed); `build.rs` puts each in the boot image, served as `/bin/<name>` |
 | `userspace/build.sh` | Builds the library and every C program into `bin/` |
@@ -89,7 +89,8 @@ handle; `init` holds the other end.
   size.
 - **Keyboard layouts:** `/etc/keymap` names the layout (`us` built in;
   `de` and `uk` in `/usr/share/keymaps`, a text file per layout, format in
-  `c-progs/keymap.h`). The shell's `loadkeys NAME` changes it.
+  `c-progs/keymap.h`), applied by the input service `inputd` (desktop step
+  F3, `INPUT.md`). The shell's `loadkeys NAME` changes it.
 - **Screen:** a VT100/xterm terminal (colours, cursor movement, the
   alternate screen, UTF-8 with box drawing and accented letters);
   Shift+PgUp/PgDn scroll back 500 lines.

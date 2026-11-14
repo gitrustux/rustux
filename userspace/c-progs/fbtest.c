@@ -6,11 +6,12 @@
 
 // fbtest: draws through the display service (DESKTOP.md step F2): colour
 // bars with rectangles moving over them, presenting only what changed,
-// and reports the frame times. Esc or q ends it early; Ctrl+Alt+F1 shows
+// and reports the frame times. A mouse or tablet moves a cursor (step F3)
+// and its buttons and wheel are printed. Esc or q ends it early; Ctrl+Alt+F1 shows
 // the text console meanwhile (fbtest keeps going, unseen), Ctrl+Alt+F7
 // brings it back.
 //
-//   fbtest [-n FRAMES]   animate (300 frames by default)
+//   fbtest [-n FRAMES]   animate (300 frames by default; 0: until Esc or q)
 //   fbtest --pattern S   draw the test pattern and keep it S seconds
 //                        (for comparing screenshots), then end
 //   fbtest --check       draw the test pattern, take a snapshot through
@@ -66,12 +67,61 @@ static void pattern(void) {
             d.pixels[(uint64_t)(y0 + y) * d.width + x0 + x] = (x + y) & 1 ? 0x000000 : 0xFF0000 >> ((x / 16) % 3 * 8);
 }
 
-// Esc or q pressed, or the display service gone
+// The cursor (step F3): where it is, and its arrow (1 black, 2 white)
+static int cx = -1, cy = -1;
+static uint8_t buttons;
+static const char *arrow[] = {
+    "1", "11", "121", "1221", "12221", "122221", "1222221", "12222221", "122222221", "1222222221",
+    "12222211111", "1221221", "121 1221", "11  1221", "1    1221", "     1221", "      11",
+};
+#define ARROW_W 11
+#define ARROW_H 17
+
+static void pointer(const rx_display_msg_t *ev) {
+    int x = (int16_t)(ev->b & 0xFFFF), y = (int16_t)(ev->b >> 16);
+    if (cx < 0) {
+        cx = (int)d.width / 2;
+        cy = (int)d.height / 2;
+    }
+    if ((ev->a >> 16) & 1) {
+        cx = (int)((uint64_t)(ev->b & 0xFFFF) * (d.width - 1) / 32767);
+        cy = (int)((uint64_t)(ev->b >> 16) * (d.height - 1) / 32767);
+    } else {
+        cx += x;
+        cy += y;
+    }
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    if (cx >= (int)d.width) cx = (int)d.width - 1;
+    if (cy >= (int)d.height) cy = (int)d.height - 1;
+    uint8_t now = ev->a & 0xFF;
+    int8_t wheel = (int8_t)((ev->a >> 8) & 0xFF);
+    for (int bit = 0; bit < 8; bit++)
+        if ((now ^ buttons) & (1 << bit))
+            printf("fbtest: button %d %s at %d,%d\n", bit + 1, now & (1 << bit) ? "down" : "up", cx, cy);
+    if (wheel) printf("fbtest: wheel %+d at %d,%d\n", wheel, cx, cy);
+    buttons = now;
+    fflush(stdout);
+}
+
+static void draw_cursor(void) {
+    if (cx < 0) return;
+    for (int r = 0; r < ARROW_H; r++)
+        for (int k = 0; arrow[r][k]; k++) {
+            uint32_t x = (uint32_t)(cx + k), y = (uint32_t)(cy + r);
+            if (x >= d.width || y >= d.height || arrow[r][k] == ' ') continue;
+            d.pixels[(uint64_t)y * d.width + x] = arrow[r][k] == '1' ? 0x000000 : 0xFFFFFF;
+        }
+}
+
+// Esc or q pressed, or the display service gone; pointer events update
+// the cursor
 static int quit_key(void) {
     rx_display_msg_t ev;
     int r;
     while ((r = rx_display_poll(&d, &ev)) != 0) {
         if (r < 0) return 1;
+        if (ev.op == RX_DISPLAY_EV_POINTER) pointer(&ev);
         if (ev.op != RX_DISPLAY_EV_KEY || !((ev.a >> 16) & 1)) continue;
         uint8_t usage = ev.a & 0xFF;
         if (usage == 0x29 || usage == 0x14) return 1; // Esc, q
@@ -95,14 +145,19 @@ static int animate(int frames) {
     rx_display_present(&d, 0, 0);
     uint64_t t0 = now_us(), draw_total = 0, present_total = 0, worst = 0;
     int done = 0, shown_frames = 0;
-    for (; done < frames; done++) {
+    for (; !frames || done < frames; done++) {
+        int ox = cx, oy = cy;
         if (quit_key()) break;
         uint64_t f0 = now_us();
-        rx_display_rect_t dmg[2 * N];
+        rx_display_rect_t dmg[2 * N + 2];
         int nd = 0;
         for (int i = 0; i < N; i++) {
             dmg[nd++] = (rx_display_rect_t){ (uint32_t)r[i].x, (uint32_t)r[i].y, r[i].w, r[i].h };
             fill_background((uint32_t)r[i].x, (uint32_t)r[i].y, r[i].w, r[i].h);
+        }
+        if (ox >= 0) {
+            fill_background((uint32_t)ox, (uint32_t)oy, ARROW_W, ARROW_H);
+            dmg[nd++] = (rx_display_rect_t){ (uint32_t)ox, (uint32_t)oy, ARROW_W, ARROW_H };
         }
         for (int i = 0; i < N; i++) {
             r[i].x += r[i].dx;
@@ -115,8 +170,14 @@ static int animate(int frames) {
                 r[i].dy = -r[i].dy;
                 r[i].y += 2 * r[i].dy;
             }
-            fill((uint32_t)r[i].x, (uint32_t)r[i].y, r[i].w, r[i].h, r[i].c);
             dmg[nd++] = (rx_display_rect_t){ (uint32_t)r[i].x, (uint32_t)r[i].y, r[i].w, r[i].h };
+        }
+        // Every rectangle again (one may have been under the old cursor),
+        // then the cursor on top
+        for (int i = 0; i < N; i++) fill((uint32_t)r[i].x, (uint32_t)r[i].y, r[i].w, r[i].h, r[i].c);
+        if (cx >= 0) {
+            draw_cursor();
+            dmg[nd++] = (rx_display_rect_t){ (uint32_t)cx, (uint32_t)cy, ARROW_W, ARROW_H };
         }
         uint64_t f1 = now_us();
         int vis = rx_display_present(&d, dmg, nd);

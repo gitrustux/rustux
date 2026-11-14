@@ -25,12 +25,15 @@ use super::{log, log_dec, log_hex, Result, UsbError};
 use crate::arch::amd64::tsc::delay_ms;
 use crate::mm::dma::DmaBuffer;
 
-const MAX_KEYBOARDS: usize = 4;
+/// Keyboards and pointing devices (mice, tablets) together
+const MAX_KEYBOARDS: usize = 8;
 const MAX_STORAGE: usize = 8;
 /// Largest bulk transfer (the transfer buffer: 64 KiB, 64 KiB aligned)
 pub const BULK_MAX: usize = 65536;
 const MAX_HUB_DEPTH: u8 = 4;
 const REPORT_SIZE: usize = 8;
+/// Largest pointer report read (a full-speed interrupt packet)
+const POINTER_REPORT_MAX: usize = 64;
 
 // Requests and descriptors
 const REQ_GET_STATUS: u8 = 0x00;
@@ -117,7 +120,11 @@ unsafe fn slot_mem(slot: u8) -> Result<&'static mut SlotMem> {
 // Keyboards
 // ============================================================
 
+/// A HID interface: a boot keyboard, or (DESKTOP.md step F3) a mouse or
+/// tablet with the layout of its reports
 struct Keyboard {
+    pointer: Option<super::hidparse::Layout>,
+    report_len: u16,
     slot: u8,
     dci: u8,
     vid: u16,
@@ -138,7 +145,12 @@ fn keyboards() -> &'static mut [Option<Keyboard>; MAX_KEYBOARDS] {
 
 /// Number of USB keyboards ready
 pub fn keyboard_count() -> usize {
-    keyboards().iter().filter(|k| k.is_some()).count()
+    keyboards().iter().flatten().filter(|k| k.pointer.is_none()).count()
+}
+
+/// Number of USB mice and tablets ready
+pub fn pointer_count() -> usize {
+    keyboards().iter().flatten().filter(|k| k.pointer.is_some()).count()
 }
 
 // ============================================================
@@ -527,7 +539,7 @@ pub unsafe fn poll() {
     for kb in keyboards().iter_mut().flatten() {
         if !kb.active && !kb.dead {
             // Normal TRB, IOC + ISP
-            kb.ring.push(kb.report.phys, REPORT_SIZE as u32, TRB_NORMAL << 10 | 1 << 5 | 1 << 2);
+            kb.ring.push(kb.report.phys, kb.report_len as u32, TRB_NORMAL << 10 | 1 << 5 | 1 << 2);
             c.ring_doorbell(kb.slot, kb.dci);
             kb.active = true;
         }
@@ -557,9 +569,12 @@ pub unsafe fn poll() {
                     }
                     kb.active = false;
                     if cc == CC_SUCCESS || cc == CC_SHORT_PACKET {
-                        let len = REPORT_SIZE.saturating_sub(residual);
+                        let len = (kb.report_len as usize).saturating_sub(residual);
                         let report = core::slice::from_raw_parts(kb.report.virt as *const u8, len);
-                        super::hid::process_report(report, &mut kb.prev);
+                        match kb.pointer.as_ref() {
+                            Some(l) => super::hidparse::process_report(report, l),
+                            None => super::hid::process_report(report, &mut kb.prev),
+                        }
                     } else {
                         // The endpoint halts on errors. CC=4 (transaction
                         // error) is what a disconnect looks like; the port
@@ -687,6 +702,8 @@ struct Location {
 
 enum Kind {
     Keyboard,
+    /// A mouse or tablet (kept like a keyboard)
+    Pointer,
     Hub,
     Storage,
     Other,
@@ -942,69 +959,118 @@ unsafe fn setup_device(slot: u8, loc: &Location) -> Result<Kind> {
         return Ok(Kind::Hub);
     }
 
-    // ---- Keyboard, or mass storage ----
-    let kbd = match find_boot_keyboard(cfg) {
-        Some(k) => k,
-        None => {
-            if let Some(bot) = find_bot(cfg) {
-                return setup_storage(slot, m, loc, config_value, &bot, vid, pid, product_index);
-            }
-            indent(loc.depth);
-            log("not a boot keyboard or USB storage, skipping\n");
-            return Ok(Kind::Other);
+    // ---- Keyboards and pointers (up to two HID interfaces), or mass storage ----
+    let mut hids = find_hids(cfg);
+    if hids[0].is_none() {
+        if let Some(bot) = find_bot(cfg) {
+            return setup_storage(slot, m, loc, config_value, &bot, vid, pid, product_index);
         }
-    };
-    let free = match keyboards().iter().position(|k| k.is_none()) {
-        Some(i) => i,
-        None => {
-            indent(loc.depth);
-            log("keyboard limit reached, skipping\n");
-            return Ok(Kind::Other);
-        }
-    };
-    ctrl(slot, m, Setup { request_type: 0, request: REQ_SET_CONFIGURATION, value: config_value as u16, index: 0, length: 0 })?;
-    let iface = kbd.interface as u16;
-    if ctrl(slot, m, Setup { request_type: 0x21, request: REQ_SET_PROTOCOL, value: 0, index: iface, length: 0 }).is_err() {
         indent(loc.depth);
-        log("SET_PROTOCOL failed (continuing)\n");
+        log("not a keyboard, mouse, tablet or USB storage, skipping\n");
+        return Ok(Kind::Other);
     }
-    let _ = ctrl(slot, m, Setup { request_type: 0x21, request: REQ_SET_IDLE, value: 0, index: iface, length: 0 });
+    ctrl(slot, m, Setup { request_type: 0, request: REQ_SET_CONFIGURATION, value: config_value as u16, index: 0, length: 0 })?;
+    // What each interface is: a boot keyboard, or a pointer whose report
+    // descriptor shows X and Y (a boot mouse without a usable descriptor
+    // is read in the boot protocol)
+    let mut layouts: [Option<super::hidparse::Layout>; 2] = [None, None];
+    for (k, h) in hids.iter_mut().enumerate() {
+        let Some(hid) = h.as_ref() else { continue };
+        let iface = hid.interface as u16;
+        if hid.keyboard {
+            if ctrl(slot, m, Setup { request_type: 0x21, request: REQ_SET_PROTOCOL, value: 0, index: iface, length: 0 }).is_err() {
+                indent(loc.depth);
+                log("SET_PROTOCOL failed (continuing)\n");
+            }
+        } else {
+            let mut layout = None;
+            let want = core::cmp::min(hid.report_desc_len as usize, 1024);
+            if want > 0 {
+                if let Ok(n) = ctrl(slot, m, Setup { request_type: 0x81, request: REQ_GET_DESCRIPTOR, value: 0x2200, index: iface, length: want as u16 }) {
+                    let mut copy = [0u8; 1024];
+                    let n = core::cmp::min(n, want);
+                    copy[..n].copy_from_slice(m.buf(n));
+                    layout = super::hidparse::parse(&copy[..n]);
+                }
+            }
+            if layout.is_some() {
+                if hid.boot_mouse {
+                    // Report protocol (the default, but a BIOS may have set boot)
+                    let _ = ctrl(slot, m, Setup { request_type: 0x21, request: REQ_SET_PROTOCOL, value: 1, index: iface, length: 0 });
+                }
+            } else if hid.boot_mouse {
+                let _ = ctrl(slot, m, Setup { request_type: 0x21, request: REQ_SET_PROTOCOL, value: 0, index: iface, length: 0 });
+                layout = Some(super::hidparse::boot_mouse());
+            } else {
+                *h = None; // not a pointer we understand
+                continue;
+            }
+            layouts[k] = layout;
+        }
+        let _ = ctrl(slot, m, Setup { request_type: 0x21, request: REQ_SET_IDLE, value: 0, index: iface, length: 0 });
+    }
+    if hids.iter().all(|h| h.is_none()) {
+        indent(loc.depth);
+        log("HID device without keys or X/Y, skipping\n");
+        return Ok(Kind::Other);
+    }
+    if keyboards().iter().filter(|k| k.is_none()).count() < hids.iter().flatten().count() {
+        indent(loc.depth);
+        log("keyboard and pointer limit reached, skipping\n");
+        return Ok(Kind::Other);
+    }
 
-    // Interrupt IN endpoint
-    let ring = Ring::new()?;
-    let report = dma_page()?;
-    let dci = (kbd.endpoint & 0x0F) as u32 * 2 + 1;
-    let mps = kbd.max_packet as u32;
+    // Their interrupt IN endpoints, configured together
+    let mut rings: [Option<(Ring, DmaBuffer)>; 2] = [None, None];
     m.clear_input();
-    *m.input_dw(cs, 0, 1) = 1 | 1 << dci;
-    write_slot_ctx(m, cs, loc, dci, None);
-    let ctx = 1 + dci as usize;
-    *m.input_dw(cs, ctx, 0) = interval(loc.speed, kbd.interval) << 16;
-    *m.input_dw(cs, ctx, 1) = 3 << 1 | 7 << 3 | mps << 16; // CErr=3, Interrupt IN
-    *m.input_dw(cs, ctx, 2) = ring.phys() as u32 | 1;
-    *m.input_dw(cs, ctx, 3) = (ring.phys() >> 32) as u32;
-    *m.input_dw(cs, ctx, 4) = mps << 16 | 8; // max ESIT payload, average TRB length
+    let mut add = 1u32;
+    let mut last_dci = 1u32;
+    for (k, h) in hids.iter().enumerate() {
+        let Some(hid) = h.as_ref() else { continue };
+        let ring = Ring::new()?;
+        let report = dma_page()?;
+        let dci = (hid.endpoint & 0x0F) as u32 * 2 + 1;
+        let mps = hid.max_packet as u32;
+        add |= 1 << dci;
+        last_dci = core::cmp::max(last_dci, dci);
+        let ctx = 1 + dci as usize;
+        *m.input_dw(cs, ctx, 0) = interval(loc.speed, hid.interval) << 16;
+        *m.input_dw(cs, ctx, 1) = 3 << 1 | 7 << 3 | mps << 16; // CErr=3, Interrupt IN
+        *m.input_dw(cs, ctx, 2) = ring.phys() as u32 | 1;
+        *m.input_dw(cs, ctx, 3) = (ring.phys() >> 32) as u32;
+        *m.input_dw(cs, ctx, 4) = mps << 16 | 8; // max ESIT payload, average TRB length
+        rings[k] = Some((ring, report));
+    }
+    *m.input_dw(cs, 0, 1) = add;
+    write_slot_ctx(m, cs, loc, last_dci, None);
     let c = xhci::controller().ok_or(UsbError::NoController)?;
     c.configure_endpoint(slot, m.input.phys)?;
 
-    keyboards()[free] = Some(Keyboard {
-        slot,
-        dci: dci as u8,
-        vid,
-        pid,
-        ring,
-        report,
-        active: false,
-        dead: false,
-        prev: [0; 7],
-    });
-    indent(loc.depth);
-    log("keyboard ");
-    log_hex(vid as u64, 4);
-    log(":");
-    log_hex(pid as u64, 4);
-    log(" ready\n");
-    Ok(Kind::Keyboard)
+    let mut any_keyboard = false;
+    for k in 0..2 {
+        let (Some(hid), Some((ring, report))) = (hids[k].as_ref(), rings[k].take()) else { continue };
+        let free = keyboards().iter().position(|k| k.is_none()).unwrap_or(0);
+        let dci = (hid.endpoint & 0x0F) * 2 + 1;
+        let pointer = layouts[k];
+        let report_len = if pointer.is_some() {
+            core::cmp::min(core::cmp::max(hid.max_packet as usize, 1), POINTER_REPORT_MAX) as u16
+        } else {
+            REPORT_SIZE as u16
+        };
+        keyboards()[free] = Some(Keyboard { pointer, report_len, slot, dci, vid, pid, ring, report, active: false, dead: false, prev: [0; 7] });
+        indent(loc.depth);
+        log(match pointer {
+            None => "keyboard ",
+            Some(l) if l.absolute => "tablet ",
+            Some(_) => "mouse ",
+        });
+        any_keyboard |= pointer.is_none();
+        log_hex(vid as u64, 4);
+        log(":");
+        log_hex(pid as u64, 4);
+        log(" ready\n");
+    }
+    Ok(if any_keyboard { Kind::Keyboard } else { Kind::Pointer })
 }
 
 unsafe fn setup_hub(slot: u8, m: &mut SlotMem, loc: &Location, config_value: u8, protocol: u8) -> Result<()> {
@@ -1140,41 +1206,65 @@ fn has_interface_class(desc: &[u8], class: u8) -> bool {
     false
 }
 
-struct BootKeyboard {
+struct HidInterface {
     interface: u8,
     endpoint: u8,
     max_packet: u16,
     interval: u8,
+    /// Boot keyboard (class 3/1/1)
+    keyboard: bool,
+    /// Boot mouse (3/1/2): readable in the boot protocol if its report
+    /// descriptor says nothing useful
+    boot_mouse: bool,
+    /// From its HID descriptor
+    report_desc_len: u16,
 }
 
-/// First HID boot keyboard interface (class 3/1/1) and its interrupt IN
-/// endpoint
-fn find_boot_keyboard(desc: &[u8]) -> Option<BootKeyboard> {
+/// The first two HID interfaces that are boot keyboards or may be
+/// pointers (any other HID interface: its report descriptor decides), each
+/// with its interrupt IN endpoint
+fn find_hids(desc: &[u8]) -> [Option<HidInterface>; 2] {
+    let mut out: [Option<HidInterface>; 2] = [None, None];
+    let mut n = 0;
     let mut i = 0;
-    let mut iface: Option<u8> = None;
-    while i + 2 <= desc.len() {
+    // The interface being read: (number, subclass, protocol, report descriptor length)
+    let mut cur: Option<(u8, u8, u8, u16)> = None;
+    while i + 2 <= desc.len() && n < 2 {
         let len = desc[i] as usize;
         if len < 2 || i + len > desc.len() {
             break;
         }
         match desc[i + 1] {
             DT_INTERFACE if len >= 9 => {
-                iface = if desc[i + 5] == CLASS_HID && desc[i + 6] == 1 && desc[i + 7] == 1 {
-                    Some(desc[i + 2])
-                } else {
-                    None
-                };
+                cur = if desc[i + 5] == CLASS_HID { Some((desc[i + 2], desc[i + 6], desc[i + 7], 0)) } else { None };
+            }
+            0x21 if len >= 9 => {
+                // HID descriptor: the first class descriptor's length
+                if let Some(c) = cur.as_mut() {
+                    if desc[i + 6] == 0x22 {
+                        c.3 = (desc[i + 8] as u16) << 8 | desc[i + 7] as u16;
+                    }
+                }
             }
             DT_ENDPOINT if len >= 7 => {
-                if let Some(interface) = iface {
+                if let Some((interface, sub, proto, rlen)) = cur {
                     let addr = desc[i + 2];
                     if addr & 0x80 != 0 && desc[i + 3] & 3 == 3 {
-                        return Some(BootKeyboard {
-                            interface,
-                            endpoint: addr,
-                            max_packet: ((desc[i + 5] as u16) << 8 | desc[i + 4] as u16) & 0x7FF,
-                            interval: desc[i + 6],
-                        });
+                        let keyboard = sub == 1 && proto == 1;
+                        // Other boot-subclass protocols than mouse are not pointers
+                        if keyboard || !(sub == 1 && proto != 2) {
+                            out[n] = Some(HidInterface {
+                                interface,
+                                endpoint: addr,
+                                max_packet: ((desc[i + 5] as u16) << 8 | desc[i + 4] as u16) & 0x7FF,
+                                interval: desc[i + 6],
+                                keyboard,
+                                boot_mouse: sub == 1 && proto == 2,
+                                report_desc_len: rlen,
+                            });
+                            n += 1;
+                        }
+                        cur = None; // one endpoint an interface
                     }
                 }
             }
@@ -1182,5 +1272,5 @@ fn find_boot_keyboard(desc: &[u8]) -> Option<BootKeyboard> {
         }
         i += len;
     }
-    None
+    out
 }

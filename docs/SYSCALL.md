@@ -792,7 +792,7 @@ handle, e.g. one that can only wait.
 
 | Syscall | Number | Description | Status |
 |---------|--------|-------------|--------|
-| `INTERRUPT_CREATE` | 0x80 | Bind a legacy ISA IRQ to a handle | ✅ (IRQ 1 only) |
+| `INTERRUPT_CREATE` | 0x80 | Bind a legacy ISA IRQ to a handle | ✅ (IRQs 1 and 12) |
 | `INTERRUPT_WAIT` | 0x81 | Block until the IRQ fires | ✅ |
 | `INTERRUPT_ACK` | 0x82 | Re-arm the IRQ | ✅ |
 | `INTERRUPT_DESTROY` | 0x83 | Cancel waits on the interrupt | ✅ |
@@ -831,8 +831,9 @@ power.
 
 `interrupt_create(rx_handle_t resource, uint32_t irq, uint32_t options, rx_handle_t *out)`
 
-With `options` 0, binds legacy ISA `irq` (only 1, the PS/2 keyboard, is
-wired up so far; others give `ERR_NOT_SUPPORTED`) to a new interrupt
+With `options` 0, binds legacy ISA `irq` (1, the PS/2 keyboard, and 12,
+the PS/2 mouse (desktop step F3), are wired up; others give
+`ERR_NOT_SUPPORTED`) to a new interrupt
 object (type 9). With `options` `0x100` (`RX_INTERRUPT_MSI`, `irq` 0) it
 takes a free **MSI vector** (64 of them, 0x40-0x7F; `ERR_NO_RESOURCES`
 when all are taken): `object_get_info(INTERRUPT_MSI)` tells the address

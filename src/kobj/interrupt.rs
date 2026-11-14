@@ -61,9 +61,9 @@ impl Resource {
     }
 }
 
-/// ISA IRQs that can be bound. Only IRQ 1 (PS/2 keyboard) is wired to the
-/// interrupt handlers so far.
-pub const BINDABLE_IRQS: &[u32] = &[1];
+/// ISA IRQs that can be bound: those wired to interrupt handlers, IRQ 1
+/// (PS/2 keyboard) and IRQ 12 (PS/2 mouse, desktop step F3)
+pub const BINDABLE_IRQS: &[u32] = &[1, 12];
 
 /// Vector of ISA IRQ n
 pub const ISA_VECTOR_BASE: u32 = 32;

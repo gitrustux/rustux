@@ -13,7 +13,7 @@ framebuffer UEFI GOP set up at boot (the resolution the firmware chose).
  GOP framebuffer  -- claim -->  display_claim  -- VMO, claim, geometry --> /svc/display <-- ACQUIRE / PRESENT / RELEASE
  text console     <-- display_console (show / hide) ------------------------  |
                                                                                v
- init (keys) ------------------ SWITCH (Ctrl+Alt+F1/F7), KEY ---------------> service --> EV_KEY, EV_VISIBLE --> owner
+ inputd (keys, pointer) ------- SWITCH (Ctrl+Alt+F1/F7), KEY, POINTER ------> service --> EV_KEY, EV_POINTER, EV_VISIBLE --> owner
 ```
 
 - **Kernel.** At boot the kernel records the framebuffer GOP describes
@@ -35,10 +35,11 @@ framebuffer UEFI GOP set up at boot (the resolution the firmware chose).
 - **display** (`c-progs/display.c`) maps the framebuffer, keeps a back
   buffer in RAM (committed at once: it is a system service) and publishes
   `/svc/display`.
-- **init** turns Ctrl+Alt+F1 and Ctrl+Alt+F7 into SWITCH requests, and
-  while graphics are shown sends every key event to the service (KEY)
-  instead of the console, which the service passes to the owner. This is a
-  stand-in until the input service (step F3).
+- **inputd**, the input service (step F3, `docs/INPUT.md`), turns
+  Ctrl+Alt+F1 and Ctrl+Alt+F7 into SWITCH requests, and while graphics
+  are shown (and no program grabbed the input) sends every key and pointer
+  event to the service (KEY, POINTER), which passes them to the owner. The
+  compositor (step F4) will take them from inputd directly.
 
 ## Protocol (`<rustux/display.h>`)
 
@@ -53,11 +54,13 @@ PRESENT's followed by its rectangles. Replies carry the op with
 | `PRESENT` | the owner | copy rectangles (none: all) of the back buffer to the screen, converting to its pixel layout; the reply comes when they are there (`a` = 1 if shown) |
 | `RELEASE` | the owner | give the screen back to the console (closing the channel does the same) |
 | `SNAPSHOT` | root | what is on the screen now, read from the framebuffer: a VMO of `0x00RRGGBB` pixels |
-| `SWITCH` | root (init) | `a` = text or graphics; no reply |
-| `KEY` | root (init) | a key event for the owner; no reply |
+| `SWITCH` | root (inputd) | `a` = text or graphics; no reply |
+| `KEY` | root (inputd) | a key event for the owner; no reply |
+| `POINTER` | root (inputd) | a pointer event for the owner: `a` = buttons, wheel << 8, flags << 16; `b` = x, y << 16; no reply |
 
 Events to the owner: `EV_KEY` (`a` = usage, modifiers << 8, flags << 16, as
-init's key events) and `EV_VISIBLE` (`a` = 1 or 0).
+the input records: usage, modifiers << 8, flags << 16), `EV_POINTER` (as
+`POINTER`) and `EV_VISIBLE` (`a` = 1 or 0).
 
 An owner that waits for PRESENT's reply before drawing again never shows a
 half-drawn frame of its own; there is no vertical sync on a GOP framebuffer,

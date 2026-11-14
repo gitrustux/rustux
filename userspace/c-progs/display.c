@@ -211,6 +211,12 @@ static int client_message(int k) {
     case RX_DISPLAY_OP_KEY:
         if (root && graphics) event(RX_DISPLAY_EV_KEY, m.a);
         break;
+    case RX_DISPLAY_OP_POINTER:
+        if (root && graphics && owner) {
+            rx_display_msg_t e = { RX_DISPLAY_EV_POINTER, 0, m.a, m.b };
+            rx_channel_write(owner, 0, &e, sizeof e, 0, 0);
+        }
+        break;
     default:
         reply(ch, m.op, -ENOSYS, 0, 0, 0);
     }
