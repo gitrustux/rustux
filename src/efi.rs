@@ -22,6 +22,7 @@
 
 use crate::arch::amd64::mm::kernel_map;
 use crate::arch::amd64::mm::RxStatus;
+use crate::sync::BootCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 use uefi::mem::memory_map::{MemoryAttribute, MemoryDescriptor, MemoryType};
 use uefi::runtime::{VariableAttributes, VariableVendor};
@@ -29,15 +30,23 @@ use uefi::{CStr16, Guid};
 
 const MAX_RUNTIME: usize = 128;
 
-static mut DESCS: [MemoryDescriptor; MAX_RUNTIME] = [MemoryDescriptor {
-    ty: MemoryType::RESERVED,
-    phys_start: 0,
-    virt_start: 0,
-    page_count: 0,
-    att: MemoryAttribute::empty(),
-}; MAX_RUNTIME];
-static mut NDESCS: usize = 0;
-static mut SYSTEM_TABLE: u64 = 0;
+/// Boot only, one CPU: the runtime descriptors, how many, the system table
+struct Boot {
+    descs: [MemoryDescriptor; MAX_RUNTIME],
+    n: usize,
+    system_table: u64,
+}
+static BOOT: BootCell<Boot> = BootCell::new(Boot {
+    descs: [MemoryDescriptor {
+        ty: MemoryType::RESERVED,
+        phys_start: 0,
+        virt_start: 0,
+        page_count: 0,
+        att: MemoryAttribute::empty(),
+    }; MAX_RUNTIME],
+    n: 0,
+    system_table: 0,
+});
 static READY: AtomicBool = AtomicBool::new(false);
 static LOCK: crate::sync::SpinMutex<()> = crate::sync::SpinMutex::new(());
 
@@ -48,17 +57,16 @@ pub fn note_descriptor(d: &MemoryDescriptor) {
         return;
     }
     // Boot, one CPU
-    unsafe {
-        if NDESCS < MAX_RUNTIME {
-            DESCS[NDESCS] = *d;
-            NDESCS += 1;
-        }
+    let b = unsafe { BOOT.boot_mut() };
+    if b.n < MAX_RUNTIME {
+        b.descs[b.n] = *d;
+        b.n += 1;
     }
 }
 
 /// The system table's physical address (call before ExitBootServices)
 pub fn note_system_table(phys: u64) {
-    unsafe { SYSTEM_TABLE = phys };
+    unsafe { BOOT.boot_mut().system_table = phys };
 }
 
 /// Move the runtime services to kernel addresses. Returns a message for
@@ -68,11 +76,13 @@ pub fn note_system_table(phys: u64) {
 /// After `kernel_map::init`, while the boot identity map is still in place
 /// (the firmware runs at its physical addresses during the call), on one CPU.
 pub unsafe fn init() -> &'static str {
-    let n = NDESCS;
-    if SYSTEM_TABLE == 0 || n == 0 {
+    let b = BOOT.boot_mut();
+    let n = b.n;
+    if b.system_table == 0 || n == 0 {
         return "no runtime services";
     }
-    let descs = &mut *core::ptr::addr_of_mut!(DESCS);
+    let system_table = b.system_table;
+    let descs = &mut b.descs;
     for d in descs[..n].iter_mut() {
         let size = d.page_count * 4096;
         d.virt_start = if d.ty == MemoryType::MMIO || d.ty == MemoryType::MMIO_PORT_SPACE {
@@ -84,7 +94,7 @@ pub unsafe fn init() -> &'static str {
             kernel_map::phys_to_virt(d.phys_start)
         };
     }
-    let st = kernel_map::phys_to_virt(SYSTEM_TABLE) as *const uefi_raw::table::system::SystemTable;
+    let st = kernel_map::phys_to_virt(system_table) as *const uefi_raw::table::system::SystemTable;
     match uefi::runtime::set_virtual_address_map(&mut descs[..n], st) {
         Ok(()) => {
             READY.store(true, Ordering::Release);
