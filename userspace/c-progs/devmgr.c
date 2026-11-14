@@ -864,6 +864,7 @@ static void ram_check(void) {
 // ---- main ----
 
 int main(void) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     resource = rx_take_startup_handle(RX_PA_ROOT_RESOURCE);
     if (!resource) {
         fprintf(stderr, "devmgr: no root resource\n");

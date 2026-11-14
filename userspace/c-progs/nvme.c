@@ -19,6 +19,7 @@
 // first active one) as nvme#n1, served through <rustux/blockdev.h>.
 // Spec: "NVM Express Base Specification 2.0", sections 3.1, 3.5, 5.
 
+#include <rustux/process.h>
 #include <errno.h>
 #include <rustux/blockdev.h>
 #include <rustux/driver.h>
@@ -228,6 +229,7 @@ static int fail(const char *what) {
 }
 
 int main(int argc, char **argv) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     if (argc > 1) where = argv[1];
     dev = rx_drv_device();
     if (!dev) return fail("started without a device (devmgr starts this driver)");

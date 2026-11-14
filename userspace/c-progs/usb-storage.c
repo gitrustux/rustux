@@ -235,6 +235,7 @@ static void trim(char *s) {
 }
 
 int main(int argc, char **argv) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     if (argc > 1) where = argv[1];
     usb = rx_take_startup_handle(RX_PA_USER0);
     if (!usb) {

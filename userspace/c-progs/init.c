@@ -535,6 +535,7 @@ static void driver_ended(void) {
 }
 
 int main(int argc, char **argv) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     rx_handle_t log;
     resource = rx_take_startup_handle(RX_PA_ROOT_RESOURCE);
     kernel_input = rx_take_startup_handle(RX_PA_KERNEL_INPUT);

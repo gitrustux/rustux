@@ -9,7 +9,8 @@
 //! Every page of a user buffer is checked against the current address
 //! space (present, user-accessible, writable when written) before the
 //! kernel touches it, so a bad pointer gives the program an error instead
-//! of a kernel page fault.
+//! of a kernel page fault. A page of a mapping not touched yet (demand
+//! paging) is committed and mapped here first.
 
 use crate::arch::amd64::mm::kernel_map;
 use crate::arch::amd64::mm::RxStatus;
@@ -33,7 +34,14 @@ pub fn check(addr: usize, len: usize, write: bool) -> Result<(), RxStatus> {
     let mut page = addr & !0xFFF;
     while page < end {
         if !unsafe { kernel_map::user_access_ok(pml4, page as u64, write) } {
-            return Err(RxStatus::ERR_INVALID_ARGS);
+            // Not there yet (demand paging): commit and map it as a touch
+            // would, then look again
+            let p = super::object::current_process().map_err(|_| RxStatus::ERR_INVALID_ARGS)?;
+            if p.aspace.fault_in(page as u64, write, false).is_err()
+                || !unsafe { kernel_map::user_access_ok(pml4, page as u64, write) }
+            {
+                return Err(RxStatus::ERR_INVALID_ARGS);
+            }
         }
         page += 0x1000;
     }

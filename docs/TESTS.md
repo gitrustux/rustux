@@ -205,6 +205,17 @@ authd or login. `e2fsck -f` finds the disk clean after each boot, and the
 log on the disk has the three boots, kernel lines, the unit's line with
 uid 1000, mode 0640 root:adm.
 
+## Memory test (DESKTOP.md step F1)
+
+`memory.sh` (in the command tests) runs `vmtest`: a 1 GiB mapping costs
+only the pages touched (the process's private memory and the system's free
+memory both checked); the kernel copies into pages not touched yet
+(`vmo_write`, `vmo_read`, `channel_read`, `write()`, `read()`); eight
+threads fault the same 64 pages at once; 100 threads with 256 KiB stacks
+cost little more than their kernel stacks; a stack overflow hits the guard
+page and kills only its process; a process that touches memory until none
+is left is killed and its memory given back. It passes with 128 MiB.
+
 ## Boot manager test (step 19)
 
 `scripts/run-rboot-test.sh` boots QEMU with OVMF's code and a variable

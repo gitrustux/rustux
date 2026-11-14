@@ -506,6 +506,7 @@ static void *serve_client(void *arg) {
 }
 
 int main(void) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     if (geteuid() != 0) {
         fprintf(stderr, "authd: must run as root (init starts it)\n");
         return 1;

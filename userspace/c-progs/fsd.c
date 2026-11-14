@@ -1441,6 +1441,7 @@ static struct node *bootfs_load(rx_handle_t vmo) {
 }
 
 int main(void) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     rx_handle_t bootfs = rx_take_startup_handle(RX_PA_VMO_BOOTFS);
     rx_handle_t first = rx_take_startup_handle(RX_PA_USER0);
     if (!first) {

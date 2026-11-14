@@ -7,9 +7,11 @@
 //! Virtual memory objects: a resizable-later, page-granular piece of memory
 //! that can be read, written and mapped into address spaces.
 //!
-//! Pages are committed (allocated and zeroed) on first write or when
-//! mapped; reading an uncommitted page gives zeros. Pages are freed when
-//! the last handle and the last mapping are gone.
+//! Pages are committed (allocated and zeroed) on first write: through
+//! `vmo_write`, or a mapping's first touch (the page fault handler,
+//! `Aspace::fault_in`: demand paging, DESKTOP.md step F1); reading an
+//! uncommitted page gives zeros. Pages are freed when the last handle and
+//! the last mapping are gone.
 //!
 //! Two more kinds serve drivers (step 12):
 //! - **physical**: a fixed range of device memory (registers, a frame
@@ -53,11 +55,72 @@ pub enum VmoKind {
     Wired,
 }
 
+/// Pages per chunk of a [`PageList`] (2 MiB of memory per 4 KiB chunk)
+const CHUNK: usize = 512;
+
+/// The physical address of each page of a VMO (0: not committed), in
+/// chunks allocated when one of their pages is first committed: a 1 GiB
+/// VMO costs 4 KiB of list until it is used (demand paging, step F1)
+pub struct PageList {
+    chunks: Vec<Option<alloc::boxed::Box<[u64; CHUNK]>>>,
+    len: usize,
+}
+
+impl PageList {
+    fn new(len: usize) -> Result<Self, RxStatus> {
+        let mut chunks = Vec::new();
+        let n = len.div_ceil(CHUNK);
+        chunks.try_reserve_exact(n).map_err(|_| RxStatus::ERR_NO_MEMORY)?;
+        chunks.resize_with(n, || None);
+        Ok(Self { chunks, len })
+    }
+
+    /// All `len` pages at once (physical, wired, contiguous VMOs)
+    fn filled(len: usize, page: impl Fn(usize) -> u64) -> Result<Self, RxStatus> {
+        let mut l = Self::new(len)?;
+        for i in 0..len {
+            l.set(i, page(i));
+        }
+        Ok(l)
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn get(&self, i: usize) -> u64 {
+        match &self.chunks[i / CHUNK] {
+            Some(c) => c[i % CHUNK],
+            None => 0,
+        }
+    }
+
+    fn set(&mut self, i: usize, p: u64) {
+        let c = self.chunks[i / CHUNK].get_or_insert_with(|| alloc::boxed::Box::new([0u64; CHUNK]));
+        c[i % CHUNK] = p;
+    }
+
+    /// Committed pages among [first, last)
+    fn count(&self, first: usize, last: usize) -> usize {
+        (first..last.min(self.len)).filter(|&i| self.chunks[i / CHUNK].is_some() && self.get(i) != 0).count()
+    }
+
+    fn for_each_committed(&self, mut f: impl FnMut(u64)) {
+        for c in self.chunks.iter().flatten() {
+            for &p in c.iter() {
+                if p != 0 {
+                    f(p);
+                }
+            }
+        }
+    }
+}
+
 pub struct Vmo {
     pub signals: SignalState,
     size: u64,
     /// Physical address of each page, 0 = not committed
-    pages: SpinMutex<Vec<u64>>,
+    pages: SpinMutex<PageList>,
     pub kind: VmoKind,
     cache: AtomicU32,
 }
@@ -72,13 +135,11 @@ impl Vmo {
         if size > MAX_SIZE {
             return Err(RxStatus::ERR_OUT_OF_RANGE);
         }
-        let mut pages = Vec::new();
-        pages.try_reserve_exact((size / PAGE) as usize).map_err(|_| RxStatus::ERR_NO_MEMORY)?;
-        pages.resize((size / PAGE) as usize, 0);
+        let pages = PageList::new((size / PAGE) as usize)?;
         Ok(Arc::new(Self::with(size, pages, VmoKind::Paged)))
     }
 
-    fn with(size: u64, pages: Vec<u64>, kind: VmoKind) -> Self {
+    fn with(size: u64, pages: PageList, kind: VmoKind) -> Self {
         Self { signals: SignalState::new(0), size, pages: SpinMutex::new(pages), kind, cache: AtomicU32::new(cache::CACHED) }
     }
 
@@ -92,9 +153,7 @@ impl Vmo {
         if size > MAX_SIZE || base.checked_add(size).is_none() {
             return Err(RxStatus::ERR_OUT_OF_RANGE);
         }
-        let mut pages = Vec::new();
-        pages.try_reserve_exact((size / PAGE) as usize).map_err(|_| RxStatus::ERR_NO_MEMORY)?;
-        pages.extend((0..size / PAGE).map(|i| base + i * PAGE));
+        let pages = PageList::filled((size / PAGE) as usize, |i| base + i as u64 * PAGE)?;
         let v = Self::with(size, pages, VmoKind::Physical);
         v.cache.store(cache::UNCACHED_DEVICE, Ordering::Relaxed);
         Ok(Arc::new(v))
@@ -108,9 +167,7 @@ impl Vmo {
         if base % PAGE != 0 || size % PAGE != 0 || size == 0 || size > MAX_SIZE {
             return Err(RxStatus::ERR_INVALID_ARGS);
         }
-        let mut pages = Vec::new();
-        pages.try_reserve_exact((size / PAGE) as usize).map_err(|_| RxStatus::ERR_NO_MEMORY)?;
-        pages.extend((0..size / PAGE).map(|i| base + i * PAGE));
+        let pages = PageList::filled((size / PAGE) as usize, |i| base + i as u64 * PAGE)?;
         Ok(Arc::new(Self::with(size, pages, VmoKind::Wired)))
     }
 
@@ -122,8 +179,7 @@ impl Vmo {
             return Err(RxStatus::ERR_INVALID_ARGS);
         }
         let count = (size / PAGE) as usize;
-        let mut pages = Vec::new();
-        pages.try_reserve_exact(count).map_err(|_| RxStatus::ERR_NO_MEMORY)?;
+        let mut pages = PageList::new(count)?;
         let mut flags = pmm::PMM_ALLOC_FLAG_USER;
         if low {
             flags |= pmm::PMM_ALLOC_FLAG_LOW_MEM;
@@ -136,7 +192,7 @@ impl Vmo {
         for i in 0..count as u64 {
             let p = base + i * PAGE;
             unsafe { core::ptr::write_bytes(kernel_map::phys_to_virt(p) as *mut u8, 0, PAGE as usize) };
-            pages.push(p);
+            pages.set(i as usize, p);
         }
         Ok(Arc::new(Self::with(size, pages, VmoKind::Contiguous)))
     }
@@ -178,13 +234,13 @@ impl Vmo {
         }
     }
 
-    fn commit(pages: &mut [u64], index: usize) -> Result<u64, RxStatus> {
-        if pages[index] == 0 {
+    fn commit(pages: &mut PageList, index: usize) -> Result<u64, RxStatus> {
+        if pages.get(index) == 0 {
             let p = pmm::pmm_alloc_user_page().map_err(|_| RxStatus::ERR_NO_MEMORY)?;
             unsafe { core::ptr::write_bytes(kernel_map::phys_to_virt(p) as *mut u8, 0, PAGE as usize) };
-            pages[index] = p;
+            pages.set(index, p);
         }
-        Ok(pages[index])
+        Ok(pages.get(index))
     }
 
     /// Copy `len` bytes at `offset` to `dst`.
@@ -202,7 +258,7 @@ impl Vmo {
             let pos = offset + done;
             let in_page = pos % PAGE;
             let n = (PAGE - in_page).min(len - done);
-            let p = pages[(pos / PAGE) as usize];
+            let p = pages.get((pos / PAGE) as usize);
             if p == 0 {
                 core::ptr::write_bytes(dst.add(done as usize), 0, n as usize);
             } else {
@@ -252,6 +308,26 @@ impl Vmo {
         Ok(out)
     }
 
+    /// The pages of a page-aligned range as they are: physical addresses,
+    /// 0 for pages not committed yet (nothing is committed)
+    pub fn present_pages(&self, offset: u64, len: u64) -> Result<Vec<u64>, RxStatus> {
+        self.check_range(offset, len)?;
+        let pages = self.pages.lock();
+        let first = (offset / PAGE) as usize;
+        let count = (len / PAGE) as usize;
+        let mut out = Vec::new();
+        out.try_reserve_exact(count).map_err(|_| RxStatus::ERR_NO_MEMORY)?;
+        out.extend((first..first + count).map(|i| pages.get(i)));
+        Ok(out)
+    }
+
+    /// Commit one page (page-aligned `offset`) and return it
+    pub fn commit_page(&self, offset: u64) -> Result<u64, RxStatus> {
+        self.check_range(offset, PAGE)?;
+        let mut pages = self.pages.lock();
+        Self::commit(&mut pages, (offset / PAGE) as usize)
+    }
+
     /// A new VMO holding a copy of `size` bytes from page-aligned `offset`
     /// (bytes past the end of this VMO read as zero). Later writes to
     /// either VMO are not seen by the other.
@@ -266,7 +342,11 @@ impl Vmo {
         let src = self.pages.lock();
         let mut dst = child.pages.lock();
         for i in 0..dst.len() {
-            let Some(&p) = src.get((offset / PAGE) as usize + i) else { break };
+            let j = (offset / PAGE) as usize + i;
+            if j >= src.len() {
+                break;
+            }
+            let p = src.get(j);
             if p != 0 {
                 let q = Self::commit(&mut dst, i)?;
                 unsafe {
@@ -287,7 +367,8 @@ impl Vmo {
         if self.kind == VmoKind::Physical {
             return 0;
         }
-        self.pages.lock().iter().filter(|&&p| p != 0).count()
+        let pages = self.pages.lock();
+        pages.count(0, pages.len())
     }
 
     /// Committed pages in [offset, offset + len)
@@ -297,8 +378,7 @@ impl Vmo {
         }
         let first = (offset / PAGE) as usize;
         let last = offset.saturating_add(len).div_ceil(PAGE) as usize;
-        let pages = self.pages.lock();
-        pages.iter().take(last).skip(first).filter(|&&p| p != 0).count()
+        self.pages.lock().count(first, last)
     }
 }
 
@@ -307,10 +387,8 @@ impl Drop for Vmo {
         if self.kind == VmoKind::Physical || self.kind == VmoKind::Wired {
             return;
         }
-        for &p in self.pages.lock().iter() {
-            if p != 0 {
-                pmm::pmm_free_page(p);
-            }
-        }
+        self.pages.lock().for_each_committed(|p| {
+            pmm::pmm_free_page(p);
+        });
     }
 }

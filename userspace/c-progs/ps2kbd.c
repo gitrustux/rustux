@@ -16,6 +16,7 @@
 // Exit codes: 0 channel closed, 2 no PS/2 controller (init does not
 // restart it), 3 setup failed.
 
+#include <rustux/process.h>
 #include "rx.h"
 
 #define DATA_PORT   0x60
@@ -100,6 +101,7 @@ static int drain(uint8_t *out, int max) {
 }
 
 int main(void) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     rx_handle_t res = rx_take_startup_handle(RX_PA_ROOT_RESOURCE);
     rx_handle_t out = rx_take_startup_handle(RX_PA_USER0);
     rx_handle_t irq;

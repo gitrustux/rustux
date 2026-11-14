@@ -8,6 +8,7 @@
 #
 # Needs qemu-system-x86_64, OVMF, mtools (mformat/mcopy), socat, python3.
 # Default kernel: target/x86_64-unknown-uefi/release/rustux.efi (build.sh).
+# SMP=N (CPUs, default 2) and MEM=SIZE (default 512M) change the machine.
 set -u
 cd "$(dirname "$0")/.."
 EFI=${1:-target/x86_64-unknown-uefi/release/rustux.efi}
@@ -31,7 +32,7 @@ python3 "$(dirname "$0")/make-test-disk.py" make "$W/disk.img" > /dev/null
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
 mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI
-qemu-system-x86_64 -machine q35 -m 512M -smp 2 -bios "$OVMF" -drive file="$W/boot.img",format=raw \
+qemu-system-x86_64 -machine q35 -m "${MEM:-512M}" -smp "${SMP:-2}" -bios "$OVMF" -drive file="$W/boot.img",format=raw \
     -device edu,dma_mask=0xffffffff \
     -drive file="$W/disk.img",if=none,id=vd,format=raw,snapshot=on,file.locking=off -device virtio-blk-pci,drive=vd \
     -drive file="$W/disk.img",if=none,id=nv,format=raw,snapshot=on,file.locking=off -device nvme,drive=nv,serial=rustux \

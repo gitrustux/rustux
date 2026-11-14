@@ -91,6 +91,9 @@ typedef int64_t rx_status_t;
 #define RX_VM_PERM_WRITE   (1u << 1)
 #define RX_VM_PERM_EXECUTE (1u << 2)
 #define RX_VM_SPECIFIC     (1u << 4)
+// Commit every page now (else each is committed when first touched:
+// demand paging); fails with RX_ERR_NO_MEMORY instead of a later fault
+#define RX_VM_MAP_RANGE    (1u << 10)
 
 // Every process's root VMAR is [0x10000, 0x7ffffffff000). Mappings
 // without RX_VM_SPECIFIC go at or above 4 GiB when there is room.

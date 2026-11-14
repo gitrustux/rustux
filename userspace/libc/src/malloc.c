@@ -40,12 +40,18 @@ static volatile int lock;
 
 void __malloc_init(void) {}
 
+// System services ask for their heap to be committed when it is mapped, so
+// running out of memory is a NULL from malloc, not a page fault that ends
+// them (demand paging, DESKTOP.md step F1)
+uint32_t __rx_commit_now; // also thread stacks (thread.c)
+void rx_malloc_commit(int on) { __rx_commit_now = on ? RX_VM_MAP_RANGE : 0; }
+
 // Map `size` bytes (a multiple of 4096) of fresh zeroed memory
 static void *map_pages(uint64_t size) {
     rx_handle_t vmo;
     uint64_t addr = 0;
     if (!rx_vmar_root || rx_vmo_create(size, 0, &vmo) != RX_OK) return 0;
-    rx_status_t r = rx_vmar_map(rx_vmar_root, RX_VM_PERM_READ | RX_VM_PERM_WRITE, 0, vmo, 0, size, &addr);
+    rx_status_t r = rx_vmar_map(rx_vmar_root, RX_VM_PERM_READ | RX_VM_PERM_WRITE | __rx_commit_now, 0, vmo, 0, size, &addr);
     rx_handle_close(vmo);
     return r == RX_OK ? (void *)addr : 0;
 }

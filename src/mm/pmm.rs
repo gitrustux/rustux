@@ -905,7 +905,15 @@ pub fn pmm_alloc_kernel_page() -> RxResult<PAddr> {
 }
 
 /// Allocate a page for user memory (VMO backing pages)
+/// Pages kept for the kernel (page tables, kernel stacks, DMA buffers):
+/// user memory cannot take the last 8 MiB, so a program that touches too
+/// much is the one that runs out (demand paging, step F1), not the kernel
+pub const USER_RESERVE_PAGES: u64 = 2048;
+
 pub fn pmm_alloc_user_page() -> RxResult<PAddr> {
+    if pmm_count_free_pages() < USER_RESERVE_PAGES {
+        return Err(RxStatus::ERR_NO_MEMORY);
+    }
     pmm_alloc_page(PMM_ALLOC_FLAG_USER)
 }
 

@@ -526,6 +526,19 @@ The VMO handle needs `MAP`; each permission needs the matching right
 (`READ`, `WRITE`, `EXECUTE`) on both the VMO and the VMAR handle. Those
 rights also cap what `vmar_protect` can grant later.
 
+**Demand paging** (DESKTOP.md step F1): mapping commits nothing. The
+VMO's pages already committed are put in the page tables; every other page
+is committed (zeroed) and mapped by the page fault handler the first time
+the program touches it, so a 1 GiB mapping touched in 10 places costs 40
+KiB. Syscalls that read or write user memory (`vmo_read`, `channel_read`,
+file I/O, ...) commit the pages of the buffer the same way before they
+copy. A page that cannot be committed (out of memory: user pages may not
+take the last 8 MiB, which stay for the kernel) kills the process that
+touched it with `RETCODE_EXCEPTION`; the kernel goes on. A mapping with no
+permissions is never filled in: the C library puts one page of it under
+every thread stack (a guard page), so a stack overflow kills the process.
+`TASK_STATS` counts committed pages only.
+
 #### VMAR_UNMAP (0x15)
 
 `vmar_unmap(rx_handle_t vmar, uint64_t addr, uint64_t len)` — removes

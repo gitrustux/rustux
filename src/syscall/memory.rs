@@ -132,7 +132,7 @@ pub fn sys_vmar_map(args: SyscallArgs) -> SyscallRet {
     ret((|| {
         let (vmar, vrights) = vmar_of(vh)?;
         let (vmo, orights) = vmo_of(oh, Rights::MAP)?;
-        if options & !(opts::PERMS | opts::SPECIFIC) != 0 {
+        if options & !(opts::PERMS | opts::SPECIFIC | opts::MAP_RANGE) != 0 {
             return Err(RxStatus::ERR_INVALID_ARGS);
         }
         let perms = options & opts::PERMS;
@@ -148,6 +148,12 @@ pub fn sys_vmar_map(args: SyscallArgs) -> SyscallRet {
             None
         };
         user::check(out, 8, true)?;
+        if options & opts::MAP_RANGE != 0 {
+            // Everything committed now, or ERR_NO_MEMORY (and nothing mapped)
+            let start = vmo_offset & !0xFFF;
+            let l = len.checked_add(0xFFF).ok_or(RxStatus::ERR_OUT_OF_RANGE)? & !0xFFF;
+            vmo.commit_range(start, l)?;
+        }
         let base = vmar.aspace.map(vmar.base, vmar.end(), addr, vmo, vmo_offset, len, perms, max)?;
         user::write_u64(out, base)?;
         Ok(0)

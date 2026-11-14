@@ -79,4 +79,8 @@ rx_status_t rx_spawn_as(rx_handle_t job, const rx_creds_t *creds, const char *pa
 // Wait for a process to end and return its exit code (closes `proc`)
 int64_t rx_wait_process(rx_handle_t proc);
 
+// System services: malloc's memory committed when mapped (ENOMEM from
+// malloc instead of being ended by a page fault when memory runs out)
+void rx_malloc_commit(int on);
+
 #endif

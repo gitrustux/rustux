@@ -2883,6 +2883,7 @@ again:
 }
 
 int main(int argc, char **argv) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     int a = 1;
     for (; a < argc && argv[a][0] == '-'; a++)
         if (!strcmp(argv[a], "-r")) read_only = 1;

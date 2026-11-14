@@ -11,6 +11,13 @@
 //! VMO, so the memory stays alive while it is mapped even if every VMO
 //! handle is closed.
 //!
+//! Mappings are lazy (demand paging, DESKTOP.md step F1): mapping puts
+//! the VMO's pages that are already committed in the page tables; the
+//! others are committed and mapped on first touch by the page fault
+//! handler ([`Aspace::fault_in`]), so a large mapping costs only the pages
+//! used. A mapping with no permissions (a guard page) is never filled in:
+//! touching it kills the process.
+//!
 //! A process's root VMAR covers [`ROOT_BASE`, `ROOT_END`): all of user space
 //! except the first 64 KiB, so null-pointer accesses fault. The program
 //! image and stack set up by the kernel's loader are ordinary mappings in
@@ -35,6 +42,9 @@ pub mod opts {
     pub const PERM_WRITE: u32 = 1 << 1;
     pub const PERM_EXECUTE: u32 = 1 << 2;
     pub const SPECIFIC: u32 = 1 << 4;
+    /// Commit every page now (fails with ERR_NO_MEMORY instead of a later
+    /// page fault): for memory that must be there (Zircon's MAP_RANGE)
+    pub const MAP_RANGE: u32 = 1 << 10;
     pub const PERMS: u32 = PERM_READ | PERM_WRITE | PERM_EXECUTE;
 }
 
@@ -127,10 +137,14 @@ impl Aspace {
                 from_hint.or_else(|| find_gap(&inner.maps, lo, hi, len)).ok_or(RxStatus::ERR_NO_MEMORY)?
             }
         };
-        let pages = vmo.commit_range(vmo_offset, len)?;
+        // Only what is committed already; the rest on first touch
+        let pages = vmo.present_pages(vmo_offset, len)?;
         if perms != 0 {
             let flags = pte_flags(perms, vmo.cache_policy());
             for (i, &p) in pages.iter().enumerate() {
+                if p == 0 {
+                    continue;
+                }
                 let va = base + i as u64 * PAGE;
                 if unsafe { kernel_map::map_4k(self.pml4, va, p, flags, alloc_table_page) }.is_err() {
                     for j in 0..i {
@@ -223,13 +237,39 @@ impl Aspace {
         drop(inner);
         crate::arch::amd64::smp::tlb_shootdown(pml4);
         // Pages of a mapping that had no access were never put in the page
-        // tables; they were committed when it was mapped
+        // tables: those already committed go in now, the rest on first touch
         for (va, vmo, off) in remap {
-            let p = vmo.commit_range(off, PAGE)?[0];
-            unsafe { kernel_map::map_4k(pml4, va, p, pte_flags(perms, vmo.cache_policy()), alloc_table_page) }
-                .map_err(|_| RxStatus::ERR_NO_MEMORY)?;
+            let p = vmo.present_pages(off, PAGE)?[0];
+            if p != 0 {
+                unsafe { kernel_map::map_4k(pml4, va, p, pte_flags(perms, vmo.cache_policy()), alloc_table_page) }
+                    .map_err(|_| RxStatus::ERR_NO_MEMORY)?;
+            }
         }
         Ok(())
+    }
+
+    /// Demand paging: the page holding `va` was touched and is not in the
+    /// page tables. If a mapping covers it with the access asked (`write`,
+    /// `exec`), commit the VMO's page and map it. ERR_NOT_FOUND: no mapping
+    /// (or a guard page); ERR_ACCESS_DENIED: not with that access;
+    /// ERR_NO_MEMORY: no page left.
+    pub fn fault_in(&self, va: u64, write: bool, exec: bool) -> Result<(), RxStatus> {
+        let inner = self.inner.lock();
+        if inner.dead {
+            return Err(RxStatus::ERR_BAD_STATE);
+        }
+        let (&k, m) = inner.maps.range(..=va).next_back().ok_or(RxStatus::ERR_NOT_FOUND)?;
+        if va >= k + m.size || m.perms == 0 {
+            return Err(RxStatus::ERR_NOT_FOUND);
+        }
+        if (write && m.perms & opts::PERM_WRITE == 0) || (exec && m.perms & opts::PERM_EXECUTE == 0) {
+            return Err(RxStatus::ERR_ACCESS_DENIED);
+        }
+        let page_va = va & !(PAGE - 1);
+        let p = m.vmo.commit_page(m.vmo_offset + (page_va - k))?;
+        // Another thread may have mapped it meanwhile: the same page again is fine
+        unsafe { kernel_map::map_4k(self.pml4, page_va, p, pte_flags(m.perms, m.vmo.cache_policy()), alloc_table_page) }
+            .map_err(|_| RxStatus::ERR_NO_MEMORY)
     }
 
     /// The process is gone: drop every mapping (returned so the caller drops

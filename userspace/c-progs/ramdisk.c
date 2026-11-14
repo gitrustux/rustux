@@ -60,6 +60,7 @@ static int usage(FILE *f, int code) {
 }
 
 int main(int argc, char **argv) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     int ro = 0, quiet = 0;
     const char *size_arg = 0, *name = "ram#";
     bs = 512;
@@ -80,7 +81,7 @@ int main(int argc, char **argv) {
     rx_handle_t vmo;
     uint64_t addr;
     if (rx_vmo_create(size, 0, &vmo) != RX_OK ||
-        rx_vmar_map(rx_vmar_root, RX_VM_PERM_READ | RX_VM_PERM_WRITE, 0, vmo, 0, size, &addr) != RX_OK) {
+        rx_vmar_map(rx_vmar_root, RX_VM_PERM_READ | RX_VM_PERM_WRITE | RX_VM_MAP_RANGE, 0, vmo, 0, size, &addr) != RX_OK) {
         fprintf(stderr, "ramdisk: not enough memory for %s\n", size_arg);
         return 1;
     }

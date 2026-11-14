@@ -13,6 +13,7 @@
 // devmgr starts it for 1af4:1001 (transitional) and 1af4:1042 (modern).
 // Spec: "Virtual I/O Device (VIRTIO) Version 1.2", sections 2, 4.1, 5.2.
 
+#include <rustux/process.h>
 #include <errno.h>
 #include <rustux/blockdev.h>
 #include <rustux/driver.h>
@@ -173,6 +174,7 @@ static int fl(void *ctx) {
 }
 
 int main(int argc, char **argv) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     if (argc > 1) where = argv[1];
     dev = rx_drv_device();
     if (!dev) {

@@ -485,6 +485,21 @@ fn handle_exception(vector: u64, code: Option<u64>, frame: &InterruptFrame) {
     unsafe { asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)) };
     let name = EXCEPTION_NAMES.get(vector as usize).copied().unwrap_or("exception");
     let user = frame.cs & 3 == 3;
+    // Demand paging (step F1): a user page not present yet is committed and
+    // mapped, and the instruction runs again. Error code bit 0: present
+    // (a protection fault), bit 1: write, bit 4: instruction fetch.
+    let mut oom = false;
+    if vector == 14 && user {
+        let c = code.unwrap_or(0);
+        if c & 1 == 0 {
+            if let Some((_, t)) = rustux::process::run::current_thread() {
+                match t.process.aspace.fault_in(cr2, c & 2 != 0, c & 0x10 != 0) {
+                    Ok(()) => return,
+                    Err(e) => oom = e == rustux::arch::amd64::mm::RxStatus::ERR_NO_MEMORY,
+                }
+            }
+        }
+    }
     let pid = rustux::process::table::PROCESS_TABLE.lock().current_pid().unwrap_or(0);
 
     // Debug port: full detail
@@ -507,6 +522,9 @@ fn handle_exception(vector: u64, code: Option<u64>, frame: &InterruptFrame) {
     if vector == 14 {
         debug_print(" addr=0x");
         print_hex(cr2);
+        if oom {
+            debug_print(" (out of memory: no page for it)");
+        }
     }
     debug_print("\n");
 

@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #define DEFAULT_STACK (256u * 1024u)
+#define GUARD 4096u
 #define MAIN_STACK_SIZE (256u * 1024u)
 #define ROOT_END 0x7ffffffff000ull
 
@@ -86,11 +87,12 @@ static int set_thread_pointer(rx_handle_t thread, struct __pthread *t) {
 // Space for TLS and the control block at the top of a mapping
 static size_t tls_space(void) { return tls_offset + sizeof(struct __pthread) + tcb_align; }
 
+extern uint32_t __rx_commit_now; // rx_malloc_commit (malloc.c)
 static void *map_pages(uint64_t size) {
     rx_handle_t vmo;
     uint64_t addr = 0;
     if (!rx_vmar_root || rx_vmo_create(size, 0, &vmo) != RX_OK) return 0;
-    rx_status_t r = rx_vmar_map(rx_vmar_root, RX_VM_PERM_READ | RX_VM_PERM_WRITE, 0, vmo, 0, size, &addr);
+    rx_status_t r = rx_vmar_map(rx_vmar_root, RX_VM_PERM_READ | RX_VM_PERM_WRITE | __rx_commit_now, 0, vmo, 0, size, &addr);
     rx_handle_close(vmo);
     return r == RX_OK ? (void *)addr : 0;
 }
@@ -377,20 +379,24 @@ int pthread_attr_getstack(const pthread_attr_t *restrict a, void **restrict addr
 }
 int pthread_attr_setdetachstate(pthread_attr_t *a, int state) { a->__s[1] = (unsigned long)state; return 0; }
 int pthread_attr_getdetachstate(const pthread_attr_t *a, int *state) { *state = (int)a->__s[1]; return 0; }
-int pthread_attr_getguardsize(const pthread_attr_t *restrict a, size_t *restrict size) { (void)a; *size = 0; return 0; }
+int pthread_attr_getguardsize(const pthread_attr_t *restrict a, size_t *restrict size) { (void)a; *size = GUARD; return 0; }
 int pthread_attr_setguardsize(pthread_attr_t *a, size_t size) { (void)a; (void)size; return 0; }
 
 int pthread_create(pthread_t *restrict out, const pthread_attr_t *restrict attr, void *(*fn)(void *), void *restrict arg) {
     reap();
     size_t stack = attr && attr->__s[0] ? attr->__s[0] : DEFAULT_STACK;
     stack = align_up(stack, 4096);
-    size_t size = align_up(stack + tls_space(), 4096);
+    // A guard page under the stack (no access: an overflow kills the
+    // process instead of writing into whatever lies below); the stack's
+    // pages are committed as they are touched (demand paging, step F1)
+    size_t size = align_up(GUARD + stack + tls_space(), 4096);
     char *map = map_pages(size);
     if (!map) return EAGAIN;
-    struct __pthread *t = init_block((char *)align_up((size_t)map + stack + tls_offset, tcb_align));
+    rx_vmar_protect(rx_vmar_root, 0, (uint64_t)map, GUARD);
+    struct __pthread *t = init_block((char *)align_up((size_t)map + GUARD + stack + tls_offset, tcb_align));
     t->map = map;
     t->map_size = size;
-    t->stack = map;
+    t->stack = map + GUARD;
     t->stack_size = stack;
     t->fn = fn;
     t->arg = arg;
@@ -401,7 +407,7 @@ int pthread_create(pthread_t *restrict out, const pthread_attr_t *restrict attr,
     if (r == RX_OK) {
         t->handle = h;
         r = set_thread_pointer(h, t);
-        if (r == RX_OK) r = rx_thread_start(h, (uint64_t)__thread_entry, (uint64_t)(map + stack), (uint64_t)t, 0);
+        if (r == RX_OK) r = rx_thread_start(h, (uint64_t)__thread_entry, (uint64_t)(map + GUARD + stack), (uint64_t)t, 0);
         if (r != RX_OK) rx_handle_close(h);
     }
     if (r != RX_OK) {

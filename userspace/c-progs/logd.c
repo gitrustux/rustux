@@ -257,6 +257,7 @@ static void accept_clients(void) {
 }
 
 int main(void) {
+    rx_malloc_commit(1); // a system service: memory committed when mapped (step F1)
     rx_handle_t theirs;
     start_boot();
     if (rx_channel_create(0, &listen_ch, &theirs) != RX_OK || rx_service_publish("/svc/log", theirs) < 0) {

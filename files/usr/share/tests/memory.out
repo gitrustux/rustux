@@ -1,0 +1,18 @@
+vmtest: demand paging
+  ok   a 1 GiB mapping
+  ok   mapping 1 GiB commits nothing
+  ok   touching 10 pages commits 10 pages (40 KiB)
+  ok   the system's free memory drops by little
+  ok   touched pages keep their data; untouched ones read as zero
+  ok   unmapping frees them
+  ok   vmo_write into a page not touched yet shows in the mapping
+  ok   vmo_read into a page not touched yet
+  ok   channel_read into a page not touched yet
+  ok   write() from and read() into pages not touched yet
+  ok   8 threads faulting the same 64 pages: every write kept
+  ok   100 threads with 256 KiB stacks start
+  ok   their stacks are not committed (less than 192 KiB a thread with the kernel stack)
+  ok   a stack overflow hits the guard page: the process is killed
+  ok   running out of memory kills the process that touches too much
+  ok   its memory is all given back
+vmtest: 16 passed, 0 failed
