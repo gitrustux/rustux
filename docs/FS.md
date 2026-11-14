@@ -51,6 +51,11 @@ are `init`'s arguments and are in `/run/cmdline`:
 | `root=SPEC` | the root filesystem: `UUID=...`, `LABEL=...`, `PARTLABEL=...` or a device name (`vda2`); `root=live` or none: from memory, as before |
 | `rootfstype=TYPE` | its type (default: what `blkid` finds) |
 | `ro`, `rw` | mount it read-only (default `rw`) |
+| `rescue`, `single` | the rescue target (step 18, `SERVICES.md`) |
+| `autologin=USER` | log USER in without a password (step 17) |
+| `quiet` | the kernel's own boot lines stay off the screen (still in `dmesg`) (step 19) |
+| `noefi` | no UEFI runtime services: no firmware variables, for firmware that misbehaves (step 19, `BOOT.md`) |
+| `bootfs=PATH` | the boot image from that file on the kernel's EFI partition instead of the one built in (step 19) |
 
 If the root filesystem cannot be mounted, `init` says so and the system
 runs from memory.

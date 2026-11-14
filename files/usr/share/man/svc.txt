@@ -43,6 +43,7 @@ UNIT FILES
     log=console            output on the screen, not in the log
     console=yes            holds the console (login, a shell)
     system_job=yes         gets the system job (to look at and end processes)
+    keep_processes=yes     what it started stays when it ends (mounts)
 
     The unit's stdout and stderr go to the system log under its name
     (logs -u NAME); a line starting <N> (0-7) has priority N. It runs in

@@ -13,8 +13,9 @@
 //                                       (not noauto, not mounted yet)
 //
 // DEV is a block device name (sda1; /dev/sda1 works too), LABEL=name,
-// UUID=XXXX-XXXX, PARTLABEL=name, or EFI: the EFI system partition, on a
-// removable disk if there is one (the stick Rustux started from). An EFI
+// UUID=XXXX-XXXX, PARTLABEL=name, or EFI: the EFI system partition the
+// boot manager (rboot) started from (step 19: LoaderDevicePartUUID), else
+// one on a removable disk if there is one (the stick Rustux started from). An EFI
 // partition on a fixed disk (Windows' own) is mounted read-only unless
 // the options say "rw!".
 // TYPE: vfat (fat, msdos), ext2, ext3, ext4 (steps 15 and 16; features
@@ -43,6 +44,8 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include "efivar.h"
 
 static const char *prog = "mount";
 
@@ -142,6 +145,16 @@ static int find_device(const char *src, char *out, size_t cap, int *fixed_esp) {
     int n = rx_block_list(&all);
     if (n < 0) return n;
     int r = -ENOENT, best = -1;
+    // The partition rboot started from: Rustica's own boot files are there
+    char booted[64];
+    uint8_t bguid[16];
+    if (efi && ev_get_str(EFI_LOADER_GUID, "LoaderDevicePartUUID", booted, sizeof booted) == 0 && rx_guid_parse(booted, bguid) == 0)
+        for (int i = 0; i < n; i++)
+            if ((all[i].flags & RX_BLOCK_FLAG_PARTITION) && !memcmp(all[i].guid, bguid, 16) && is_esp(&all[i])) {
+                snprintf(out, cap, "%s", all[i].name);
+                free(all);
+                return 0;
+            }
     for (int i = 0; i < n && r == -ENOENT; i++) {
         rx_block_info_t *b = &all[i];
         if (by_label || by_uuid) {

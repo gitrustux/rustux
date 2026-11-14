@@ -1,0 +1,24 @@
+[package]
+name = "rboot"
+version = "0.1.0"
+edition = "2021"
+description = "Rustica's boot manager (UEFI)"
+license = "MIT"
+
+# Not part of the kernel's crate: built on its own (see build.sh)
+[workspace]
+
+[[bin]]
+name = "rboot"
+path = "src/main.rs"
+
+[dependencies]
+uefi = { version = "0.36", features = ["alloc", "global_allocator", "panic_handler"] }
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "z"
+
+[profile.dev]
+panic = "abort"

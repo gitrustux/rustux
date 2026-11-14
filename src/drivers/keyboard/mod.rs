@@ -72,14 +72,14 @@ pub unsafe fn init() {
     if !ps2::controller_present() {
         // No keyboard controller - print [NO KEYBOARD] and continue
         // PS/2 is optional - USB HID will be the path for modern systems
-        crate::drivers::display::write_str("[NO KEYBOARD] - PS/2 absent, continuing without keyboard\n");
+        crate::drivers::display::kernel_message("[NO KEYBOARD] - PS/2 absent, continuing without keyboard\n");
         // Mark as initialized but with no backend (allowing graceful degradation)
         INITIALIZED.store(true, Ordering::Release);
         return;
     }
 
     // PS/2 controller present - print [PS/2]
-    crate::drivers::display::write_str("[PS/2] ");
+    crate::drivers::display::kernel_message("[PS/2] ");
 
     // Reset state
     INPUT.lock().buffer = CircularBuffer::new();

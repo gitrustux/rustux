@@ -19,6 +19,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KERNEL_SRC="${SCRIPT_DIR}/target/x86_64-unknown-uefi/release"
 KERNEL_EFI="${KERNEL_SRC}/rustux.efi"
+# The boot manager (step 19); RBOOT=0 boots the kernel directly as before
+RBOOT_EFI="${SCRIPT_DIR}/rboot/target/x86_64-unknown-uefi/release/rboot.efi"
+RBOOT="${RBOOT:-1}"
 OUTPUT_DIR="${OUTPUT_DIR:-/var/www/rustux.com/html/rustica}"
 BUILD_DIR="${SCRIPT_DIR}/.build-live"
 VERSION="${RUSTUX_VERSION:-0.1.0}"
@@ -98,9 +101,23 @@ create_disk_image() {
     log_info "Creating EFI directory structure..."
     mkdir -p "$mount_dir/EFI/BOOT"
 
-    # Copy kernel as BOOTX64.EFI
-    log_info "Installing kernel as BOOTX64.EFI..."
-    cp "$KERNEL_EFI" "$mount_dir/EFI/BOOT/BOOTX64.EFI"
+    if [ "$RBOOT" = 1 ] && [ -f "$RBOOT_EFI" ]; then
+        # rboot first (BOOTX64.EFI), the kernel in \EFI\Rustica, one entry
+        # with no options: the kernel then reads \EFI\BOOT\cmdline.txt if
+        # there is one, and otherwise runs from memory (live)
+        log_info "Installing rboot as BOOTX64.EFI, the kernel as \\EFI\\Rustica\\rustux.efi..."
+        mkdir -p "$mount_dir/EFI/Rustica" "$mount_dir/loader/entries"
+        cp "$RBOOT_EFI" "$mount_dir/EFI/BOOT/BOOTX64.EFI"
+        cp "$RBOOT_EFI" "$mount_dir/EFI/Rustica/rboot.efi"
+        cp "$KERNEL_EFI" "$mount_dir/EFI/Rustica/rustux.efi"
+        printf 'default rustica\ntimeout 5\n' > "$mount_dir/loader/loader.conf"
+        printf 'title Rustica\nefi /EFI/Rustica/rustux.efi\n' > "$mount_dir/loader/entries/rustica.conf"
+    else
+        [ "$RBOOT" = 1 ] && log_warn "rboot not built ($RBOOT_EFI): the kernel boots directly"
+        # Copy kernel as BOOTX64.EFI
+        log_info "Installing kernel as BOOTX64.EFI..."
+        cp "$KERNEL_EFI" "$mount_dir/EFI/BOOT/BOOTX64.EFI"
+    fi
 
     local kernel_size=$(du -h "$KERNEL_EFI" | cut -f1)
     log_info "Kernel installed: BOOTX64.EFI ($kernel_size)"

@@ -85,6 +85,8 @@ uses).
 | `poweroff`, `reboot` | root (or `sudo poweroff`): init stops the services (logd last), writes out and marks clean every filesystem, then the power |
 | `svc` (`systemctl`) | the service manager (step 18, `SERVICES.md`): `list` (`list-units`, `list-unit-files`), `status [UNIT]` (with the unit's last log lines), `start stop restart`, `enable disable [--now]`, `reload` (`daemon-reload`), `reset-failed`, `isolate rescue|multi-user`, `is-active is-enabled is-failed`, `cat`, `show`, `get-default`, `poweroff`, `reboot`; `--json`; units are `/etc/svc/NAME.svc`; no `mask`, timers, sockets |
 | `logs` (`journalctl`) | the system log (`/var/log/system.log`): `-u -t -k -b [N] -p -g -S/--since -U/--until -n -r -f -o short|short-iso|json|cat --list-boots --disk-usage`; root and group adm; no `--vacuum`, `--rotate`, `-D` |
+| `efibootmgr` | the firmware's boot entries (step 19, `BOOT.md`): list (`-v`), `-o` order, `-n`/`-N` BootNext, `-b N -B` delete, `-a`/`-A`, `-t`/`-T` timeout, `-c [-d DISK -p PART] [-l LOADER] [-L LABEL]` (default: rboot on the ESP this boot came from); changes: root; no `-r` (driver entries), `-e`, `-@` |
+| `bootctl` | the boot manager rboot through systemd's loader variables (step 19): `status`, `list`, `set-default`, `set-oneshot`, `set-timeout`, `set-timeout-oneshot`, `reboot-to-firmware`, `is-installed`, `--esp-path=`; no `install`, `update`, `remove` yet (step 20) |
 | `logger` | `-t TAG -p [FACILITY.]PRIO -s -f FILE [MESSAGE]`; to logd (`/svc/log`); no `--journald`, `-u` |
 | `dmesg` | the kernel's log since boot (the last 64 KiB); `logs -k` has it with times |
 | `hostname` | `hostname NAME` writes `/etc/hostname` (root) |

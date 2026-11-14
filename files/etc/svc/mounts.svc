@@ -3,4 +3,6 @@ description=Mount the filesystems in /etc/fstab
 type=oneshot
 exec=/bin/mount -a
 after=logd
+# the filesystem servers mount starts stay when it ends
+keep_processes=yes
 target=multi-user rescue

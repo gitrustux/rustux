@@ -46,7 +46,7 @@ pub type Result<T> = core::result::Result<T, UsbError>;
 
 /// Print to the screen and the debug port
 pub(crate) fn log(s: &str) {
-    crate::drivers::display::write_str(s);
+    crate::drivers::display::kernel_message(s);
     for &b in s.as_bytes() {
         unsafe { crate::klog::put(b) };
     }

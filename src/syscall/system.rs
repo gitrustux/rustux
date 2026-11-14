@@ -120,3 +120,92 @@ pub fn sys_system_powerctl(args: SyscallArgs) -> SyscallRet {
         }
     })())
 }
+
+/// The argument block of efi_variable (`rx_efi_var_t` in <rustux/syscalls.h>)
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EfiVarArg {
+    guid: [u8; 16],
+    attributes: u32,
+    name_len: u32, // u16 units: GET/SET the name with its NUL; NEXT the buffer's room
+    name: u64,
+    data: u64,
+    data_len: u64, // GET: in the room, out the size (or the size needed)
+}
+
+pub const EFI_VAR_GET: u32 = 0;
+pub const EFI_VAR_SET: u32 = 1;
+pub const EFI_VAR_NEXT: u32 = 2;
+
+/// efi_variable(op, *rx_efi_var_t) — the firmware's variables (step 19):
+/// GET (anyone), SET (root; no data deletes), NEXT (anyone: name and guid
+/// become the next variable's; "" starts). NOT_SUPPORTED without runtime
+/// services (`noefi`, or not booted through UEFI); BUFFER_TOO_SMALL with
+/// the size needed in data_len (GET) or name_len (NEXT).
+pub fn sys_efi_variable(args: SyscallArgs) -> SyscallRet {
+    let (op, ptr) = (args.arg_u32(0), args.arg(1));
+    ret((|| -> R<usize> {
+        #[cfg(not(feature = "uefi"))]
+        {
+            let _ = (op, ptr);
+            return Err(RxStatus::ERR_NOT_SUPPORTED);
+        }
+        #[cfg(feature = "uefi")]
+        {
+            let raw = user::read_bytes(ptr, core::mem::size_of::<EfiVarArg>())?;
+            let mut a: EfiVarArg = unsafe { core::ptr::read_unaligned(raw.as_ptr() as *const EfiVarArg) };
+            if a.name_len == 0 || a.name_len > 1024 || a.data_len > 64 * 1024 {
+                return Err(RxStatus::ERR_INVALID_ARGS);
+            }
+            let nb = user::read_bytes(a.name as usize, a.name_len as usize * 2)?;
+            let mut name: alloc::vec::Vec<u16> = nb.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            let write_back = |a: &EfiVarArg| -> R<()> {
+                let bytes = unsafe { core::slice::from_raw_parts(a as *const EfiVarArg as *const u8, core::mem::size_of::<EfiVarArg>()) };
+                user::write_bytes(ptr, bytes)
+            };
+            match op {
+                EFI_VAR_GET => {
+                    let mut buf = alloc::vec![0u8; a.data_len as usize];
+                    match crate::efi::get(&name, a.guid, &mut buf) {
+                        Ok((attrs, n)) => {
+                            user::write_bytes(a.data as usize, &buf[..n])?;
+                            a.attributes = attrs;
+                            a.data_len = n as u64;
+                            write_back(&a)?;
+                            Ok(0)
+                        }
+                        Err((e, need)) => {
+                            if e == RxStatus::ERR_BUFFER_TOO_SMALL {
+                                a.data_len = need as u64;
+                                write_back(&a)?;
+                            }
+                            Err(e)
+                        }
+                    }
+                }
+                EFI_VAR_SET => {
+                    if !super::object::current_process()?.creds.lock().is_root() {
+                        return Err(RxStatus::ERR_ACCESS_DENIED);
+                    }
+                    let data = user::read_bytes(a.data as usize, a.data_len as usize)?;
+                    crate::efi::set(&name, a.guid, a.attributes, &data).map(|_| 0)
+                }
+                EFI_VAR_NEXT => {
+                    let mut guid = a.guid;
+                    match crate::efi::next(&mut name, &mut guid) {
+                        Ok(()) => {
+                            let len = name.iter().position(|&c| c == 0).map_or(name.len(), |p| p + 1);
+                            let out: alloc::vec::Vec<u8> = name[..len].iter().flat_map(|c| c.to_le_bytes()).collect();
+                            user::write_bytes(a.name as usize, &out)?;
+                            a.guid = guid;
+                            write_back(&a)?;
+                            Ok(0)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                _ => Err(RxStatus::ERR_INVALID_ARGS),
+            }
+        }
+    })())
+}

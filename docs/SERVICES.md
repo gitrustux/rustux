@@ -37,6 +37,7 @@ so the directory is `/etc/svc`): `key=value` lines, `#` comments,
 | `log` | `console`: stdout and stderr to the screen instead of the log |
 | `console` | `yes`: the unit holds the console (fds 0-2 are the console, with the shell's control channel) |
 | `system_job` | `yes`: it gets the system job (to look at and end other processes: authd) |
+| `keep_processes` | `yes`: what it started stays when its program ends (`mounts`: the filesystem servers, which end when the filesystems are shut down); not ended by `svc stop` or at power-off either (step 19) |
 
 systemd's spellings `ExecStart`, `Requires`, `WantedBy`, `RestartSec`,
 `Environment`, `WorkingDirectory` are accepted too. Unknown keys are logged
@@ -52,7 +53,7 @@ The image's units:
 |------|------|---------|
 | `logd` | the system log, `ready=/svc/log`, output on the screen | multi-user, rescue |
 | `authd` | su, sudo, passwd; `system_job` | multi-user |
-| `mounts` | `mount -a` (oneshot) | multi-user, rescue |
+| `mounts` | `mount -a` (oneshot, `keep_processes`) | multi-user, rescue |
 | `console` | `login` (with `-f USER` for autologin) | multi-user |
 | `rescue-shell` | a root shell, no login | rescue |
 | `emergency` | built in, never in a file: a root shell when nothing else can hold the console | none |
@@ -73,8 +74,8 @@ step 17).
   (`rx_spawn_as`, as `login` does): its uid, gid and groups from
   `/etc/passwd` and `/etc/group`, and their environment.
 - **Jobs.** Each unit runs in a job of its own; when its program ends,
-  init ends the job, so nothing it started is left over. Stopping a unit
-  ends the job.
+  init ends the job, so nothing it started is left over (unless
+  `keep_processes`). Stopping a unit ends the job.
 - **Output.** Its stdout and stderr are one end of a socket; logd reads the
   other end (`RX_LOG_OP_STREAM`, which only root may send) and records
   each line under the unit's name, with its pid and uid. A line starting
@@ -161,3 +162,6 @@ RESTART, ENABLE, DISABLE, RELOAD, RESET_FAILED and ISOLATE are root's
   sockets (lost) until they restart.
 - `svc isolate` from the rescue shell ends that shell before `svc` can
   print.
+- A filesystem mounted by hand from a session runs its server in the
+  session's job: logging out ends it (the mounts of `/etc/fstab` are
+  safe: `keep_processes`).

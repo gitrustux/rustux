@@ -34,4 +34,4 @@ USERS
     that are enforced. man users.
 
 SEE ALSO
-    man intro, man shell, man top, man users, man svc, man logs, uname -a
+    man intro, man shell, man top, man users, man svc, man logs, man rboot, uname -a

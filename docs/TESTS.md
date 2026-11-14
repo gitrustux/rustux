@@ -205,6 +205,23 @@ authd or login. `e2fsck -f` finds the disk clean after each boot, and the
 log on the disk has the three boots, kernel lines, the unit's line with
 uid 1000, mode 0640 root:adm.
 
+## Boot manager test (step 19)
+
+`scripts/run-rboot-test.sh` boots QEMU with OVMF's code and a variable
+store of its own (kept between the boots, as a computer keeps its
+variables) and two GPT disks made by `scripts/gpt-wrap.py`: an ESP with
+rboot, the kernel, `loader.conf` and two entries (one with `quiet`, one
+with `bootfs=`), and a disk with stand-ins for Windows and Debian
+(`rboot/src/bin/fakeos.rs`: it writes `FAKEOS <path> [<options>]` to the
+debug port and powers off). Six boots: the menu to Windows, to Debian;
+`e` and ` noefi` (the kernel's `[BOOT] command line` and efibootmgr's
+"no UEFI runtime services"); the default after the countdown, where
+`efibootmgr -c` makes a firmware entry and `bootctl` sets the default to
+the recovery entry and the timeout to 1 s; the firmware starting that
+entry (`BootCurrent`) and rboot the recovery entry (rescue mode), with
+`bootctl reboot-to-firmware`; and the `bootfs=` entry (`[INIT] boot image
+from bootfs=`). rboot must be built (`build.sh` does it).
+
 ## Run in QEMU
 
 ```bash

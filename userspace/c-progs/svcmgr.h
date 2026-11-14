@@ -48,7 +48,7 @@ enum { R_NO, R_ON_FAILURE, R_ALWAYS };
 
 typedef struct {
     char name[32], desc[96], exec[256], user[32], needs[160], after[160], env[512], dir[128], ready[64];
-    int type, restart, restart_ms, start_limit, targets, console, system_job, log_console;
+    int type, restart, restart_ms, start_limit, targets, console, system_job, log_console, keep_processes;
 } ucfg_t;
 
 typedef struct {
@@ -56,6 +56,7 @@ typedef struct {
     int present, builtin, enabled;
     int state, restart_pending;
     rx_handle_t proc, job;
+    rx_handle_t kept_job;  // keep_processes: the job of an ended run, left alone
     uint64_t pid;
     int64_t since_ms, last_code;
     int64_t deadline;      // monotonic ns: the restart (RESTART_WAIT), giving up on ready (STARTING)
@@ -76,7 +77,7 @@ static int64_t mono_ns(void) { return (int64_t)rx_clock_get_monotonic(); }
 static const char *const builtin_units[][2] = {
     { "logd", "description=System log (/svc/log)\nexec=/bin/logd\nready=/svc/log\nrestart=always\nlog=console\ntarget=multi-user rescue\n" },
     { "authd", "description=Authentication: su, sudo, passwd (/svc/auth)\nexec=/bin/authd\nafter=logd\nrestart=always\nsystem_job=yes\ntarget=multi-user\n" },
-    { "mounts", "description=Mount the filesystems in /etc/fstab\ntype=oneshot\nexec=/bin/mount -a\nafter=logd\ntarget=multi-user rescue\n" },
+    { "mounts", "description=Mount the filesystems in /etc/fstab\ntype=oneshot\nexec=/bin/mount -a\nafter=logd\nkeep_processes=yes\ntarget=multi-user rescue\n" },
     { "console", "description=Login on the console\nexec=/bin/login\nafter=logd authd\nconsole=yes\nrestart=always\nrestart_delay=0\nstart_limit=0\ntarget=multi-user\n" },
     { "rescue-shell", "description=Root shell on the console (rescue mode)\nexec=/bin/shell\nafter=logd\nconsole=yes\nrestart=always\nrestart_delay=0\nstart_limit=0\ntarget=rescue\n" },
 };
@@ -210,6 +211,7 @@ static void unit_parse(ucfg_t *c, const char *name, const char *text, const char
             if (strstr(v, "rescue")) c->targets |= TGT_RESCUE;
         } else if (!strcmp(k, "console")) c->console = yes;
         else if (!strcmp(k, "system_job")) c->system_job = yes;
+        else if (!strcmp(k, "keep_processes")) c->keep_processes = yes;
         else if (!strcmp(k, "log")) c->log_console = !strcmp(v, "console");
         else ulog(LOG_WARNING, "%s:%d: unknown key %s", where, lineno, k);
     }
@@ -566,11 +568,17 @@ static int recent_starts(unit_t *u) {
     return n;
 }
 
-// Its main process has ended (the rest of its job goes with it)
+// Its main process has ended (the rest of its job goes with it, unless
+// keep_processes: the mounts' filesystem servers stay, and end when the
+// filesystems are shut down)
 static void unit_ended(unit_t *u) {
     int64_t code = rx_wait_process(u->proc);
     u->proc = 0;
-    if (u->job) {
+    if (u->job && u->c.keep_processes) {
+        if (u->kept_job) rx_handle_close(u->kept_job);
+        u->kept_job = u->job;
+        u->job = 0;
+    } else if (u->job) {
         rx_task_kill(u->job);
         rx_handle_close(u->job);
         u->job = 0;

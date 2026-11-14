@@ -1,0 +1,25 @@
+rboot - the boot manager
+
+    rboot starts at power-on (from \EFI\BOOT\BOOTX64.EFI on the stick, or
+    from a firmware entry for \EFI\Rustica\rboot.efi) and shows what can
+    be started:
+
+      Rustica                       the system
+      Rustica (recovery)            a root shell, no login (rescue)
+      Rustica (live, in memory)     the system from memory, disks untouched
+      Windows Boot Manager          found on the disks
+      Linux (...)                   shim, GRUB or systemd-boot found
+      Firmware setup                restarts into the firmware's setup
+
+    Up/Down choose, Enter starts, e edits the command line once (Enter
+    starts, Esc cancels), d makes the choice the default. Any key stops
+    the countdown.
+
+    Its settings are on the EFI partition: \loader\loader.conf (default,
+    timeout, editor, auto-entries, auto-firmware) and one file per entry
+    in \loader\entries (title, efi, options, bootfs, sort-key), as
+    systemd-boot's. Kernel command line words: root=, rescue, quiet,
+    autologin=, noefi, bootfs= (man rustux, docs/FS.md).
+
+SEE ALSO
+    bootctl, efibootmgr, docs/BOOT.md

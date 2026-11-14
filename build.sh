@@ -78,6 +78,12 @@ fi
 echo -e "${GREEN}✓${NC} Kernel built successfully"
 echo ""
 
+# The boot manager (step 19): its own crate in rboot/
+echo "[Step 2b] Building the boot manager (rboot)..."
+(cd rboot && cargo build --release --target x86_64-unknown-uefi)
+echo -e "${GREEN}✓${NC} rboot built: rboot/target/x86_64-unknown-uefi/release/rboot.efi"
+echo ""
+
 # ============================================================================
 # Step 3: Create disk image
 # ============================================================================

@@ -23,6 +23,7 @@ bitflags = "2.4"
 
 # UEFI support (only for binary target, optional)
 uefi = { version = "0.36", features = ["alloc"], optional = true }
+uefi-raw = { version = "0.13", optional = true }
 
 [features]
 default = []
@@ -33,7 +34,7 @@ riscv64 = []
 # Enable kernel test mode (includes test_entry and interrupt tests)
 kernel_test = []
 # Enable UEFI kernel (for the binary target)
-uefi_kernel = ["uefi", "standalone"]
+uefi_kernel = ["uefi", "uefi-raw", "standalone"]
 # Defines the kernel global allocator (src/mm/allocator.rs)
 standalone = []
 # Do not start the other CPU cores (escape hatch for bring-up problems)

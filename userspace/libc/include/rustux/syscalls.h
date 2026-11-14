@@ -496,6 +496,24 @@ static inline rx_status_t rx_timer_create(uint32_t options, uint32_t clock_id, r
 static inline rx_status_t rx_timer_set(rx_handle_t h, uint64_t deadline, uint64_t slack) { return RX_SYS(0x42, h, deadline, slack, 0); }
 static inline rx_status_t rx_timer_cancel(rx_handle_t h) { return RX_SYS(0x43, h, 0, 0, 0); }
 
+// UEFI variables (step 19): the firmware's (boot entries, BootOrder, the
+// boot manager's settings). GET and NEXT for anyone, SET for root (no data
+// deletes the variable). RX_ERR_NOT_SUPPORTED without runtime services
+// (noefi on the kernel command line); RX_ERR_BUFFER_TOO_SMALL with the
+// size needed in data_len. docs/SYSCALL.md, c-progs/efivar.h.
+typedef struct {
+    uint8_t guid[16];       // as EFI keeps it in memory (as rx_guid_parse makes it)
+    uint32_t attributes;    // EFI_VARIABLE_*: 1 non-volatile, 2 boot services, 4 runtime
+    uint32_t name_len;      // in u16 units: the name with its NUL (NEXT: the buffer's room)
+    uint64_t name;          // uint16_t *: UTF-16
+    uint64_t data;
+    uint64_t data_len;      // GET: in the room, out the size
+} rx_efi_var_t;
+#define RX_EFI_VAR_GET  0u
+#define RX_EFI_VAR_SET  1u
+#define RX_EFI_VAR_NEXT 2u
+static inline rx_status_t rx_efi_variable(uint32_t op, rx_efi_var_t *v) { return RX_SYS(0x9A, op, v, 0, 0); }
+
 // Ends the process at once (no stdio flush; use exit() for that)
 __attribute__((noreturn)) static inline void rx_exit(int64_t code) {
     RX_SYS(0x06, code, 0, 0, 0);

@@ -1106,6 +1106,22 @@ pub fn size() -> (usize, usize) {
     (COLS.load(Ordering::Relaxed), ROWS.load(Ordering::Relaxed))
 }
 
+static QUIET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// `quiet` on the kernel command line (step 19): the kernel's own boot
+/// messages ([`kernel_message`]) stay off the screen (they are still in
+/// the kernel log)
+pub fn set_quiet(q: bool) {
+    QUIET.store(q, Ordering::Relaxed);
+}
+
+/// A boot message of the kernel's: on the screen unless `quiet`
+pub fn kernel_message(s: &str) {
+    if !QUIET.load(Ordering::Relaxed) {
+        write_str(s);
+    }
+}
+
 /// Write a string to the console
 pub fn write_str(s: &str) {
     if let Some(console) = CONSOLE.lock().as_mut() {

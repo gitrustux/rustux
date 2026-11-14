@@ -57,6 +57,10 @@ fn main() -> Status {
     }
     record_kernel_image();
     capture_cmdline();
+    capture_bootfs();
+    if let Some(st) = uefi::table::system_table_raw() {
+        rustux::efi::note_system_table(st.as_ptr() as u64);
+    }
     let memory_map = unsafe { uefi::boot::exit_boot_services(None) };
     record_phys_limit(&memory_map);
 
@@ -126,6 +130,18 @@ fn kernel_main() -> ! {
                 debug_print("[VM] Kernel page tables active, physical memory mapped at 0x");
                 print_hex(kernel_map::HHDM_BASE);
                 debug_print("\n");
+                // The firmware's runtime services move to kernel addresses
+                // while the boot identity map is still there (step 19)
+                debug_print("[BOOT] command line: ");
+                debug_print(cmdline());
+                debug_print("\n");
+                if cmdline_has("noefi") {
+                    debug_print("[EFI] noefi: no runtime services\n");
+                } else {
+                    debug_print("[EFI] ");
+                    debug_print(rustux::efi::init());
+                    debug_print("\n");
+                }
             }
             Err(e) => {
                 debug_print("[VM] FATAL: ");
@@ -278,6 +294,7 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     debug_print("╔══════════════════════════════════════════════════════════╗\n");
     debug_print("║  PHASE 6B: Initializing Display Console                   ║\n");
     debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
+    rustux::drivers::display::set_quiet(cmdline_has("quiet"));
     unsafe {
         init_display_console();
     }
@@ -315,7 +332,7 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
             if n >= 10 { b[i] = b'0' + (n / 10) as u8; i += 1; }
             b[i] = b'0' + (n % 10) as u8;
             b[i + 1] = b'\n';
-            rustux::drivers::display::write_str(core::str::from_utf8_unchecked(&b[..i + 2]));
+            rustux::drivers::display::kernel_message(core::str::from_utf8_unchecked(&b[..i + 2]));
         }
 
         // init gets the root resource (to start drivers), the kernel's
@@ -329,10 +346,18 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
         #[repr(C, align(4096))]
         struct PageAligned<B: ?Sized>(B);
         static BOOT_PAGES: &PageAligned<[u8]> = &PageAligned(*include_bytes!(concat!(env!("OUT_DIR"), "/bootfs.img")));
-        let boot_image: &[u8] = &BOOT_PAGES.0;
-        let base = rustux::arch::amd64::mm::kernel_map::virt_to_phys(boot_image.as_ptr() as u64);
+        // bootfs=PATH on the command line: that file, loaded before
+        // ExitBootServices (step 19); else the image built into the kernel
+        let (loaded, loaded_len) = *BOOTFS_FILE.get();
+        let boot_image: &[u8] = if loaded != 0 {
+            debug_print("[INIT] boot image from bootfs=\n");
+            core::slice::from_raw_parts(rustux::arch::amd64::mm::kernel_map::phys_to_virt(loaded) as *const u8, loaded_len)
+        } else {
+            &BOOT_PAGES.0
+        };
+        let base = if loaded != 0 { loaded } else { rustux::arch::amd64::mm::kernel_map::virt_to_phys(boot_image.as_ptr() as u64) };
         let (kbase, ksize) = rustux::arch::amd64::mm::kernel_map::kernel_image();
-        assert!(base >= kbase && base + boot_image.len() as u64 <= kbase + ksize, "boot image outside the kernel image");
+        assert!(loaded != 0 || (base >= kbase && base + boot_image.len() as u64 <= kbase + ksize), "boot image outside the kernel image");
         let bootfs = rustux::kobj::Vmo::new_wired(base, boot_image.len() as u64).expect("boot image VMO");
         let read_only = Rights::BASIC | Rights::READ | Rights::MAP | Rights::GET_PROPERTY;
         let extra = alloc::vec![
@@ -797,6 +822,61 @@ fn set_cmdline(text: &[u8]) -> bool {
     n > 0
 }
 
+/// Whether the command line has `word` (alone, or as `word=...`)
+fn cmdline_has(word: &str) -> bool {
+    cmdline().split(' ').any(|w| w == word)
+}
+
+/// The value of `key=` on the command line
+fn cmdline_value(key: &str) -> Option<&'static str> {
+    cmdline().split(' ').find_map(|w| w.strip_prefix(key).and_then(|r| r.strip_prefix('=')))
+}
+
+/// A boot image from the EFI partition (`bootfs=\EFI\Rustica\bootfs.img`):
+/// physical address (page aligned, padded with zeros) and length
+static BOOTFS_FILE: rustux::sync::BootCell<(u64, usize)> = rustux::sync::BootCell::new((0, 0));
+
+fn capture_bootfs() {
+    use uefi::boot::{self, AllocateType, MemoryType};
+    use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode};
+    let Some(path) = cmdline_value("bootfs") else { return };
+    let mut wide = [0u16; 260];
+    let mut n = 0;
+    for b in path.bytes() {
+        if n == wide.len() - 1 {
+            return;
+        }
+        wide[n] = if b == b'/' { b'\\' as u16 } else { b as u16 };
+        n += 1;
+    }
+    let Ok(name) = uefi::CStr16::from_u16_with_nul(&wide[..n + 1]) else { return };
+    let Ok(mut sfs) = boot::get_image_file_system(boot::image_handle()) else { return };
+    let Ok(mut root) = sfs.open_volume() else { return };
+    let Ok(handle) = root.open(name, FileMode::Read, FileAttribute::empty()) else { return };
+    let Some(mut file) = handle.into_regular_file() else { return };
+    let mut info_buf = [0u8; 512];
+    let Ok(info) = file.get_info::<FileInfo>(&mut info_buf) else { return };
+    let size = info.file_size() as usize;
+    if size == 0 {
+        return;
+    }
+    let pages = (size + 4095) / 4096;
+    // LOADER_DATA: the kernel's PMM leaves it alone
+    let Ok(mem) = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages) else { return };
+    let buf = unsafe { core::slice::from_raw_parts_mut(mem.as_ptr(), pages * 4096) };
+    buf.fill(0);
+    let mut got = 0;
+    while got < size {
+        match file.read(&mut buf[got..size]) {
+            Ok(0) | Err(_) => break,
+            Ok(k) => got += k,
+        }
+    }
+    if got == size {
+        unsafe { *BOOTFS_FILE.boot_mut() = (mem.as_ptr() as u64, pages * 4096) };
+    }
+}
+
 fn printable(text: &[u8]) -> bool {
     !text.is_empty() && text.iter().all(|&b| (0x20..0x7f).contains(&b))
 }
@@ -864,6 +944,7 @@ fn record_phys_limit(map: &impl uefi::mem::memory_map::MemoryMap) {
     use rustux::arch::amd64::mm::kernel_map::note_phys_limit;
     use uefi::mem::memory_map::MemoryType;
     for desc in map.entries() {
+        rustux::efi::note_descriptor(desc);
         note_phys_limit(desc.phys_start + desc.page_count * 4096);
         if desc.ty == MemoryType::CONVENTIONAL {
             rustux::mm::pmm::note_usable_memory(desc.phys_start, desc.page_count);

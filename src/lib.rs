@@ -118,6 +118,10 @@ pub mod drivers;
 /// Kernel objects reached through handles (events, timers, channels, ...)
 pub mod kobj;
 
+/// UEFI runtime services: the firmware's variables (step 19)
+#[cfg(feature = "uefi")]
+pub mod efi;
+
 // Re-export commonly used types
 pub use traits::{
     InterruptController,

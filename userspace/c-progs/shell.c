@@ -2531,6 +2531,7 @@ static void cmd_help(void) {
            "         id whoami uname nproc expr man\n"
            "  system: ps top kill uptime free dmesg hostname reboot poweroff timedatectl localectl\n"
            "  services: svc (systemctl) logs (journalctl) logger (man svc, man logs)\n"
+           "  boot: bootctl efibootmgr (man rboot)\n"
            "  users: id whoami groups su sudo passwd useradd userdel usermod groupadd groupdel\n"
            "         chpasswd chmod chown chgrp (man users)\n"
            "  tests: runtests systest fstest libctest threadtest objtest ipctest spawntest\n"

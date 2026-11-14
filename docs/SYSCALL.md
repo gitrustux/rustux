@@ -921,6 +921,7 @@ local time (as Windows does), correcting by the offset of the zone in
 | `USB_CONTROL` | 0x97 | A control request to its interface | ✅ |
 | `USB_CLEAR_HALT` | 0x98 | Recover a bulk endpoint | ✅ |
 | `USB_RESET` | 0x99 | Reset a stuck device's port; it is enumerated again | ✅ |
+| `EFI_VARIABLE` | 0x9A | Read, write and list the firmware's UEFI variables (step 19) | ✅ |
 
 `system_get_version(char *buf, size_t len)` writes
 `Rustux <version> (git <hash>, built <date>) x86_64` with a NUL and
@@ -1002,6 +1003,33 @@ completion that came too late) is not taken for the current transfer's.
 On a time-out the kernel logs the endpoint's state and dequeue pointer
 (still on the transfer's TRB: the device never took or gave the data),
 the controller's status and the port's.
+
+#### UEFI variables (0x9A, step 19)
+
+`efi_variable(u32 op, rx_efi_var_t *v)` with `rx_efi_var_t { u8 guid[16];
+u32 attributes; u32 name_len; u64 name; u64 data; u64 data_len; }` (the
+GUID in EFI's memory layout, the name UTF-16 with `name_len` units
+including its NUL):
+
+- `RX_EFI_VAR_GET` (0, anyone): the data into `data` (room `data_len`);
+  `attributes` and `data_len` are written back. `ERR_NOT_FOUND`;
+  `ERR_BUFFER_TOO_SMALL` with the size needed in `data_len`.
+- `RX_EFI_VAR_SET` (1, root: the caller's effective uid 0): `data_len`
+  bytes with `attributes` (1 non-volatile, 2 boot services, 4 runtime);
+  no data deletes the variable. `ERR_ACCESS_DENIED` for others or a
+  write-protected variable.
+- `RX_EFI_VAR_NEXT` (2, anyone): `name` (room `name_len` units; "" to
+  start) and `guid` become the next variable's; `ERR_NOT_FOUND` at the
+  end.
+
+`ERR_NOT_SUPPORTED` when there are no runtime services (`noefi`, or
+SetVirtualAddressMap failed). At boot the kernel moves the runtime
+services to its own addresses (`src/efi.rs`): code and data at their
+direct-map address, runtime MMIO uncached in the MMIO window, then
+SetVirtualAddressMap while the boot identity map is still there. Calls
+are serialised, run with interrupts off and keep the caller's SSE
+registers. `c-progs/efivar.h` wraps it (strings, load options, device
+paths) for `efibootmgr`, `bootctl` and `mount`.
 
 USB polling (keyboards, port changes) runs in the timer tick; events
 that arrive while a transfer or command waits for its own completion are

@@ -225,7 +225,7 @@ pub unsafe fn ps2_controller_init() {
         line[pos] = h[0];
         line[pos + 1] = h[1];
     }
-    crate::drivers::display::write_str(core::str::from_utf8_unchecked(&line));
+    crate::drivers::display::kernel_message(core::str::from_utf8_unchecked(&line));
     for &b in line.iter() {
         crate::klog::put(b);
     }

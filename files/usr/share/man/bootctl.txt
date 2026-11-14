@@ -1,0 +1,36 @@
+bootctl - the boot manager's settings
+
+USAGE
+    bootctl [status]
+    bootctl list
+    bootctl set-default ID | set-oneshot ID
+    bootctl set-timeout SECONDS | set-timeout-oneshot SECONDS
+    bootctl reboot-to-firmware [yes|no]
+    bootctl is-installed
+    --esp-path=DIR    the EFI partition (default /boot/efi)
+
+    rboot, Rustica's boot manager, shows a menu at power-on: Rustica,
+    Rustica (recovery), Rustica (live, in memory), Windows and Linux if
+    it finds them, the firmware setup. bootctl talks to it through UEFI
+    variables, as systemd's bootctl does with systemd-boot.
+
+    status shows the boot manager, the entry this boot came from, the
+    default and the timeout, and the firmware's boot order. list shows the
+    menu's entries by id. set-default chooses the entry rboot starts when
+    nobody presses a key ("" goes back to loader.conf's); set-oneshot only
+    for the next boot. set-timeout overrides loader.conf's timeout (0:
+    no menu unless a key is held). reboot-to-firmware: the next restart
+    goes into the firmware's setup.
+
+    Changes need root.
+
+FILES
+    /boot/efi/loader/loader.conf, /boot/efi/loader/entries/*.conf
+
+EXAMPLES
+    bootctl list
+    sudo bootctl set-default auto-windows
+    sudo bootctl set-oneshot rustica-recovery; sudo reboot
+
+SEE ALSO
+    efibootmgr, rboot (man rboot, docs/BOOT.md)

@@ -80,6 +80,7 @@ dependencies = [
  "bitflags",
  "spin",
  "uefi",
+ "uefi-raw",
  "x86_64",
 ]
 

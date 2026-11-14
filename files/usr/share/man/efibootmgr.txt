@@ -1,0 +1,33 @@
+efibootmgr - the firmware's boot entries
+
+USAGE
+    efibootmgr [-v]
+    efibootmgr -o XXXX,YYYY,...       set the order (BootOrder)
+    efibootmgr -n XXXX | -N           start XXXX next time only / do not
+    efibootmgr -b XXXX -B             delete entry XXXX
+    efibootmgr -b XXXX -a | -A        make it active / inactive
+    efibootmgr -c [-d DISK [-p PART]] [-l LOADER] [-L LABEL]
+    efibootmgr -t SECONDS | -T        the firmware's own menu timeout
+
+    The firmware (UEFI) keeps a list of what it can start (Boot0000,
+    Boot0001, ...) and the order to try them in. Without options,
+    efibootmgr lists them: BootCurrent is the one this boot came from,
+    * marks an active entry, and each shows its device path, as
+    HD(partition,GPT,guid,start,size)/File(\EFI\...).
+
+    -c makes a new entry and puts it first: LOADER (default
+    \EFI\Rustica\rboot.efi) on partition PART (default 1) of DISK, or,
+    without -d, on the EFI partition rboot started this boot from.
+    LABEL defaults to Rustica. Numbers are hexadecimal, as 0001.
+
+    Anyone may look; changes need root. Without UEFI runtime services
+    (noefi on the kernel command line) it says so.
+
+EXAMPLES
+    efibootmgr
+    sudo efibootmgr -c -L Rustica
+    sudo efibootmgr -o 0003,0000
+    sudo efibootmgr -n 0000           Windows next time, once
+
+SEE ALSO
+    bootctl, rboot (docs/BOOT.md)
