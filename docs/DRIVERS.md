@@ -202,7 +202,7 @@ DMA buffers (`rx_dma_alloc`).
 |--------|---------|-------|
 | `virtio-blk` | `1af4:1001`, `1af4:1042`: QEMU, KVM, cloud servers | virtio 1.0 (the capabilities' configuration structures), one split virtqueue, MSI-X vector 0 (polling if the device has none or no interrupt comes within 10 s); `vda`, `vdb`, ...; read-only if the device says so; flush when offered |
 | `usb-storage` | USB class 8, bulk-only (`usb=08:06:50`) | see "USB storage"; `sda`, `sdb`, ...; removable flag from INQUIRY, read-only when the write-protect switch is on |
-| `nvme` | class `01:08:02` | **read-only until the installer (step 20)**: no write function, no write command in the driver at all; one admin and one I/O queue pair on MSI-X (MSI, or polling), PRP lists for transfers over 8 KiB, the controller's transfer limit (MDTS), 512-byte and 4 KiB blocks, the first active namespace: `nvme0n1` |
+| `nvme` | class `01:08:02` | **write-locked** (step 20): every write refused unless `nvme=rw` is on the kernel command line (the entry of a Rustica installed on it) or root sends `RX_BLOCK_OP_ALLOW_WRITE` (the installer, after the user confirmed: INSTALL.md); then write and flush commands, never write-zeroes, format or sanitize; one admin and one I/O queue pair on MSI-X (MSI, or polling), PRP lists for transfers over 8 KiB, the controller's transfer limit (MDTS), 512-byte and 4 KiB blocks, the first active namespace: `nvme0n1` |
 
 ### USB storage
 

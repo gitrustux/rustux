@@ -5,4 +5,4 @@ ready=/svc/log
 restart=always
 # its own output goes to the screen: there is no log to write it to
 log=console
-target=multi-user rescue
+target=multi-user rescue install

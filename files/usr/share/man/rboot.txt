@@ -4,6 +4,7 @@ rboot - the boot manager
     from a firmware entry for \EFI\Rustica\rboot.efi) and shows what can
     be started:
 
+      Try / Install Rustica Server  on the installation stick
       Rustica                       the system
       Rustica (recovery)            a root shell, no login (rescue)
       Rustica (live, in memory)     the system from memory, disks untouched

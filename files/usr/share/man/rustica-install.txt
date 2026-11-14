@@ -1,0 +1,34 @@
+rustica-install - install Rustica Server on a disk
+
+USAGE
+    rustica-install [--dry-run]
+    rustica-install --disk NAME|auto --mode erase|alongside|replace|manual
+                    --user NAME (--password PASS | --password-file FILE)
+                    [--esp PART|new] [--root PART|new] [--fullname TEXT]
+                    [--lock-root | --root-password PASS] [--hostname NAME]
+                    [--timezone ZONE] [--keymap NAME] [--yes] [--dry-run]
+                    [--reboot | --no-reboot]
+
+    "Install Rustica Server" in the boot menu starts it; root can start it
+    from the live system too. It asks for the keyboard layout, host name,
+    time zone, the first user (an administrator: sudo) and root (locked
+    by default), the disk and how to install on it:
+
+      erase       the whole disk: a new EFI partition and root
+      alongside   in the free space next to Windows or Linux (shrink
+                  their partitions in their own system first)
+      replace     an earlier Rustica on the disk
+      manual      choose the EFI and root partitions
+
+    Then it shows every change and writes nothing until you type
+    install. The computer's internal NVMe disk is only written after you
+    type its name as well. Other systems' partitions and files are never
+    touched, and the firmware's boot order changes last, so a power cut
+    leaves the computer starting what it started before.
+
+    --dry-run shows the plan and writes nothing. --yes asks nothing (for
+    scripts); --disk auto is the only disk besides the installation
+    medium. The log: /var/log/install.log (also on the installed system).
+
+SEE ALSO
+    rboot, bootctl, efibootmgr, docs/INSTALL.md

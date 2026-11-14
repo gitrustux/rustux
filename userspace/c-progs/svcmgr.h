@@ -37,6 +37,7 @@
 #define MAX_UNITS 64
 #define TGT_MULTI  1
 #define TGT_RESCUE 2
+#define TGT_INSTALL 4  // step 20: the installer on the console
 #define SVC_DIR "/etc/svc"
 #define START_WINDOW_NS 30000000000ll
 #define READY_TIMEOUT_NS 10000000000ll
@@ -75,11 +76,12 @@ static int64_t mono_ns(void) { return (int64_t)rx_clock_get_monotonic(); }
 
 // Built in: used when there is no /etc/svc (the files in the image are the same)
 static const char *const builtin_units[][2] = {
-    { "logd", "description=System log (/svc/log)\nexec=/bin/logd\nready=/svc/log\nrestart=always\nlog=console\ntarget=multi-user rescue\n" },
+    { "logd", "description=System log (/svc/log)\nexec=/bin/logd\nready=/svc/log\nrestart=always\nlog=console\ntarget=multi-user rescue install\n" },
     { "authd", "description=Authentication: su, sudo, passwd (/svc/auth)\nexec=/bin/authd\nafter=logd\nrestart=always\nsystem_job=yes\ntarget=multi-user\n" },
-    { "mounts", "description=Mount the filesystems in /etc/fstab\ntype=oneshot\nexec=/bin/mount -a\nafter=logd\nkeep_processes=yes\ntarget=multi-user rescue\n" },
+    { "mounts", "description=Mount the filesystems in /etc/fstab\ntype=oneshot\nexec=/bin/mount -a\nafter=logd\nkeep_processes=yes\ntarget=multi-user rescue install\n" },
     { "console", "description=Login on the console\nexec=/bin/login\nafter=logd authd\nconsole=yes\nrestart=always\nrestart_delay=0\nstart_limit=0\ntarget=multi-user\n" },
     { "rescue-shell", "description=Root shell on the console (rescue mode)\nexec=/bin/shell\nafter=logd\nconsole=yes\nrestart=always\nrestart_delay=0\nstart_limit=0\ntarget=rescue\n" },
+    { "installer", "description=The installer on the console (install mode)\nexec=/bin/rustica-install\nafter=logd mounts\nconsole=yes\nsystem_job=yes\ntarget=install\n" },
 };
 // Never in a file: what init falls back to when nothing else holds the console
 static const char emergency_unit[] = "description=Root shell when nothing else runs on the console\nexec=/bin/shell\nconsole=yes\ntarget=\n";
@@ -209,6 +211,7 @@ static void unit_parse(ucfg_t *c, const char *name, const char *text, const char
             c->targets = 0;
             if (strstr(v, "multi-user")) c->targets |= TGT_MULTI;
             if (strstr(v, "rescue")) c->targets |= TGT_RESCUE;
+            if (strstr(v, "install")) c->targets |= TGT_INSTALL;
         } else if (!strcmp(k, "console")) c->console = yes;
         else if (!strcmp(k, "system_job")) c->system_job = yes;
         else if (!strcmp(k, "keep_processes")) c->keep_processes = yes;
@@ -670,12 +673,17 @@ static uint64_t svc_deadline(void) {
     return d == INT64_MAX ? RX_TIME_INFINITE : (uint64_t)(d < 0 ? 0 : d);
 }
 
+static const char *target_name(int t) {
+    return t == TGT_RESCUE ? "rescue" : t == TGT_INSTALL ? "install" : "multi-user";
+}
+
 static int target_of_cmdline(int argc, char **argv) {
     int t = TGT_MULTI;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "rescue") || !strcmp(argv[i], "single") || !strcmp(argv[i], "target=rescue") || !strcmp(argv[i], "S"))
             t = TGT_RESCUE;
         else if (!strcmp(argv[i], "target=multi-user")) t = TGT_MULTI;
+        else if (!strcmp(argv[i], "installer") || !strcmp(argv[i], "target=install")) t = TGT_INSTALL;
     }
     return t;
 }
@@ -737,6 +745,7 @@ static void unit_line(const unit_t *u) {
     char tg[32] = "";
     if (u->c.targets & TGT_MULTI) strcat(tg, "multi-user");
     if (u->c.targets & TGT_RESCUE) strcat(tg, tg[0] ? ",rescue" : "rescue");
+    if (u->c.targets & TGT_INSTALL) strcat(tg, tg[0] ? ",install" : "install");
     const char *en = !strcmp(u->c.name, "emergency") ? "static" : u->builtin ? "builtin" : u->enabled ? "enabled" : "disabled";
     char code[24] = "-";
     if (u->have_code) snprintf(code, sizeof code, "%lld", (long long)u->last_code);
@@ -771,7 +780,7 @@ static int set_enabled(unit_t *u, int on) {
 
 static void svc_isolate(int t) {
     svc_target = t;
-    ulog(LOG_NOTICE, "switching to the %s target", t == TGT_RESCUE ? "rescue" : "multi-user");
+    ulog(LOG_NOTICE, "switching to the %s target", target_name(t));
     for (int i = 0; i < nunits; i++) {
         unit_t *u = &units[i];
         int in = u->enabled && (u->c.targets & t);
@@ -791,7 +800,7 @@ static void svc_request(const rx_svc_req_t *rq, uint32_t len, const rx_sender_t 
     if (cmd != RX_SVC_LIST && cmd != RX_SVC_STATUS && who->euid != 0) {
         st = -EPERM;
     } else if (cmd == RX_SVC_LIST) {
-        reply_add("target\t%s\n", svc_target == TGT_RESCUE ? "rescue" : "multi-user");
+        reply_add("target\t%s\n", target_name(svc_target));
         for (int i = 0; i < nunits; i++) unit_line(&units[i]);
     } else if (cmd == RX_SVC_RELOAD) {
         svc_load();
@@ -799,9 +808,10 @@ static void svc_request(const rx_svc_req_t *rq, uint32_t len, const rx_sender_t 
         ulog(LOG_INFO, "read %s again (%d units)", SVC_DIR, nunits);
     } else if (cmd == RX_SVC_ISOLATE) {
         if (!strcmp(name, "rescue") || !strcmp(name, "rescue.target")) svc_isolate(TGT_RESCUE);
+        else if (!strcmp(name, "install")) svc_isolate(TGT_INSTALL);
         else if (!strcmp(name, "multi-user") || !strcmp(name, "multi-user.target") || !strcmp(name, "default")) svc_isolate(TGT_MULTI);
         else {
-            reply_add("No target %s (rescue, multi-user)\n", name);
+            reply_add("No target %s (rescue, multi-user, install)\n", name);
             st = -ENOENT;
         }
     } else if (cmd == RX_SVC_RESET_FAILED && !name[0]) {

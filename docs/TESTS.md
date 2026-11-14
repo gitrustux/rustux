@@ -214,13 +214,25 @@ rboot, the kernel, `loader.conf` and two entries (one with `quiet`, one
 with `bootfs=`), and a disk with stand-ins for Windows and Debian
 (`rboot/src/bin/fakeos.rs`: it writes `FAKEOS <path> [<options>]` to the
 debug port and powers off). Six boots: the menu to Windows, to Debian;
-`e` and ` noefi` (the kernel's `[BOOT] command line` and efibootmgr's
+`e` and ` noefi` (the kernel's `[BOOT] Command line` and efibootmgr's
 "no UEFI runtime services"); the default after the countdown, where
 `efibootmgr -c` makes a firmware entry and `bootctl` sets the default to
 the recovery entry and the timeout to 1 s; the firmware starting that
 entry (`BootCurrent`) and rboot the recovery entry (rescue mode), with
 `bootctl reboot-to-firmware`; and the `bootfs=` entry (`[INIT] boot image
 from bootfs=`). rboot must be built (`build.sh` does it).
+
+## Installer test (step 20)
+
+`scripts/run-install-test.sh` (INSTALL.md "Tests"): with a live medium as
+`build-live-image.sh` makes it, eleven QEMU boots: the menu's Install
+entry and the installer answered on the console onto an empty NVMe disk
+(write-locked until then), the disk alone booting through rboot to a
+login prompt, the user's file kept across boots (`e2fsck -f` clean); a
+"replace" reinstall from the live session; a dry run and an "alongside"
+install next to a stand-in Windows (its partitions byte for byte
+unchanged, its loader started from rboot's menu); and a power cut during
+the installation, after which the computer still starts "Windows".
 
 ## Run in QEMU
 

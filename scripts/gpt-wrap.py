@@ -8,7 +8,8 @@
 
     scripts/gpt-wrap.py [--disk D] OUT TYPE:IMAGE [TYPE:IMAGE ...]
 
-TYPE is esp, linux or msdata. Each partition starts on a 1 MiB boundary;
+TYPE is esp, linux or msdata; free:MIB leaves that much unpartitioned
+space there. Each partition starts on a 1 MiB boundary;
 partition k gets the GUID 22222222-0000-4000-8000-0000000000kk (k = 1, 2,
 ...; with --disk D: 22222222-0000-4000-8000-DDDDDD0000kk), so tests know it."""
 import struct, sys, uuid, zlib
@@ -32,8 +33,13 @@ def main():
         disk_no, args = int(args[1]), args[2:]
     out, specs = args[0], args[1:]
     parts, lba = [], 2048
-    for k, spec in enumerate(specs):
+    k = -1
+    for spec in specs:
         t, path = spec.split(":", 1)
+        if t == "free":
+            lba += int(path) * 2048
+            continue
+        k += 1
         data = open(path, "rb").read()
         n = (len(data) + BS - 1) // BS
         parts.append((TYPES[t], lba, lba + n - 1, data, k + 1))

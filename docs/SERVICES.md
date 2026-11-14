@@ -56,6 +56,7 @@ The image's units:
 | `mounts` | `mount -a` (oneshot, `keep_processes`) | multi-user, rescue |
 | `console` | `login` (with `-f USER` for autologin) | multi-user |
 | `rescue-shell` | a root shell, no login | rescue |
+| `installer` | `rustica-install` on the console (step 20) | install |
 | `emergency` | built in, never in a file: a root shell when nothing else can hold the console | none |
 
 Without `/etc/svc` init uses the same units built in (`svc list` says
@@ -98,7 +99,9 @@ login. `rescue`, `single` or `S` (or `target=rescue`) on the kernel command
 line boots the rescue target instead: logd, the mounts and a root shell on
 the console with no login, for repairs (a forgotten password: `svc start
 authd`, then `passwd USER`). `svc isolate multi-user` starts the rest from there, `svc isolate
-rescue` goes back.
+rescue` goes back. `installer` (or `target=install`) boots the install
+target (step 20): logd, the mounts and the installer on the console;
+`logd.svc` and `mounts.svc` name it among their targets.
 
 ## Shutdown
 

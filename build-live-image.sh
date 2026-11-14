@@ -110,8 +110,11 @@ create_disk_image() {
         cp "$RBOOT_EFI" "$mount_dir/EFI/BOOT/BOOTX64.EFI"
         cp "$RBOOT_EFI" "$mount_dir/EFI/Rustica/rboot.efi"
         cp "$KERNEL_EFI" "$mount_dir/EFI/Rustica/rustux.efi"
-        printf 'default rustica\ntimeout 5\n' > "$mount_dir/loader/loader.conf"
-        printf 'title Rustica\nefi /EFI/Rustica/rustux.efi\n' > "$mount_dir/loader/entries/rustica.conf"
+        # Two entries (step 20): try it (from memory; \EFI\BOOT\cmdline.txt
+        # if there is one) or install it; rboot adds the recovery entry
+        printf 'default rustica\ntimeout 10\n' > "$mount_dir/loader/loader.conf"
+        printf 'title Try Rustica Server\nefi /EFI/Rustica/rustux.efi\nsort-key 1\n' > "$mount_dir/loader/entries/rustica.conf"
+        printf 'title Install Rustica Server\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 2\n' > "$mount_dir/loader/entries/install.conf"
     else
         [ "$RBOOT" = 1 ] && log_warn "rboot not built ($RBOOT_EFI): the kernel boots directly"
         # Copy kernel as BOOTX64.EFI

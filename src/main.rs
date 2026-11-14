@@ -132,9 +132,6 @@ fn kernel_main() -> ! {
                 debug_print("\n");
                 // The firmware's runtime services move to kernel addresses
                 // while the boot identity map is still there (step 19)
-                debug_print("[BOOT] command line: ");
-                debug_print(cmdline());
-                debug_print("\n");
                 if cmdline_has("noefi") {
                     debug_print("[EFI] noefi: no runtime services\n");
                 } else {

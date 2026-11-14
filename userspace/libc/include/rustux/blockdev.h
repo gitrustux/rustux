@@ -37,6 +37,9 @@ typedef struct {
 } rx_blockdev_ops_t;
 
 #define RX_BLOCKDEV_NO_PARTITIONS 1u   // serve the disk only (RAM disks)
+// Read-only (RX_BLOCK_FLAG_READONLY) although `write` is there, until a
+// root client sends RX_BLOCK_OP_ALLOW_WRITE (step 20: the NVMe driver)
+#define RX_BLOCKDEV_WRITE_LOCKED 2u
 
 // Publish the disk and its partitions. info->name may hold '#' or '@'
 // (devmgr fills in a free number or letter); on success it holds the name

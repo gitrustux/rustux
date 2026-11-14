@@ -185,6 +185,13 @@ fn main() {
         .collect();
     programs.sort();
     files.extend(programs);
+    // The boot manager (step 19), for the installer (step 20), when it has
+    // been built first (build.sh does): /usr/lib/rboot/rboot.efi
+    let rboot = "rboot/target/x86_64-unknown-uefi/release/rboot.efi";
+    println!("cargo:rerun-if-changed={}", rboot);
+    if std::path::Path::new(rboot).is_file() {
+        files.push((rboot.to_string(), "usr/lib/rboot/rboot.efi".to_string()));
+    }
 
     // userspace/links: more names for multi-call programs ("NAME PROGRAM"),
     // stored as entries that share the program's data

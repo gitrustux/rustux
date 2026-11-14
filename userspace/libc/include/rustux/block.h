@@ -76,6 +76,13 @@ typedef struct {
 #define RX_BLOCK_OP_WRITE_VMO  7
 #define RX_BLOCK_OP_DETACH_VMO 8
 #define RX_BLOCK_OP_RESCAN     9   // re-read the partition table (whole disks only; EBUSY if a partition is open)
+// A write-locked disk (the NVMe driver: its disks are read-only unless
+// the installer, step 20, unlocks them or the kernel command line has
+// nvme=rw) takes writes from now until its driver ends. Root only; the
+// request data is RX_BLOCK_ALLOW_WRITE_WORDS. On the disk or a partition:
+// the whole disk is unlocked.
+#define RX_BLOCK_OP_ALLOW_WRITE 10
+#define RX_BLOCK_ALLOW_WRITE_WORDS "allow writes"
 
 // Most data in one READ or WRITE through the channel
 #define RX_BLOCK_MAX_IO 32768u

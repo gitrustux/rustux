@@ -130,7 +130,7 @@ fi
 wait_end 60
 log | grep -a "rboot: booting rustica (\|command line\|efibootmgr:"
 expect "rboot: booting rustica (\\EFI\\Rustica\\rustux.efi quiet noefi)"
-expect "[BOOT] command line: quiet noefi"
+expect "[BOOT] Command line: quiet noefi"
 expect "efibootmgr: cannot read the variables: no UEFI runtime services"
 
 echo "== boot 4: the default (quiet); a firmware entry; rboot's default and timeout"

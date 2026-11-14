@@ -6,12 +6,13 @@
 
 // nvme: NVM Express disks (step 13), the laptop's internal disk.
 //
-// READ-ONLY until the installer (checklist step 20): this driver has no
-// write path at all. It never sends a write, write-zeroes, format or
-// sanitize command, and it gives the block library no write function, so
-// every write request is refused with EROFS. It does reset and enable the
-// controller and creates one I/O queue pair, which changes nothing on the
-// medium.
+// WRITE-LOCKED (step 20): the disk is read-only (every write refused with
+// EROFS) unless the kernel command line has nvme=rw (the entry of a
+// Rustica installed on it) or root unlocks it with RX_BLOCK_OP_ALLOW_WRITE
+// (the installer, after the user has confirmed). Only then are write and
+// flush commands sent; it never sends write-zeroes, format or sanitize.
+// Resetting and enabling the controller and creating one I/O queue pair
+// change nothing on the medium.
 //
 // One admin queue and one I/O queue pair on MSI-X vector 0 (MSI, or
 // polling, without MSI-X); one command at a time; namespace 1 (or the
@@ -44,6 +45,8 @@
 #define A_CREATE_SQ 0x01
 #define A_CREATE_CQ 0x05
 #define A_IDENTIFY  0x06
+#define IO_FLUSH    0x00
+#define IO_WRITE    0x01
 #define IO_READ     0x02
 
 #define QD        16              // entries per queue
@@ -168,6 +171,46 @@ static int rd(void *ctx, uint64_t block, uint32_t count, void *buf) {
     return 0;
 }
 
+static int wr(void *ctx, uint64_t block, uint32_t count, const void *buf) {
+    (void)ctx;
+    memcpy((void *)data.va, buf, (size_t)count * lba_size);
+    uint32_t cmd[16] = { 0 };
+    cmd[0] = IO_WRITE;
+    cmd[1] = nsid;
+    set_prps(cmd, count * lba_size);
+    cmd[10] = (uint32_t)block;
+    cmd[11] = (uint32_t)(block >> 32);
+    cmd[12] = count - 1;
+    int st = submit(&io, cmd, 0, 30000);
+    if (st != 0) {
+        if (st > 0) fprintf(stderr, "nvme %s: write of %u blocks at %llu failed (status %#x)\n", where, count, (unsigned long long)block, st);
+        return st < 0 ? st : -EIO;
+    }
+    return 0;
+}
+
+static int fl(void *ctx) {
+    (void)ctx;
+    uint32_t cmd[16] = { 0 };
+    cmd[0] = IO_FLUSH;
+    cmd[1] = nsid;
+    int st = submit(&io, cmd, 0, 60000);
+    return st == 0 ? 0 : st < 0 ? st : -EIO;
+}
+
+// nvme=rw on the kernel command line (/run/cmdline)
+static int cmdline_rw(void) {
+    FILE *f = fopen("/run/cmdline", "r");
+    if (!f) return 0;
+    char line[1024];
+    int yes = 0;
+    if (fgets(line, sizeof line, f))
+        for (char *save = 0, *w = strtok_r(line, " \n", &save); w; w = strtok_r(0, " \n", &save))
+            if (!strcmp(w, "nvme=rw")) yes = 1;
+    fclose(f);
+    return yes;
+}
+
 // Copy an ASCII field, trimming the space padding
 static void field(char *out, size_t cap, const volatile uint8_t *in, size_t len) {
     size_t n = len;
@@ -264,12 +307,13 @@ int main(int argc, char **argv) {
     snprintf(info.name, sizeof info.name, "nvme#n%u", nsid);
     info.block_count = ns_blocks;
     info.block_size = lba_size;
-    info.flags = RX_BLOCK_FLAG_READONLY;
     strcpy(info.driver, "nvme");
     snprintf(info.model, sizeof info.model, "%s", model);
     (void)serial;
-    rx_blockdev_ops_t ops = { rd, 0, 0 };   // no write, no flush: read-only
-    int r = rx_blockdev_publish(&ops, 0, &info, max_bytes / lba_size, 0);
+    rx_blockdev_ops_t ops = { rd, wr, fl };
+    int rw = cmdline_rw();
+    if (rw) fprintf(stderr, "nvme %s: writable (nvme=rw on the command line)\n", where);
+    int r = rx_blockdev_publish(&ops, 0, &info, max_bytes / lba_size, rw ? 0 : RX_BLOCKDEV_WRITE_LOCKED);
     if (r < 0) {
         fprintf(stderr, "nvme %s: cannot publish the disk: %s\n", where, strerror(-r));
         return 1;

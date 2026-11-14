@@ -178,7 +178,7 @@ int rx_blockdev_publish(const rx_blockdev_ops_t *o, void *ctx, rx_block_info_t *
     chunk = BUF_SIZE / info->block_size;
     if (max_blocks && max_blocks < chunk) chunk = max_blocks;
     if (!chunk) return -EINVAL;
-    if (!o->write) info->flags |= RX_BLOCK_FLAG_READONLY;
+    if (!o->write || (flags & RX_BLOCKDEV_WRITE_LOCKED)) info->flags |= RX_BLOCK_FLAG_READONLY;
     memset(devs, 0, sizeof devs);
     devs[0].info = *info;
     ndevs = 1;
@@ -228,7 +228,8 @@ static int rescan(struct conn *c) {
 static int serve(struct conn *c) {
     rx_handle_t h = 0;
     uint32_t nb = 0, nh = 0;
-    rx_status_t s = rx_channel_read(c->ch, 0, req, &h, sizeof req, 1, &nb, &nh);
+    rx_sender_t who;
+    rx_status_t s = rx_channel_read_creds(c->ch, req, &h, sizeof req, 1, &nb, &nh, &who);
     if (s == RX_ERR_SHOULD_WAIT) return 0;
     if (s != RX_OK) return -1;
     if (!nh) h = 0;
@@ -320,6 +321,20 @@ static int serve(struct conn *c) {
     case RX_BLOCK_OP_RESCAN:
         send_reply(c->ch, q.txid, rescan(c), 0, 0);
         break;
+    case RX_BLOCK_OP_ALLOW_WRITE: {
+        int r = 0;
+        size_t wl = strlen(RX_BLOCK_ALLOW_WRITE_WORDS);
+        if (!(bflags & RX_BLOCKDEV_WRITE_LOCKED) || !ops->write) r = (devs[0].info.flags & RX_BLOCK_FLAG_READONLY) ? -EROFS : 0;
+        else if (who.euid != 0) r = -EPERM;
+        else if (dlen != wl || memcmp(data, RX_BLOCK_ALLOW_WRITE_WORDS, wl)) r = -EINVAL;
+        else {
+            for (int k = 0; k < ndevs; k++) devs[k].info.flags &= ~RX_BLOCK_FLAG_READONLY;
+            bflags &= ~RX_BLOCKDEV_WRITE_LOCKED;
+            fprintf(stderr, "%s: writes allowed (by pid %llu, uid %u)\n", devs[0].info.name, (unsigned long long)who.pid, who.euid);
+        }
+        send_reply(c->ch, q.txid, r, 0, 0);
+        break;
+    }
     default:
         send_reply(c->ch, q.txid, -EINVAL, 0, 0);
     }

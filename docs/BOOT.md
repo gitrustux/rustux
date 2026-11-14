@@ -24,8 +24,12 @@ x86_64-unknown-uefi`; `build.sh` builds it), the kernel's side in
 ```
 
 `build-live-image.sh` lays the stick out this way (`RBOOT=0`: the kernel as
-`BOOTX64.EFI`, as before step 19). The stick's entry has no options, so the
-kernel still reads `\EFI\BOOT\cmdline.txt` when there is one.
+`BOOTX64.EFI`, as before step 19), with two entries (step 20): "Try Rustica
+Server" with no options (the kernel then still reads
+`\EFI\BOOT\cmdline.txt` when there is one) and "Install Rustica Server"
+(`installer`: INSTALL.md). rboot adds no recovery entry for an entry whose
+options say `installer`. An installed system's ESP is laid out the same
+way by `rustica-install`.
 
 ### loader.conf
 
@@ -121,8 +125,8 @@ rboot speaks systemd's boot loader interface (vendor GUID
 - `bootctl`: `status`, `list` (the menu's entries, the default and the
   current one marked), `set-default ID`, `set-oneshot ID`, `set-timeout
   N`, `set-timeout-oneshot N`, `reboot-to-firmware [yes|no]`,
-  `is-installed`; `--esp-path=` (default `/boot/efi`). `bootctl install`
-  comes with the installer (step 20).
+  `is-installed`; `--esp-path=` (default `/boot/efi`). Installing rboot
+  is `rustica-install`'s job (INSTALL.md).
 
 ## Tests
 
@@ -144,4 +148,5 @@ and an entry with `bootfs=`.
   `LoaderTimeInitUSec`/`LoaderTimeExecUSec` timing variables.
 - Linux kernels are not started directly (no EFI-stub `linux` with
   `initrd`): their own loaders (shim, GRUB) are.
-- `bootctl install`, `update`, `remove`: step 20.
+- `bootctl install`, `update`, `remove`: `rustica-install` installs rboot
+  (INSTALL.md); there is no separate update yet.
