@@ -1,0 +1,13 @@
+screenshot - save the screen as a PNG
+
+USAGE
+    screenshot FILE.png
+
+    Asks the display service for what is on the screen now (the text
+    console or the graphics) and writes it as an 8-bit RGB PNG, stored
+    without compression. Prints the size and the CRC-32 of the pixels (the
+    RGB bytes row by row, as in a PPM file, e.g. QEMU's screendump).
+    Root only.
+
+SEE ALSO
+    fbtest

@@ -779,7 +779,15 @@ fn capture_framebuffer() {
     let blue_first = match mode.pixel_format() {
         GopFormat::Bgr => true,
         GopFormat::Rgb => false,
-        // Bitmask / BltOnly: no linear 32-bit framebuffer we can draw to
+        // A bit mask that is one of the two byte orders
+        GopFormat::Bitmask => match mode.pixel_bitmask() {
+            Some(m) if (m.red, m.green, m.blue) == (0xFF0000, 0xFF00, 0xFF) => true,
+            Some(m) if (m.red, m.green, m.blue) == (0xFF, 0xFF00, 0xFF0000) => false,
+            // Other masks (16-bit, 10-bit colour): neither the console
+            // nor the display service draws them yet
+            _ => return,
+        },
+        // BltOnly: no linear framebuffer to draw to
         _ => return,
     };
     let (width, height) = mode.resolution();
@@ -795,6 +803,18 @@ fn capture_framebuffer() {
             blue_first,
         };
     }
+    // For the display service (DESKTOP.md step F2)
+    let (red, blue) = if blue_first { (0xFF0000, 0xFF) } else { (0xFF, 0xFF0000) };
+    rustux::kobj::display::set_boot_framebuffer(rustux::kobj::display::BootFb {
+        addr: fb.as_mut_ptr() as u64,
+        size: fb.size() as u64,
+        width: width as u32,
+        height: height as u32,
+        stride: mode.stride() as u32,
+        red,
+        green: 0xFF00,
+        blue,
+    });
 }
 
 /// The kernel command line (step 15): the UEFI load options (a boot
@@ -1143,6 +1163,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         }
     }
     use core::fmt::Write;
+    // The text console comes back even if the display service has the screen
+    rustux::drivers::display::force_show();
     let _ = write!(Out, "\n[PANIC] {}\n", info);
     loop { unsafe { asm!("cli", "hlt", options(nostack, nomem)) }; }
 }

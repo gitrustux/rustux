@@ -88,6 +88,8 @@ uses).
 | `efibootmgr` | the firmware's boot entries (step 19, `BOOT.md`): list (`-v`), `-o` order, `-n`/`-N` BootNext, `-b N -B` delete, `-a`/`-A`, `-t`/`-T` timeout, `-c [-d DISK -p PART] [-l LOADER] [-L LABEL]` (default: rboot on the ESP this boot came from); changes: root; no `-r` (driver entries), `-e`, `-@` |
 | `bootctl` | the boot manager rboot through systemd's loader variables (step 19): `status`, `list`, `set-default`, `set-oneshot`, `set-timeout`, `set-timeout-oneshot`, `reboot-to-firmware`, `is-installed`, `--esp-path=`; no `install`, `update`, `remove` yet (step 20) |
 | `rustica-install` | the installer (step 20, `INSTALL.md`): asks (keyboard, host, time zone, user, root, disk, erase/alongside/replace/manual), shows every change, writes after `install`; `--disk NAME|auto --mode ... --user ... --yes --dry-run` for scripts; log `/var/log/install.log` |
+| `fbtest` | draws through the display service (step F2, `DISPLAY.md`): `-n FRAMES` animation with frame times, `--pattern S` a still test pattern, `--check` snapshot equals what was drawn; Esc or q ends it; root |
+| `screenshot` | `screenshot FILE.png`: the screen (text console or graphics) as a PNG, with the CRC-32 of its pixels; root |
 | `logger` | `-t TAG -p [FACILITY.]PRIO -s -f FILE [MESSAGE]`; to logd (`/svc/log`); no `--journald`, `-u` |
 | `dmesg` | the kernel's log since boot (the last 64 KiB); `logs -k` has it with times |
 | `hostname` | `hostname NAME` writes `/etc/hostname` (root) |

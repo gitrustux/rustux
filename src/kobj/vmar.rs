@@ -69,14 +69,15 @@ pub struct Aspace {
     inner: SpinMutex<Inner>,
 }
 
-/// Page-table bits for a cache policy: PCD|PWT selects uncached with the
-/// power-on PAT
+/// Page-table bits for a cache policy, with the kernel's PAT (mmu.rs):
+/// PWT alone selects write-combining, PCD|PWT uncached
 const PTE_PWT: u64 = 1 << 3;
 const PTE_PCD: u64 = 1 << 4;
 
 fn cache_bits(policy: u32) -> u64 {
     match policy {
         super::vmo::cache::CACHED => 0,
+        super::vmo::cache::WRITE_COMBINING => PTE_PWT,
         _ => PTE_PCD | PTE_PWT,
     }
 }

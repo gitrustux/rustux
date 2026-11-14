@@ -23,7 +23,10 @@ pub const IA32_PAT_MSR: u32 = 0x277;
 pub const IA32_MTRR_CAP_MSR: u32 = 0xFE;
 pub const IA32_MTRR_DEF_TYPE_MSR: u32 = 0x2FF;
 
-// PAT register default values (write-back caching)
+// The PAT this kernel uses (DESKTOP.md step F2): the power-on layout but
+// with entries 1 and 5 write-combining (01) instead of write-through, so a
+// page with PWT alone is write-combining:
+//   0 WB (no bits)  1 WC (PWT)  2 UC- (PCD)  3 UC (PCD|PWT), repeated
 pub const PAT_DEFAULT_VALUE: u64 = 0x0007010600070106;
 
 // Global page table state (simplified - in real kernel would be per-address space)
@@ -114,8 +117,8 @@ pub fn x86_mmu_init() {
         // For now, we continue using the boot page tables
         // TODO: Create kernel address space with proper mappings
 
-        // Synchronize PAT settings across all CPUs
-        x86_pat_sync(0xFFFF_FFFF_FFFF_FFFF); // All CPUs
+        // This CPU's PAT (each AP loads the same in smp.rs's ap_entry)
+        x86_mmu_percpu_init();
 
         // Initialize large page support detection
         x86_detect_huge_page_support();
@@ -127,9 +130,12 @@ pub fn x86_mmu_init() {
 /// Initializes MMU settings specific to this CPU.
 pub fn x86_mmu_percpu_init() {
     unsafe {
-        // Initialize PAT (Page Attribute Table) for proper memory caching
-        // The default PAT value provides write-back caching for most memory
+        // Load the PAT (write-combining in entry 1). Nothing maps a page
+        // with PWT alone before this, but follow the SDM's sequence anyway:
+        // write back the caches, load, flush the TLB.
+        core::arch::asm!("wbinvd", options(nostack, preserves_flags));
         x86_write_msr(IA32_PAT_MSR, PAT_DEFAULT_VALUE);
+        core::arch::asm!("mov {t}, cr3", "mov cr3, {t}", t = out(reg) _, options(nostack, preserves_flags));
 
         // Initialize MTRR (Memory Type Range Registers) if supported
         // For now, we use the default BIOS settings

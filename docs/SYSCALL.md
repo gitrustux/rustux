@@ -496,8 +496,11 @@ cloned or pinned. Mapped uncached (`UNCACHED_DEVICE`) unless changed.
 
 `vmo_set_cache_policy(rx_handle_t vmo, uint32_t policy)` — needs
 `SET_PROPERTY`. `CACHED` 0, `UNCACHED` 1, `UNCACHED_DEVICE` 2 (both
-uncached: PCD and PWT in the page tables), `WRITE_COMBINING` 3 gives
-`ERR_NOT_SUPPORTED` (needs the PAT). Applies to mappings made afterwards.
+uncached: PCD and PWT in the page tables), `WRITE_COMBINING` 3 (PWT
+alone: the kernel loads a PAT with write-combining in entry 1 on every
+CPU, step F2) for physical VMOs only, `ERR_NOT_SUPPORTED` for others (RAM
+would be mapped with two memory types). Applies to mappings made
+afterwards.
 
 #### VMO_CREATE_CONTIGUOUS (0x1B)
 
@@ -935,6 +938,8 @@ local time (as Windows does), correcting by the offset of the zone in
 | `USB_CLEAR_HALT` | 0x98 | Recover a bulk endpoint | ✅ |
 | `USB_RESET` | 0x99 | Reset a stuck device's port; it is enumerated again | ✅ |
 | `EFI_VARIABLE` | 0x9A | Read, write and list the firmware's UEFI variables (step 19) | ✅ |
+| `DISPLAY_CLAIM` | 0x9B | The boot framebuffer and the claim on the screen (step F2) | ✅ |
+| `DISPLAY_CONSOLE` | 0x9C | Show the text console or the claim holder's graphics | ✅ |
 
 `system_get_version(char *buf, size_t len)` writes
 `Rustux <version> (git <hash>, built <date>) x86_64` with a NUL and
@@ -1043,6 +1048,26 @@ SetVirtualAddressMap while the boot identity map is still there. Calls
 are serialised, run with interrupts off and keep the caller's SSE
 registers. `c-progs/efivar.h` wraps it (strings, load options, device
 paths) for `efibootmgr`, `bootctl` and `mount`.
+
+#### The boot framebuffer (0x9B, 0x9C, step F2)
+
+`display_claim(root, rx_display_info_t *info, rx_handle_t *vmo,
+rx_handle_t *claim)` (the root resource): `info` gets `{ u64 phys; u64
+vmo_size; u32 width, height; u32 stride (bytes); u32 red, green, blue
+(32-bit pixel masks) }` of the framebuffer UEFI GOP set up, `vmo` a
+physical VMO over it (write-combining; the first pixel at `phys & 0xFFF`)
+and `claim` a display claim object (type 41, rights BASIC and WRITE).
+One claim at a time: `ERR_BUSY` while one exists, `ERR_NOT_FOUND`
+without a framebuffer (GOP missing, BltOnly, or masks other than the two
+byte orders).
+
+`display_console(claim, mode)`: `RX_DISPLAY_TEXT` (0) shows the kernel's
+text console (it draws its whole text again), `RX_DISPLAY_GRAPHICS` (1)
+stops it drawing (it keeps its text and the log everything) so the claim
+holder's pixels stay; `RX_DISPLAY_QUERY` (2, any handle) returns which is
+shown. When the claim's last handle closes, the console is shown; a
+kernel panic shows it whatever the claim. `devmgr` claims the framebuffer
+and gives it to the display service (`docs/DISPLAY.md`).
 
 USB polling (keyboards, port changes) runs in the timer tick; events
 that arrive while a transfer or command waits for its own completion are

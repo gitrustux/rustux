@@ -505,3 +505,67 @@ pub fn sys_usb_clear_halt(args: SyscallArgs) -> SyscallRet {
         Ok(0)
     })())
 }
+
+// ---------------------------------------------------------------------
+// The boot framebuffer (DESKTOP.md step F2)
+// ---------------------------------------------------------------------
+
+/// rx_display_info_t in <rustux/syscalls.h>
+const DISPLAY_INFO_SIZE: usize = 40;
+
+/// display_claim(root, info, vmo_out, claim_out): the boot framebuffer's
+/// geometry, a physical VMO over it (write-combining) and the claim on the
+/// screen. NOT_FOUND without a framebuffer, BUSY while someone
+/// holds the claim.
+pub fn sys_display_claim(args: SyscallArgs) -> SyscallRet {
+    let (res, info, vmo_out, claim_out) = (args.arg_u32(0), args.arg(1), args.arg(2), args.arg(3));
+    ret((|| {
+        require_resource(res)?;
+        let fb = crate::kobj::display::boot_framebuffer().ok_or(RxStatus::ERR_NOT_FOUND)?;
+        user::check(info, DISPLAY_INFO_SIZE, true)?;
+        user::check(vmo_out, 4, true)?;
+        user::check(claim_out, 4, true)?;
+        let base = fb.addr & !0xFFF;
+        let size = (fb.addr - base + fb.size + 0xFFF) & !0xFFF;
+        let vmo = crate::kobj::vmo::Vmo::new_physical(base, size)?;
+        vmo.set_cache_policy(crate::kobj::vmo::cache::WRITE_COMBINING)?;
+        let claim = crate::kobj::display::DisplayClaim::take().ok_or(RxStatus::ERR_BUSY)?;
+        let mut b = [0u8; DISPLAY_INFO_SIZE];
+        b[0..8].copy_from_slice(&fb.addr.to_le_bytes());
+        b[8..16].copy_from_slice(&size.to_le_bytes());
+        b[16..20].copy_from_slice(&fb.width.to_le_bytes());
+        b[20..24].copy_from_slice(&fb.height.to_le_bytes());
+        b[24..28].copy_from_slice(&(fb.stride * 4).to_le_bytes());
+        b[28..32].copy_from_slice(&fb.red.to_le_bytes());
+        b[32..36].copy_from_slice(&fb.green.to_le_bytes());
+        b[36..40].copy_from_slice(&fb.blue.to_le_bytes());
+        // Offset of the first pixel in the VMO goes with the address
+        // (addr - base); GOP framebuffers are page aligned in practice
+        user::write_bytes(info, &b)?;
+        let v = install(KObject::Vmo(vmo), Rights::VMO)?;
+        let c = install(KObject::Display(claim), Rights::DISPLAY)?;
+        user::write_u32(vmo_out, v)?;
+        user::write_u32(claim_out, c)?;
+        Ok(0)
+    })())
+}
+
+/// display_console(claim, mode): mode 0 shows the text console, 1 the
+/// claim holder's graphics (the console stops drawing); 2 (any handle)
+/// returns which is shown, 0 or 1
+pub fn sys_display_console(args: SyscallArgs) -> SyscallRet {
+    let (h, mode) = (args.arg_u32(0), args.arg_u32(1));
+    ret((|| {
+        if mode == 2 {
+            return Ok(if crate::drivers::display::shown() { 0 } else { 1 });
+        }
+        let (obj, _) = lookup(h, Rights::WRITE)?;
+        let KObject::Display(_) = obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+        match mode {
+            0 => crate::drivers::display::show(),
+            1 => crate::drivers::display::hide(),
+            _ => return Err(RxStatus::ERR_INVALID_ARGS),
+        }
+        Ok(0)
+    })())
+}

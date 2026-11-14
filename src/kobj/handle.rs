@@ -57,6 +57,7 @@ impl Rights {
     pub const BTI: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::MAP;
     pub const PMT: u32 = Self::INSPECT;
     pub const USB: u32 = Self::BASIC | Self::READ | Self::WRITE;
+    pub const DISPLAY: u32 = Self::BASIC | Self::WRITE;
     pub const CHANNEL: u32 = Self::BASIC | Self::READ | Self::WRITE | Self::SIGNAL | Self::SIGNAL_PEER;
 
     pub fn has(self, r: u32) -> bool {

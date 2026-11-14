@@ -1,0 +1,20 @@
+fbtest - draw through the display service
+
+USAGE
+    fbtest [-n FRAMES] [--pattern SECONDS] [--check]
+
+    Takes the screen from the text console (the display service gives it
+    to root only) and draws colour bars with rectangles moving over them,
+    presenting only what changed, then reports the frame rate and the time
+    a frame takes to draw and to present. Esc or q ends it early.
+    Ctrl+Alt+F1 shows the text console meanwhile, Ctrl+Alt+F7 the
+    graphics again. When fbtest ends the console comes back.
+
+    -n FRAMES          how many frames (300)
+    --pattern SECONDS  a still test pattern for SECONDS (to compare
+                       screenshots), then end
+    --check            draw the pattern, take a snapshot through the
+                       service and compare it with what was drawn
+
+SEE ALSO
+    screenshot, rustux (the display service, docs/DISPLAY.md)

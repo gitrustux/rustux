@@ -270,7 +270,7 @@ impl TextConsole {
         }
         self.grid.copy_within((top + n) * cols..(bottom + 1) * cols, top * cols);
         self.erase((bottom + 1 - n) * cols, (bottom + 1) * cols);
-        if self.view == 0 && n <= bottom - top {
+        if self.view == 0 && !hidden() && n <= bottom - top {
             // Move the pixels up with the text instead of drawing every
             // row again; rows still to be drawn move their marks along
             self.move_pixels_up(top, bottom, n);
@@ -753,8 +753,12 @@ impl TextConsole {
         self.history[idx * self.cols + c]
     }
 
-    /// Draw the dirty rows and the cursor
+    /// Draw the dirty rows and the cursor (nothing while the display
+    /// service has the screen: the rows stay dirty for [`show`])
     pub fn flush(&mut self) {
+        if hidden() {
+            return;
+        }
         if let Some(r) = self.cursor_row_drawn.take() {
             if r < self.rows {
                 self.dirty[r] = true;
@@ -1094,6 +1098,53 @@ pub unsafe fn init(framebuffer: Framebuffer) {
     console.clear();
     *CONSOLE.lock() = Some(console);
     CONSOLE_INITIALIZED.store(true, Ordering::Release);
+}
+
+/// Set while the display service (DESKTOP.md step F2) has the screen:
+/// the console keeps its text (and the log gets everything) but draws
+/// nothing
+static HIDDEN: AtomicBool = AtomicBool::new(false);
+
+fn hidden() -> bool {
+    HIDDEN.load(Ordering::Acquire)
+}
+
+/// Whether the console is on the screen (false while graphics are shown)
+pub fn shown() -> bool {
+    !hidden()
+}
+
+/// Stop drawing: the display service takes the screen
+pub fn hide() {
+    // Taking the lock waits for a write in progress on another CPU, so
+    // nothing of the console is drawn after this returns
+    let _c = CONSOLE.lock();
+    HIDDEN.store(true, Ordering::Release);
+}
+
+/// Draw the whole console again and keep drawing (the display service
+/// gave the screen back, switched to the text console, or ended)
+pub fn show() {
+    let mut c = CONSOLE.lock();
+    HIDDEN.store(false, Ordering::Release);
+    if let Some(console) = c.as_mut() {
+        console.cursor_row_drawn = None;
+        console.mark_all();
+        console.flush();
+    }
+}
+
+/// For a kernel panic: show the console without waiting for its lock
+/// (this CPU may hold it). The text is redrawn if the lock is free.
+pub fn force_show() {
+    HIDDEN.store(false, Ordering::Release);
+    if let Some(mut c) = CONSOLE.try_lock() {
+        if let Some(console) = c.as_mut() {
+            console.cursor_row_drawn = None;
+            console.mark_all();
+            console.flush();
+        }
+    }
 }
 
 /// Check if the console has been initialized

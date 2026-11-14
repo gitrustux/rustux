@@ -32,6 +32,9 @@
 //! - Ctrl+C (with ISIG) clears the line and raises the interrupt signal,
 //!   which the shell uses to end the program in the foreground.
 //! - Shift+PgUp / Shift+PgDn scroll the screen back and forth.
+//! - Ctrl+Alt+F1 shows the text console, Ctrl+Alt+F7 the graphics of the
+//!   display service's owner (DESKTOP.md step F2); while the graphics are
+//!   shown, keys go to the display service instead of the console.
 //! - Programs print by writing to the console channel; init prints what
 //!   they write on the screen through the kernel's debug log.
 //!
@@ -42,6 +45,7 @@
 #include <errno.h>
 #include <rustux/auth.h>
 #include <rustux/console.h>
+#include <rustux/display.h>
 #include <rustux/process.h>
 #include <rustux/service.h>
 #include <sys/mount.h>
@@ -177,8 +181,35 @@ static rx_handle_t repeat_timer;
 static uint8_t repeat_usage, repeat_mods;
 static int repeating;
 
+// The display service (step F2), connected when first needed; one-way
+// messages (SWITCH, KEY), so init never waits for it
+static rx_handle_t display_ch;
+
+static void to_display(uint32_t op, uint32_t a) {
+    rx_display_msg_t m = { op, 0, a, 0 };
+    for (int tries = 0; tries < 2; tries++) {
+        if (!display_ch && rx_service_connect("/svc/display", &display_ch) < 0) {
+            display_ch = 0;
+            return;
+        }
+        if (rx_channel_write(display_ch, 0, &m, sizeof m, 0, 0) == RX_OK) return;
+        rx_handle_close(display_ch);  // the service was restarted: connect again
+        display_ch = 0;
+    }
+}
+
 static void key_event(uint8_t usage, uint8_t mods, uint8_t flags) {
     int pressed = flags & 1;
+    // Ctrl+Alt+F1: the text console; Ctrl+Alt+F7: graphics
+    if ((mods & KM_CTRL) && (mods & (KM_LALT | KM_RALT)) && (usage == 0x3A || usage == 0x40)) {
+        if (pressed) to_display(RX_DISPLAY_OP_SWITCH, usage == 0x3A ? RX_DISPLAY_TEXT : RX_DISPLAY_GRAPHICS);
+        return;
+    }
+    if (rx_display_console(0, RX_DISPLAY_QUERY) == RX_DISPLAY_GRAPHICS) {
+        repeating = 0;
+        to_display(RX_DISPLAY_OP_KEY, usage | (uint32_t)mods << 8 | (uint32_t)flags << 16);
+        return;
+    }
     if (usage >= 0xE0) return; // modifiers: their state comes with every event
     if (!pressed) {
         if (usage == repeat_usage) repeating = 0;

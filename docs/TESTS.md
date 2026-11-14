@@ -245,6 +245,17 @@ install next to a stand-in Windows (its partitions byte for byte
 unchanged, its loader started from rboot's menu); and a power cut during
 the installation, after which the computer still starts "Windows".
 
+## Display test (step F2)
+
+`scripts/run-display-test.sh` (`DISPLAY.md`): one QEMU boot. `fbtest
+--check` (the service's snapshot is what fbtest drew); `fbtest --pattern`
+in the background and `screenshot`, whose pixel CRC-32 must be that of
+QEMU's `screendump`, which must in turn be the test pattern the script
+computes; Ctrl+Alt+F1 (the console), Ctrl+Alt+F7 (the pattern again), `q`
+(passed to fbtest, which ends: the console is back as it was); `fbtest -n
+200` (200 frames, all shown, with the frame times); and the display service
+killed (the console shows, devmgr restarts it, `fbtest --check` passes).
+
 ## Run in QEMU
 
 ```bash

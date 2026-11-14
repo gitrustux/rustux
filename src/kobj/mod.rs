@@ -22,6 +22,7 @@
 pub mod bti;
 pub mod channel;
 pub mod debuglog;
+pub mod display;
 pub mod event;
 pub mod handle;
 pub mod socket;
@@ -80,6 +81,8 @@ pub enum ObjType {
     Pmt = 26,
     /// A USB device (step 13; not a Zircon type)
     Usb = 40,
+    /// The claim on the boot framebuffer (DESKTOP.md step F2; not a Zircon type)
+    Display = 41,
 }
 
 /// Signal bits of an object and the processes waiting for them to change
@@ -148,6 +151,7 @@ pub enum KObject {
     Bti(Arc<bti::Bti>),
     Pmt(Arc<bti::Pmt>),
     Usb(Arc<usb::UsbDevice>),
+    Display(Arc<display::DisplayClaim>),
 }
 
 impl KObject {
@@ -169,6 +173,7 @@ impl KObject {
             KObject::Bti(_) => ObjType::Bti,
             KObject::Pmt(_) => ObjType::Pmt,
             KObject::Usb(_) => ObjType::Usb,
+            KObject::Display(_) => ObjType::Display,
         }
     }
 
@@ -190,6 +195,7 @@ impl KObject {
             KObject::Bti(o) => &o.signals,
             KObject::Pmt(o) => &o.signals,
             KObject::Usb(o) => &o.signals,
+            KObject::Display(o) => &o.signals,
         }
     }
 

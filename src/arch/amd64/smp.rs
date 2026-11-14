@@ -496,6 +496,8 @@ extern "sysv64" fn ap_entry(index: u64) -> ! {
         // (load_cpu_tables also reloads CS: the trampoline's 0x18 is the
         // kernel GDT's user code segment)
         super::descriptor::idt_load_shared();
+        // The same PAT as the boot CPU (write-combining in entry 1)
+        super::mmu::x86_mmu_percpu_init();
         // Enable this CPU's local APIC (spurious vector 0xFF); accept all
         // interrupt priorities
         lapic_write(0xF0, lapic_read(0xF0) | 0x1FF);

@@ -517,6 +517,32 @@ typedef struct {
 #define RX_EFI_VAR_NEXT 2u
 static inline rx_status_t rx_efi_variable(uint32_t op, rx_efi_var_t *v) { return RX_SYS(0x9A, op, v, 0, 0); }
 
+// The boot framebuffer (DESKTOP.md step F2; the display service, through
+// devmgr). display_claim (root resource): its geometry, a physical VMO
+// over it (write-combining; the first pixel at phys & 0xFFF) and the claim
+// on the screen, one holder at a time (RX_ERR_BUSY), RX_ERR_NOT_FOUND
+// without a framebuffer. Pixels are 32 bits: the masks say where red,
+// green and blue are. When the claim's last handle closes, the text
+// console is shown again. docs/DISPLAY.md.
+typedef struct {
+    uint64_t phys;
+    uint64_t vmo_size;
+    uint32_t width, height;
+    uint32_t stride;        // bytes per scan line
+    uint32_t red, green, blue;
+} rx_display_info_t;
+static inline rx_status_t rx_display_claim(rx_handle_t resource, rx_display_info_t *info, rx_handle_t *vmo,
+                                           rx_handle_t *claim) {
+    return RX_SYS(0x9B, resource, info, vmo, claim);
+}
+// display_console(claim, mode): RX_DISPLAY_TEXT shows the kernel's text
+// console, RX_DISPLAY_GRAPHICS the claim holder's pixels (the console
+// stops drawing); RX_DISPLAY_QUERY (no handle needed) returns which is shown
+#define RX_DISPLAY_TEXT     0u
+#define RX_DISPLAY_GRAPHICS 1u
+#define RX_DISPLAY_QUERY    2u
+static inline rx_status_t rx_display_console(rx_handle_t claim, uint32_t mode) { return RX_SYS(0x9C, claim, mode, 0, 0); }
+
 // Ends the process at once (no stdio flush; use exit() for that)
 __attribute__((noreturn)) static inline void rx_exit(int64_t code) {
     RX_SYS(0x06, code, 0, 0, 0);

@@ -201,11 +201,17 @@ impl Vmo {
         self.cache.load(Ordering::Acquire)
     }
 
-    /// Set the cache policy for later mappings (write-combining needs the
-    /// PAT, which is not set up: NOT_SUPPORTED)
+    /// Set the cache policy for later mappings; write-combining (PAT entry
+    /// 1, mmu.rs) only for physical VMOs (device memory such as a
+    /// framebuffer: RAM mapped WC alongside the kernel's cached direct map
+    /// would have two memory types)
     pub fn set_cache_policy(&self, policy: u32) -> Result<(), RxStatus> {
         match policy {
             cache::CACHED | cache::UNCACHED | cache::UNCACHED_DEVICE => {
+                self.cache.store(policy, Ordering::Release);
+                Ok(())
+            }
+            cache::WRITE_COMBINING if self.kind == VmoKind::Physical => {
                 self.cache.store(policy, Ordering::Release);
                 Ok(())
             }

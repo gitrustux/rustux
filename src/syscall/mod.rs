@@ -389,6 +389,8 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x98 => driver::sys_usb_clear_halt(args),
         0x99 => driver::sys_usb_reset(args),
         0x9A => system::sys_efi_variable(args),
+        0x9B => driver::sys_display_claim(args),
+        0x9C => driver::sys_display_console(args),
 
         // yield(): give up the CPU (tests, and waiting for a full console)
         0x72 => sys_yield(args),

@@ -861,6 +861,63 @@ static void ram_check(void) {
     rx_handle_close(bti);
 }
 
+// ---- the display service (DESKTOP.md step F2) ----
+
+// devmgr claims the boot framebuffer from the kernel and hands it to
+// /bin/display, restarting it when it ends (like a driver)
+static struct {
+    rx_handle_t proc;
+    uint64_t started;
+    int quick_fails, given_up, none;
+} disp;
+
+static void start_display(void) {
+    rx_display_info_t info;
+    rx_handle_t vmo, claim;
+    rx_status_t s = rx_display_claim(resource, &info, &vmo, &claim);
+    if (s == RX_ERR_NOT_FOUND) {
+        disp.none = 1;  // no framebuffer (serial console only)
+        return;
+    }
+    if (s != RX_OK) {
+        printf("devmgr: cannot claim the framebuffer (%d)\n", (int)s);
+        disp.given_up = 1;
+        return;
+    }
+    char w[12], h[12], st[12], r[12], g[12], b[12], off[12];
+    snprintf(w, sizeof w, "%u", info.width);
+    snprintf(h, sizeof h, "%u", info.height);
+    snprintf(st, sizeof st, "%u", info.stride);
+    snprintf(r, sizeof r, "%x", info.red);
+    snprintf(g, sizeof g, "%x", info.green);
+    snprintf(b, sizeof b, "%x", info.blue);
+    snprintf(off, sizeof off, "%u", (unsigned)(info.phys & 0xFFF));
+    char *argv[] = { "display", w, h, st, r, g, b, off, 0 };
+    rx_spawn_handle_t hs[] = { { RX_PA_USER0, vmo }, { RX_PA_USER1, claim } };
+    if (rx_spawn("/bin/display", argv, 0, RX_SPAWN_CLONE_ALL, hs, 2, &disp.proc) != RX_OK) {
+        printf("devmgr: cannot start /bin/display\n");
+        disp.proc = 0;
+        disp.given_up = 1;
+        return;
+    }
+    disp.started = now_ns();
+}
+
+static void display_ended(void) {
+    int64_t code = rx_wait_process(disp.proc);
+    rx_handle_close(disp.proc);
+    disp.proc = 0;
+    if (now_ns() - disp.started < 5000000000ull) disp.quick_fails++;
+    else disp.quick_fails = 0;
+    if (disp.quick_fails >= 5) {
+        printf("devmgr: display keeps failing (code %lld); not restarting it\n", (long long)code);
+        disp.given_up = 1;
+        return;
+    }
+    printf("devmgr: display ended (code %lld); restarting it\n", (long long)code);
+    start_display();
+}
+
 // ---- main ----
 
 int main(void) {
@@ -891,8 +948,9 @@ int main(void) {
     }
 
     usb_scan();
-    static rx_wait_item_t items[1 + MAX_CLIENTS + MAX_BLOCK + 2 * MAX_PCI + MAX_USB];
-    static int who[1 + MAX_CLIENTS + MAX_BLOCK + 2 * MAX_PCI + MAX_USB]; // what each item is
+    start_display();
+    static rx_wait_item_t items[2 + MAX_CLIENTS + MAX_BLOCK + 2 * MAX_PCI + MAX_USB];
+    static int who[2 + MAX_CLIENTS + MAX_BLOCK + 2 * MAX_PCI + MAX_USB]; // what each item is
     uint64_t next_usb_scan = now_ns() + 1000000000ull;
     for (;;) {
         int n = 0;
@@ -921,6 +979,10 @@ int main(void) {
                 items[n] = (rx_wait_item_t){ usbs[k].proc, RX_PROCESS_TERMINATED, 0 };
                 who[n++] = 0x50000 | k;
             }
+        }
+        if (disp.proc) {
+            items[n] = (rx_wait_item_t){ disp.proc, RX_PROCESS_TERMINATED, 0 };
+            who[n++] = 0x60000;
         }
         // USB devices come and go: look every second (if a driver is set up for them)
         rx_status_t ws = rx_object_wait_many(items, (uint64_t)n, nusb_rules ? next_usb_scan : RX_TIME_INFINITE);
@@ -955,6 +1017,8 @@ int main(void) {
                 if (devs[idx].proc) driver_ended(&devs[idx]);
             } else if (kind == 5) {
                 if (idx < nusbs && usbs[idx].proc) usb_driver_ended(&usbs[idx]);
+            } else if (kind == 6) {
+                if (disp.proc) display_ended();
             }
         }
     }
