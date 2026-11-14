@@ -1,0 +1,19 @@
+[package]
+name = "rustica-window"
+version = "0.1.0"
+edition = "2021"
+description = "Windows on the Rustica compositor (DESKTOP.md step F4): a safe wrapper of libwindow, and a demo client"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "rustica-window"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+opt-level = "s"

@@ -37,8 +37,10 @@ inputd does, freeing the IRQs). inputd:
 - gives each event to **the one consumer with the focus**:
   1. a program that grabbed the input (`GRAB`, root: `evtest`), until it
      lets go or ends;
-  2. else, while graphics are on the screen, the display service's owner
-     (`KEY` and `POINTER` to `/svc/display`, `docs/DISPLAY.md`);
+  2. else, while graphics are on the screen, the program registered for
+     them (`GRAPHICS`, root: the compositor, step F4, `WINDOWS.md`), or
+     the display service's owner (`KEY` and `POINTER` to `/svc/display`,
+     `docs/DISPLAY.md`);
   3. else the console (init): the bytes of each key press, Enter as CR
      (init makes it a newline when the terminal's ICRNL is on), and the
      usage and modifiers (Shift+PgUp/PgDn scroll the console).
@@ -51,7 +53,9 @@ No other program sees input: nothing reads the devices but the kernel and
 Requests are `rx_input_req_t { u32 op; u32 arg; }`, each answered with an
 `int32_t` (0 or a negative errno): `GRAB` (root; `EBUSY` if another
 program has the focus), `UNGRAB` (closing the channel does it too),
-`RELOAD_KEYMAP` (anyone), `RESTART_KBD` (root; the shell's `restart-kbd`).
+`RELOAD_KEYMAP` (anyone), `RESTART_KBD` (root; the shell's `restart-kbd`),
+`GRAPHICS` (root: events while graphics are shown, until the channel
+closes; `EBUSY` if another program has it).
 A grabbing client receives `rx_input_event_t`: type (key or pointer), HID
 usage or buttons, modifiers, flags (pressed, repeat; absolute), x, y,
 wheel, the layout's text for a key press (UTF-8 or an escape sequence) and
@@ -74,5 +78,3 @@ then USB keyboard, mouse and tablet, in QEMU.
   is only a mouse if it reports as one (PS/2 or a HID mouse).
 - Pointer acceleration and settings; left-handed buttons.
 - Several keyboards with different layouts; compose and dead keys.
-- The compositor (step F4) will be the consumer while graphics are shown,
-  with focus per window.

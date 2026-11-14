@@ -41,6 +41,7 @@ static int driver_failures;
 static rx_handle_t clients[MAX_CLIENTS];
 static int nclients;
 static rx_handle_t grabber;     // the client with the focus, or 0
+static rx_handle_t gfx;         // the client for graphics (the compositor), or 0
 
 static rx_handle_t display_ch;  // connected when first needed
 
@@ -107,6 +108,16 @@ static void to_grabber(const rx_input_event_t *e) {
     if (rx_channel_write(grabber, 0, e, sizeof *e, 0, 0) != RX_OK) grabber = 0; // gone: the next event goes elsewhere
 }
 
+// To the graphics client while graphics are shown: 1 if sent
+static int to_gfx(const rx_input_event_t *e) {
+    if (!gfx || !graphics_shown()) return 0;
+    if (rx_channel_write(gfx, 0, e, sizeof *e, 0, 0) != RX_OK) {
+        gfx = 0;
+        return 0;
+    }
+    return 1;
+}
+
 static void key(uint8_t usage, uint8_t mods, uint8_t flags) {
     int pressed = flags & 1;
     // Ctrl+Alt+F1: the text console; Ctrl+Alt+F7: graphics (whoever has the focus)
@@ -132,18 +143,19 @@ static void key(uint8_t usage, uint8_t mods, uint8_t flags) {
             repeating = 0;
         }
     }
+    rx_input_event_t e;
+    memset(&e, 0, sizeof e);
+    e.type = RX_INPUT_KEY;
+    e.code = usage;
+    e.mods = mods;
+    e.flags = (flags & 1) | (flags & RX_INPUT_REPEAT);
+    memcpy(e.text, text, (size_t)n + 1);
+    e.time = rx_clock_get_monotonic();
     if (grabber) {
-        rx_input_event_t e;
-        memset(&e, 0, sizeof e);
-        e.type = RX_INPUT_KEY;
-        e.code = usage;
-        e.mods = mods;
-        e.flags = (flags & 1) | (flags & RX_INPUT_REPEAT);
-        memcpy(e.text, text, (size_t)n + 1);
-        e.time = rx_clock_get_monotonic();
         to_grabber(&e);
         return;
     }
+    if (to_gfx(&e)) return;
     if (graphics_shown()) {
         to_display(RX_DISPLAY_OP_KEY, usage | (uint32_t)mods << 8 | (uint32_t)(flags & 7) << 16, 0);
         return;
@@ -166,7 +178,7 @@ static void repeat_fired(void) {
 
 static void pointer(const unsigned char *r) {
     int16_t x = (int16_t)(r[4] | r[5] << 8), y = (int16_t)(r[6] | r[7] << 8);
-    if (grabber) {
+    {
         rx_input_event_t e;
         memset(&e, 0, sizeof e);
         e.type = RX_INPUT_POINTER;
@@ -181,8 +193,11 @@ static void pointer(const unsigned char *r) {
         }
         e.wheel = (int8_t)r[1];
         e.time = rx_clock_get_monotonic();
-        to_grabber(&e);
-        return;
+        if (grabber) {
+            to_grabber(&e);
+            return;
+        }
+        if (to_gfx(&e)) return;
     }
     // The console has no pointer
     if (graphics_shown())
@@ -211,6 +226,7 @@ static void read_source(rx_handle_t from) {
 
 static void drop_client(int k) {
     if (clients[k] == grabber) grabber = 0;
+    if (clients[k] == gfx) gfx = 0;
     rx_handle_close(clients[k]);
     clients[k] = clients[--nclients];
 }
@@ -239,6 +255,11 @@ static int request(int k) {
         break;
     case RX_INPUT_OP_UNGRAB:
         if (grabber == ch) grabber = 0;
+        break;
+    case RX_INPUT_OP_GRAPHICS:
+        if (who.euid != 0) st = -EPERM;
+        else if (gfx && gfx != ch) st = -EBUSY;
+        else gfx = ch;
         break;
     case RX_INPUT_OP_RELOAD_KEYMAP:
         km_load();

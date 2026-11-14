@@ -90,6 +90,9 @@ uses).
 | `rustica-install` | the installer (step 20, `INSTALL.md`): asks (keyboard, host, time zone, user, root, disk, erase/alongside/replace/manual), shows every change, writes after `install`; `--disk NAME|auto --mode ... --user ... --yes --dry-run` for scripts; log `/var/log/install.log` |
 | `fbtest` | draws through the display service (step F2, `DISPLAY.md`): `-n FRAMES` animation with frame times (0: until Esc or q), a cursor that follows the mouse with its clicks and wheel printed (step F3), `--pattern S` a still test pattern, `--check` snapshot equals what was drawn; Esc or q ends it; root |
 | `evtest` | prints input events (step F3, `INPUT.md`): takes the focus from the input service and prints keys (usage, modifiers, the layout's text) and pointer motion, buttons and wheel until Esc (or `-t SECONDS`); root |
+| `compositor` | windows on the screen (step F4, `WINDOWS.md`): click to focus, drag to move and resize, title bar buttons, Alt+Tab, Alt+F4, F11; `-v` prints what happens; root |
+| `wintest` | a test window: `NAME [-c RRGGBB] [-s WxH] [-p X,Y] [-a] [-n] [-k] [-t TEXT]`; prints the events it gets |
+| `rustica-window` | a window from Rust (the `rustica-window` crate's demo) |
 | `screenshot` | `screenshot FILE.png`: the screen (text console or graphics) as a PNG, with the CRC-32 of its pixels; root |
 | `logger` | `-t TAG -p [FACILITY.]PRIO -s -f FILE [MESSAGE]`; to logd (`/svc/log`); no `--journald`, `-u` |
 | `dmesg` | the kernel's log since boot (the last 64 KiB); `logs -k` has it with times |

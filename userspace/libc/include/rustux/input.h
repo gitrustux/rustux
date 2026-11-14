@@ -14,8 +14,9 @@
 //
 //   - a program that grabbed the input (GRAB: root; evtest), until it
 //     lets go or ends;
-//   - otherwise, while graphics are on the screen, the display service's
-//     owner (through the display service);
+//   - otherwise, while graphics are on the screen, the program that
+//     registered for them (GRAPHICS: the compositor), or else the display
+//     service's owner (through the display service);
 //   - otherwise the text console (init).
 //
 // Ctrl+Alt+F1 and Ctrl+Alt+F7 are inputd's own: they switch between the
@@ -43,6 +44,10 @@ typedef struct {
 #define RX_INPUT_OP_RELOAD_KEYMAP 3u
 // Restart the PS/2 driver (root)
 #define RX_INPUT_OP_RESTART_KBD   4u
+// Receive the events while graphics are on the screen (root: the
+// compositor, step F4), until the channel closes; instead of the display
+// service's owner
+#define RX_INPUT_OP_GRAPHICS      5u
 
 #define RX_INPUT_KEY     1u
 #define RX_INPUT_POINTER 2u

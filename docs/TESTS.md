@@ -269,6 +269,18 @@ it again, typing works); `localectl set-keymap de` (the key labelled Y
 gives z). With a USB keyboard, mouse and tablet: the kernel finds all
 three, typing works, `evtest` sees relative motion and absolute positions.
 
+## Window test (step F4)
+
+`scripts/run-window-test.sh` (`WINDOWS.md`): one QEMU boot with a USB
+tablet (QMP sends exact pointer positions). The compositor and `wintest`
+windows: overlapping windows checked by screendump pixels (content, title
+bars, the desktop); a click focuses and raises, keys reach only the focused
+window; dragging the title bar moves a window, dragging its corner resizes
+it; the maximise, minimise and close buttons, Alt+Tab, F11, Alt+F4; the
+clipboard between two windows; a killed client loses its window, a client
+ignoring a close request loses it after 5 s, an animating client is paced
+by frames; killing the compositor leaves the text console on the screen.
+
 ## Run in QEMU
 
 ```bash

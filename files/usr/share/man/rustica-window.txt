@@ -1,0 +1,10 @@
+rustica-window - a window from Rust
+
+USAGE
+    rustica-window [X,Y]
+
+    The demo of the rustica-window crate: a gradient that follows the
+    window's size and a square under the pointer; prints its events.
+
+SEE ALSO
+    compositor, wintest
