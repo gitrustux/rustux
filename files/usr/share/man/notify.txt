@@ -1,0 +1,10 @@
+notify - a notification on the desktop
+
+USAGE
+    notify TEXT...
+
+    Shows TEXT at the top right of the desktop for 5 seconds (three at a
+    time at most).
+
+SEE ALSO
+    desktop

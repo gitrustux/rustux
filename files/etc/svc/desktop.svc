@@ -1,0 +1,11 @@
+# The desktop session (DESKTOP.md step F6): the compositor, the graphical
+# login and the user's session. Started at boot in the graphical target
+# ("Rustica (desktop)" in the boot menu: desktop on the kernel command
+# line), or from the console with `desktop` (svc start desktop). The
+# console stays on Ctrl+Alt+F1.
+description=The desktop (compositor, login, session)
+exec=/bin/desktop --run
+after=logd authd mounts
+restart=always
+restart_delay=2
+target=graphical

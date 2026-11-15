@@ -292,6 +292,18 @@ with F10 and arrows and with the mouse; the text editor field; the list of
 and a JPEG drawn and anti-aliased text (screendump pixels); File > Quit
 through its dialog; `--scale 2` gives a window twice the size.
 
+## Desktop session test (step F6)
+
+`scripts/run-desktop-test.sh` (`SESSION.md`): one QEMU boot with `desktop`
+on the kernel command line and a USB tablet. The desktop starts at boot
+(root's session from `/etc/autologin`: the panel on the wallpaper);
+Applications opens the launcher, Enter starts an application; `notify` from
+the console shows top right; Log out ends the session and brings the
+graphical login, which refuses a wrong password and lets alice (made at the
+console) in; Lock shows the lock screen, refuses a wrong password, takes
+hers; the console works throughout; the system log records it all, and no
+program of either session is left after logging out (`ps`).
+
 ## Run in QEMU
 
 ```bash
@@ -342,8 +354,8 @@ EBS OK
 [VM] Kernel page tables active, physical memory mapped at 0xffff800000000000
 [VM] Kernel image relocated to 0xffffffff80000000
 [STACK] Switching to kernel stack: vaddr=0xffff800000442000 size=0x40000
-[INIT] Heap: 16 MB at physical 0x1780000
-[INIT] Heap initialized successfully (16MB)
+[INIT] Heap at physical 0x1780000
+[INIT] Heap initialized successfully (MB: 0x1A)
 [DMA] Self-test passed
 [1/5] Setting up GDT...           ✓ GDT configured
 [2/5] Setting up IDT...           ✓ IDT configured

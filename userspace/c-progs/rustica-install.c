@@ -1019,6 +1019,10 @@ static void install_esp(void) {
     snprintf(buf, sizeof buf, "title   Rustica Server\nefi     /EFI/Rustica/rustux.efi\noptions root=UUID=%s quiet%s\nsort-key 1\n", root_uuid,
              plan.nvme ? " nvme=rw" : "");
     wfile(TGT_ESP "/loader/entries/rustica.conf", buf, 0644);
+    // The same with the desktop (DESKTOP.md step F6): the graphical login
+    snprintf(buf, sizeof buf, "title   Rustica (desktop)\nefi     /EFI/Rustica/rustux.efi\noptions root=UUID=%s quiet desktop%s\nsort-key 2\n",
+             root_uuid, plan.nvme ? " nvme=rw" : "");
+    wfile(TGT_ESP "/loader/entries/rustica-desktop.conf", buf, 0644);
     wfile(TGT_ESP "/loader/loader.conf", plan.windows ? "default rustica\ntimeout 5\n" : "default rustica\ntimeout 3\n", 0644);
 }
 

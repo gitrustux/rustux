@@ -67,7 +67,9 @@ the console (`svc isolate multi-user`).
    under other names and then renamed; `\EFI\BOOT\BOOTX64.EFI` (rboot) only
    if there is none (Windows' fallback is never replaced); `\loader\
    loader.conf` (timeout 3, or 5 with Windows) and `\loader\entries\
-   rustica.conf` (`root=UUID=... quiet`, and `nvme=rw` on NVMe). rboot finds
+   rustica.conf` (`root=UUID=... quiet`, and `nvme=rw` on NVMe), and
+   `rustica-desktop.conf`, the same with `desktop`: "Rustica (desktop)",
+   the graphical login (desktop step F6, `SESSION.md`). rboot finds
    Windows and Linux itself at each boot.
 6. Everything written out; the log (`/var/log/install.log`) copied to the
    new system; both unmounted.

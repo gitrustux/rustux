@@ -27,6 +27,14 @@
 // the compositor ends, the display service gives the screen back to the
 // text console.
 //
+// For the desktop session (step F6): a window can be the panel (docked at
+// the bottom, always on top, never focused; it hears of every window and
+// can activate them); clients can show notifications (top right, 5 s);
+// and the screen can be locked (the session's user's password unlocks
+// it). The desktop program (desktop --run) starts the compositor with a
+// control channel on which it names the session's user ("user NAME", or
+// "user" for none: no lock then).
+//
 //   compositor [-v]     -v: print what happens (for the tests)
 //
 // Root only (the display and input services give the screen and the
@@ -42,6 +50,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "userdb.h"
 
 #define MAX_WINDOWS 32
 #define TITLE_H 24      // title bar height
@@ -78,6 +87,7 @@ typedef struct {
     int committed;              // something committed since the last FRAME
     uint64_t close_deadline;    // after a close request, 0 if none
     uint32_t want_w, want_h;    // the size asked for with CONFIGURE (0: none pending)
+    int panel;                  // the panel: no frame, docked at the bottom, on top, never focused
 } window_t;
 
 static window_t wins[MAX_WINDOWS];
@@ -92,6 +102,16 @@ static int visible = 1;
 
 static char clipboard[RX_WINDOW_MAX_CLIPBOARD + 1];
 static size_t clipboard_len;
+
+static int panel_h;             // the screen's bottom rows the panel takes
+static char session_user[64];   // who unlocks the screen ("" without a session)
+static int locked;
+static char lock_pw[65];
+static int lock_failed;
+
+#define MAX_TOASTS 3
+static struct { char text[121]; uint64_t until; } toasts[MAX_TOASTS];
+static int ntoasts;
 
 #define vlog(...) do { if (verbose) { printf("compositor: " __VA_ARGS__); fflush(stdout); } } while (0)
 
@@ -129,7 +149,7 @@ static void add_damage(int x, int y, int w, int h) {
 
 // The whole frame of a window (border, title bar, content) and the resize grips
 static void frame_rect(const window_t *w, int *x, int *y, int *fw, int *fh) {
-    if (w->fullscreen) {
+    if (w->fullscreen || w->panel) {
         *x = w->x; *y = w->y; *fw = (int)w->w; *fh = (int)w->h;
         return;
     }
@@ -192,7 +212,7 @@ static void button_rect(const window_t *w, int k, int *x, int *y) {
 }
 
 static void draw_window(const window_t *w, int focused, const rx_display_rect_t *r) {
-    if (!w->fullscreen) {
+    if (!w->fullscreen && !w->panel) {
         int fx, fy, fw, fh;
         frame_rect(w, &fx, &fy, &fw, &fh);
         uint32_t bc = focused ? C_BORDER : C_BORDER_OFF;
@@ -244,15 +264,94 @@ static void draw_cursor(const rx_display_rect_t *r) {
         }
 }
 
+// The wallpaper: a vertical Dracula gradient with a soft purple glow low
+// on the left (computed once)
+static uint32_t *wallpaper;
+
+static void make_wallpaper(void) {
+    wallpaper = malloc((size_t)W * H * 4);
+    if (!wallpaper) return;
+    // Ordered dithering (4x4 Bayer) keeps the gradient free of bands
+    static const int bayer[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+    int64_t rad = (int64_t)H * 10 / 14, r2 = rad * rad;
+    for (uint32_t y = 0; y < H; y++) {
+        // 0x1E1F29 at the top to 0x2B2D3C at the bottom, in 1/256ths
+        int64_t t = (int64_t)y * 256 / H;
+        int64_t br = 0x1E * 256 + (0x2B - 0x1E) * t, bg = 0x1F * 256 + (0x2D - 0x1F) * t, bb = 0x29 * 256 + (0x3C - 0x29) * t;
+        for (uint32_t x = 0; x < W; x++) {
+            // The glow: centre at (W/4, 3H/4), strength up to 16% of the accent
+            int64_t dx = (int64_t)x - W / 4, dy = (int64_t)y - 3 * H / 4, d2 = dx * dx + dy * dy;
+            int64_t g = d2 < r2 ? 41 * (r2 - d2) / r2 : 0; // 0..41 of 256
+            g = g * (r2 - d2 > 0 ? (r2 - d2) : 0) / (r2 ? r2 : 1); // eased: falls off smoothly
+            int64_t r = br + ((0xBD * 256 - br) * g) / 256, gg = bg + ((0x93 * 256 - bg) * g) / 256,
+                    b = bb + ((0xF9 * 256 - bb) * g) / 256;
+            int dth = bayer[y & 3][x & 3] * 16 + 8; // 0..255
+            wallpaper[(uint64_t)y * W + x] = (uint32_t)((r + dth) >> 8) << 16 | (uint32_t)((gg + dth) >> 8) << 8 |
+                                             (uint32_t)((b + dth) >> 8);
+        }
+    }
+}
+
+static void draw_wallpaper(const rx_display_rect_t *r) {
+    if (!wallpaper) {
+        fill((int)r->x, (int)r->y, (int)r->w, (int)r->h, C_DESKTOP, r);
+        return;
+    }
+    for (uint32_t y = r->y; y < r->y + r->h; y++)
+        memcpy(fbp + (uint64_t)y * W + r->x, wallpaper + (uint64_t)y * W + r->x, (size_t)r->w * 4);
+}
+
+// The lock screen's box
+#define LOCK_W 360
+#define LOCK_H 150
+static void draw_lock(const rx_display_rect_t *r) {
+    int x = ((int)W - LOCK_W) / 2, y = ((int)H - LOCK_H) / 2;
+    fill(x, y, LOCK_W, LOCK_H, 0x343746, r);
+    fill(x, y, LOCK_W, 2, C_BORDER, r);
+    char line[96];
+    snprintf(line, sizeof line, "Locked: %s", session_user);
+    text(x + 24, y + 22, line, LOCK_W - 48, C_TEXT, r);
+    text(x + 24, y + 48, "Type your password and Enter", LOCK_W - 48, C_TEXT_OFF, r);
+    fill(x + 24, y + 78, LOCK_W - 48, 28, 0x282A36, r);
+    char dots[65];
+    size_t n = strlen(lock_pw);
+    for (size_t i = 0; i < n; i++) dots[i] = '*';
+    dots[n] = 0;
+    text(x + 32, y + 84, dots, LOCK_W - 64, C_TEXT, r);
+    if (lock_failed) text(x + 24, y + 116, "Wrong password", LOCK_W - 48, C_CLOSE, r);
+}
+
+#define TOAST_W 320
+#define TOAST_H 48
+static void toast_rect(int i, int *x, int *y) {
+    *x = (int)W - TOAST_W - 16;
+    *y = 16 + i * (TOAST_H + 8);
+}
+
+static void draw_toasts(const rx_display_rect_t *r) {
+    for (int i = 0; i < ntoasts; i++) {
+        int x, y;
+        toast_rect(i, &x, &y);
+        fill(x, y, TOAST_W, TOAST_H, 0x44475A, r);
+        fill(x, y, 3, TOAST_H, C_BORDER, r);
+        text(x + 14, y + 16, toasts[i].text, TOAST_W - 24, C_TEXT, r);
+    }
+}
+
 static void compose(void) {
     if (!ndamage) return;
     for (int i = 0; i < ndamage; i++) {
         const rx_display_rect_t *r = &damage[i];
-        fill((int)r->x, (int)r->y, (int)r->w, (int)r->h, C_DESKTOP, r);
-        for (int k = 0; k < norder; k++) {
-            const window_t *w = &wins[order[k]];
-            if (w->minimized || !w->pix) continue;
-            draw_window(w, order[k] == focus, r);
+        draw_wallpaper(r);
+        if (locked) {
+            draw_lock(r);
+        } else {
+            for (int k = 0; k < norder; k++) {
+                const window_t *w = &wins[order[k]];
+                if (w->minimized || !w->pix) continue;
+                draw_window(w, order[k] == focus, r);
+            }
+            draw_toasts(r);
         }
         draw_cursor(r);
     }
@@ -296,7 +395,31 @@ static void send_state(window_t *w) {
                                            (w->minimized ? RX_WINDOW_STATE_MINIMIZED : 0));
 }
 
+// Tell the panels about every window (step F6): a clearing event (x -1),
+// then one per window: id, title (15 characters), focused, minimised
+static void notify_panels(void) {
+    for (int p = 0; p < MAX_WINDOWS; p++) {
+        if (!wins[p].used || !wins[p].panel) continue;
+        rx_window_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.op = RX_WINDOW_EV_WINDOW_INFO;
+        ev.x = -1;
+        send_event(&wins[p], &ev);
+        for (int i = 0; i < norder; i++) {
+            const window_t *w = &wins[order[i]];
+            if (w->panel) continue;
+            memset(&ev, 0, sizeof ev);
+            ev.op = RX_WINDOW_EV_WINDOW_INFO;
+            ev.x = order[i];
+            ev.flags = (order[i] == focus ? 1u : 0u) | (w->minimized ? 2u : 0u);
+            snprintf(ev.text, sizeof ev.text, "%s", w->title);
+            send_event(&wins[p], &ev);
+        }
+    }
+}
+
 static void set_focus(int k) {
+    if (k >= 0 && wins[k].panel) return; // the panel never takes the focus
     if (k == focus) return;
     if (focus >= 0 && wins[focus].used) {
         send_simple(&wins[focus], RX_WINDOW_EV_FOCUS, 0);
@@ -308,6 +431,7 @@ static void set_focus(int k) {
         damage_window(&wins[k]);
         vlog("focus \"%s\"\n", wins[k].title);
     }
+    notify_panels();
 }
 
 static void raise(int k) {
@@ -317,12 +441,21 @@ static void raise(int k) {
     for (; i < norder - 1; i++) order[i] = order[i + 1];
     order[norder - 1] = k;
     damage_window(&wins[k]);
+    // Panels stay on top
+    for (int j = 0, n = norder; j < n; j++) {
+        int p = order[j];
+        if (!wins[p].panel || p == k) continue;
+        for (int m = j; m < norder - 1; m++) order[m] = order[m + 1];
+        order[norder - 1] = p;
+        j--;
+        n--;
+    }
 }
 
-// The topmost window that is not minimised, or -1
+// The topmost window that is not minimised (nor a panel), or -1
 static int top_window(void) {
     for (int i = norder - 1; i >= 0; i--)
-        if (!wins[order[i]].minimized) return order[i];
+        if (!wins[order[i]].minimized && !wins[order[i]].panel) return order[i];
     return -1;
 }
 
@@ -371,11 +504,14 @@ static void remove_window(int k, const char *why) {
     for (; i < norder; i++)
         if (order[i] != k) order[j++] = order[i];
     norder = j;
+    int was_panel = w->panel;
     memset(w, 0, sizeof *w);
+    if (was_panel) panel_h = 0;
     if (focus == k) {
         focus = -1;
         set_focus(top_window());
     }
+    notify_panels();
 }
 
 // Ask the client for a new size (and remember where the window goes)
@@ -420,7 +556,7 @@ static void toggle_maximize(int k) {
         damage_window(w);
         w->x = BORDER;
         w->y = TITLE_H + BORDER;
-        configure(w, W - 2 * BORDER, H - TITLE_H - 2 * BORDER);
+        configure(w, W - 2 * BORDER, H - (uint32_t)panel_h - TITLE_H - 2 * BORDER);
     }
     vlog("window \"%s\" %s\n", w->title, w->maximized ? "maximized" : "restored");
     send_state(w);
@@ -441,7 +577,7 @@ static void set_fullscreen(int k, int on) {
         if (w->maximized) {
             w->x = BORDER;
             w->y = TITLE_H + BORDER;
-            configure(w, W - 2 * BORDER, H - TITLE_H - 2 * BORDER);
+            configure(w, W - 2 * BORDER, H - (uint32_t)panel_h - TITLE_H - 2 * BORDER);
         } else {
             restore_geometry(w);
         }
@@ -457,6 +593,7 @@ static void minimize(int k) {
     damage_window(w);
     vlog("window \"%s\" minimized\n", w->title);
     send_state(w);
+    notify_panels();
     if (focus == k) {
         focus = -1;
         send_simple(w, RX_WINDOW_EV_FOCUS, 0);
@@ -497,6 +634,7 @@ static int new_window(rx_handle_t ch, const rx_window_req_t *r, const char *payl
     w->ch = ch;
     order[norder++] = k;
     vlog("window \"%s\" %ux%u at %d,%d\n", w->title, w->w, w->h, w->x, w->y);
+    raise(k); // under the panels
     return k;
 }
 
@@ -517,6 +655,73 @@ static void commit(window_t *w, const rx_window_rect_t *rects, uint32_t n) {
         if (!w->minimized) add_damage(w->x + (int)r.x, w->y + (int)r.y, (int)r.w, (int)r.h);
     }
     w->committed = 1;
+}
+
+// A notification (top right, 5 s; the oldest goes when there are three)
+static void notify(const char *t, uint32_t n) {
+    if (ntoasts == MAX_TOASTS) {
+        memmove(&toasts[0], &toasts[1], sizeof toasts[0] * (MAX_TOASTS - 1));
+        ntoasts--;
+    }
+    size_t c = n < sizeof toasts[0].text - 1 ? n : sizeof toasts[0].text - 1;
+    memcpy(toasts[ntoasts].text, t, c);
+    toasts[ntoasts].text[c] = 0;
+    toasts[ntoasts].until = rx_clock_get_monotonic() + 5000000000ull;
+    ntoasts++;
+    add_damage((int)W - TOAST_W - 16, 16, TOAST_W, MAX_TOASTS * (TOAST_H + 8));
+    vlog("notification \"%s\"\n", toasts[ntoasts - 1].text);
+}
+
+static void expire_toasts(uint64_t now) {
+    int j = 0;
+    for (int i = 0; i < ntoasts; i++)
+        if (toasts[i].until > now) toasts[j++] = toasts[i];
+    if (j != ntoasts) add_damage((int)W - TOAST_W - 16, 16, TOAST_W, MAX_TOASTS * (TOAST_H + 8));
+    ntoasts = j;
+}
+
+static void lock_screen(void) {
+    if (!session_user[0] || locked) return;
+    if (udb_locked(session_user)) {
+        // No password (the live image's root): nothing could unlock it
+        static const char msg[] = "No password to unlock with: set one with passwd to lock the screen";
+        notify(msg, sizeof msg - 1);
+        return;
+    }
+    locked = 1;
+    lock_pw[0] = 0;
+    lock_failed = 0;
+    add_damage(0, 0, (int)W, (int)H);
+    vlog("locked\n");
+}
+
+// A key while locked: the password, Enter checks it
+static void lock_key(const rx_input_event_t *e) {
+    if (!(e->flags & RX_INPUT_PRESSED)) return;
+    size_t n = strlen(lock_pw);
+    if (e->code == 0x28 || e->code == 0x58) {
+        int ok = udb_check(session_user, lock_pw);
+        memset(lock_pw, 0, sizeof lock_pw);
+        if (ok) {
+            locked = 0;
+            vlog("unlocked\n");
+        } else {
+            lock_failed = 1;
+            vlog("wrong password at the lock screen\n");
+        }
+        add_damage(0, 0, (int)W, (int)H);
+        return;
+    }
+    if (e->code == 0x2A) {
+        if (n) lock_pw[n - 1] = 0;
+    } else if (e->code == 0x29) {
+        lock_pw[0] = 0;
+    } else if (e->text[0] && !e->text[1] && (unsigned char)e->text[0] >= ' ' && n < sizeof lock_pw - 1) {
+        lock_pw[n] = e->text[0];
+        lock_pw[n + 1] = 0;
+    }
+    lock_failed = 0;
+    add_damage(((int)W - LOCK_W) / 2, ((int)H - LOCK_H) / 2, LOCK_W, LOCK_H);
 }
 
 // A client channel's messages: 0 if the client is gone
@@ -553,6 +758,7 @@ static int client_messages(int k) {
             memcpy(w->title, payload, tl);
             w->title[tl] = 0;
             add_damage(w->x, w->y - TITLE_H, (int)w->w, TITLE_H);
+            notify_panels();
             break;
         }
         case RX_WINDOW_CLIPBOARD_SET:
@@ -573,7 +779,50 @@ static int client_messages(int k) {
             break;
         }
         case RX_WINDOW_SET_FULLSCREEN:
-            set_fullscreen(k, r.flags != 0);
+            if (!w->panel) set_fullscreen(k, r.flags != 0);
+            break;
+        case RX_WINDOW_SET_ROLE:
+            if (r.flags == RX_WINDOW_ROLE_PANEL && !w->panel) {
+                // Docked at the bottom, the screen's width, on top
+                damage_window(w);
+                if (focus == k) {
+                    focus = -1;
+                    set_focus(top_window());
+                }
+                w->panel = 1;
+                panel_h = (int)w->h;
+                w->x = 0;
+                w->y = (int)H - panel_h;
+                configure(w, W, w->h);
+                raise(k);
+                damage_window(w);
+                vlog("window \"%s\" is the panel\n", w->title);
+                notify_panels();
+            }
+            break;
+        case RX_WINDOW_ACTIVATE:
+            if (w->panel && r.x >= 0 && r.x < MAX_WINDOWS && wins[r.x].used && !wins[r.x].panel) {
+                window_t *t = &wins[r.x];
+                if (t->minimized) {
+                    t->minimized = 0;
+                    send_state(t);
+                    raise(r.x);
+                    set_focus(r.x);
+                } else if (focus == r.x) {
+                    minimize(r.x);
+                } else {
+                    raise(r.x);
+                    set_focus(r.x);
+                }
+                damage_window(t);
+                notify_panels();
+            }
+            break;
+        case RX_WINDOW_NOTIFY:
+            notify(payload, plen);
+            break;
+        case RX_WINDOW_LOCK:
+            lock_screen();
             break;
         default:
             break;
@@ -602,6 +851,13 @@ static int pending_message(int i) {
     }
     rx_window_req_t r;
     memcpy(&r, buf, sizeof r);
+    if (nb >= sizeof r && r.op == RX_WINDOW_NOTIFY) {
+        // A notification without a window (the notify command)
+        notify(buf + sizeof r, nb - (uint32_t)sizeof r);
+        if (nh) rx_handle_close(h);
+        rx_handle_close(ch);
+        return 0;
+    }
     int k = -EINVAL;
     if (nb >= sizeof r && r.op == RX_WINDOW_CREATE && nh) {
         k = new_window(ch, &r, buf + sizeof r, nb - (uint32_t)sizeof r, h);
@@ -645,7 +901,7 @@ static int hit(int px, int py, int *which, int *edges) {
         if (w->minimized) continue;
         *which = k;
         if (px >= w->x && px < w->x + (int)w->w && py >= w->y && py < w->y + (int)w->h) return HIT_CONTENT;
-        if (w->fullscreen) continue;
+        if (w->fullscreen || w->panel) continue;
         if (px >= w->x && px < w->x + (int)w->w && py >= w->y - TITLE_H && py < w->y) {
             for (int b = 0; b < 3; b++) {
                 int bx, by;
@@ -696,6 +952,15 @@ static void move_cursor(int nx, int ny) {
 }
 
 static void pointer_event(const rx_input_event_t *e) {
+    if (locked) {
+        // The cursor moves; nothing else
+        if (e->flags & RX_INPUT_ABSOLUTE)
+            move_cursor((int)((uint64_t)e->x * (W - 1) / 32767), (int)((uint64_t)e->y * (H - 1) / 32767));
+        else
+            move_cursor(cx + e->x, cy + e->y);
+        buttons = e->code;
+        return;
+    }
     int ox = cx, oy = cy;
     if (e->flags & RX_INPUT_ABSOLUTE)
         move_cursor((int)((uint64_t)e->x * (W - 1) / 32767), (int)((uint64_t)e->y * (H - 1) / 32767));
@@ -747,7 +1012,7 @@ static void pointer_event(const rx_input_event_t *e) {
 
     int k, edges = 0, where = hit(cx, cy, &k, &edges);
     if (pressed) {
-        if (k >= 0) {
+        if (k >= 0 && !wins[k].panel) {
             raise(k);
             set_focus(k);
         }
@@ -785,7 +1050,9 @@ static void pointer_event(const rx_input_event_t *e) {
         }
     }
     // Pointer events reach the focused window only, while over its content
-    if (where == HIT_CONTENT && k == focus) {
+    // (and the panel, which is never focused)
+    if (where == HIT_CONTENT && (k == focus || wins[k].panel)) {
+        if (pointer_in >= 0 && pointer_in != k && wins[pointer_in].used) pointer_to(pointer_in, RX_WINDOW_PTR_LEAVE, 0);
         uint32_t f = (moved ? RX_WINDOW_PTR_MOTION : 0) | (pressed || released ? RX_WINDOW_PTR_BUTTON : 0) |
                      (e->wheel ? RX_WINDOW_PTR_WHEEL : 0);
         if (f) pointer_to(k, f, e->wheel);
@@ -819,6 +1086,16 @@ static void cycle_focus(void) {
 
 static void key_event(const rx_input_event_t *e) {
     int pressed = e->flags & RX_INPUT_PRESSED;
+    if (locked) {
+        lock_key(e);
+        return;
+    }
+    // Super+L (or Ctrl+Alt+L): lock
+    if (pressed && e->code == 0x0F && ((e->mods & (RX_INPUT_MOD_LGUI | RX_INPUT_MOD_RGUI)) ||
+                                       ((e->mods & (RX_INPUT_MOD_LCTRL | RX_INPUT_MOD_RCTRL)) && (e->mods & (RX_INPUT_MOD_LALT | RX_INPUT_MOD_RALT))))) {
+        lock_screen();
+        return;
+    }
     int alt = e->mods & (RX_INPUT_MOD_LALT | RX_INPUT_MOD_RALT);
     if (pressed && alt && e->code == 0x2B) { // Alt+Tab
         cycle_focus();
@@ -889,6 +1166,8 @@ int main(int argc, char **argv) {
     fbp = d.pixels;
     cx = (int)W / 2;
     cy = (int)H / 2;
+    make_wallpaper();
+    rx_handle_t control = rx_take_startup_handle(RX_PA_USER0); // from desktop --run, if it started us
     connect_input();
     rx_handle_t listen, theirs;
     if (rx_channel_create(0, &listen, &theirs) != RX_OK || rx_service_publish("/svc/window", theirs) < 0) {
@@ -917,9 +1196,32 @@ int main(int argc, char **argv) {
         }
         int i_pend = n;
         for (int i = 0; i < npending; i++) items[n++] = (rx_wait_item_t){ pending[i], RX_CHANNEL_READABLE | RX_PEER_CLOSED, 0 };
+        int i_ctl = -1;
+        if (control) { i_ctl = n; items[n++] = (rx_wait_item_t){ control, RX_CHANNEL_READABLE | RX_PEER_CLOSED, 0 }; }
+        for (int i = 0; i < ntoasts; i++)
+            if (toasts[i].until < deadline) deadline = toasts[i].until;
         // Without the input service, look for it again now and then
         if (!input_ch && deadline > rx_clock_get_monotonic() + 1000000000ull) deadline = rx_clock_get_monotonic() + 1000000000ull;
         rx_object_wait_many(items, (uint64_t)n, deadline);
+
+        if (i_ctl >= 0 && items[i_ctl].pending) {
+            // The desktop: "user NAME" or "user"; when it ends, so do we
+            char msg[80];
+            uint32_t nb = 0;
+            rx_status_t cs;
+            while ((cs = rx_channel_read(control, 0, msg, 0, sizeof msg - 1, 0, &nb, 0)) == RX_OK) {
+                msg[nb] = 0;
+                if (!strncmp(msg, "user", 4)) {
+                    snprintf(session_user, sizeof session_user, "%s", msg[4] == ' ' ? msg + 5 : "");
+                    vlog("session user \"%s\"\n", session_user);
+                    if (!session_user[0] && locked) {
+                        locked = 0;
+                        add_damage(0, 0, (int)W, (int)H);
+                    }
+                }
+            }
+            if (cs == RX_ERR_PEER_CLOSED) return 0;
+        }
 
         if (items[i_disp].pending) {
             rx_display_msg_t ev;
@@ -954,6 +1256,7 @@ int main(int argc, char **argv) {
             }
         }
         uint64_t now = rx_clock_get_monotonic();
+        expire_toasts(now);
         for (int k = 0; k < MAX_WINDOWS; k++)
             if (wins[k].used && wins[k].close_deadline && now >= wins[k].close_deadline)
                 remove_window(k, "it did not close when asked");

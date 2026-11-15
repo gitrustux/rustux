@@ -27,8 +27,9 @@ x86_64-unknown-uefi`; `build.sh` builds it), the kernel's side in
 `BOOTX64.EFI`, as before step 19), with two entries (step 20): "Try Rustica
 Server" with no options (the kernel then still reads
 `\EFI\BOOT\cmdline.txt` when there is one) and "Install Rustica Server"
-(`installer`: INSTALL.md). rboot adds no recovery entry for an entry whose
-options say `installer`. An installed system's ESP is laid out the same
+(`installer`: INSTALL.md), and a third (desktop step F6): "Try Rustica
+(desktop)" (`desktop`: the graphical target, `SESSION.md`). rboot adds no
+recovery entry for an entry whose options say `installer` or `desktop`. An installed system's ESP is laid out the same
 way by `rustica-install`.
 
 ### loader.conf

@@ -148,7 +148,25 @@ def screen():
     data = head[3]
     return lambda x, y: int.from_bytes(data[3 * (y * w + x):3 * (y * w + x) + 3], 'big')
 
-ONE, TWO, DESKTOP = 0xFF8080, 0x80FF80, 0x1E1F29
+ONE, TWO = 0xFF8080, 0x80FF80
+BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
+
+def wallpaper(x, y, W=1280, H=800):
+    # compositor.c's make_wallpaper(), the same integer arithmetic
+    rad = H * 10 // 14
+    r2 = rad * rad
+    t = y * 256 // H
+    br, bg, bb = 0x1E * 256 + (0x2B - 0x1E) * t, 0x1F * 256 + (0x2D - 0x1F) * t, 0x29 * 256 + (0x3C - 0x29) * t
+    dx, dy = x - W // 4, y - 3 * H // 4
+    d2 = dx * dx + dy * dy
+    g = 41 * (r2 - d2) // r2 if d2 < r2 else 0
+    g = g * max(r2 - d2, 0) // r2
+    r = br + ((0xBD * 256 - br) * g) // 256
+    gg = bg + ((0x93 * 256 - bg) * g) // 256
+    b = bb + ((0xF9 * 256 - bb) * g) // 256
+    d = BAYER[y & 3][x & 3] * 16 + 8
+    return ((r + d) >> 8) << 16 | ((gg + d) >> 8) << 8 | ((b + d) >> 8)
+
 TITLE, TITLE_OFF = 0x44475A, 0x2E303E
 
 def px_is(px, x, y, want, what):
@@ -171,7 +189,7 @@ px = screen()
 px_is(px, 150, 150, ONE, 'window one\'s content')
 px_is(px, 350, 250, TWO, 'two overlaps one (two is on top)')
 px_is(px, 650, 450, TWO, 'window two\'s content')
-px_is(px, 50, 50, DESKTOP, 'the desktop')
+px_is(px, 50, 50, wallpaper(50, 50), 'the desktop (the wallpaper)')
 px_is(px, 500, 188, TITLE, 'two\'s title bar (focused)')
 px_is(px, 250, 88, TITLE_OFF, 'one\'s title bar (not focused)')
 
@@ -189,7 +207,7 @@ drag(250, 88, 450, 388)
 check(wait(r'compositor: window "one" moved to 300,400', 5, n) is not None, 'dragging the title bar moves one to 300,400')
 px = screen()
 px_is(px, 350, 450, ONE, 'one\'s content is there')
-px_is(px, 150, 150, DESKTOP, 'and gone from where it was')
+px_is(px, 150, 150, wallpaper(150, 150), 'and gone from where it was')
 
 n = len(log())
 drag(700, 500, 800, 560)
@@ -218,7 +236,7 @@ check(wait(r'wintest two: state 0x4', 5, n) is not None, 'the minimise button')
 check(wait(r'wintest one: focus in', 5, n) is not None, 'one gets the focus')
 time.sleep(0.5)
 px = screen()
-px_is(px, 750, 300, DESKTOP, 'two is gone from the screen')
+px_is(px, 750, 300, wallpaper(750, 300), 'two is gone from the screen')
 n = len(log())
 mon('sendkey alt-tab')
 check(wait(r'wintest two: state 0x0', 5, n) is not None and wait(r'wintest two: focus in', 5, n) is not None,
@@ -257,7 +275,7 @@ check(wait(r'wintest anim: window', 10, n) is not None and wait(r'wintest three:
 mon('sendkey ctrl-alt-f7')
 time.sleep(1)
 px = screen()
-px_is(px, 150, 450, DESKTOP, 'one\'s window is gone from the screen')
+px_is(px, 150, 450, wallpaper(150, 450), 'one\'s window is gone from the screen')
 check(wait(r'wintest anim: 200 frames', 30, n) is not None, 'an animating client is paced by frames (200 so far)')
 n = len(log())
 click(600, 630)
@@ -284,7 +302,7 @@ time.sleep(1)
 mon('sendkey ctrl-alt-f7')
 time.sleep(1)
 px = screen()
-check(px(SW - 1, 0) != DESKTOP and px(50, 50) != DESKTOP, 'the text console stays on the screen')
+check(px(SW - 1, 0) != wallpaper(SW - 1, 0) and px(50, 50) != wallpaper(50, 50), 'the text console stays on the screen')
 m = wait(r'compositor: (\d+)x(\d+)', 1, n0)
 if fails:
     print('run-window-test: %d checks failed' % fails)

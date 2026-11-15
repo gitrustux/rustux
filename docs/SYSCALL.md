@@ -1070,6 +1070,14 @@ shown. When the claim's last handle closes, the console is shown; a
 kernel panic shows it whatever the claim. `devmgr` claims the framebuffer
 and gives it to the display service (`docs/DISPLAY.md`).
 
+`system_get_stats` (0x91) has two more fields after the console size
+(step F6): the kernel heap's size and the bytes of it in use (`free` shows
+them). The heap is a sixteenth of the memory, between 16 and 256 MB; the
+page lists of VMOs no longer take 4 KiB per chunk for small VMOs (a
+chunk is as long as the VMO), and running out of heap for one gives the
+caller `ERR_NO_MEMORY` (a page fault: the process is killed) instead of a
+kernel panic.
+
 USB polling (keyboards, port changes) runs in the timer tick; events
 that arrive while a transfer or command waits for its own completion are
 kept and handed to it afterwards, so typing during disk transfers is not

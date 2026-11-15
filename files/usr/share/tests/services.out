@@ -8,16 +8,17 @@ multi-user
 UNIT STATE ENABLED
 authd running enabled
 console running enabled
+desktop inactive enabled
 installer inactive enabled
 logd running enabled
 mounts exited enabled
 rescue-shell inactive enabled
 emergency inactive static
-Target multi-user; 7
+Target multi-user; 8
 hello from the test
 "priority":4,"unit":"svctest","message":"hello from the test"}
 1
-Read /etc/svc: 8 units
+Read /etc/svc: 9 units
 failed
 State=failed
 Starts=3
@@ -35,7 +36,7 @@ crashing
     Reason: it exited with code 3, after 3 starts in 30 s (svc reset-failed crashy, then svc start)
     Starts: 3   Last exit: 3
 inactive
-Read /etc/svc: 9 units
+Read /etc/svc: 10 units
 running
 State=running
 Starts=2
@@ -55,5 +56,5 @@ svc: only root may do that (try sudo svc)
 svc: only root may do that (try sudo svc)
 logs: /var/log/system.log: Permission denied (root and group adm may read the log)
 -rw-r----- root adm
-Read /etc/svc: 7 units
+Read /etc/svc: 8 units
 unknown

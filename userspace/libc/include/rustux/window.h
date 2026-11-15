@@ -57,6 +57,12 @@ typedef struct {
 #define RX_WINDOW_CLIPBOARD_SET  5u  // + text (UTF-8)
 #define RX_WINDOW_CLIPBOARD_GET  6u  // reply: event with n = bytes, then the text
 #define RX_WINDOW_SET_FULLSCREEN 7u  // flags 1 or 0
+// The desktop session (step F6)
+#define RX_WINDOW_SET_ROLE       8u  // flags RX_WINDOW_ROLE_PANEL: docked at the bottom, on top, never focused
+#define RX_WINDOW_ACTIVATE       9u  // (the panel) x = a window's id: focus and raise it, or minimise it if focused
+#define RX_WINDOW_NOTIFY         10u // + text: a notification (also as a connection's first message, without a window)
+#define RX_WINDOW_LOCK           11u // lock the screen (the session's user's password unlocks it)
+#define RX_WINDOW_ROLE_PANEL     1u
 
 #define RX_WINDOW_MAX_TITLE      64
 #define RX_WINDOW_MAX_RECTS      64
@@ -70,6 +76,9 @@ typedef struct {
 #define RX_WINDOW_EV_CLOSE_REQUEST 105u
 #define RX_WINDOW_EV_FRAME         106u  // the last commit is on the screen
 #define RX_WINDOW_EV_STATE         107u  // flags: RX_WINDOW_STATE_*
+// To the panel: x -1 starts a new list, then one per window: x its id,
+// flags 1 focused, 2 minimised, text its title (cut to 15 characters)
+#define RX_WINDOW_EV_WINDOW_INFO   108u
 
 // Pointer event flags
 #define RX_WINDOW_PTR_MOTION  0x01u
@@ -123,5 +132,11 @@ int rx_window_clipboard_set(rx_window_t *win, const char *text);
 // The clipboard's text into buf (0-terminated): its length or a negative errno
 int rx_window_clipboard_get(rx_window_t *win, char *buf, size_t size);
 void rx_window_destroy(rx_window_t *win);
+// The desktop session (step F6)
+int rx_window_set_role(rx_window_t *win, uint32_t role);
+int rx_window_activate(rx_window_t *win, int id);
+int rx_window_lock(rx_window_t *win);
+// A notification, with or without a window (win 0: a connection of its own)
+int rx_window_notify(rx_window_t *win, const char *text);
 
 #endif

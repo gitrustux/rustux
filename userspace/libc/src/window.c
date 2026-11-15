@@ -195,3 +195,32 @@ void rx_window_destroy(rx_window_t *win) {
     if (win->ch) rx_handle_close(win->ch); // the compositor removes the window
     memset(win, 0, sizeof *win);
 }
+
+int rx_window_set_role(rx_window_t *win, uint32_t role) {
+    rx_window_req_t req = { RX_WINDOW_SET_ROLE, 0, 0, 0, 0, 0, role };
+    return send_req(win, &req, 0, 0, 0);
+}
+
+int rx_window_activate(rx_window_t *win, int id) {
+    rx_window_req_t req = { RX_WINDOW_ACTIVATE, 0, id, 0, 0, 0, 0 };
+    return send_req(win, &req, 0, 0, 0);
+}
+
+int rx_window_lock(rx_window_t *win) {
+    rx_window_req_t req = { RX_WINDOW_LOCK, 0, 0, 0, 0, 0, 0 };
+    return send_req(win, &req, 0, 0, 0);
+}
+
+int rx_window_notify(rx_window_t *win, const char *text) {
+    size_t n = strlen(text);
+    if (n > 120) n = 120;
+    rx_window_req_t req = { RX_WINDOW_NOTIFY, (uint32_t)n, 0, 0, 0, 0, 0 };
+    if (win) return send_req(win, &req, text, (uint32_t)n, 0);
+    rx_window_t tmp;
+    memset(&tmp, 0, sizeof tmp);
+    int r = rx_service_connect("/svc/window", &tmp.ch);
+    if (r < 0) return r;
+    r = send_req(&tmp, &req, text, (uint32_t)n, 0);
+    rx_handle_close(tmp.ch);
+    return r;
+}

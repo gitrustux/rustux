@@ -188,6 +188,8 @@ pub struct Ui {
     consumed: HashSet<usize>, // keys used this frame
     id_stack: Vec<Id>,
     pub redraw: bool, // something wants another frame (e.g. a scroll settled)
+    /// Around the window's content, in units (12)
+    pub padding: f32,
 }
 
 fn hash(parent: Id, s: &str) -> Id {
@@ -232,6 +234,7 @@ impl Ui {
             consumed: HashSet::new(),
             id_stack: vec![0],
             redraw: false,
+            padding: 12.0,
         }
     }
 
@@ -286,7 +289,7 @@ impl Ui {
         if self.input.pressed {
             self.keyboard_focus = false;
         }
-        let pad = self.u(12.0);
+        let pad = self.u(self.padding);
         self.layouts.clear();
         self.layouts.push(Layout {
             dir: Dir::Column,
@@ -732,6 +735,22 @@ impl Ui {
 
     /// A one-line text field of width w: (changed, Enter pressed)
     pub fn text_field(&mut self, name: &str, text: &mut String, w: f32) -> (bool, bool) {
+        self.text_field_impl(name, text, w, false)
+    }
+
+    /// A password field: dots instead of the characters; nothing is copied
+    /// from it
+    pub fn password_field(&mut self, name: &str, text: &mut String, w: f32) -> (bool, bool) {
+        self.text_field_impl(name, text, w, true)
+    }
+
+    /// The width of text in the normal font
+    pub fn text_width(&mut self, text: &str) -> f32 {
+        let px = self.font_px();
+        self.face.width(text, px)
+    }
+
+    fn text_field_impl(&mut self, name: &str, text: &mut String, w: f32, mask: bool) -> (bool, bool) {
         let id = self.id(name);
         let h = self.row_h();
         let w = if w <= 0.0 { 0.0 } else { self.u(w) };
@@ -741,8 +760,10 @@ impl Ui {
         let px = self.font_px();
         let pad = self.u(8.0);
         // The mouse: place the cursor, drag to select
+        let shown = |t: &str| -> String { if mask { "\u{2022}".repeat(t.chars().count()) } else { t.to_string() } };
         if self.active == Some(id) && self.input.down && !self.blocked() {
-            let adv = self.face.advances(text, px);
+            let disp = shown(text);
+            let adv = self.face.advances(&disp, px);
             let mut x = r.x + pad - st.scroll;
             let mut i = 0;
             while i < adv.len() && x + adv[i] / 2.0 < self.input.mouse.0 {
@@ -754,12 +775,16 @@ impl Ui {
                 st.anchor = i;
             }
         }
-        let keys = self.keys_for(id);
+        let mut keys = self.keys_for(id);
+        if mask {
+            keys.retain(|k| !(k.ctrl() && (k.usage == crate::ui::keys::C || k.usage == crate::ui::keys::X)));
+        }
         let (changed, submitted) = self.edit(&mut st, text, &keys, false);
+        let disp = shown(text);
         let th = self.theme;
         self.canvas.fill_rounded(r, self.u(6.0), th.surface);
         self.canvas.stroke_rounded(r, self.u(6.0), 1.0, if focused { th.accent } else { th.border });
-        let adv = self.face.advances(text, px);
+        let adv = self.face.advances(&disp, px);
         let pos = |c: usize| -> f32 { adv[..c.min(adv.len())].iter().sum() };
         // Keep the cursor visible
         let cx = pos(st.cursor);
@@ -776,7 +801,7 @@ impl Ui {
             let (a, b) = (st.cursor.min(st.anchor), st.cursor.max(st.anchor));
             self.canvas.fill_rect(Rect::new(r.x + pad + pos(a) - st.scroll, ty, pos(b) - pos(a), self.line_h()), th.selection);
         }
-        self.draw_text(false, r.x + pad - st.scroll, ty, text, px, th.text);
+        self.draw_text(false, r.x + pad - st.scroll, ty, &disp, px, th.text);
         if focused {
             self.canvas.fill_rect(Rect::new((r.x + pad + cx - st.scroll).round(), ty, self.u(2.0).max(1.0), self.line_h()), th.accent);
         }

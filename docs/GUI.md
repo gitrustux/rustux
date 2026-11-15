@@ -55,6 +55,13 @@ iced is the fallback to build next (MIT, tiny-skia renderer).
   the menus; Esc closes menus and dialogs.
 - **Theme**: Dracula. **Scaling**: integer, 1x and 2x (`RUSTICA_SCALE`,
   or `uidemo --scale 2`).
+- **Password fields** (`password_field`): dots, nothing copied out (step
+  F6).
+- **Control** (step F6): the frame function can ask for a frame after a
+  while without input (`wake_after`: a clock), send requests to the
+  window system (`requests`: the panel role, activating a window, lock,
+  notify, full screen), and read the events that are not input (`events`:
+  the window list for the panel). `Ui::padding` sets the margin.
 - **Running** (`app.rs`): `rustica_ui::run(title, w, h, position, frame)`
   opens the window, turns the compositor's events into input, calls the
   frame function, copies the canvas into the window's buffer and commits.

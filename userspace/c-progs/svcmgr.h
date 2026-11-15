@@ -38,6 +38,10 @@
 #define TGT_MULTI  1
 #define TGT_RESCUE 2
 #define TGT_INSTALL 4  // step 20: the installer on the console
+#define TGT_GRAPHICAL 8  // DESKTOP.md step F6: multi-user and the desktop
+
+// A unit belongs to target t (graphical takes everything multi-user has)
+static int in_target(int targets, int t) { return (targets & t) || (t == TGT_GRAPHICAL && (targets & TGT_MULTI)); }
 #define SVC_DIR "/etc/svc"
 #define START_WINDOW_NS 30000000000ll
 #define READY_TIMEOUT_NS 10000000000ll
@@ -212,6 +216,7 @@ static void unit_parse(ucfg_t *c, const char *name, const char *text, const char
             if (strstr(v, "multi-user")) c->targets |= TGT_MULTI;
             if (strstr(v, "rescue")) c->targets |= TGT_RESCUE;
             if (strstr(v, "install")) c->targets |= TGT_INSTALL;
+            if (strstr(v, "graphical")) c->targets |= TGT_GRAPHICAL;
         } else if (!strcmp(k, "console")) c->console = yes;
         else if (!strcmp(k, "system_job")) c->system_job = yes;
         else if (!strcmp(k, "keep_processes")) c->keep_processes = yes;
@@ -674,7 +679,7 @@ static uint64_t svc_deadline(void) {
 }
 
 static const char *target_name(int t) {
-    return t == TGT_RESCUE ? "rescue" : t == TGT_INSTALL ? "install" : "multi-user";
+    return t == TGT_RESCUE ? "rescue" : t == TGT_INSTALL ? "install" : t == TGT_GRAPHICAL ? "graphical" : "multi-user";
 }
 
 static int target_of_cmdline(int argc, char **argv) {
@@ -684,6 +689,7 @@ static int target_of_cmdline(int argc, char **argv) {
             t = TGT_RESCUE;
         else if (!strcmp(argv[i], "target=multi-user")) t = TGT_MULTI;
         else if (!strcmp(argv[i], "installer") || !strcmp(argv[i], "target=install")) t = TGT_INSTALL;
+        else if (!strcmp(argv[i], "desktop") || !strcmp(argv[i], "target=graphical")) t = TGT_GRAPHICAL;
     }
     return t;
 }
@@ -696,7 +702,7 @@ static void svc_boot(int argc, char **argv) {
         printf("init: rescue mode: the system log, the mounts and a root shell on the console\n"
                "init: (`svc isolate multi-user` starts the rest, or reboot)\n");
     for (int i = 0; i < nunits; i++)
-        if (units[i].enabled && (units[i].c.targets & svc_target)) units[i].state = U_WAITING;
+        if (units[i].enabled && in_target(units[i].c.targets, svc_target)) units[i].state = U_WAITING;
     svc_schedule();
 }
 
@@ -742,10 +748,11 @@ static void reply_add(const char *fmt, ...) {
 }
 
 static void unit_line(const unit_t *u) {
-    char tg[32] = "";
+    char tg[48] = "";
     if (u->c.targets & TGT_MULTI) strcat(tg, "multi-user");
     if (u->c.targets & TGT_RESCUE) strcat(tg, tg[0] ? ",rescue" : "rescue");
     if (u->c.targets & TGT_INSTALL) strcat(tg, tg[0] ? ",install" : "install");
+    if (u->c.targets & TGT_GRAPHICAL) strcat(tg, tg[0] ? ",graphical" : "graphical");
     const char *en = !strcmp(u->c.name, "emergency") ? "static" : u->builtin ? "builtin" : u->enabled ? "enabled" : "disabled";
     char code[24] = "-";
     if (u->have_code) snprintf(code, sizeof code, "%lld", (long long)u->last_code);
@@ -783,7 +790,7 @@ static void svc_isolate(int t) {
     ulog(LOG_NOTICE, "switching to the %s target", target_name(t));
     for (int i = 0; i < nunits; i++) {
         unit_t *u = &units[i];
-        int in = u->enabled && (u->c.targets & t);
+        int in = u->enabled && in_target(u->c.targets, t);
         if (in) unit_start(u);
         else if (unit_active(u)) unit_stop(u);
     }
@@ -810,8 +817,9 @@ static void svc_request(const rx_svc_req_t *rq, uint32_t len, const rx_sender_t 
         if (!strcmp(name, "rescue") || !strcmp(name, "rescue.target")) svc_isolate(TGT_RESCUE);
         else if (!strcmp(name, "install")) svc_isolate(TGT_INSTALL);
         else if (!strcmp(name, "multi-user") || !strcmp(name, "multi-user.target") || !strcmp(name, "default")) svc_isolate(TGT_MULTI);
+        else if (!strcmp(name, "graphical") || !strcmp(name, "graphical.target")) svc_isolate(TGT_GRAPHICAL);
         else {
-            reply_add("No target %s (rescue, multi-user, install)\n", name);
+            reply_add("No target %s (rescue, multi-user, graphical, install)\n", name);
             st = -ENOENT;
         }
     } else if (cmd == RX_SVC_RESET_FAILED && !name[0]) {

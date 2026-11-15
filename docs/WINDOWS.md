@@ -41,6 +41,7 @@ animation to what the screen takes.
 | `STATE` | maximised, full screen, minimised |
 | `CLOSE_REQUEST` | the close button or Alt+F4 |
 | `FRAME` | the last commit is on the screen |
+| `WINDOW_INFO` | (to the panel) x -1 starts a new list, then one per window: its id, title (15 characters), focused, minimised; sent on every change |
 
 | Client to compositor | |
 |---|---|
@@ -49,6 +50,10 @@ animation to what the screen takes.
 | `BUFFER` | a new buffer after `CONFIGURE` |
 | `SET_TITLE`, `SET_FULLSCREEN` | |
 | `CLIPBOARD_SET`, `CLIPBOARD_GET` | text, up to 4000 bytes; `GET` is answered with the text |
+| `SET_ROLE` | `PANEL` (step F6): no frame, docked at the bottom with the screen's width, always on top, never focused (it gets the pointer while over it); maximised windows stop above it |
+| `ACTIVATE` | (the panel) a window's id: focus and raise it, bring it back if minimised, minimise it if it has the focus |
+| `NOTIFY` | text: a notification, top right, 5 s; also as a connection's first message, without a window (`notify`) |
+| `LOCK` | lock the screen (`SESSION.md`) |
 
 Clients: `rx_window_*` in libc (`src/window.c`) for C, the
 `rustica-window` crate (`userspace/rust/rustica-window`, a safe wrapper of
@@ -70,6 +75,15 @@ it) for Rust.
   pointer is over its content; while a button is held, to the window it
   went down in.
 
+## The desktop session (step F6)
+
+`desktop --run` starts the compositor with a control channel on which it
+names the session's user (`user NAME`, or `user` for none). The compositor
+draws a wallpaper (a dithered gradient) instead of a plain colour, shows
+notifications, and has a lock screen: `LOCK`, Super+L or Ctrl+Alt+L hide
+every window and take the keys until the session's user's password
+(checked against `/etc/shadow`) is typed. `SESSION.md` has the rest.
+
 ## Robustness
 
 - A client that ends or is killed: its channel closes, its window goes.
@@ -84,7 +98,7 @@ it) for Rust.
 ## Drawing
 
 Software only, into the display's back buffer: for each damaged rectangle
-the desktop colour, the windows bottom to top (border, title bar with the
+the wallpaper, the windows bottom to top (border, title bar with the
 8x16 console font, buttons, content) and the cursor; then one `PRESENT`
 of the damaged rectangles. Only what changed is drawn and copied.
 
@@ -99,8 +113,6 @@ Alt+F4, and the compositor killed (the console comes back).
 
 ## Not yet
 
-- A desktop session, panel and launcher (step F6); the compositor is
-  started by hand.
 - Window decorations drawn with the toolkit's fonts (step F5); resizing
   from the left and top edges; snapping; per-window input methods.
 - Drag and drop; clipboard formats other than text.

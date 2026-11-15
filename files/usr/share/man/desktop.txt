@@ -1,0 +1,15 @@
+desktop - the graphical desktop
+
+USAGE
+    desktop            start the desktop (root): the compositor, the
+                       graphical login and the session
+    desktop --stop     stop it
+    desktop --run      the desktop unit's program (the service manager runs it)
+
+    "Rustica (desktop)" in the boot menu starts it at boot. Ctrl+Alt+F1
+    shows the console, Ctrl+Alt+F7 the desktop. In the session the panel
+    has Applications, the open windows, the clock, Lock and Log out;
+    Super+L locks the screen.
+
+SEE ALSO
+    compositor, notify, svc, rustux (docs/SESSION.md)

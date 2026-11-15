@@ -75,6 +75,10 @@ extern "C" {
     fn rx_window_clipboard_set(w: *mut RawWindow, text: *const u8) -> i32;
     fn rx_window_clipboard_get(w: *mut RawWindow, buf: *mut u8, size: usize) -> i32;
     fn rx_window_destroy(w: *mut RawWindow);
+    fn rx_window_set_role(w: *mut RawWindow, role: u32) -> i32;
+    fn rx_window_activate(w: *mut RawWindow, id: i32) -> i32;
+    fn rx_window_lock(w: *mut RawWindow) -> i32;
+    fn rx_window_notify(w: *mut RawWindow, text: *const u8) -> i32;
     fn clock_gettime(clock: i32, ts: *mut [i64; 2]) -> i32;
 }
 
@@ -99,12 +103,25 @@ pub enum Event {
     /// Maximised, full screen, minimised
     State { maximized: bool, fullscreen: bool, minimized: bool },
     Frame,
+    /// To the panel (step F6): id -1 starts a new list; then one per window
+    WindowInfo { id: i32, title: String, focused: bool, minimized: bool },
+}
+
+/// The panel's role (set_role)
+pub const ROLE_PANEL: u32 = 1;
+
+/// A notification on the desktop without a window
+pub fn notify(text: &str) -> std::io::Result<()> {
+    let t = CString::new(text).unwrap_or_default();
+    let r = unsafe { rx_window_notify(std::ptr::null_mut(), t.as_ptr() as *const u8) };
+    if r < 0 { Err(errno(r)) } else { Ok(()) }
 }
 
 /// A window: one channel to the compositor and a buffer of pixels
 /// (0x00RRGGBB, `width()` pixels a row)
 pub struct Window {
     raw: Box<RawWindow>,
+    gone: bool,
 }
 
 fn errno(r: i32) -> std::io::Error {
@@ -135,7 +152,12 @@ impl Window {
         if r < 0 {
             return Err(errno(r));
         }
-        Ok(Window { raw })
+        Ok(Window { raw, gone: false })
+    }
+
+    /// False once the compositor is gone (next_event said so)
+    pub fn is_alive(&self) -> bool {
+        !self.gone
     }
 
     pub fn width(&self) -> u32 {
@@ -176,6 +198,9 @@ impl Window {
     pub fn next_event(&mut self, timeout: Option<Duration>) -> Option<Event> {
         let mut ev: RawEvent = unsafe { std::mem::zeroed() };
         let r = unsafe { rx_window_next_event(&mut *self.raw, &mut ev, deadline(timeout)) };
+        if r < 0 {
+            self.gone = true;
+        }
         if r <= 0 {
             return None;
         }
@@ -186,6 +211,7 @@ impl Window {
         const CLOSE: u32 = 105;
         const FRAME: u32 = 106;
         const STATE: u32 = 107;
+        const WINDOW_INFO: u32 = 108;
         Some(match ev.op {
             CONFIGURE => Event::Configure { width: ev.w, height: ev.h },
             KEY => {
@@ -207,6 +233,15 @@ impl Window {
                 minimized: ev.flags & 4 != 0,
             },
             FRAME => Event::Frame,
+            WINDOW_INFO => {
+                let len = ev.text.iter().position(|&b| b == 0).unwrap_or(ev.text.len());
+                Event::WindowInfo {
+                    id: ev.x,
+                    title: String::from_utf8_lossy(&ev.text[..len]).into_owned(),
+                    focused: ev.flags & 1 != 0,
+                    minimized: ev.flags & 2 != 0,
+                }
+            }
             _ => return self.next_event(timeout),
         })
     }
@@ -224,6 +259,26 @@ impl Window {
 
     pub fn set_fullscreen(&mut self, on: bool) {
         unsafe { rx_window_set_fullscreen(&mut *self.raw, on as i32) };
+    }
+
+    /// The desktop session (step F6): become the panel
+    pub fn set_role(&mut self, role: u32) {
+        unsafe { rx_window_set_role(&mut *self.raw, role) };
+    }
+
+    /// (The panel) focus and raise a window, or minimise it if focused
+    pub fn activate(&mut self, id: i32) {
+        unsafe { rx_window_activate(&mut *self.raw, id) };
+    }
+
+    /// Lock the screen
+    pub fn lock(&mut self) {
+        unsafe { rx_window_lock(&mut *self.raw) };
+    }
+
+    pub fn notify(&mut self, text: &str) {
+        let t = CString::new(text).unwrap_or_default();
+        unsafe { rx_window_notify(&mut *self.raw, t.as_ptr() as *const u8) };
     }
 
     pub fn set_clipboard(&mut self, text: &str) {

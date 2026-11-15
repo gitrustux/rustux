@@ -386,18 +386,25 @@ fn init_memory() {
                 crate::klog::put(byte);
             }
 
-            // Kernel heap: 16 MB of physically contiguous memory from the
-            // PMM, used through the direct map. (Without a memory map the
-            // fixed layout puts it at 16 MB, outside the PMM's zones.)
-            const HEAP_SIZE: usize = 16 * 1024 * 1024;
-            const HEAP_PAGES: usize = HEAP_SIZE / 4096;
+            // Kernel heap: physically contiguous memory from the PMM, used
+            // through the direct map: a sixteenth of the memory, between 16
+            // and 256 MB (DESKTOP.md step F6: 16 MB ran out under the
+            // desktop). (Without a memory map the fixed layout puts 16 MB at
+            // 16 MB, outside the PMM's zones.)
             const FIXED_HEAP_PADDR: u64 = 0x0100_0000;
+            let heap_size: usize = if pmm::pmm_from_memory_map() {
+                let sixteenth = (pmm::pmm_count_total_pages() as usize * 4096 / 16) & !0xFFFFF;
+                sixteenth.clamp(16 << 20, 256 << 20)
+            } else {
+                16 << 20
+            };
+            let heap_pages = heap_size / 4096;
 
             let heap_paddr = if pmm::pmm_from_memory_map() {
-                match pmm::pmm_alloc_contiguous(HEAP_PAGES, pmm::PMM_ALLOC_FLAG_KERNEL, 0) {
+                match pmm::pmm_alloc_contiguous(heap_pages, pmm::PMM_ALLOC_FLAG_KERNEL, 0) {
                     Ok(p) => p,
                     Err(_) => {
-                        let msg = b"[INIT] FATAL: no 16 MB contiguous block for the kernel heap\n";
+                        let msg = b"[INIT] FATAL: no contiguous block for the kernel heap\n";
                         for &byte in msg {
                             crate::klog::put(byte);
                         }
@@ -409,7 +416,7 @@ fn init_memory() {
             };
             let heap_start_vaddr = pmm::paddr_to_vaddr(heap_paddr);
 
-            let msg = b"[INIT] Heap: 16 MB at physical 0x";
+            let msg = b"[INIT] Heap at physical 0x";
             for &byte in msg {
                 crate::klog::put(byte);
             }
@@ -419,10 +426,14 @@ fn init_memory() {
                 crate::klog::put(byte);
             }
 
-            crate::mm::heap_init_aligned(heap_start_vaddr as usize, HEAP_SIZE);
+            crate::mm::heap_init_aligned(heap_start_vaddr as usize, heap_size);
 
-            let msg = b"[INIT] Heap initialized successfully (16MB)\n";
+            let msg = b"[INIT] Heap initialized successfully (MB: 0x";
             for &byte in msg {
+                crate::klog::put(byte);
+            }
+            print_hex((heap_size >> 20) as u64);
+            for &byte in b")\n" {
                 crate::klog::put(byte);
             }
 

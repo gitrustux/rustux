@@ -31,11 +31,29 @@ impl Platform for Clipboard {
     }
 }
 
-/// What the frame function asks for
+/// Something for the window system, asked for by the frame function
+pub enum Request {
+    /// Become the panel (rustica_window::ROLE_PANEL)
+    SetRole(u32),
+    /// (The panel) activate a window
+    Activate(i32),
+    Lock,
+    Notify(String),
+    Fullscreen(bool),
+}
+
+/// What the frame function asks for, and what it is told
 #[derive(Default)]
 pub struct Control {
     /// End the program after this frame
     pub quit: bool,
+    /// Draw a frame again after this long even without input (a clock)
+    pub wake_after: Option<Duration>,
+    /// Requests, carried out after the frame
+    pub requests: Vec<Request>,
+    /// Events other than input since the last frame (window lists, focus,
+    /// state); the frame function takes what it wants
+    pub events: Vec<Event>,
 }
 
 /// The scale: RUSTICA_SCALE=2 doubles everything (1 otherwise)
@@ -71,6 +89,17 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
                 break;
             }
         }
+        for r in ctl.requests.drain(..) {
+            let mut w = win.borrow_mut();
+            match r {
+                Request::SetRole(role) => w.set_role(role),
+                Request::Activate(id) => w.activate(id),
+                Request::Lock => w.lock(),
+                Request::Notify(t) => w.notify(&t),
+                Request::Fullscreen(on) => w.set_fullscreen(on),
+            }
+        }
+        ctl.events.clear();
         if commit {
             let mut w = win.borrow_mut();
             ui.canvas.copy_to(w.pixels());
@@ -82,9 +111,17 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
         if ctl.quit {
             return Ok(());
         }
-        // Wait for an event, then take all that are waiting
-        let first = win.borrow_mut().next_event(None);
-        let Some(first) = first else { return Ok(()) }; // the compositor is gone
+        // Wait for an event (or the frame function's wake-up), then take
+        // all that are waiting
+        let wake = ctl.wake_after;
+        let first = win.borrow_mut().next_event(wake);
+        let Some(first) = first else {
+            if wake.is_some() && win.borrow().is_alive() {
+                draw(&mut ui, &mut ctl, true);
+                continue;
+            }
+            return Ok(()); // the compositor is gone
+        };
         let mut ev = Some(first);
         let mut dirty = false;
         while let Some(e) = ev.take() {
@@ -120,7 +157,14 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
                     now = true;
                 }
                 Event::Key { .. } => {}
-                Event::Focus(_) | Event::State { .. } => dirty = true,
+                Event::Focus(_) | Event::State { .. } => {
+                    ctl.events.push(e);
+                    dirty = true;
+                }
+                Event::WindowInfo { .. } => {
+                    ctl.events.push(e);
+                    dirty = true;
+                }
                 Event::CloseRequest => return Ok(()),
             }
             if now {

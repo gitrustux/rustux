@@ -1,0 +1,25 @@
+[package]
+name = "rustica-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "The desktop session's programs (DESKTOP.md step F6): the graphical login, the panel, the launcher"
+license = "MIT"
+
+[[bin]]
+name = "greeter"
+path = "src/bin/greeter.rs"
+
+[[bin]]
+name = "panel"
+path = "src/bin/panel.rs"
+
+[[bin]]
+name = "launcher"
+path = "src/bin/launcher.rs"
+
+[dependencies]
+rustica-ui = { path = "../rustica-ui" }
+
+[profile.release]
+panic = "abort"
+opt-level = 3

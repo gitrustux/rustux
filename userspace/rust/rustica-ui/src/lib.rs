@@ -23,5 +23,6 @@ pub mod app;
 pub mod gfx;
 pub mod ui;
 
-pub use app::{run, Control};
+pub use app::{run, Control, Request};
+pub use rustica_window;
 pub use ui::{TreeNode, Ui};

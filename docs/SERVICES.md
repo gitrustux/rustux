@@ -31,7 +31,7 @@ so the directory is `/etc/svc`): `key=value` lines, `#` comments,
 | `needs` | units started first; it fails if one of them fails; they are started even if not enabled |
 | `after` | units it waits for if they are starting anyway (ordering only) |
 | `ready` | a service path (`/svc/log`): the unit counts as up once it can be connected to (10 s at most); without it, as soon as the program runs |
-| `target` | `multi-user`, `rescue` or both (multi-user) |
+| `target` | `multi-user`, `rescue`, `install`, `graphical`, or several (multi-user) |
 | `env` | `NAME=VALUE`, repeatable; besides PATH, HOME, USER, LOGNAME, SHELL, PWD, SERVICE |
 | `dir` | the working directory (`/`) |
 | `log` | `console`: stdout and stderr to the screen instead of the log |
@@ -101,7 +101,13 @@ the console with no login, for repairs (a forgotten password: `svc start
 authd`, then `passwd USER`). `svc isolate multi-user` starts the rest from there, `svc isolate
 rescue` goes back. `installer` (or `target=install`) boots the install
 target (step 20): logd, the mounts and the installer on the console;
-`logd.svc` and `mounts.svc` name it among their targets.
+`logd.svc` and `mounts.svc` name it among their targets. `desktop` (or
+`target=graphical`) boots the graphical target (desktop step F6,
+`SESSION.md`): everything multi-user has, and the units that name
+`graphical`, which is `desktop.svc` (the compositor, the graphical login
+and the session; the console login stays on Ctrl+Alt+F1). `svc isolate
+graphical` switches to it, `svc start desktop` (or the `desktop` command)
+starts the desktop alone.
 
 ## Shutdown
 

@@ -115,6 +115,8 @@ create_disk_image() {
         printf 'default rustica\ntimeout 10\n' > "$mount_dir/loader/loader.conf"
         printf 'title Try Rustica Server\nefi /EFI/Rustica/rustux.efi\nsort-key 1\n' > "$mount_dir/loader/entries/rustica.conf"
         printf 'title Install Rustica Server\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 2\n' > "$mount_dir/loader/entries/install.conf"
+        # The desktop from memory (DESKTOP.md step F6)
+        printf 'title Try Rustica (desktop)\nefi /EFI/Rustica/rustux.efi\noptions desktop\nsort-key 3\n' > "$mount_dir/loader/entries/desktop.conf"
     else
         [ "$RBOOT" = 1 ] && log_warn "rboot not built ($RBOOT_EFI): the kernel boots directly"
         # Copy kernel as BOOTX64.EFI

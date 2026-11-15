@@ -480,6 +480,8 @@ typedef struct {
     uint64_t threads;         // running threads
     uint64_t console_cols;    // the screen console in characters (0 if none)
     uint64_t console_rows;
+    uint64_t kernel_heap;     // bytes (step F6)
+    uint64_t kernel_heap_used;
 } rx_system_stats_t;
 static inline rx_status_t rx_system_get_version(char *buf, uint64_t len) { return RX_SYS(0x90, buf, len, 0, 0); }
 static inline rx_status_t rx_system_get_stats(rx_system_stats_t *s) { return RX_SYS(0x91, s, sizeof *s, 0, 0); }

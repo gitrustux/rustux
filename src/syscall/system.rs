@@ -73,7 +73,7 @@ pub fn sys_system_get_stats(args: SyscallArgs) -> SyscallRet {
             idle += c.idle_ns.load(Ordering::Relaxed);
         }
         let (cols, rows) = crate::drivers::display::size();
-        let fields: [u64; 9] = [
+        let fields: [u64; 11] = [
             total,
             free,
             platform::boot_ns(),
@@ -83,6 +83,9 @@ pub fn sys_system_get_stats(args: SyscallArgs) -> SyscallRet {
             crate::process::table::PROCESS_TABLE.lock().count() as u64,
             cols as u64,
             rows as u64,
+            // The kernel heap (DESKTOP.md step F6: free shows it)
+            crate::mm::allocator::heap_size() as u64,
+            crate::mm::allocator::heap_usage() as u64,
         ];
         let bytes: alloc::vec::Vec<u8> = fields.iter().flat_map(|v| v.to_le_bytes()).collect();
         // Programs built before the console size was added pass 7 fields

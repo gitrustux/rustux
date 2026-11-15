@@ -60,9 +60,12 @@ const CHUNK: usize = 512;
 
 /// The physical address of each page of a VMO (0: not committed), in
 /// chunks allocated when one of their pages is first committed: a 1 GiB
-/// VMO costs 4 KiB of list until it is used (demand paging, step F1)
+/// VMO costs 4 KiB of list until it is used (demand paging, step F1). A
+/// chunk is only as long as the VMO needs, so a small VMO (most of a
+/// program's heap) costs 8 bytes a page, not 4 KiB (DESKTOP.md step F6:
+/// the kernel heap ran out under a few toolkit programs).
 pub struct PageList {
-    chunks: Vec<Option<alloc::boxed::Box<[u64; CHUNK]>>>,
+    chunks: Vec<Option<alloc::boxed::Box<[u64]>>>,
     len: usize,
 }
 
@@ -79,7 +82,7 @@ impl PageList {
     fn filled(len: usize, page: impl Fn(usize) -> u64) -> Result<Self, RxStatus> {
         let mut l = Self::new(len)?;
         for i in 0..len {
-            l.set(i, page(i));
+            l.set(i, page(i))?;
         }
         Ok(l)
     }
@@ -95,9 +98,20 @@ impl PageList {
         }
     }
 
-    fn set(&mut self, i: usize, p: u64) {
-        let c = self.chunks[i / CHUNK].get_or_insert_with(|| alloc::boxed::Box::new([0u64; CHUNK]));
-        c[i % CHUNK] = p;
+    /// Record page i; ERR_NO_MEMORY if its chunk cannot be allocated
+    fn set(&mut self, i: usize, p: u64) -> Result<(), RxStatus> {
+        let ci = i / CHUNK;
+        if self.chunks[ci].is_none() {
+            let n = core::cmp::min(CHUNK, self.len - ci * CHUNK);
+            let mut v: Vec<u64> = Vec::new();
+            v.try_reserve_exact(n).map_err(|_| RxStatus::ERR_NO_MEMORY)?;
+            v.resize(n, 0);
+            self.chunks[ci] = Some(v.into_boxed_slice());
+        }
+        if let Some(c) = self.chunks[ci].as_mut() {
+            c[i % CHUNK] = p;
+        }
+        Ok(())
     }
 
     /// Committed pages among [first, last)
@@ -192,7 +206,10 @@ impl Vmo {
         for i in 0..count as u64 {
             let p = base + i * PAGE;
             unsafe { core::ptr::write_bytes(kernel_map::phys_to_virt(p) as *mut u8, 0, PAGE as usize) };
-            pages.set(i as usize, p);
+            if pages.set(i as usize, p).is_err() {
+                pmm::pmm_free_contiguous(base, count);
+                return Err(RxStatus::ERR_NO_MEMORY);
+            }
         }
         Ok(Arc::new(Self::with(size, pages, VmoKind::Contiguous)))
     }
@@ -244,7 +261,10 @@ impl Vmo {
         if pages.get(index) == 0 {
             let p = pmm::pmm_alloc_user_page().map_err(|_| RxStatus::ERR_NO_MEMORY)?;
             unsafe { core::ptr::write_bytes(kernel_map::phys_to_virt(p) as *mut u8, 0, PAGE as usize) };
-            pages.set(index, p);
+            if pages.set(index, p).is_err() {
+                pmm::pmm_free_page(p);
+                return Err(RxStatus::ERR_NO_MEMORY);
+            }
         }
         Ok(pages.get(index))
     }

@@ -49,5 +49,12 @@ int main(int argc, char **argv) {
     show("", s.total_bytes - s.free_bytes, unit);
     show("", s.free_bytes, unit);
     printf("\n");
+    // The kernel's own heap (step F6), part of the memory used above
+    if (s.kernel_heap) {
+        show("Heap:", s.kernel_heap, unit);
+        show("", s.kernel_heap_used, unit);
+        show("", s.kernel_heap - s.kernel_heap_used, unit);
+        printf("\n");
+    }
     return 0;
 }

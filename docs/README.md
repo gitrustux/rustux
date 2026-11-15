@@ -98,6 +98,7 @@ docs/
 ├── INPUT.md                      # The input service, mice and keyboards (desktop step F3)
 ├── WINDOWS.md                    # The compositor and the window protocol (desktop step F4)
 ├── GUI.md                        # The toolkit, rustica-ui, and why (desktop step F5)
+├── SESSION.md                    # The desktop session: login, panel, launcher, lock (desktop step F6)
 ├── ROADMAP.md                    # Architecture checklist (Jan 2026 plan)
 ├── HISTORY.md                    # Project history and decisions
 ├── usb-keyboard.md               # USB keyboard status and debugging history

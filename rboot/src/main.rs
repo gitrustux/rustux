@@ -316,8 +316,9 @@ fn add_rustica_extras(entries: Vec<Entry>) -> Vec<Entry> {
             continue;
         }
         let words: Vec<&str> = opts.split(' ').collect();
-        // (not for the installer's entry, nor one that is a rescue entry already)
-        if !words.iter().any(|w| *w == "rescue" || *w == "single" || *w == "installer") {
+        // (not for the installer's entry, nor one that is a rescue entry
+        // already, nor the desktop's: its recovery is the other's)
+        if !words.iter().any(|w| *w == "rescue" || *w == "single" || *w == "installer" || *w == "desktop") {
             let mut r = e.clone();
             r.id = format!("{}-recovery", e.id);
             r.title = format!("{} (recovery)", e.title);
