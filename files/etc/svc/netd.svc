@@ -1,0 +1,9 @@
+# The network service (docs/NETWORK.md): the TCP/IP stack for every
+# network card (/svc/net for programs, /svc/netdev for the card drivers),
+# configured from /etc/network.conf
+description=Network (/svc/net)
+exec=/bin/netd
+after=logd
+ready=/svc/net
+restart=always
+target=multi-user

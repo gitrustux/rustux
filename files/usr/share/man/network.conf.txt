@@ -1,0 +1,24 @@
+network.conf - the network interfaces at boot
+
+FILE
+    /etc/network.conf
+
+    Read by the network service (netd) when it starts and each time a
+    network card appears. One line per interface; # starts a comment.
+
+    NAME static ADDRESS/PREFIX [GATEWAY]
+        a fixed address, and the default route through GATEWAY
+    NAME dhcp
+        an address from a DHCP server (NETWORK.md step D3: not yet)
+
+    NAME is eth0, eth1, ... (ip link), the cards in PCI order.
+
+    The image's file gives eth0 QEMU's user-mode network address:
+
+        eth0 static 10.0.2.15/24 10.0.2.2
+
+    After changing it: sudo svc restart netd (ip changes the running
+    state without the file).
+
+SEE ALSO
+    ip, ping, svc

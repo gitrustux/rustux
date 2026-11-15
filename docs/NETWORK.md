@@ -1,0 +1,144 @@
+# Networking
+
+Rustica's network: card drivers in userspace, one network service (`netd`)
+with the TCP/IP stack, and `ip` and `ping` (`NETWORK.md` in the planning
+documents, step D1). Sockets for programs come with step D2, DHCP and DNS
+with D3.
+
+```
+  ping, ip ──/svc/net──┐                    ┌── virtio-net 00:02.0 (eth0)
+                       netd (smoltcp) ──/svc/netdev──┤
+                       interfaces, ARP,     └── virtio-net 00:03.0 (eth1)
+                       IPv4, ICMP, routes
+```
+
+The kernel has no network code. A driver only moves Ethernet frames; netd
+owns the interfaces, their addresses and routes, and answers pings.
+
+## Drivers: /svc/netdev
+
+devmgr starts a network driver from `/etc/drivers` like any PCI driver
+(`DRIVERS.md`):
+
+```
+1af4:1000   /bin/virtio-net     # transitional virtio-net (QEMU's default)
+1af4:1041   /bin/virtio-net     # modern-only (disable-legacy=on)
+```
+
+The driver connects to `/svc/netdev`, which netd publishes, and keeps
+trying every half second until netd is there (and again whenever netd
+goes away: `svc restart netd` loses nothing but the running changes). The
+protocol is `<rustux/netdev.h>`: each message is `rx_netdev_msg_t { u32
+op; u32 a; }` and its data.
+
+| Op | Direction | `a` | Data |
+|----|-----------|-----|------|
+| `HELLO` 1 | driver → netd, first | MTU | `rx_netdev_hello_t`: MAC address, link (1 up), driver name and PCI slot (`"virtio-net 00:03.0"`) |
+| `FRAME` 2 | both ways | — | one Ethernet frame without the FCS, at most `RX_NETDEV_MAX_FRAME` (1518) bytes |
+| `LINK` 3 | driver → netd | 1 up, 0 down | — |
+
+A frame per message is simple and fast enough for now (a shared ring
+between driver and netd can come later without changing netd's stack). A
+driver drops frames it cannot queue; TCP sends them again.
+
+### virtio-net
+
+`/bin/virtio-net BDF` (`c-progs/virtio-net.c`): virtio 1.0 over PCI
+(modern registers; the transitional device's are the same), features
+`VERSION_1`, `MAC` and `STATUS` only: no checksum or segmentation
+offloads, netd computes everything. A receive queue and a transmit queue
+of 64 buffers of 2 KiB (the 12-byte virtio-net header, then the frame).
+Interrupts by MSI-X vector 0 on a thread that drains the receive queue
+(and polling every millisecond if there is no MSI-X); the link status is
+read every second. The main thread reads netd's channel and transmits.
+
+## netd
+
+`/bin/netd` (`rust/netd`, Rust, on [smoltcp](https://github.com/smoltcp-rs/smoltcp)
+0.14, `/etc/svc/netd.svc`, target multi-user, `ready=/svc/net`):
+
+- **Interfaces**: one smoltcp interface per card, named `eth0`, `eth1`,
+  ... by the card's place among the network controllers in PCI order (it
+  asks devmgr for the list; `lspci`), so the names do not depend on which
+  driver started first. A card without a PCI slot gets the next name after
+  those. `lo` is the loopback interface, 127.0.0.0/8: netd answers pings
+  to it, and to its own addresses, itself.
+- **Addresses and routes**: from `/etc/network.conf` when the card
+  appears (below), changed with `ip`. Several addresses per interface (8
+  at most), one default route.
+- **IPv4, ARP, ICMP**: netd answers ARP and echo requests (pings) on every
+  interface, and sends pings for `ping`.
+- One thread: it waits (`wait_many`) on the two listeners, the drivers'
+  channels and the clients', until a frame, a request or smoltcp's next
+  timer.
+
+### /etc/network.conf
+
+```
+# NAME static ADDRESS/PREFIX [GATEWAY]
+# NAME dhcp          (step D3)
+eth0 static 10.0.2.15/24 10.0.2.2
+```
+
+The image's file gives `eth0` QEMU's user-mode network address. After
+editing it, `sudo svc restart netd`.
+
+### The control protocol: /svc/net
+
+Text, one request per message, the answer one message whose last line is
+`ok` or `error: ...` (`c-progs/netclient.h` is the client):
+
+| Request | Answer lines | Who |
+|---------|--------------|-----|
+| `links` | `NAME DRIVER MAC up\|down\|no-carrier mtu N rx PACKETS tx PACKETS RXBYTES TXBYTES` (spaces in DRIVER as `_`) | anyone |
+| `addrs` | `NAME ADDRESS/PREFIX` | anyone |
+| `routes` | `default via GW dev NAME`, `NET/PREFIX dev NAME src ADDRESS` | anyone |
+| `addr add\|del ADDRESS/PREFIX dev NAME` | — | root |
+| `route add default via GW`, `route del default` | — | root |
+| `link set NAME up\|down` | — | root |
+| `ping ADDRESS SEQ TIMEOUT_MS SIZE` | `reply FROM SEQ BYTES MICROSECONDS` or `timeout` (no `ok`) | anyone |
+
+netd reads who sent a request from the channel (the sender's credentials,
+`rx_channel_read_creds`): changes need an effective uid of 0. Anyone may
+ping, as Linux's unprivileged ICMP sockets allow.
+
+## Commands
+
+- `ip` (`man ip`): `ip link`, `ip addr`, `ip route` in iproute2's form;
+  `-s` counters, `-br` one line per interface; `addr add|del`, `route
+  add|del default`, `link set up|down` as root.
+- `ping` (`man ping`): `-c`, `-i`, `-W`, `-w`, `-s`, `-q`; the summary
+  with packet loss and min/avg/max/mdev; exit status 0, 1 (no reply) or 2
+  (an error such as no route).
+
+```
+$ ip -br a
+lo               UP             127.0.0.1/8
+eth0             UP             10.0.2.15/24
+$ ping -c 2 10.0.2.2
+PING 10.0.2.2 (10.0.2.2) 56(84) bytes of data.
+64 bytes from 10.0.2.2: icmp_seq=1 time=1.445 ms
+64 bytes from 10.0.2.2: icmp_seq=2 time=0.957 ms
+
+--- 10.0.2.2 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1004ms
+rtt min/avg/max/mdev = 0.957/1.201/1.445/0.244 ms
+```
+
+## In QEMU
+
+```bash
+qemu-system-x86_64 ... -netdev user,id=n0 -device virtio-net-pci,netdev=n0
+```
+
+QEMU's user-mode network has the gateway at 10.0.2.2 (it answers pings),
+DNS at 10.0.2.3 and gives 10.0.2.15 by DHCP; the image's
+`/etc/network.conf` sets that address statically until step D3. Pings beyond
+it reach the outside world only if the host lets QEMU use unprivileged
+ICMP sockets (Linux's `net.ipv4.ping_group_range`). The host cannot reach the guest through it except by
+`hostfwd` (TCP and UDP ports, step D2); the network test reaches the guest
+on a second card instead, a `-netdev dgram` "wire" to a peer written in
+Python (`docs/TESTS.md`, network test).
+
+Proxmox and KVM use the same virtio-net device; the laptop's Intel card
+comes with step D4 (e1000e).

@@ -23,3 +23,7 @@ usb=08:06:50    /bin/usb-storage
 # virtio-vga. "display": it serves the screen instead of /bin/display
 # (which takes over again if it keeps failing)
 1af4:1050   /bin/virtio-gpu   display
+#
+# virtio-net (NETWORK.md step D1): frames to and from netd
+1af4:1000   /bin/virtio-net
+1af4:1041   /bin/virtio-net

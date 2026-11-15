@@ -71,6 +71,9 @@ class=01:08:02  /bin/nvme
 usb=08:06:50    /bin/usb-storage
 # a third word "display": the driver serves the screen (step F8)
 1af4:1050   /bin/virtio-gpu   display
+# network cards (NETWORK.md step D1): frames to netd, docs/NETWORK.md
+1af4:1000   /bin/virtio-net
+1af4:1041   /bin/virtio-net
 ```
 
 The first matching line for a device wins. Devices the kernel uses are

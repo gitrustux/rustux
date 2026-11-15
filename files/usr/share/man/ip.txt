@@ -1,0 +1,30 @@
+ip - show and change network interfaces, addresses and routes
+
+USAGE
+    ip [-s] [-br] link [show [IF]]
+    ip link set IF up|down
+    ip [-br] addr [show [dev] IF]
+    ip addr add|del ADDRESS/PREFIX dev IF
+    ip route [show]
+    ip route add default via GATEWAY
+    ip route del default
+
+    Asks the network service (netd, /svc/net) and prints in iproute2's
+    form. Objects and commands may be shortened: ip a, ip r, ip l.
+
+    -s       link: packet and byte counters
+    -br      one line per interface: name, state, MAC or addresses
+
+    Interfaces are named eth0, eth1, ... in PCI order (lspci). lo is the
+    loopback interface (127.0.0.1).
+
+    Changes are root's (sudo ip addr add ...) and last until netd
+    restarts; the addresses and routes at boot are in /etc/network.conf.
+
+EXAMPLES
+    ip a                                  addresses of every interface
+    sudo ip addr add 192.168.1.20/24 dev eth0
+    sudo ip route add default via 192.168.1.1
+
+SEE ALSO
+    ping, network.conf, svc (svc restart netd)

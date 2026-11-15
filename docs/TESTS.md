@@ -333,6 +333,23 @@ head). With `virtio-gpu-pci` (no UEFI framebuffer): the desktop still
 comes up. The GOP framebuffer without virtio-gpu is every other
 graphical test's case.
 
+## Network test (step D1)
+
+`scripts/run-network-test.sh` (`NETWORK.md`): one QEMU boot with two
+virtio-net cards, the first transitional (`1af4:1000`) on QEMU's
+user-mode network, the second modern-only (`1af4:1041`) on a
+`-netdev dgram` wire to the script, where a peer at 10.0.3.1 written in
+Python answers ARP and pings. netd names the cards eth0 and eth1 in PCI
+order and gives eth0 10.0.2.15 from `/etc/network.conf`; `ip addr`, `ip
+route` and `ip -br link` show it; `ping 10.0.2.2` (the gateway) gets 3
+replies, a missing address none (exit status 1), localhost answers with
+1000 bytes; `nobody` may not add an address, root adds 10.0.3.15 to eth1;
+the peer's ARP request and 3 pings are answered (their data checked), the
+guest pings the peer; without the default route 1.1.1.1 is unreachable,
+the route comes back; a bad prefix is refused; `ip link set down/up`;
+last `svc restart netd`: the drivers connect again and eth0 has its
+address again.
+
 ## Run in QEMU
 
 ```bash

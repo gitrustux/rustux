@@ -1,0 +1,4 @@
+# smoltcp's compile-time sizes (its build.rs reads these)
+[env]
+SMOLTCP_IFACE_MAX_ADDR_COUNT = "8"
+SMOLTCP_IFACE_MAX_ROUTE_COUNT = "8"

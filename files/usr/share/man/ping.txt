@@ -1,0 +1,24 @@
+ping - send ICMP echo requests to a host
+
+USAGE
+    ping [-c COUNT] [-i SECONDS] [-W SECONDS] [-s SIZE] [-q] ADDRESS
+
+    Sends an echo request every second through the network service (netd)
+    and prints each reply and its round-trip time; at the end, how many
+    were answered. Without -c it goes on until stopped (Ctrl+C). Anyone may
+    ping.
+
+    -c COUNT    stop after COUNT requests
+    -i SECONDS  time between requests (1; at least 0.2)
+    -W SECONDS  how long to wait for each reply (1)
+    -w SECONDS  stop after this many seconds
+    -s SIZE     bytes of data in each request (56; at most 1000)
+    -q          only the summary
+
+    ADDRESS is an IPv4 address or localhost (names: step D3, DNS).
+
+    Exit status: 0 if a reply came, 1 if none did, 2 on an error (no
+    route to the address, netd not running).
+
+SEE ALSO
+    ip

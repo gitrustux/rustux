@@ -57,6 +57,7 @@ The image's units:
 | `console` | `login` (with `-f USER` for autologin) | multi-user |
 | `rescue-shell` | a root shell, no login | rescue |
 | `installer` | `rustica-install` on the console (step 20) | install |
+| `netd` | the network service, `ready=/svc/net` (`NETWORK.md`) | multi-user |
 | `emergency` | built in, never in a file: a root shell when nothing else can hold the console | none |
 
 Without `/etc/svc` init uses the same units built in (`svc list` says
