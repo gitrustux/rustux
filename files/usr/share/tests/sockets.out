@@ -1,0 +1,13 @@
+ok tcp 127.0.0.1: 300000 bytes, half-close, answer
+ok tcp 127.0.0.1 (this computer)
+ok tcp 0.0.0.0 listener reached at 127.0.0.1
+ok connection refused
+ok address in use
+ok read time-out, non-blocking
+ok connect_timeout, addresses
+ok udp 127.0.0.1 send_to, recv_from, connect
+ok localhost:80 resolves
+nettest local: all passed
+through lo
+nc: connect to 127.0.0.1 9124 (tcp) failed: Connection refused
+status 1

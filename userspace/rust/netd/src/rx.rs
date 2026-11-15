@@ -14,6 +14,7 @@ pub type Handle = u32;
 pub const OK: i64 = 0;
 pub const ERR_SHOULD_WAIT: i64 = -13;
 pub const CHANNEL_READABLE: u32 = 1 << 0;
+pub const WRITABLE: u32 = 1 << 1;
 pub const PEER_CLOSED: u32 = 1 << 2;
 pub const TIME_INFINITE: u64 = u64::MAX;
 
@@ -85,6 +86,32 @@ pub fn channel_read(h: Handle, buf: &mut [u8], sender: Option<&mut Sender>) -> R
         *s = a.s;
     }
     Ok((a.n[0] as usize, (a.n[1] > 0).then_some(hs[0])))
+}
+
+pub fn socket_create() -> Option<(Handle, Handle)> {
+    let (mut a, mut b) = (0u32, 0u32);
+    let r = unsafe { syscall(0x2A, 0, &mut a as *mut u32 as i64, &mut b as *mut u32 as i64, 0, 0, 0) };
+    (r == OK).then_some((a, b))
+}
+
+/// Bytes written (Err SHOULD_WAIT when full, PEER_CLOSED when the other end is gone)
+pub fn socket_write(h: Handle, data: &[u8]) -> Result<usize, i64> {
+    let mut n = 0u64;
+    let r = unsafe { syscall(0x2B, h as i64, 0, data.as_ptr() as i64, data.len() as i64, &mut n as *mut u64 as i64, 0) };
+    if r == OK { Ok(n as usize) } else { Err(r) }
+}
+
+/// Write no more on this end (the other end reads end-of-stream)
+pub fn socket_shutdown_write(h: Handle) {
+    let mut n = 0u64;
+    unsafe { syscall(0x2B, h as i64, 1, 0, 0, &mut n as *mut u64 as i64, 0) };
+}
+
+/// Bytes read (Err SHOULD_WAIT when none yet, PEER_CLOSED at the end)
+pub fn socket_read(h: Handle, buf: &mut [u8]) -> Result<usize, i64> {
+    let mut n = 0u64;
+    let r = unsafe { syscall(0x2C, h as i64, 0, buf.as_mut_ptr() as i64, buf.len() as i64, &mut n as *mut u64 as i64, 0) };
+    if r == OK { Ok(n as usize) } else { Err(r) }
 }
 
 pub fn wait_many(items: &mut [WaitItem], deadline: u64) -> i64 {

@@ -263,6 +263,9 @@ static inline int rx_sender_in_group(const rx_sender_t *s, uint32_t g) {
 static inline rx_status_t rx_socket_create(uint32_t options, rx_handle_t *out0, rx_handle_t *out1) {
     return RX_SYS(0x2A, options, out0, out1, 0);
 }
+// rx_socket_write options: with len 0, write no more (half-close: the peer
+// reads end-of-stream after what is left)
+#define RX_SOCKET_SHUTDOWN_WRITE 1u
 static inline rx_status_t rx_socket_write(rx_handle_t h, uint32_t options, const void *buf, uint64_t len, uint64_t *actual) {
     return RX_SYS6(0x2B, h, options, buf, len, actual, 0);
 }

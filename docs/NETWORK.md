@@ -1,19 +1,20 @@
 # Networking
 
 Rustica's network: card drivers in userspace, one network service (`netd`)
-with the TCP/IP stack, and `ip` and `ping` (`NETWORK.md` in the planning
-documents, step D1). Sockets for programs come with step D2, DHCP and DNS
-with D3.
+with the TCP/IP stack, `ip` and `ping` (`NETWORK.md` in the planning
+documents, step D1), and POSIX sockets for programs, C and Rust (`nc`,
+`ss`, `std::net`; step D2). DHCP and DNS come with D3.
 
 ```
-  ping, ip ──/svc/net──┐                    ┌── virtio-net 00:02.0 (eth0)
-                       netd (smoltcp) ──/svc/netdev──┤
-                       interfaces, ARP,     └── virtio-net 00:03.0 (eth1)
-                       IPv4, ICMP, routes
+  ping, ip, ss ──/svc/net──────┐                    ┌── virtio-net 00:02.0 (eth0)
+                               netd (smoltcp) ──/svc/netdev──┤
+  socket() ────/svc/netsock────┘ interfaces, ARP,   └── virtio-net 00:03.0 (eth1)
+  (C library)   + data sockets   IPv4, ICMP, TCP,
+                                 UDP, routes, lo
 ```
 
 The kernel has no network code. A driver only moves Ethernet frames; netd
-owns the interfaces, their addresses and routes, and answers pings.
+owns the interfaces, their addresses and routes, and every socket.
 
 ## Drivers: /svc/netdev
 
@@ -61,16 +62,19 @@ read every second. The main thread reads netd's channel and transmits.
   ... by the card's place among the network controllers in PCI order (it
   asks devmgr for the list; `lspci`), so the names do not depend on which
   driver started first. A card without a PCI slot gets the next name after
-  those. `lo` is the loopback interface, 127.0.0.0/8: netd answers pings
-  to it, and to its own addresses, itself.
+  those. `lo` is the loopback interface (a smoltcp interface whose frames
+  go round again): 127.0.0.0/8, and a copy (/32) of every other
+  interface's address, so traffic to this computer's own addresses stays
+  inside, as on Linux.
 - **Addresses and routes**: from `/etc/network.conf` when the card
-  appears (below), changed with `ip`. Several addresses per interface (8
+  appears (below), changed with `ip`. Several addresses per interface (16
   at most), one default route.
 - **IPv4, ARP, ICMP**: netd answers ARP and echo requests (pings) on every
   interface, and sends pings for `ping`.
-- One thread: it waits (`wait_many`) on the two listeners, the drivers'
-  channels and the clients', until a frame, a request or smoltcp's next
-  timer.
+- **TCP and UDP sockets** for programs (below).
+- One thread: it waits (`wait_many`) on the three listeners, the drivers'
+  channels, the clients' and the sockets', until a frame, a request, a
+  socket's bytes or smoltcp's next timer.
 
 ### /etc/network.conf
 
@@ -102,6 +106,63 @@ netd reads who sent a request from the channel (the sender's credentials,
 `rx_channel_read_creds`): changes need an effective uid of 0. Anyone may
 ping, as Linux's unprivileged ICMP sockets allow.
 
+## Sockets (step D2)
+
+The C library's `socket`, `bind`, `listen`, `accept`/`accept4`,
+`connect`, `send`/`recv`/`sendto`/`recvfrom`/`sendmsg`/`recvmsg` (no
+ancillary data), `read`/`write`, `shutdown`, `getsockname`,
+`getpeername`, `setsockopt`/`getsockopt`, `poll` and `select`,
+non-blocking sockets (`SOCK_NONBLOCK`, `O_NONBLOCK`, `FIONBIO`,
+`MSG_DONTWAIT`) and non-blocking `connect` (`EINPROGRESS`, then `poll`
+for `POLLOUT` and `SO_ERROR`), `SO_RCVTIMEO`/`SO_SNDTIMEO`, `MSG_PEEK`,
+`MSG_WAITALL`; `inet_pton`/`inet_ntop` (IPv4 and IPv6), `inet_aton`,
+`htons` and friends; `getaddrinfo`, `getnameinfo`, `gethostbyname`,
+`getservbyname` for numeric addresses, `localhost`, `/etc/hosts` and the
+usual service names (names on the network need DNS, step D3).
+`socketpair(AF_UNIX, SOCK_STREAM)` gives two connected pipe-like fds (a
+kernel socket pair). Layouts and numbers are Linux's (musl's), so Rust's
+`std::net` (`TcpStream`, `TcpListener`, `UdpSocket`, `connect_timeout`,
+`to_socket_addrs`) works unchanged: `nettest` checks it. IPv4 only for
+now: `AF_INET6` sockets fail with `EAFNOSUPPORT`, IPv4-mapped IPv6
+addresses are taken as IPv4.
+
+**How a socket works.** `socket()` connects to `/svc/netsock`: that
+channel is the socket's control channel to netd (`<rustux/netsock.h>`).
+`bind`, `listen` and `connect` are requests on it. A TCP connection's
+bytes travel on a kernel socket pair besides, the *data socket*: the
+program's fd holds one end, netd the other, and copies between it and
+smoltcp's TCP socket. The kernel buffers 64 KiB each way, which is the
+flow control (a slow reader stops a fast sender at both ends), and
+`read`, `write` and `poll` on the fd are the kernel's, as for a pipe. A
+half-close is `RX_SOCKET_SHUTDOWN_WRITE` on the data socket (a kernel
+addition of this step, `SYSCALL.md`): `shutdown(SHUT_WR)` makes netd send
+a FIN, and the peer's FIN reaches the program as end-of-stream while it
+can still write. A listening socket's new connections arrive as
+`ACCEPTED` messages on its control channel, each with the new data
+socket and control channel; `accept` takes one (so the backlog is
+netd's: up to 8 handshakes at once per interface, plus the connections
+waiting to be accepted). UDP datagrams are messages on the control
+channel both ways (up to 65000 bytes). A reset reaches the program as
+`ECONNRESET` on its next `read` or `write`.
+
+**Ports.** `bind` to port 0 (or none) takes a free port from 49152 up;
+ports below 1024 are root's (`EACCES`), checked by the credentials of
+the message. `EADDRINUSE` when a port is taken; with `SO_REUSEADDR` only
+listeners and bound sockets count. A socket bound to 0.0.0.0 is served
+on every interface (lo too), one bound to an address on its interface
+and lo.
+
+| Socket option | |
+|---------------|-|
+| `SO_REUSEADDR`, `SO_KEEPALIVE` (75 s), `TCP_NODELAY` | passed to netd |
+| `SO_RCVTIMEO`, `SO_SNDTIMEO` | in the library |
+| `SO_ERROR`, `SO_TYPE`, `SO_ACCEPTCONN`, `SO_RCVBUF`/`SO_SNDBUF` (64 KiB) | read |
+| `SO_BROADCAST`, `SO_LINGER`, `SO_REUSEPORT`, `IP_TTL`, ... | accepted, no effect |
+
+Not yet: IPv6 (D4), broadcast and multicast, raw sockets, Unix-domain
+sockets with names, passing sockets to other programs (spawned programs
+get fds 0-2 only, as before).
+
 ## Commands
 
 - `ip` (`man ip`): `ip link`, `ip addr`, `ip route` in iproute2's form;
@@ -110,6 +171,15 @@ ping, as Linux's unprivileged ICMP sockets allow.
 - `ping` (`man ping`): `-c`, `-i`, `-W`, `-w`, `-s`, `-q`; the summary
   with packet loss and min/avg/max/mdev; exit status 0, 1 (no reply) or 2
   (an error such as no route).
+- `nc` (`man nc`, OpenBSD netcat's form): `nc HOST PORT` connects, `nc
+  -l PORT` listens (`-k` again and again); `-u` UDP, `-v`, `-z` (only
+  connect), `-w`, `-s`, `-p`, `-N`. Standard input goes out, what comes
+  in goes to standard output; at the end of the input nc half-closes.
+- `ss` (`man ss`): netd's sockets, `-t`, `-u`, `-l`, `-a`, in iproute2's
+  columns (`sockets` on `/svc/net`).
+- `nettest` (Rust, `rust/nettest`): `nettest local` checks `std::net`
+  inside the computer; `connect`, `serve`, `udp` for tests across the
+  network.
 
 ```
 $ ip -br a
@@ -135,10 +205,17 @@ QEMU's user-mode network has the gateway at 10.0.2.2 (it answers pings),
 DNS at 10.0.2.3 and gives 10.0.2.15 by DHCP; the image's
 `/etc/network.conf` sets that address statically until step D3. Pings beyond
 it reach the outside world only if the host lets QEMU use unprivileged
-ICMP sockets (Linux's `net.ipv4.ping_group_range`). The host cannot reach the guest through it except by
-`hostfwd` (TCP and UDP ports, step D2); the network test reaches the guest
-on a second card instead, a `-netdev dgram` "wire" to a peer written in
-Python (`docs/TESTS.md`, network test).
+ICMP sockets (Linux's `net.ipv4.ping_group_range`). The host is 10.0.2.2 from the guest: a server listening
+on the host's 127.0.0.1 is reached there (`nc 10.0.2.2 PORT`). The host
+reaches the guest only through forwarded ports:
+
+```bash
+-netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp:127.0.0.1:8080-:8080
+```
+
+The network test reaches the guest at the frame level on a second card
+too, a `-netdev dgram` "wire" to a peer written in Python
+(`docs/TESTS.md`, network test).
 
 Proxmox and KVM use the same virtio-net device; the laptop's Intel card
 comes with step D4 (e1000e).

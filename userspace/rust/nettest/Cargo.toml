@@ -1,0 +1,12 @@
+[package]
+name = "nettest"
+version = "0.1.0"
+edition = "2021"
+description = "Rust's std::net on Rustux (network step D2): TCP and UDP, local and through the network"
+license = "MIT"
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+opt-level = "s"

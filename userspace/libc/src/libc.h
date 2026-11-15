@@ -25,7 +25,18 @@ struct fd {
     char *rbuf;
     uint32_t rlen, rpos;
     struct pty *pty;      // a pseudo-terminal's master (pty.c)
+    struct sock *sock;    // a network socket (net.c); handle: its data socket once connected
 };
+
+// Network sockets (net.c)
+struct sock;
+void __sock_ref(struct fd *f);
+void __sock_release(struct fd *f);
+long __sock_read(struct fd *f, char *buf, size_t n);
+long __sock_write(struct fd *f, const char *buf, size_t n);
+// poll: the events ready now; or the handle and signals to wait for
+short __sock_poll_prepare(struct fd *f, short events, rx_handle_t *h, uint32_t *signals);
+short __sock_poll_result(struct fd *f, short events, uint32_t pending);
 
 // Pseudo-terminal masters (pty.c)
 struct pty;

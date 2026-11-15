@@ -1,0 +1,32 @@
+nc - TCP and UDP connections (netcat)
+
+USAGE
+    nc [-uvzN] [-w SECONDS] [-s ADDRESS] [-p PORT] HOST PORT
+    nc -l [-ukv] [-s ADDRESS] [-p] PORT
+
+    Connects to PORT on HOST (or, with -l, waits for a connection on
+    PORT), then sends standard input and prints what comes back. At the
+    end of standard input nc stops sending (a half-close, so the other
+    side sees the end) and ends when the other side closes too.
+
+    -l          listen for one connection (-k: one after another)
+    -u          UDP: each read of standard input is a datagram; with -l,
+                the first datagram's sender is the peer
+    -v          say what happens (on standard error)
+    -z          only connect (is the port open?), send nothing
+    -N          end at the end of standard input
+    -w SECONDS  give up connecting after this long; after the end of
+                standard input, end when nothing has come for this long
+    -s ADDRESS  the local address to use
+    -p PORT     the local port (with -l: the port to listen on)
+
+    HOST is an IPv4 address, localhost or a name in /etc/hosts (names on
+    the network: step D3, DNS). Ports below 1024 are root's to listen on.
+
+EXAMPLES
+    nc -l 8080 > received.txt             wait for a file
+    nc 10.0.2.2 8080 < file.txt           send one
+    echo hello | nc -u -w 1 10.0.2.2 9999
+
+SEE ALSO
+    ss, ip, ping

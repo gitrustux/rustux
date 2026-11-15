@@ -711,7 +711,11 @@ when none will come. Writing to a closed peer gives `ERR_PEER_CLOSED`.
 Signals: `READABLE` (bit 0), `WRITABLE` (bit 1, room in the peer's
 buffer), `PEER_CLOSED` (bit 2), user signals (also through
 `object_signal_peer`). Type 14; rights BASIC + READ + WRITE + SIGNAL +
-SIGNAL_PEER. `options` must be 0.
+SIGNAL_PEER. `options` must be 0, except `socket_write`'s
+`RX_SOCKET_SHUTDOWN_WRITE` (1) with `len` 0 (network step D2): the
+endpoint writes no more (half-close, as TCP's FIN); later writes give
+`ERR_BAD_STATE`, and the peer reads what is left, then `ERR_PEER_CLOSED`,
+and stays `READABLE`.
 
 #### CHANNEL_CREATE (0x20)
 

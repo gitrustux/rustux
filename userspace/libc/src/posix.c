@@ -128,6 +128,17 @@ int poll(struct pollfd *fds, nfds_t n, int timeout_ms) {
                 map[m++] = (int)i;
             }
             break;
+        case RX_FD_SOCKET: {
+            rx_handle_t h = 0;
+            uint32_t sig = 0;
+            fds[i].revents = __sock_poll_prepare(f, fds[i].events, &h, &sig);
+            if (!fds[i].revents && h) {
+                items[m].handle = h;
+                items[m].waitfor = sig;
+                map[m++] = (int)i;
+            }
+            break;
+        }
         case RX_FD_PIPE:
             items[m].handle = f->handle;
             items[m].waitfor = RX_PEER_CLOSED | ((fds[i].events & POLLIN) ? RX_CHANNEL_READABLE : 0) |
@@ -152,6 +163,12 @@ int poll(struct pollfd *fds, nfds_t n, int timeout_ms) {
         struct pollfd *p = &fds[map[k]];
         short before = p->revents;
         uint32_t s = items[k].pending;
+        struct fd *pf = &__fds[p->fd];
+        if (pf->kind == RX_FD_SOCKET) {
+            p->revents = __sock_poll_result(pf, p->events, s);
+            if (!before && p->revents) ready++;
+            continue;
+        }
         if ((s & (RX_CHANNEL_READABLE | (__pty_poll_signals() & ~(RX_CHANNEL_READABLE | RX_PEER_CLOSED)))) && (p->events & POLLIN)) p->revents |= POLLIN;
         if ((s & RX_CHANNEL_WRITABLE) && (p->events & POLLOUT)) p->revents |= POLLOUT;
         if (s & RX_PEER_CLOSED) p->revents |= (p->events & POLLOUT) ? POLLERR | POLLHUP : POLLHUP;
@@ -620,15 +637,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) { (void)pat
 int execv(const char *path, char *const argv[]) { return execve(path, argv, environ); }
 int execvp(const char *file, char *const argv[]) { return execve(file, argv, environ); }
 
-// No sockets yet (networking is later)
-int socketpair(int domain, int type, int protocol, int fds[2]) {
-    (void)domain; (void)type; (void)protocol; (void)fds;
-    return fail(EAFNOSUPPORT);
-}
-ssize_t sendmsg(int fd, const void *msg, int flags) { (void)fd; (void)msg; (void)flags; return fail(ENOTSOCK); }
-ssize_t recvmsg(int fd, void *msg, int flags) { (void)fd; (void)msg; (void)flags; return fail(ENOTSOCK); }
-ssize_t recv(int fd, void *buf, size_t n, int flags) { (void)fd; (void)buf; (void)n; (void)flags; return fail(ENOTSOCK); }
-ssize_t send(int fd, const void *buf, size_t n, int flags) { (void)fd; (void)buf; (void)n; (void)flags; return fail(ENOTSOCK); }
+// Sockets are in net.c (network step D2)
 
 // ---- getopt ----
 
@@ -746,10 +755,6 @@ ssize_t splice(int in, off_t *ioff, int out, off_t *ooff, size_t n, unsigned fla
     (void)in; (void)ioff; (void)out; (void)ooff; (void)n; (void)flags;
     return fail(ENOSYS);
 }
-int socket(int domain, int type, int protocol) { (void)domain; (void)type; (void)protocol; return fail(EAFNOSUPPORT); }
-int bind(int fd, const void *addr, unsigned len) { (void)fd; (void)addr; (void)len; return fail(ENOTSOCK); }
-int listen(int fd, int backlog) { (void)fd; (void)backlog; return fail(ENOTSOCK); }
-int connect(int fd, const void *addr, unsigned len) { (void)fd; (void)addr; (void)len; return fail(ENOTSOCK); }
 int __libc_current_sigrtmin(void) { return 34; }
 int __libc_current_sigrtmax(void) { return 64; }
 int sched_getscheduler(pid_t pid) { (void)pid; return 0; } // SCHED_OTHER

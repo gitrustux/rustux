@@ -13,6 +13,13 @@
 # loopback address, adding and removing addresses and the default route,
 # that only root may change them, the peer's pings of the guest, and a
 # restart of netd (the drivers connect again; /etc/network.conf again).
+# Sockets (step D2): `nettest local` (Rust's std::net inside the guest:
+# TCP on 127.0.0.1 and the guest's own address, 300000 bytes with a
+# half-close, refused, in use, time-outs, non-blocking connect, UDP,
+# localhost); the guest's nc and nettest reach TCP and UDP servers this
+# script runs on the host (10.0.2.2 from the guest); the host reaches the
+# guest's nc -l and nettest serve through QEMU's port forwarding
+# (hostfwd); ss lists a listener; nobody may not listen on port 80.
 # Exit status 0 if all is well.
 #
 #   scripts/run-network-test.sh [KERNEL.efi]
@@ -44,6 +51,9 @@ mcopy -i "$W/boot.img" "$W/cmdline.txt" ::/EFI/BOOT/cmdline.txt
 python3 - "$W" "$OVMF" <<'PY'
 import os, re, socket, struct, subprocess, sys, threading, time
 W, OVMF = sys.argv[1], sys.argv[2]
+def free_port(kind=socket.SOCK_STREAM):
+    t = socket.socket(socket.AF_INET, kind); t.bind(('127.0.0.1', 0)); p = t.getsockname()[1]; t.close(); return p
+FWD_NC, FWD_RUST = free_port(), free_port()   # host ports forwarded to the guest's 8080, 8081
 LOG, MON = W + '/console.log', W + '/mon'
 
 # The wire: QEMU sends eth1's frames to UDP port B and listens on port A
@@ -55,7 +65,7 @@ s2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s2.bind(('127.0.0.1', 0))
 qemu = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35', '-m', '512M', '-smp', '2', '-bios', OVMF,
     '-drive', f'file={W}/boot.img,format=raw', '-display', 'none', '-debugcon', f'file:{LOG}', '-no-reboot',
     '-monitor', f'unix:{MON},server,nowait',
-    '-netdev', 'user,id=n0', '-device', 'virtio-net-pci,netdev=n0,mac=52:54:00:12:34:56',
+    '-netdev', f'user,id=n0,hostfwd=tcp:127.0.0.1:{FWD_NC}-:8080,hostfwd=tcp:127.0.0.1:{FWD_RUST}-:8081', '-device', 'virtio-net-pci,netdev=n0,mac=52:54:00:12:34:56',
     '-netdev', f'dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port={A},remote.type=inet,remote.host=127.0.0.1,remote.port={B}',
     '-device', 'virtio-net-pci,netdev=n1,disable-legacy=on,mac=52:54:00:ab:cd:ef'],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -85,7 +95,8 @@ def run(cmd, t=15):
     global DONE
     DONE += 1
     st = len(log())
-    keys(f'{cmd}; echo "=DONE{DONE}= $?"\n')
+    sep = ' ' if cmd.rstrip().endswith('&') else '; '
+    keys(f'{cmd}{sep}echo "=DONE{DONE}= $?"\n')
     wait(rf'=DONE{DONE}= \d+', t, st)
     out = log()[st:]
     return out
@@ -200,6 +211,77 @@ try:
     out = run('svc restart netd; sleep 3; ip -br addr; ping -c 1 10.0.2.2', 25)
     check(re.search(r'eth0 +UP +10.0.2.15/24', out) and re.search(r'eth1 +UP', out) and '1 received' in out,
           'netd restarted: the drivers come back, the address too', out)
+
+    # ---- sockets (step D2) ----
+    out = run('nettest local', 60)
+    check('nettest local: all passed' in out, 'Rust std::net in the guest (nettest local)', out)
+    # Servers on the host: TCP answers "host got " + all it received; UDP echoes
+    tsrv = socket.socket(); tsrv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    tsrv.bind(('127.0.0.1', 0)); tsrv.listen(4); HT = tsrv.getsockname()[1]
+    usrv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); usrv.bind(('127.0.0.1', 0)); HU = usrv.getsockname()[1]
+    def tcp_server():
+        while True:
+            try: c, _ = tsrv.accept()
+            except OSError: return
+            d = b''
+            c.settimeout(10)
+            try:
+                while True:
+                    x = c.recv(65536)
+                    if not x: break
+                    d += x
+                c.sendall(b'host got ' + d)
+            except OSError: pass
+            c.close()
+    def udp_server():
+        while True:
+            try: d, a = usrv.recvfrom(65536)
+            except OSError: return
+            usrv.sendto(b'echo: ' + d, a)
+    threading.Thread(target=tcp_server, daemon=True).start()
+    threading.Thread(target=udp_server, daemon=True).start()
+    out = run(f'echo hello host | nc 10.0.2.2 {HT}')
+    check('host got hello host' in out, 'nc in the guest reaches a TCP server on the host', out)
+    out = run(f'nettest connect 10.0.2.2:{HT} from-rust')
+    check('host got from-rust' in out, 'Rust TcpStream reaches the host', out)
+    out = run(f'nettest udp 10.0.2.2:{HU} ping-udp')
+    check(f'echo: ping-udp from 10.0.2.2:{HU}' in out, 'Rust UdpSocket reaches the host and gets the answer', out)
+    out = run(f'echo hi-udp | nc -u -w 2 10.0.2.2 {HU}')
+    check('echo: hi-udp' in out, 'nc -u to the host', out)
+    # The host reaches the guest (hostfwd)
+    out = run('nc -l 8080 < /etc/hostname > /tmp/nc-in.txt &', 3)
+    out = run('ss -tln')
+    check(re.search(r'tcp +LISTEN +0 +0 +0.0.0.0:8080', out), 'ss shows nc listening on 8080', out)
+    got = b''
+    try:
+        c = socket.create_connection(('127.0.0.1', FWD_NC), timeout=10)
+        c.sendall(b'from the host\n'); c.shutdown(socket.SHUT_WR)
+        while True:
+            x = c.recv(4096)
+            if not x: break
+            got += x
+        c.close()
+    except OSError as e:
+        got = repr(e).encode()
+    time.sleep(1)
+    out = run('cat /tmp/nc-in.txt')
+    check('from the host' in out and b'rustica' in got, 'the host reaches nc -l in the guest, both ways', out + ' / host got ' + got.decode('latin1'))
+    out = run('nettest serve 8081 &', 3)
+    got = b''
+    try:
+        c = socket.create_connection(('127.0.0.1', FWD_RUST), timeout=10)
+        c.sendall(b'a line from the host\n')
+        while True:
+            x = c.recv(4096)
+            if not x: break
+            got += x
+        c.close()
+    except OSError as e:
+        got = repr(e).encode()
+    check(got == b'rust got: a line from the host\n', 'the host reaches a Rust TcpListener in the guest', got.decode('latin1'))
+    out = run('sudo -u nobody nc -l 80')
+    check('Permission denied' in out, 'nobody may not listen on port 80', out)
+    tsrv.close(); usrv.close()
 finally:
     qemu.kill(); qemu.wait()
 print('network test:', 'all passed' if fails == 0 else f'{fails} failed')

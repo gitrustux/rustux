@@ -348,7 +348,15 @@ the peer's ARP request and 3 pings are answered (their data checked), the
 guest pings the peer; without the default route 1.1.1.1 is unreachable,
 the route comes back; a bad prefix is refused; `ip link set down/up`;
 last `svc restart netd`: the drivers connect again and eth0 has its
-address again.
+address again. Sockets (step D2), in the same boot, with two of the
+guest's ports forwarded from the host (`hostfwd`) and a TCP and a UDP
+server that the script runs on the host: `nettest local` (Rust's
+`std::net` on 127.0.0.1 and 10.0.2.15); the guest's `nc` and `nettest`
+reach both servers at 10.0.2.2 (`nc -u` too); `ss -tln` shows `nc -l
+8080`, which the host reaches through its forwarded port, both ways; the
+host reaches `nettest serve` (a Rust `TcpListener`); `nobody` may not
+listen on port 80. `runtests sockets` (every build) runs `nettest local`
+and `nc` on lo.
 
 ## Run in QEMU
 

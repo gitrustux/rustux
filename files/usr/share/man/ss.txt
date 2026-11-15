@@ -1,0 +1,20 @@
+ss - show sockets
+
+USAGE
+    ss [-t] [-u] [-l] [-a] [-n] [-H]
+
+    Lists the network service's (netd's) sockets: protocol, state, the
+    bytes waiting to be read and to be sent, the local and the peer
+    address.
+
+    -t   TCP only       -u   UDP only (both without either)
+    -l   listening sockets (and bound UDP ones) only
+    -a   all sockets (without -l or -a: connections only)
+    -n   numbers (always)
+    -H   no header line
+
+EXAMPLES
+    ss -tln       what listens for TCP connections
+
+SEE ALSO
+    nc, ip

@@ -364,11 +364,21 @@ fn socket_of(h: u32, right: u32) -> R<alloc::sync::Arc<crate::kobj::socket::Sock
 }
 
 /// socket_write(handle, options, *buf, len, *actual) — writes as much as
-/// fits (at most 64 KiB wait in each direction); SHOULD_WAIT if none does
+/// fits (at most 64 KiB wait in each direction); SHOULD_WAIT if none does.
+/// Options SHUTDOWN_WRITE (1): with len 0, write no more (the peer reads
+/// end-of-stream after what is left; BAD_STATE for later writes)
 pub fn sys_socket_write(args: SyscallArgs) -> SyscallRet {
     let (h, opts, buf, len, actual) = (args.arg_u32(0), args.arg(1), args.arg(2), args.arg(3), args.arg(4));
     ret((|| {
         let s = socket_of(h, Rights::WRITE)?;
+        if opts == 1 && len == 0 {
+            s.shutdown_write();
+            if actual != 0 {
+                user::check(actual, 8, true)?;
+                user::write_u64(actual, 0)?;
+            }
+            return Ok(0);
+        }
         if opts != 0 {
             return Err(RxStatus::ERR_INVALID_ARGS);
         }

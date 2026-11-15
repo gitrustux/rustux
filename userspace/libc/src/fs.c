@@ -277,7 +277,7 @@ int fstat(int fd, struct stat *st) {
         return 0;
     }
     memset(st, 0, sizeof *st);
-    st->st_mode = (f->kind == RX_FD_PIPE ? S_IFIFO : S_IFCHR) | 0620;
+    st->st_mode = (f->kind == RX_FD_PIPE ? S_IFIFO : f->kind == RX_FD_SOCKET ? S_IFSOCK | 0777 : S_IFCHR) | 0620;
     st->st_nlink = 1;
     return 0;
 }

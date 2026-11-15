@@ -48,6 +48,7 @@ Each fd is a handle plus a kind (`libc/src/fd.c`):
 | log | debug log (`init` only) | not supported | `debuglog_write` |
 | file | connection to `fsd` (file or directory) | `READ` requests | `WRITE` requests |
 | pipe | socket | waits for bytes; 0 when the writer is gone | waits for room; `EPIPE` when the reader is gone |
+| network socket | its data socket once connected (TCP), and a connection to netd | as a pipe (TCP) or one datagram (UDP); `docs/NETWORK.md` | as a pipe (TCP) or one datagram |
 
 `read`, `write`, `close`, `lseek`, `dup`, `dup2`, `pipe`, `pipe2`,
 `fstat`, `isatty`, `fcntl` (`F_GETFD`/`SETFD`/`GETFL`/`SETFL`/`DUPFD`),
@@ -212,8 +213,9 @@ Disks (step 13): `rx_block_list`, `rx_block_info`, `rx_block_read`,
 MBR tables (`<rustux/gpt.h>`), filesystem signatures
 (`<rustux/fsprobe.h>`); see `DRIVERS.md`.
 Linux interfaces with nothing behind them fail so callers fall back:
-`inotify`, `epoll`, `eventfd`, `sendfile`, `splice`, sockets (`ENOSYS`,
-`EAFNOSUPPORT`); extended attributes are empty.
+`inotify`, `epoll`, `eventfd`, `sendfile`, `splice` (`ENOSYS`), IPv6
+sockets (`EAFNOSUPPORT`); extended attributes are empty. IPv4 sockets are
+in `net.c` (network step D2, `docs/NETWORK.md`).
 
 The loader (`libc/src/spawn.c`) checks the file is a static x86-64 ELF,
 maps each page with its segment's permissions, maps a 256 KiB stack at
@@ -296,7 +298,7 @@ Other system calls in the library: `uname` (kernel version, host name from
   32 KiB; programs up to 64 MiB.
 - No symbolic links (`ln -s` fails) or hard links (`ln` fails), no file
   locking, no `fork`/`exec` (programs are
-  started with `rx_spawn` or `posix_spawn`), no Unix signals, no sockets,
+  started with `rx_spawn` or `posix_spawn`), no Unix signals, IPv4 sockets only,
   no file mappings (`mmap` of anonymous memory only), no guard pages below
   thread stacks.
 - `stdout` to a file or pipe is fully buffered (flushed at exit or when the

@@ -55,6 +55,7 @@ rx_handle_t __fd_export(int fd) {
 
 static void release(struct fd *f) {
     if (f->kind == RX_FD_PTY) __pty_release(f);
+    if (f->kind == RX_FD_SOCKET) __sock_release(f);
     if (f->handle) rx_handle_close(f->handle);
     free(f->rbuf);
     free(f->path);
@@ -204,6 +205,7 @@ ssize_t read(int fd, void *buf, size_t n) {
     case RX_FD_FILE: return file_read(f, buf, n);
     case RX_FD_PIPE: return pipe_read(f, buf, n);
     case RX_FD_PTY: return __pty_read(f, buf, n);
+    case RX_FD_SOCKET: return __sock_read(f, buf, n);
     default: errno = EBADF; return -1;
     }
 }
@@ -251,6 +253,8 @@ ssize_t write(int fd, const void *buf, size_t n) {
         return pipe_write(f, buf, n);
     case RX_FD_PTY:
         return __pty_write(f, buf, n);
+    case RX_FD_SOCKET:
+        return __sock_write(f, buf, n);
     case RX_FD_LOG: {
         size_t done = 0;
         while (done < n) {
@@ -283,18 +287,24 @@ int dup2(int fd, int fd2) {
     }
     if (fd == fd2) return fd2;
     rx_handle_t h = 0;
-    rx_status_t r = rx_handle_duplicate(f->handle, RX_RIGHT_SAME_RIGHTS, &h);
-    if (r != RX_OK) return __set_errno_status(r);
+    // A socket not yet connected has no handle of its own (its sock has)
+    if (f->handle) {
+        rx_status_t r = rx_handle_duplicate(f->handle, RX_RIGHT_SAME_RIGHTS, &h);
+        if (r != RX_OK) return __set_errno_status(r);
+    }
     int kind = f->kind, flags = f->flags;
     char *path = f->path ? strdup(f->path) : 0;
     struct pty *pty = f->pty;
     if (pty) __pty_ref(f);
+    struct sock *sock = f->sock;
+    if (sock) __sock_ref(f);
     release(&__fds[fd2]);
     __fds[fd2].kind = kind;
     __fds[fd2].handle = h;
     __fds[fd2].flags = flags;
     __fds[fd2].path = path;
     __fds[fd2].pty = pty;
+    __fds[fd2].sock = sock;
     return fd2;
 }
 

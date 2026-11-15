@@ -7,20 +7,21 @@
 //! netd: Rustica's network service (NETWORK.md, docs/NETWORK.md). The
 //! TCP/IP stack (smoltcp) for every interface: network card drivers send
 //! and receive Ethernet frames through /svc/netdev (<rustux/netdev.h>);
-//! programs reach the network through /svc/net.
+//! programs reach the network through /svc/net (control: `ip`, `ping`)
+//! and /svc/netsock (a connection per socket, <rustux/netsock.h>, sock.rs).
 //!
-//! Step D1: interfaces (Ethernet, ARP, IPv4, ICMP: it answers pings),
-//! static addresses and routes from /etc/network.conf, and a text control
-//! protocol on /svc/net for `ip` and `ping`: one request a message, the
-//! answer a message, its last line "ok" or "error: ...".
+//! /svc/net is a text protocol: one request a message, the answer a
+//! message, its last line "ok" or "error: ...".
 //!
 //!   links | addrs | routes                    (anyone)
 //!   addr add|del CIDR dev IF                  (root)
 //!   route add|del default via GATEWAY         (root)
 //!   link set IF up|down                       (root)
 //!   ping ADDRESS SEQ TIMEOUT_MS SIZE          -> "reply FROM SEQ BYTES MICROSECONDS" or "timeout"
+//!   sockets                                   (anyone: what `ss` shows)
 
 mod rx;
+mod sock;
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken};
@@ -35,6 +36,7 @@ const NETDEV_HELLO: u32 = 1;
 const NETDEV_FRAME: u32 = 2;
 const NETDEV_LINK: u32 = 3;
 const PING_IDENT: u16 = 0x5258;
+const LO_ID: u32 = 0;
 
 fn log(s: &str) {
     println!("netd: {s}");
@@ -50,10 +52,11 @@ fn now() -> Instant {
     Instant::from_micros((rx::monotonic() / 1000) as i64)
 }
 
-// ---- frames to and from a driver ----
+// ---- frames to and from a driver (or round again, on lo) ----
 
-struct ChanDev {
-    ch: rx::Handle,
+pub struct ChanDev {
+    ch: rx::Handle, // 0 for lo
+    lo: bool,
     rxq: VecDeque<Vec<u8>>,
     rx_frames: u64,
     tx_frames: u64,
@@ -62,8 +65,8 @@ struct ChanDev {
     up: bool,
 }
 
-struct RxT(Vec<u8>);
-struct TxT<'a> {
+pub struct RxT(Vec<u8>);
+pub struct TxT<'a> {
     dev: &'a mut ChanDev,
 }
 
@@ -75,6 +78,18 @@ impl RxToken for RxT {
 
 impl<'a> TxToken for TxT<'a> {
     fn consume<R, F: FnOnce(&mut [u8]) -> R>(self, len: usize, f: F) -> R {
+        if self.dev.lo {
+            let mut buf = vec![0u8; len];
+            let r = f(&mut buf);
+            if self.dev.up {
+                self.dev.tx_frames += 1;
+                self.dev.tx_bytes += len as u64;
+                self.dev.rx_frames += 1;
+                self.dev.rx_bytes += len as u64;
+                self.dev.rxq.push_back(buf);
+            }
+            return r;
+        }
         let mut buf = vec![0u8; 8 + len];
         buf[..4].copy_from_slice(&NETDEV_FRAME.to_le_bytes());
         let r = f(&mut buf[8..]);
@@ -102,8 +117,13 @@ impl Device for ChanDev {
 
     fn capabilities(&self) -> DeviceCapabilities {
         let mut c = DeviceCapabilities::default();
-        c.medium = Medium::Ethernet;
-        c.max_transmission_unit = 1514;
+        if self.lo {
+            c.medium = Medium::Ip;
+            c.max_transmission_unit = 65535;
+        } else {
+            c.medium = Medium::Ethernet;
+            c.max_transmission_unit = 1514;
+        }
         c.max_burst_size = Some(32);
         c
     }
@@ -111,17 +131,41 @@ impl Device for ChanDev {
 
 // ---- interfaces ----
 
-struct Link {
-    name: String,
+pub struct Link {
+    pub id: u32,
+    pub name: String,
     driver: String,
     mac: EthernetAddress,
     carrier: bool, // the driver's link
     admin_up: bool,
-    dev: ChanDev,
-    iface: Interface,
-    sockets: SocketSet<'static>,
+    pub dev: ChanDev,
+    pub iface: Interface,
+    pub sockets: SocketSet<'static>,
     icmp: SocketHandle,
     gateway: Option<Ipv4Address>,
+}
+
+impl Link {
+    pub fn is_lo(&self) -> bool {
+        self.id == LO_ID
+    }
+
+    /// Its IPv4 addresses (for lo: 127.0.0.1 only, not the copies of the
+    /// others' it carries)
+    pub fn v4(&self) -> Vec<Ipv4Cidr> {
+        if self.is_lo() {
+            return vec![Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8)];
+        }
+        self.iface
+            .ip_addrs()
+            .iter()
+            .filter_map(|c| if let IpCidr::Ipv4(c) = c { Some(*c) } else { None })
+            .collect()
+    }
+
+    pub fn usable(&self) -> bool {
+        self.admin_up && (self.carrier || self.is_lo())
+    }
 }
 
 /// /etc/network.conf: "NAME static ADDRESS/PREFIX [GATEWAY]" or "NAME dhcp"
@@ -153,23 +197,29 @@ fn configure(link: &mut Link) {
     }
 }
 
-fn new_link(name: String, ch: rx::Handle, hello: &[u8]) -> Link {
+fn icmp_socket(sockets: &mut SocketSet<'static>) -> SocketHandle {
+    let s = icmp::Socket::new(
+        icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY; 16], vec![0; 16 * 1100]),
+        icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY; 16], vec![0; 16 * 1100]),
+    );
+    let h = sockets.add(s);
+    sockets.get_mut::<icmp::Socket>(h).bind(icmp::Endpoint::Ident(PING_IDENT)).ok();
+    h
+}
+
+fn new_link(id: u32, name: String, ch: rx::Handle, hello: &[u8]) -> Link {
     let mut mac = [0u8; 6];
     mac.copy_from_slice(&hello[..6]);
     let link_up = u16::from_le_bytes([hello[6], hello[7]]) != 0;
     let driver = String::from_utf8_lossy(&hello[8..32]).trim_end_matches('\0').to_string();
-    let mut dev = ChanDev { ch, rxq: VecDeque::new(), rx_frames: 0, tx_frames: 0, rx_bytes: 0, tx_bytes: 0, up: true };
+    let mut dev = ChanDev { ch, lo: false, rxq: VecDeque::new(), rx_frames: 0, tx_frames: 0, rx_bytes: 0, tx_bytes: 0, up: true };
     let mut config = Config::new(HardwareAddress::Ethernet(EthernetAddress(mac)));
     config.random_seed = rx::monotonic() ^ (u64::from_le_bytes([mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], 0, 0]));
     let iface = Interface::new(config, &mut dev, now());
     let mut sockets = SocketSet::new(vec![]);
-    let icmp_s = icmp::Socket::new(
-        icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY; 16], vec![0; 16 * 1100]),
-        icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY; 16], vec![0; 16 * 1100]),
-    );
-    let icmp = sockets.add(icmp_s);
-    sockets.get_mut::<icmp::Socket>(icmp).bind(icmp::Endpoint::Ident(PING_IDENT)).ok();
+    let icmp = icmp_socket(&mut sockets);
     let mut l = Link {
+        id,
         name,
         driver,
         mac: EthernetAddress(mac),
@@ -185,25 +235,50 @@ fn new_link(name: String, ch: rx::Handle, hello: &[u8]) -> Link {
     l
 }
 
+fn new_lo() -> Link {
+    let mut dev = ChanDev { ch: 0, lo: true, rxq: VecDeque::new(), rx_frames: 0, tx_frames: 0, rx_bytes: 0, tx_bytes: 0, up: true };
+    let mut config = Config::new(HardwareAddress::Ip);
+    config.random_seed = rx::monotonic();
+    let iface = Interface::new(config, &mut dev, now());
+    let mut sockets = SocketSet::new(vec![]);
+    let icmp = icmp_socket(&mut sockets);
+    Link {
+        id: LO_ID,
+        name: "lo".into(),
+        driver: "loopback".into(),
+        mac: EthernetAddress([0; 6]),
+        carrier: true,
+        admin_up: true,
+        dev,
+        iface,
+        sockets,
+        icmp,
+        gateway: None,
+    }
+}
+
 // ---- pings in flight ----
 
 struct Ping {
     client: rx::Handle,
-    link: usize,
-    seq: u16,       // ours, on the wire
+    link: u32,
+    seq: u16, // ours, on the wire
     client_seq: u32,
     sent: Instant,
     deadline: Instant,
-    bytes: usize,
 }
 
-struct Netd {
-    links: Vec<Link>,
+pub struct Netd {
+    pub links: Vec<Link>,
+    next_link: u32,
     pending_drivers: Vec<rx::Handle>,
     clients: Vec<rx::Handle>,
     pings: Vec<Ping>,
     next_seq: u16,
     next_eth: usize,
+    pub socks: Vec<sock::Sock>,
+    pub next_sock: u64,
+    pub next_port: u16,
 }
 
 fn reply(ch: rx::Handle, text: &str) {
@@ -211,6 +286,77 @@ fn reply(ch: rx::Handle, text: &str) {
 }
 
 impl Netd {
+    fn link_by_name(&self, n: &str) -> Option<usize> {
+        self.links.iter().position(|l| l.name == n)
+    }
+
+    pub fn link_index(&self, id: u32) -> Option<usize> {
+        self.links.iter().position(|l| l.id == id)
+    }
+
+    /// Is `a` this computer's (127/8 or an interface's address)?
+    pub fn is_local(&self, a: Ipv4Address) -> bool {
+        a.octets()[0] == 127 || self.links.iter().any(|l| !l.is_lo() && l.v4().iter().any(|c| c.address() == a))
+    }
+
+    // The interface (not lo) for an address: the one whose subnet holds
+    // it, else the one with a default route
+    fn link_for(&self, a: Ipv4Address) -> Option<usize> {
+        for (i, l) in self.links.iter().enumerate() {
+            if l.is_lo() {
+                continue;
+            }
+            if l.v4().iter().any(|c| c.contains_addr(&a)) {
+                return Some(i);
+            }
+        }
+        self.links.iter().position(|l| l.gateway.is_some())
+    }
+
+    /// Where a packet to `dst` goes: the interface and the source address
+    pub fn route(&self, dst: Ipv4Address) -> Option<(usize, Ipv4Address)> {
+        if self.is_local(dst) {
+            let lo = self.link_index(LO_ID)?;
+            let src = if dst.octets()[0] == 127 { Ipv4Address::new(127, 0, 0, 1) } else { dst };
+            return Some((lo, src));
+        }
+        let i = self.link_for(dst)?;
+        let v4 = self.links[i].v4();
+        let src = v4.iter().find(|c| c.contains_addr(&dst)).or(v4.first())?.address();
+        Some((i, src))
+    }
+
+    /// lo carries every interface's addresses too (/32), so traffic to
+    /// them stays inside
+    fn sync_lo(&mut self) {
+        let mut all: Vec<Ipv4Address> = Vec::new();
+        for l in &self.links {
+            if !l.is_lo() {
+                for c in l.v4() {
+                    if !all.contains(&c.address()) {
+                        all.push(c.address());
+                    }
+                }
+            }
+        }
+        if let Some(i) = self.link_index(LO_ID) {
+            self.links[i].iface.update_ip_addrs(|a| {
+                a.clear();
+                let _ = a.push(IpCidr::Ipv4(Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8)));
+                for x in &all {
+                    let _ = a.push(IpCidr::Ipv4(Ipv4Cidr::new(*x, 32)));
+                }
+            });
+        }
+    }
+
+    // The interfaces in name order (lo, eth0, eth1, ..., eth10)
+    fn sorted(&self) -> Vec<&Link> {
+        let mut v: Vec<&Link> = self.links.iter().collect();
+        v.sort_by_key(|l| (!l.is_lo(), l.name.len(), l.name.clone()));
+        v
+    }
+
     // A card's name: ethN, N its place among the network controllers in
     // PCI order (the driver names its slot: "virtio-net 00:03.0"), so the
     // names do not depend on which driver started first; else the next
@@ -238,47 +384,22 @@ impl Netd {
         }
     }
 
-    fn link_by_name(&mut self, n: &str) -> Option<usize> {
-        self.links.iter().position(|l| l.name == n)
-    }
-
-    // The interface for an address: the one whose subnet holds it, else
-    // the one with a default route
-    fn link_for(&self, a: Ipv4Address) -> Option<usize> {
-        for (i, l) in self.links.iter().enumerate() {
-            for c in l.iface.ip_addrs() {
-                if let IpCidr::Ipv4(c) = c {
-                    if c.contains_addr(&a) {
-                        return Some(i);
-                    }
-                }
-            }
-        }
-        self.links.iter().position(|l| l.gateway.is_some())
-    }
-
-    // The interfaces in name order (eth0, eth1, ..., eth10)
-    fn sorted(&self) -> Vec<&Link> {
-        let mut v: Vec<&Link> = self.links.iter().collect();
-        v.sort_by_key(|l| (l.name.len(), l.name.clone()));
-        v
-    }
-
     fn command(&mut self, ch: rx::Handle, who: &rx::Sender, text: &str) {
         let w: Vec<&str> = text.split_whitespace().collect();
         let root = who.euid == 0;
         let mut out = String::new();
+        let mut addrs_changed = false;
         let res: Result<(), String> = (|| {
             match w.as_slice() {
                 ["links"] => {
-                    out.push_str("lo loopback 00:00:00:00:00:00 up mtu 65536 rx 0 tx 0 0 0\n");
                     for l in self.sorted() {
                         out.push_str(&format!(
-                            "{} {} {} {} mtu 1500 rx {} tx {} {} {}\n",
+                            "{} {} {} {} mtu {} rx {} tx {} {} {}\n",
                             l.name,
                             l.driver.replace(' ', "_"),
                             mac_str(&l.mac),
                             if !l.admin_up { "down" } else if l.carrier { "up" } else { "no-carrier" },
+                            if l.is_lo() { 65536 } else { 1500 },
                             l.dev.rx_frames,
                             l.dev.tx_frames,
                             l.dev.rx_bytes,
@@ -287,31 +408,35 @@ impl Netd {
                     }
                 }
                 ["addrs"] => {
-                    out.push_str("lo 127.0.0.1/8\n");
                     for l in self.sorted() {
-                        for c in l.iface.ip_addrs() {
+                        for c in l.v4() {
                             out.push_str(&format!("{} {}\n", l.name, c));
                         }
                     }
                 }
                 ["routes"] => {
                     for l in self.sorted() {
+                        if l.is_lo() {
+                            continue;
+                        }
                         if let Some(g) = l.gateway {
                             out.push_str(&format!("default via {} dev {}\n", g, l.name));
                         }
-                        for c in l.iface.ip_addrs() {
-                            if let IpCidr::Ipv4(c) = c {
-                                out.push_str(&format!("{} dev {} src {}\n", c.network(), l.name, c.address()));
-                            }
+                        for c in l.v4() {
+                            out.push_str(&format!("{} dev {} src {}\n", c.network(), l.name, c.address()));
                         }
                     }
                 }
+                ["sockets"] => out.push_str(&sock::list(self)),
                 ["addr", op @ ("add" | "del"), cidr, "dev", ifname] => {
                     if !root {
                         return Err("only root changes addresses".into());
                     }
                     let c = Ipv4Cidr::from_str(cidr).map_err(|_| format!("{cidr}: not an address/prefix"))?;
                     let i = self.link_by_name(ifname).ok_or(format!("{ifname}: no such interface"))?;
+                    if self.links[i].is_lo() {
+                        return Err("lo has 127.0.0.1/8 only".into());
+                    }
                     let l = &mut self.links[i];
                     let mut err = None;
                     l.iface.update_ip_addrs(|a| {
@@ -330,6 +455,7 @@ impl Netd {
                     if let Some(e) = err {
                         return Err(e);
                     }
+                    addrs_changed = true;
                     log(&format!("{}: address {} {}", l.name, if *op == "add" { "added" } else { "removed" }, c));
                 }
                 ["route", "add", "default", "via", gw] => {
@@ -337,7 +463,11 @@ impl Netd {
                         return Err("only root changes routes".into());
                     }
                     let g = Ipv4Address::from_str(gw).map_err(|_| format!("{gw}: not an address"))?;
-                    let i = self.link_for(g).ok_or("no interface reaches it")?;
+                    let i = self
+                        .links
+                        .iter()
+                        .position(|l| !l.is_lo() && l.v4().iter().any(|c| c.contains_addr(&g)))
+                        .ok_or("no interface reaches it")?;
                     for l in self.links.iter_mut() {
                         if l.gateway.take().is_some() {
                             l.iface.routes_mut().remove_default_ipv4_route();
@@ -378,19 +508,12 @@ impl Netd {
                     let cseq: u32 = seq.parse().map_err(|_| "bad sequence number")?;
                     let tmo: u64 = timeout.parse().map_err(|_| "bad time-out")?;
                     let size: usize = size.parse::<usize>().map_err(|_| "bad size")?.min(1000);
-                    // Loopback and our own addresses answer at once
-                    let local = a.octets()[0] == 127
-                        || self.links.iter().any(|l| l.iface.ip_addrs().iter().any(|c| c.address() == IpAddress::Ipv4(a)));
-                    if local {
-                        reply(ch, &format!("reply {} {} {} {}\n", a, cseq, size, 5));
-                        return Ok(());
-                    }
-                    let i = self.link_for(a).ok_or("network unreachable")?;
+                    let (i, _) = self.route(a).ok_or("network unreachable")?;
                     let t = now();
                     let seq_no = self.next_seq;
                     self.next_seq = self.next_seq.wrapping_add(1);
                     let l = &mut self.links[i];
-                    if !l.admin_up || !l.carrier {
+                    if !l.usable() {
                         return Err(format!("{}: the link is down", l.name));
                     }
                     let mut data = vec![0u8; size];
@@ -404,12 +527,11 @@ impl Netd {
                     repr.emit(&mut pkt, &ChecksumCapabilities::default());
                     self.pings.push(Ping {
                         client: ch,
-                        link: i,
+                        link: l.id,
                         seq: seq_no,
                         client_seq: cseq,
                         sent: t,
                         deadline: t + smoltcp::time::Duration::from_millis(tmo),
-                        bytes: size,
                     });
                     return Ok(()); // answered when the reply comes, or the time is up
                 }
@@ -422,12 +544,15 @@ impl Netd {
         if let Err(e) = res {
             reply(ch, &format!("error: {e}\n"));
         }
+        if addrs_changed {
+            self.sync_lo();
+        }
     }
 
     // Echo replies and pings whose time is up
     fn pings(&mut self) {
         let t = now();
-        for (li, l) in self.links.iter_mut().enumerate() {
+        for l in self.links.iter_mut() {
             let s = l.sockets.get_mut::<icmp::Socket>(l.icmp);
             while s.can_recv() {
                 let Ok((payload, from)) = s.recv() else { break };
@@ -438,11 +563,10 @@ impl Netd {
                 if ident != PING_IDENT {
                     continue;
                 }
-                if let Some(p) = self.pings.iter().position(|p| p.link == li && p.seq == seq_no) {
+                if let Some(p) = self.pings.iter().position(|p| p.link == l.id && p.seq == seq_no) {
                     let p = self.pings.remove(p);
                     let us = (t - p.sent).total_micros();
                     reply(p.client, &format!("reply {} {} {} {}\n", from, p.client_seq, data.len(), us));
-                    let _ = p.bytes;
                 }
             }
         }
@@ -478,25 +602,85 @@ impl Netd {
             _ => {}
         }
     }
+
+    fn add_link(&mut self, d: rx::Handle, hello: &[u8]) {
+        let name = self.name_for(hello);
+        let id = self.next_link;
+        self.next_link += 1;
+        let l = new_link(id, name, d, hello);
+        log(&format!("{}: {} ({}), link {}", l.name, mac_str(&l.mac), l.driver, if l.carrier { "up" } else { "down" }));
+        self.links.push(l);
+        self.sync_lo();
+        sock::link_added(self, id);
+    }
+
+    fn remove_link(&mut self, id: u32) {
+        let Some(i) = self.link_index(id) else { return };
+        sock::link_removed(self, id);
+        let l = self.links.remove(i);
+        log(&format!("{}: the driver is gone", l.name));
+        self.pings.retain(|p| p.link != id);
+        rx::close(l.dev.ch);
+        self.sync_lo();
+    }
+}
+
+// What a wait item stands for
+enum Waiting {
+    Svc,
+    Netdev,
+    Netsock,
+    Driver(u32),
+    Pending(rx::Handle),
+    Client(rx::Handle),
+    SockCtl(u64),
+    SockData(u64),
 }
 
 fn main() {
-    let (Some(svc), Some(netdev)) = (rx::publish("/svc/net"), rx::publish("/svc/netdev")) else {
-        eprintln!("netd: cannot publish /svc/net and /svc/netdev");
+    let (Some(svc), Some(netdev), Some(netsock)) = (rx::publish("/svc/net"), rx::publish("/svc/netdev"), rx::publish("/svc/netsock")) else {
+        eprintln!("netd: cannot publish /svc/net, /svc/netdev and /svc/netsock");
         std::process::exit(3);
     };
-    log("started (/svc/net, /svc/netdev)");
-    let mut n = Netd { links: Vec::new(), pending_drivers: Vec::new(), clients: Vec::new(), pings: Vec::new(), next_seq: 1, next_eth: 0 };
+    log("started (/svc/net, /svc/netdev, /svc/netsock)");
+    let mut n = Netd {
+        links: vec![new_lo()],
+        next_link: 1,
+        pending_drivers: Vec::new(),
+        clients: Vec::new(),
+        pings: Vec::new(),
+        next_seq: 1,
+        next_eth: 0,
+        socks: Vec::new(),
+        next_sock: 1,
+        next_port: 49152,
+    };
+    n.sync_lo();
     let mut buf = vec![0u8; 65536];
     loop {
-        let t = now();
-        for l in n.links.iter_mut() {
-            l.iface.poll(t, &mut l.dev, &mut l.sockets);
+        // The stack, then the sockets, until neither has more to do now
+        let mut rounds = 0;
+        loop {
+            let t = now();
+            let mut busy = false;
+            for l in n.links.iter_mut() {
+                if l.iface.poll(t, &mut l.dev, &mut l.sockets) != smoltcp::iface::PollResult::None {
+                    busy = true;
+                }
+            }
+            n.pings();
+            if sock::service(&mut n) {
+                busy = true;
+            }
+            rounds += 1;
+            if !busy || rounds >= 16 {
+                break;
+            }
         }
-        n.pings();
         // How long until something is due
-        let mut deadline = rx::TIME_INFINITE;
+        let t = now();
         let mono = rx::monotonic();
+        let mut deadline = rx::TIME_INFINITE;
         for l in n.links.iter_mut() {
             if let Some(d) = l.iface.poll_delay(t, &l.sockets) {
                 deadline = deadline.min(mono + d.total_micros() * 1000);
@@ -506,95 +690,109 @@ fn main() {
             }
         }
         for p in &n.pings {
-            deadline = deadline.min(mono + ((p.deadline - t).total_micros().max(0) * 1000));
+            deadline = deadline.min(mono + ((p.deadline - t).total_micros().max(0) as u64 * 1000));
         }
-        // Wait for a frame, a request or a connection
-        let mut items = vec![
-            rx::WaitItem { handle: svc, waitfor: rx::CHANNEL_READABLE, pending: 0 },
-            rx::WaitItem { handle: netdev, waitfor: rx::CHANNEL_READABLE, pending: 0 },
-        ];
+        if let Some(d) = sock::next_deadline(&n) {
+            deadline = deadline.min(mono + ((d - t).total_micros().max(0) as u64 * 1000));
+        }
+        // Wait for a frame, a request, a connection or a socket
+        let mut items = Vec::new();
+        let mut what = Vec::new();
+        let add = |items: &mut Vec<rx::WaitItem>, what: &mut Vec<Waiting>, h: rx::Handle, sig: u32, w: Waiting| {
+            items.push(rx::WaitItem { handle: h, waitfor: sig, pending: 0 });
+            what.push(w);
+        };
+        add(&mut items, &mut what, svc, rx::CHANNEL_READABLE, Waiting::Svc);
+        add(&mut items, &mut what, netdev, rx::CHANNEL_READABLE, Waiting::Netdev);
+        add(&mut items, &mut what, netsock, rx::CHANNEL_READABLE, Waiting::Netsock);
         for l in &n.links {
-            items.push(rx::WaitItem { handle: l.dev.ch, waitfor: rx::CHANNEL_READABLE | rx::PEER_CLOSED, pending: 0 });
+            if l.dev.ch != 0 {
+                add(&mut items, &mut what, l.dev.ch, rx::CHANNEL_READABLE | rx::PEER_CLOSED, Waiting::Driver(l.id));
+            }
         }
         for &d in &n.pending_drivers {
-            items.push(rx::WaitItem { handle: d, waitfor: rx::CHANNEL_READABLE | rx::PEER_CLOSED, pending: 0 });
+            add(&mut items, &mut what, d, rx::CHANNEL_READABLE | rx::PEER_CLOSED, Waiting::Pending(d));
         }
         for &c in &n.clients {
-            items.push(rx::WaitItem { handle: c, waitfor: rx::CHANNEL_READABLE | rx::PEER_CLOSED, pending: 0 });
+            add(&mut items, &mut what, c, rx::CHANNEL_READABLE | rx::PEER_CLOSED, Waiting::Client(c));
+        }
+        for s in &n.socks {
+            if s.ctl != 0 {
+                add(&mut items, &mut what, s.ctl, rx::CHANNEL_READABLE | rx::PEER_CLOSED, Waiting::SockCtl(s.id));
+            }
+            if let Some(sig) = s.data_signals(&n) {
+                add(&mut items, &mut what, s.data, sig, Waiting::SockData(s.id));
+            }
         }
         rx::wait_many(&mut items, deadline);
-        let (nl, nd) = (n.links.len(), n.pending_drivers.len());
-        // Frames from the drivers (a few at a time each, so one busy card
-        // does not starve the rest)
         let mut gone_links = Vec::new();
-        for i in 0..nl {
-            if items[2 + i].pending == 0 {
-                continue;
-            }
-            let ch = n.links[i].dev.ch;
-            let mut k = 0;
-            loop {
-                match rx::channel_read(ch, &mut buf, None) {
-                    Ok((len, h)) => {
-                        if let Some(h) = h {
-                            rx::close(h);
-                        }
-                        n.driver_message(i, &buf[..len]);
-                        k += 1;
-                        if k == 64 {
-                            break;
-                        }
-                    }
-                    Err(rx::ERR_SHOULD_WAIT) => break,
-                    Err(_) => {
-                        gone_links.push(i);
-                        break;
-                    }
-                }
-            }
-        }
-        // Drivers saying who they are
-        let mut keep = Vec::new();
-        for (j, &d) in n.pending_drivers.clone().iter().enumerate() {
-            if items[2 + nl + j].pending == 0 {
-                keep.push(d);
-                continue;
-            }
-            match rx::channel_read(d, &mut buf, None) {
-                Ok((len, _)) if len >= 8 + 32 && u32::from_le_bytes(buf[..4].try_into().unwrap()) == NETDEV_HELLO => {
-                    let name = n.name_for(&buf[8..len]);
-                    let l = new_link(name, d, &buf[8..len]);
-                    log(&format!("{}: {} ({}), link {}", l.name, mac_str(&l.mac), l.driver, if l.carrier { "up" } else { "down" }));
-                    n.links.push(l);
-                }
-                Err(rx::ERR_SHOULD_WAIT) => keep.push(d),
-                Ok(_) => keep.push(d),
-                Err(_) => rx::close(d),
-            }
-        }
-        n.pending_drivers = keep;
-        // Requests
         let mut gone_clients = Vec::new();
-        for (j, &c) in n.clients.clone().iter().enumerate() {
-            if items[2 + nl + nd + j].pending == 0 {
+        for (k, w) in what.iter().enumerate() {
+            let pending = items[k].pending;
+            if pending == 0 {
                 continue;
             }
-            let mut who = rx::Sender::default();
-            loop {
-                match rx::channel_read(c, &mut buf, Some(&mut who)) {
-                    Ok((len, h)) => {
-                        if let Some(h) = h {
-                            rx::close(h);
-                        }
-                        let text = String::from_utf8_lossy(&buf[..len]).into_owned();
-                        n.command(c, &who, &text);
-                    }
-                    Err(rx::ERR_SHOULD_WAIT) => break,
-                    Err(_) => {
-                        gone_clients.push(c);
-                        break;
+            match *w {
+                Waiting::Svc => n.clients.extend(rx::accept_all(svc)),
+                Waiting::Netdev => n.pending_drivers.extend(rx::accept_all(netdev)),
+                Waiting::Netsock => {
+                    for c in rx::accept_all(netsock) {
+                        sock::new_connection(&mut n, c);
                     }
                 }
+                Waiting::Driver(id) => {
+                    let Some(i) = n.link_index(id) else { continue };
+                    let ch = n.links[i].dev.ch;
+                    // A few at a time each, so one busy card does not starve the rest
+                    for _ in 0..64 {
+                        match rx::channel_read(ch, &mut buf, None) {
+                            Ok((len, h)) => {
+                                if let Some(h) = h {
+                                    rx::close(h);
+                                }
+                                n.driver_message(i, &buf[..len]);
+                            }
+                            Err(rx::ERR_SHOULD_WAIT) => break,
+                            Err(_) => {
+                                gone_links.push(id);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Waiting::Pending(d) => match rx::channel_read(d, &mut buf, None) {
+                    Ok((len, _)) if len >= 8 + 32 && u32::from_le_bytes(buf[..4].try_into().unwrap()) == NETDEV_HELLO => {
+                        n.pending_drivers.retain(|&x| x != d);
+                        let hello = buf[8..len].to_vec();
+                        n.add_link(d, &hello);
+                    }
+                    Err(rx::ERR_SHOULD_WAIT) | Ok(_) => {}
+                    Err(_) => {
+                        n.pending_drivers.retain(|&x| x != d);
+                        rx::close(d);
+                    }
+                },
+                Waiting::Client(c) => {
+                    let mut who = rx::Sender::default();
+                    loop {
+                        match rx::channel_read(c, &mut buf, Some(&mut who)) {
+                            Ok((len, h)) => {
+                                if let Some(h) = h {
+                                    rx::close(h);
+                                }
+                                let text = String::from_utf8_lossy(&buf[..len]).into_owned();
+                                n.command(c, &who, &text);
+                            }
+                            Err(rx::ERR_SHOULD_WAIT) => break,
+                            Err(_) => {
+                                gone_clients.push(c);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Waiting::SockCtl(id) => sock::ctl_ready(&mut n, id, &mut buf),
+                Waiting::SockData(id) => sock::data_ready(&mut n, id, pending),
             }
         }
         for c in gone_clients {
@@ -602,22 +800,8 @@ fn main() {
             n.pings.retain(|p| p.client != c);
             rx::close(c);
         }
-        for i in gone_links.into_iter().rev() {
-            let l = n.links.remove(i);
-            log(&format!("{}: the driver is gone", l.name));
-            n.pings.retain(|p| p.link != i);
-            for p in n.pings.iter_mut() {
-                if p.link > i {
-                    p.link -= 1;
-                }
-            }
-            rx::close(l.dev.ch);
-        }
-        if items[0].pending != 0 {
-            n.clients.extend(rx::accept_all(svc));
-        }
-        if items[1].pending != 0 {
-            n.pending_drivers.extend(rx::accept_all(netdev));
+        for id in gone_links {
+            n.remove_link(id);
         }
     }
 }

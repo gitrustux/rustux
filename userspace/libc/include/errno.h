@@ -65,6 +65,28 @@ int *__errno_location(void);
 #define ENOTSUP 95
 #define EOPNOTSUPP 95
 #define ECANCELED 125
+// Networking (Linux's numbers, as Rust's std expects; network step D2)
+#define EDESTADDRREQ 89
+#define EMSGSIZE 90
+#define EPROTOTYPE 91
+#define ENOPROTOOPT 92
+#define EPROTONOSUPPORT 93
+#define ESOCKTNOSUPPORT 94
+#define EPFNOSUPPORT 96
+#define EADDRNOTAVAIL 99
+#define ENETDOWN 100
+#define ENETUNREACH 101
+#define ENETRESET 102
+#define ECONNABORTED 103
+#define ECONNRESET 104
+#define ENOBUFS 105
+#define EISCONN 106
+#define ENOTCONN 107
+#define ESHUTDOWN 108
+#define EHOSTDOWN 112
+#define EHOSTUNREACH 113
+#define EALREADY 114
+#define EINPROGRESS 115
 
 // The name the program was started by (argv[0]), and its last part (GNU)
 extern char *program_invocation_name, *program_invocation_short_name;

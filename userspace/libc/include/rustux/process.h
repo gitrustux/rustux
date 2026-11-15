@@ -26,6 +26,7 @@ rx_handle_t rx_take_startup_handle(uint32_t info);
 #define RX_FD_FILE    3   // a connection to the filesystem service (file or directory)
 #define RX_FD_PIPE    4   // a socket
 #define RX_FD_PTY     5   // a pseudo-terminal's master (posix_openpt; not passed to programs)
+#define RX_FD_SOCKET  6   // a network socket (net.c; not passed to programs)
 #define RX_FD_INFO(fd, kind) RX_PA_HND(RX_PA_FD, (uint32_t)(fd) | ((uint32_t)(kind) << 12))
 
 // The namespace root (a directory connection to the filesystem service),
