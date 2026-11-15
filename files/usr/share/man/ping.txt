@@ -1,7 +1,7 @@
 ping - send ICMP echo requests to a host
 
 USAGE
-    ping [-c COUNT] [-i SECONDS] [-W SECONDS] [-s SIZE] [-q] HOST
+    ping [-4|-6] [-c COUNT] [-i SECONDS] [-W SECONDS] [-s SIZE] [-q] HOST
 
     Sends an echo request every second through the network service (netd)
     and prints each reply and its round-trip time; at the end, how many
@@ -14,8 +14,10 @@ USAGE
     -w SECONDS  stop after this many seconds
     -s SIZE     bytes of data in each request (56; at most 1000)
     -q          only the summary
+    -4, -6      IPv4 or IPv6 only (for names with both); ping6 is ping -6
 
-    HOST is an IPv4 address or a name (/etc/hosts, then DNS).
+    HOST is an IPv4 or IPv6 address or a name (/etc/hosts, then DNS; the
+    IPv4 address first).
 
     Exit status: 0 if a reply came, 1 if none did, 2 on an error (no
     route to the address, netd not running).

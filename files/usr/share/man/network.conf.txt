@@ -14,6 +14,10 @@ FILE
         a fixed address, and the default route through GATEWAY
     NAME off
         left alone
+    NAME static6 ADDRESS/PREFIX [GATEWAY]
+        an IPv6 address (and default route) besides what routers
+        advertise; the card still gets IPv4 by DHCP unless it has a line
+        for that too
     dns ADDRESS...
         DNS servers, before DHCP's (netd writes /etc/resolv.conf)
     search DOMAIN...

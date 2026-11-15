@@ -25,7 +25,7 @@
 static const char *prog = "ping";
 
 static void usage(void) {
-    fprintf(stderr, "usage: ping [-c COUNT] [-i SECONDS] [-W SECONDS] [-s SIZE] [-q] ADDRESS\n");
+    fprintf(stderr, "usage: ping [-4|-6] [-c COUNT] [-i SECONDS] [-W SECONDS] [-s SIZE] [-q] HOST\n");
     exit(2);
 }
 
@@ -72,9 +72,10 @@ static void ms(unsigned long long us, char *out, size_t n) {
 }
 
 int main(int argc, char **argv) {
+    int family = AF_UNSPEC;
     long count = -1, interval = 1000, wait = 1000, size = 56;
     int quiet = 0, opt;
-    while ((opt = getopt(argc, argv, "c:i:W:w:s:qh4")) != -1) {
+    while ((opt = getopt(argc, argv, "c:i:W:w:s:qh46")) != -1) {
         switch (opt) {
         case 'c': count = strtol(optarg, 0, 10); if (count <= 0) usage(); break;
         case 'i': interval = millis(optarg); break;
@@ -82,30 +83,34 @@ int main(int argc, char **argv) {
         case 'w': count = millis(optarg) / 1000; if (count <= 0) count = 1; break;
         case 's': size = strtol(optarg, 0, 10); if (size < 0 || size > 1000) { fprintf(stderr, "%s: the size is 0 to 1000 bytes\n", prog); return 2; } break;
         case 'q': quiet = 1; break;
-        case '4': break;
+        case '4': family = AF_INET; break;
+        case '6': family = AF_INET6; break;
         default: usage();
         }
     }
     if (optind != argc - 1) usage();
     const char *host = argv[optind];
     // A name: through the resolver (/etc/hosts, DNS)
-    char addr[INET_ADDRSTRLEN];
+    char addr[INET6_ADDRSTRLEN];
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;
+    hints.ai_family = family;
     hints.ai_socktype = SOCK_DGRAM;
     int e = getaddrinfo(host, 0, &hints, &res);
     if (e) {
         fprintf(stderr, "%s: %s: %s\n", prog, host, gai_strerror(e));
         return 2;
     }
-    inet_ntop(AF_INET, &((struct sockaddr_in *)res->ai_addr)->sin_addr, addr, sizeof addr);
+    int v6 = res->ai_family == AF_INET6;
+    if (v6) inet_ntop(AF_INET6, ((struct sockaddr_in6 *)res->ai_addr)->sin6_addr.s6_addr, addr, sizeof addr);
+    else inet_ntop(AF_INET, &((struct sockaddr_in *)res->ai_addr)->sin_addr, addr, sizeof addr);
     freeaddrinfo(res);
     if (interval < 200) interval = 200;  // as Linux's limit for users
     if (wait < 1) wait = 1;
 
     net_connect(prog);
-    printf("PING %s (%s) %ld(%ld) bytes of data.\n", host, addr, size, size + 28);
+    if (v6) printf("PING %s(%s) %ld data bytes\n", host, addr, size);
+    else printf("PING %s (%s) %ld(%ld) bytes of data.\n", host, addr, size, size + 28);
     fflush(stdout);
     long sent = 0, got = 0;
     unsigned long long tmin = ~0ULL, tmax = 0, tsum = 0, tsum2 = 0;

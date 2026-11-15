@@ -47,6 +47,7 @@ struct sock {
     volatile int lock;
     int refs;
     int type;            // SOCK_STREAM, SOCK_DGRAM
+    int domain;          // AF_INET, AF_INET6
     rx_handle_t ctl;
     int state;
     int err;             // pending error (SO_ERROR), an errno
@@ -277,17 +278,19 @@ static int to_net(const struct sockaddr *sa, socklen_t len, rx_netaddr_t *out) {
         return 0;
     }
     if (sa->sa_family == AF_INET6) {
-        // IPv4-mapped addresses are IPv4; IPv6 itself comes with step D4
+        // IPv4-mapped addresses are IPv4 (a dual-stack AF_INET6 socket)
         if (len < sizeof(struct sockaddr_in6)) return -EINVAL;
         const struct sockaddr_in6 *in6 = (const void *)sa;
         static const uint8_t mapped[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
+        out->port = ntohs(in6->sin6_port);
         if (!memcmp(in6->sin6_addr.s6_addr, mapped, 12)) {
             out->family = AF_INET;
-            out->port = ntohs(in6->sin6_port);
             memcpy(out->addr, in6->sin6_addr.s6_addr + 12, 4);
             return 0;
         }
-        return -EAFNOSUPPORT;
+        out->family = AF_INET6;
+        memcpy(out->addr, in6->sin6_addr.s6_addr, 16);
+        return 0;
     }
     if (sa->sa_family == AF_UNSPEC) {
         out->family = AF_INET; // "disconnect" for UDP
@@ -296,8 +299,29 @@ static int to_net(const struct sockaddr *sa, socklen_t len, rx_netaddr_t *out) {
     return -EAFNOSUPPORT;
 }
 
-static void from_net(const rx_netaddr_t *a, struct sockaddr *sa, socklen_t *len) {
+// For an AF_INET6 socket: sockaddr_in6, IPv4 addresses as ::ffff:a.b.c.d
+static void from_net6(const rx_netaddr_t *a, struct sockaddr *sa, socklen_t *len) {
+    struct sockaddr_in6 in6;
+    memset(&in6, 0, sizeof in6);
+    in6.sin6_family = AF_INET6;
+    in6.sin6_port = htons(a->port);
+    if (a->family == AF_INET6) {
+        memcpy(in6.sin6_addr.s6_addr, a->addr, 16);
+    } else if (a->family == AF_INET) {
+        in6.sin6_addr.s6_addr[10] = in6.sin6_addr.s6_addr[11] = 0xff;
+        memcpy(in6.sin6_addr.s6_addr + 12, a->addr, 4);
+    }
+    socklen_t n = *len < sizeof in6 ? *len : (socklen_t)sizeof in6;
+    memcpy(sa, &in6, n);
+    *len = sizeof in6;
+}
+
+static void from_net(int domain, const rx_netaddr_t *a, struct sockaddr *sa, socklen_t *len) {
     if (!sa || !len) return;
+    if (domain == AF_INET6 || a->family == AF_INET6) {
+        from_net6(a, sa, len);
+        return;
+    }
     struct sockaddr_in in;
     memset(&in, 0, sizeof in);
     in.sin_family = AF_INET;
@@ -492,8 +516,7 @@ static int new_fd(struct sock *s, rx_handle_t data, int flags) {
 
 int socket(int domain, int type, int protocol) {
     int base = type & 0xf, flags = type & ~0xf;
-    if (domain == AF_INET6) return fail(EAFNOSUPPORT);  // IPv6: step D4
-    if (domain != AF_INET) return fail(EAFNOSUPPORT);
+    if (domain != AF_INET && domain != AF_INET6) return fail(EAFNOSUPPORT);
     if (flags & ~(SOCK_NONBLOCK | SOCK_CLOEXEC)) return fail(EINVAL);
     if (base != SOCK_STREAM && base != SOCK_DGRAM) return fail(base == SOCK_RAW ? EPERM : ESOCKTNOSUPPORT);
     if (protocol && !(base == SOCK_STREAM && protocol == IPPROTO_TCP) && !(base == SOCK_DGRAM && protocol == IPPROTO_UDP))
@@ -505,10 +528,12 @@ int socket(int domain, int type, int protocol) {
         rx_handle_close(ctl);
         return fail(ENOMEM);
     }
+    s->domain = domain;
     rx_netsock_msg_t m;
     memset(&m, 0, sizeof m);
     m.op = RX_NETSOCK_OPEN;
     m.a = base == SOCK_STREAM ? RX_NETSOCK_STREAM : RX_NETSOCK_DGRAM_TYPE;
+    m.b = (uint32_t)domain;
     int r = call(s, &m, 0, 0);
     if (r < 0) {
         sock_free(s);
@@ -603,6 +628,7 @@ int accept4(int fd, struct sockaddr *addr, socklen_t *len, int flags) {
         return fail(ENOMEM);
     }
     c->state = S_CONNECTED;
+    c->domain = s->domain;
     c->peer = q->m.addr;
     c->local = q->m.addr2;
     c->has_peer = c->has_local = 1;
@@ -611,7 +637,7 @@ int accept4(int fd, struct sockaddr *addr, socklen_t *len, int flags) {
     rx_netaddr_t peer = q->m.addr;
     free(q);
     int nfd = new_fd(c, data, flags);
-    if (nfd >= 0) from_net(&peer, addr, len);
+    if (nfd >= 0) from_net(s->domain, &peer, addr, len);
     return nfd;
 }
 
@@ -811,7 +837,7 @@ static ssize_t dgram_recv(struct fd *f, struct sock *s, char *buf, size_t n, int
     size_t k = q->len < n ? q->len : n;
     memcpy(buf, q->data, k);
     size_t full = q->len;
-    from_net(&q->m.addr, from, fromlen);
+    from_net(s->domain, &q->m.addr, from, fromlen);
     if (!(flags & MSG_PEEK)) free(q);
     return (ssize_t)((flags & MSG_TRUNC) ? full : k);
 }
@@ -833,7 +859,7 @@ static ssize_t dgram_send(struct sock *s, const char *buf, size_t n, const struc
     if (!s->has_local) {
         rx_netaddr_t any;
         memset(&any, 0, sizeof any);
-        any.family = AF_INET;
+        any.family = (uint16_t)s->domain;
         int r = do_bind(s, &any);
         if (r < 0) return fail(-r);
     }
@@ -858,7 +884,7 @@ ssize_t recvfrom(int fd, void *buf, size_t n, int flags, struct sockaddr *from, 
     if (!s) return -1;
     if (s->type == SOCK_DGRAM) return dgram_recv(f, s, buf, n, flags, from, fromlen);
     ssize_t r = stream_recv(f, s, buf, n, flags);
-    if (r >= 0 && from && fromlen) from_net(&s->peer, from, fromlen);
+    if (r >= 0 && from && fromlen) from_net(s->domain, &s->peer, from, fromlen);
     return r;
 }
 
@@ -960,8 +986,9 @@ int getsockname(int fd, struct sockaddr *addr, socklen_t *len) {
     settle(f, s);
     rx_netaddr_t a;
     memset(&a, 0, sizeof a);
+    a.family = (uint16_t)s->domain;
     if (s->has_local) a = s->local;
-    from_net(&a, addr, len);
+    from_net(s->domain, &a, addr, len);
     return 0;
 }
 
@@ -971,7 +998,7 @@ int getpeername(int fd, struct sockaddr *addr, socklen_t *len) {
     if (!s) return -1;
     settle(f, s);
     if (!s->has_peer || s->state != S_CONNECTED) return fail(ENOTCONN);
-    from_net(&s->peer, addr, len);
+    from_net(s->domain, &s->peer, addr, len);
     return 0;
 }
 
@@ -1025,7 +1052,10 @@ int setsockopt(int fd, int level, int name, const void *val, socklen_t len) {
         if (name == IP_TTL || name == IP_TOS || name == IP_MULTICAST_TTL || name == IP_MULTICAST_LOOP) return 0;
         return fail(ENOPROTOOPT);
     }
-    if (level == IPPROTO_IPV6) return fail(ENOPROTOOPT);
+    if (level == IPPROTO_IPV6) {
+        if (name == IPV6_V6ONLY || name == IPV6_UNICAST_HOPS || name == IPV6_MULTICAST_LOOP) return 0;  // accepted
+        return fail(ENOPROTOOPT);
+    }
     return fail(ENOPROTOOPT);
 }
 
@@ -1266,6 +1296,7 @@ static int hosts_lookup(const char *name, uint8_t out[4], char *canon, size_t cl
 
 int __dns_lookup4(const char *name, uint8_t (*addrs)[4], int max, char *canon, size_t clen);
 int __dns_reverse4(const uint8_t a[4], char *name, size_t len);
+int __dns_lookup6(const char *name, uint8_t (*addrs)[16], int max, char *canon, size_t clen);
 
 int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
     int flags = hints ? hints->ai_flags : 0;
@@ -1274,28 +1305,74 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
     int protocol = hints ? hints->ai_protocol : 0;
     if (!node && !service) return EAI_NONAME;
     if (family != AF_UNSPEC && family != AF_INET && family != AF_INET6) return EAI_FAMILY;
-    if (family == AF_INET6) return EAI_NONAME;  // no IPv6 addresses yet (step D4)
     if (socktype && socktype != SOCK_STREAM && socktype != SOCK_DGRAM && socktype != SOCK_RAW) return EAI_SOCKTYPE;
     int port;
     int e = service_port(service, (flags & AI_NUMERICSERV) != 0, &port);
     if (e) return e;
-    uint8_t addrs[16][4];
-    int na = 1;
+    // The addresses: IPv4 first, then IPv6 (AF_UNSPEC), as most of the
+    // world's networks are still IPv4
+    struct { int fam; uint8_t a[16]; } addrs[32];
+    int na = 0;
+    int want4 = family != AF_INET6, want6 = family != AF_INET;
     char canon[256] = "";
+    uint8_t v4[4], v6[16];
     if (!node) {
-        uint32_t v = htonl((flags & AI_PASSIVE) ? INADDR_ANY : INADDR_LOOPBACK);
-        memcpy(addrs[0], &v, 4);
-    } else if (inet_aton(node, (struct in_addr *)addrs[0])) {
+        if (want4) {
+            uint32_t v = htonl((flags & AI_PASSIVE) ? INADDR_ANY : INADDR_LOOPBACK);
+            addrs[na].fam = AF_INET;
+            memcpy(addrs[na++].a, &v, 4);
+        }
+        if (want6) {
+            addrs[na].fam = AF_INET6;
+            memcpy(addrs[na++].a, (flags & AI_PASSIVE) ? &in6addr_any : &in6addr_loopback, 16);
+        }
+    } else if (inet_aton(node, (struct in_addr *)v4)) {
+        if (!want4) return EAI_NONAME;
+        addrs[na].fam = AF_INET;
+        memcpy(addrs[na++].a, v4, 4);
+        snprintf(canon, sizeof canon, "%s", node);
+    } else if (inet_pton(AF_INET6, node, v6) == 1) {
+        if (!want6) return EAI_NONAME;
+        addrs[na].fam = AF_INET6;
+        memcpy(addrs[na++].a, v6, 16);
         snprintf(canon, sizeof canon, "%s", node);
     } else if (flags & AI_NUMERICHOST) {
         return EAI_NONAME;
     } else if (!strcasecmp(node, "localhost") || !strcasecmp(node, "localhost.localdomain") || !strcasecmp(node, "ip6-localhost")) {
-        addrs[0][0] = 127, addrs[0][1] = 0, addrs[0][2] = 0, addrs[0][3] = 1;
+        if (want4) {
+            addrs[na].fam = AF_INET;
+            memcpy(addrs[na++].a, "\x7f\0\0\1", 4);
+        }
+        if (want6) {
+            addrs[na].fam = AF_INET6;
+            memcpy(addrs[na++].a, &in6addr_loopback, 16);
+        }
         snprintf(canon, sizeof canon, "localhost");
-    } else if (!hosts_lookup(node, addrs[0], canon, sizeof canon)) {
-        // DNS (step D3): the servers in /etc/resolv.conf
-        na = __dns_lookup4(node, addrs, 16, canon, sizeof canon);
-        if (na < 0) return na;
+    } else if (want4 && hosts_lookup(node, v4, canon, sizeof canon)) {
+        addrs[na].fam = AF_INET;
+        memcpy(addrs[na++].a, v4, 4);
+    } else {
+        // DNS: A and AAAA records from the servers in /etc/resolv.conf
+        int err = EAI_NONAME;
+        if (want4) {
+            uint8_t a4[16][4];
+            int n = __dns_lookup4(node, a4, 16, canon, sizeof canon);
+            if (n < 0) err = n;
+            for (int k = 0; k < n; k++) {
+                addrs[na].fam = AF_INET;
+                memcpy(addrs[na++].a, a4[k], 4);
+            }
+        }
+        if (want6 && (err != EAI_AGAIN || !want4)) {
+            uint8_t a6[16][16];
+            int n = __dns_lookup6(node, a6, 16, canon[0] ? 0 : canon, sizeof canon);
+            if (n < 0 && !na) err = n;
+            for (int k = 0; k < n; k++) {
+                addrs[na].fam = AF_INET6;
+                memcpy(addrs[na++].a, a6[k], 16);
+            }
+        }
+        if (!na) return err;
     }
     int types[2], nt = 0;
     if (socktype) types[nt++] = socktype;
@@ -1303,21 +1380,29 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
     struct addrinfo *head = 0, **tail = &head;
     for (int j = 0; j < na; j++)
     for (int k = 0; k < nt; k++) {
-        uint8_t *a = addrs[j];
-        struct addrinfo *ai = calloc(1, sizeof *ai + sizeof(struct sockaddr_in));
+        struct addrinfo *ai = calloc(1, sizeof *ai + sizeof(struct sockaddr_in6));
         if (!ai) {
             freeaddrinfo(head);
             return EAI_MEMORY;
         }
-        struct sockaddr_in *in = (struct sockaddr_in *)(ai + 1);
-        in->sin_family = AF_INET;
-        in->sin_port = htons((uint16_t)port);
-        memcpy(&in->sin_addr, a, 4);
-        ai->ai_family = AF_INET;
+        if (addrs[j].fam == AF_INET) {
+            struct sockaddr_in *in = (struct sockaddr_in *)(ai + 1);
+            in->sin_family = AF_INET;
+            in->sin_port = htons((uint16_t)port);
+            memcpy(&in->sin_addr, addrs[j].a, 4);
+            ai->ai_addrlen = sizeof *in;
+            ai->ai_addr = (struct sockaddr *)in;
+        } else {
+            struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)(ai + 1);
+            in6->sin6_family = AF_INET6;
+            in6->sin6_port = htons((uint16_t)port);
+            memcpy(in6->sin6_addr.s6_addr, addrs[j].a, 16);
+            ai->ai_addrlen = sizeof *in6;
+            ai->ai_addr = (struct sockaddr *)in6;
+        }
+        ai->ai_family = addrs[j].fam;
         ai->ai_socktype = types[k];
         ai->ai_protocol = protocol ? protocol : types[k] == SOCK_STREAM ? IPPROTO_TCP : types[k] == SOCK_DGRAM ? IPPROTO_UDP : 0;
-        ai->ai_addrlen = sizeof *in;
-        ai->ai_addr = (struct sockaddr *)in;
         if ((flags & AI_CANONNAME) && !head) ai->ai_canonname = strdup(canon[0] ? canon : node ? node : "");
         *tail = ai;
         tail = &ai->ai_next;
@@ -1353,6 +1438,25 @@ const char *gai_strerror(int e) {
 }
 
 int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, socklen_t hostlen, char *serv, socklen_t servlen, int flags) {
+    if (sa && sa->sa_family == AF_INET6 && salen >= sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *in6 = (const void *)sa;
+        if (host && hostlen) {
+            char num[INET6_ADDRSTRLEN];
+            inet_ntop(AF_INET6, in6->sin6_addr.s6_addr, num, sizeof num);
+            const char *name = num;
+            if (!(flags & NI_NUMERICHOST) && !memcmp(&in6->sin6_addr, &in6addr_loopback, 16)) name = "localhost";
+            else if (!(flags & NI_NUMERICHOST) && (flags & NI_NAMEREQD)) return EAI_NONAME;
+            if (strlen(name) >= hostlen) return EAI_OVERFLOW;
+            strcpy(host, name);
+        }
+        if (serv && servlen) {
+            char num[8];
+            snprintf(num, sizeof num, "%d", ntohs(in6->sin6_port));
+            if (strlen(num) >= servlen) return EAI_OVERFLOW;
+            strcpy(serv, num);
+        }
+        return 0;
+    }
     if (!sa || salen < sizeof(struct sockaddr_in) || sa->sa_family != AF_INET) return EAI_FAMILY;
     const struct sockaddr_in *in = (const void *)sa;
     if (host && hostlen) {

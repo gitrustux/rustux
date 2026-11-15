@@ -27,6 +27,10 @@
 #include <unistd.h>
 
 static int udp, verbose, zero, keep, listen_mode, quit_on_eof;
+static int family = AF_UNSPEC;  // -4, -6
+static socklen_t addr_len(const struct sockaddr_storage *a) {
+    return a->ss_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+}
 static int timeout_s = -1;
 static const char *src_addr, *src_port;
 
@@ -42,10 +46,10 @@ static void die(const char *what) {
     exit(1);
 }
 
-static int resolve(const char *host, const char *port, int passive, struct sockaddr_in *out) {
+static int resolve(const char *host, const char *port, int passive, struct sockaddr_storage *out) {
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;
+    hints.ai_family = family != AF_UNSPEC ? family : passive && !host ? AF_INET : AF_UNSPEC;
     hints.ai_socktype = udp ? SOCK_DGRAM : SOCK_STREAM;
     hints.ai_flags = passive ? AI_PASSIVE : 0;
     int e = getaddrinfo(host, port, &hints, &res);
@@ -53,16 +57,26 @@ static int resolve(const char *host, const char *port, int passive, struct socka
         fprintf(stderr, "nc: %s%s%s: %s\n", host ? host : "", host ? " " : "", port ? port : "", gai_strerror(e));
         return -1;
     }
-    memcpy(out, res->ai_addr, sizeof *out);
+    memset(out, 0, sizeof *out);
+    memcpy(out, res->ai_addr, res->ai_addrlen);
     freeaddrinfo(res);
     return 0;
 }
 
-static const char *show(const struct sockaddr_in *a) {
+static const char *show(const struct sockaddr_storage *a) {
     static char buf[64];
-    char ip[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &a->sin_addr, ip, sizeof ip);
-    snprintf(buf, sizeof buf, "%s %u", ip, ntohs(a->sin_port));
+    char ip[INET6_ADDRSTRLEN];
+    unsigned port;
+    if (a->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *in6 = (const void *)a;
+        inet_ntop(AF_INET6, in6->sin6_addr.s6_addr, ip, sizeof ip);
+        port = ntohs(in6->sin6_port);
+    } else {
+        const struct sockaddr_in *in = (const void *)a;
+        inet_ntop(AF_INET, &in->sin_addr, ip, sizeof ip);
+        port = ntohs(in->sin_port);
+    }
+    snprintf(buf, sizeof buf, "%s %u", ip, port);
     return buf;
 }
 
@@ -127,23 +141,26 @@ static void transfer(int s) {
 
 static int bind_source(int s) {
     if (!src_addr && !src_port) return 0;
-    struct sockaddr_in a;
+    struct sockaddr_storage a;
     if (resolve(src_addr, src_port ? src_port : "0", 1, &a) < 0) return -1;
-    if (bind(s, (struct sockaddr *)&a, sizeof a) < 0) die("bind");
+    if (bind(s, (struct sockaddr *)&a, addr_len(&a)) < 0) die("bind");
     return 0;
 }
 
 static int connect_one(const char *host, const char *port) {
-    struct sockaddr_in a;
+    struct sockaddr_storage a;
     if (resolve(host, port, 0, &a) < 0) return 1;
-    int s = socket(AF_INET, udp ? SOCK_DGRAM : SOCK_STREAM, 0);
+    int s = socket(a.ss_family, udp ? SOCK_DGRAM : SOCK_STREAM, 0);
     if (s < 0) die("socket");
+    int fam = family;
+    if (family == AF_UNSPEC) family = a.ss_family;  // the source address of the same family
     if (bind_source(s) < 0) return 1;
+    family = fam;
     if (timeout_s > 0 && !udp) {
         struct timeval tv = { timeout_s, 0 };
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     }
-    if (connect(s, (struct sockaddr *)&a, sizeof a) < 0) {
+    if (connect(s, (struct sockaddr *)&a, addr_len(&a)) < 0) {
         if (verbose || !zero) fprintf(stderr, "nc: connect to %s %s (%s) failed: %s\n", host, port, udp ? "udp" : "tcp", strerror(errno));
         close(s);
         return 1;
@@ -155,31 +172,31 @@ static int connect_one(const char *host, const char *port) {
 }
 
 static int listen_on(const char *port) {
-    struct sockaddr_in a;
+    struct sockaddr_storage a;
     if (resolve(src_addr, port, 1, &a) < 0) return 1;
-    int s = socket(AF_INET, udp ? SOCK_DGRAM : SOCK_STREAM, 0);
+    int s = socket(a.ss_family, udp ? SOCK_DGRAM : SOCK_STREAM, 0);
     if (s < 0) die("socket");
     int on = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
-    if (bind(s, (struct sockaddr *)&a, sizeof a) < 0) die("bind");
+    if (bind(s, (struct sockaddr *)&a, addr_len(&a)) < 0) die("bind");
     if (verbose) fprintf(stderr, "Listening on %s\n", show(&a));
     if (udp) {
         // The first datagram says who the peer is
         char buf[65536];
-        struct sockaddr_in from;
+        struct sockaddr_storage from;
         socklen_t fl = sizeof from;
         ssize_t k = recvfrom(s, buf, sizeof buf, 0, (struct sockaddr *)&from, &fl);
         if (k < 0) die("recvfrom");
         if (verbose) fprintf(stderr, "Connection received on %s\n", show(&from));
         write_all(1, buf, (size_t)k);
-        if (connect(s, (struct sockaddr *)&from, sizeof from) < 0) die("connect");
+        if (connect(s, (struct sockaddr *)&from, addr_len(&from)) < 0) die("connect");
         transfer(s);
         close(s);
         return 0;
     }
     if (listen(s, keep ? 8 : 1) < 0) die("listen");
     do {
-        struct sockaddr_in from;
+        struct sockaddr_storage from;
         socklen_t fl = sizeof from;
         int c = accept(s, (struct sockaddr *)&from, &fl);
         if (c < 0) die("accept");
@@ -204,8 +221,8 @@ int main(int argc, char **argv) {
         case 'w': timeout_s = atoi(optarg); break;
         case 's': src_addr = optarg; break;
         case 'p': src_port = optarg; break;
-        case '4': break;
-        case '6': fprintf(stderr, "nc: IPv6 comes later (network step D4)\n"); return 1;
+        case '4': family = AF_INET; break;
+        case '6': family = AF_INET6; break;
         default: usage();
         }
     }

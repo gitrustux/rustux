@@ -164,6 +164,26 @@ fn main() {
             ok &= check("read time-out, non-blocking", timeouts());
             ok &= check("connect_timeout, addresses", connect_timeout());
             ok &= check("udp 127.0.0.1 send_to, recv_from, connect", udp_local());
+            ok &= check("tcp [::1] (IPv6): 300000 bytes, half-close, answer", echo_pair("[::1]:0"));
+            ok &= check("udp [::1] (IPv6)", (|| {
+                let a = UdpSocket::bind("[::1]:0").map_err(s)?;
+                let b = UdpSocket::bind("[::1]:0").map_err(s)?;
+                a.send_to(b"six", b.local_addr().map_err(s)?).map_err(s)?;
+                let mut buf = [0u8; 16];
+                b.set_read_timeout(Some(Duration::from_secs(3))).map_err(s)?;
+                let (n, from) = b.recv_from(&mut buf).map_err(s)?;
+                (&buf[..n] == b"six" && from == a.local_addr().map_err(s)?).then_some(()).ok_or(format!("got {:?} from {from}", &buf[..n]))
+            })());
+            ok &= check("[::] listener: IPv4 and IPv6 clients", (|| {
+                let l = TcpListener::bind("[::]:0").map_err(s)?;
+                let port = l.local_addr().map_err(s)?.port();
+                let _c6 = TcpStream::connect(("::1", port)).map_err(s)?;
+                let (_a, p6) = l.accept().map_err(s)?;
+                let _c4 = TcpStream::connect(("127.0.0.1", port)).map_err(s)?;
+                let (_b, p4) = l.accept().map_err(s)?;
+                let want4 = "::ffff:127.0.0.1";
+                (p6.ip().to_string() == "::1" && p4.ip().to_string() == want4).then_some(()).ok_or(format!("peers {p6} and {p4}"))
+            })());
             ok &= check("localhost:80 resolves", (|| {
                 let v: Vec<SocketAddr> = "localhost:80".to_socket_addrs().map_err(s)?.collect();
                 (v.first().map(|a| a.to_string()) == Some("127.0.0.1:80".into())).then_some(()).ok_or(format!("{v:?}"))

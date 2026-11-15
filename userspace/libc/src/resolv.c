@@ -332,6 +332,36 @@ int __dns_lookup4(const char *name, uint8_t (*addrs)[4], int max, char *canon, s
     return count ? count : EAI_NONAME;
 }
 
+// The AAAA records for name: how many, or an EAI_* error
+int __dns_lookup6(const char *name, uint8_t (*addrs)[16], int max, char *canon, size_t clen) {
+    unsigned char ans[4096];
+    int n = res_search(name, C_IN, T_AAAA, ans, sizeof ans);
+    if (n < 0) return h_errno == HOST_NOT_FOUND || h_errno == NO_DATA ? EAI_NONAME : h_errno == TRY_AGAIN ? EAI_AGAIN : EAI_FAIL;
+    const unsigned char *eom = ans + n, *p = ans + 12;
+    int qd = ans[4] << 8 | ans[5], an = ans[6] << 8 | ans[7];
+    char rname[NS_MAXDNAME];
+    for (int i = 0; i < qd; i++) {
+        int k = dn_expand(ans, eom, p, rname, sizeof rname);
+        if (k < 0) return EAI_FAIL;
+        p += k + 4;
+    }
+    int count = 0;
+    for (int i = 0; i < an && p < eom; i++) {
+        int k = dn_expand(ans, eom, p, rname, sizeof rname);
+        if (k < 0 || p + k + 10 > eom) break;
+        p += k;
+        int type = p[0] << 8 | p[1], rdlen = p[8] << 8 | p[9];
+        p += 10;
+        if (p + rdlen > eom) break;
+        if (type == T_AAAA && rdlen == 16 && count < max) {
+            memcpy(addrs[count++], p, 16);
+            if (canon) snprintf(canon, clen, "%s", rname);
+        }
+        p += rdlen;
+    }
+    return count ? count : EAI_NONAME;
+}
+
 // The name for an IPv4 address (PTR), or -1
 int __dns_reverse4(const uint8_t a[4], char *name, size_t len) {
     char q[64];

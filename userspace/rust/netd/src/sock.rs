@@ -20,7 +20,7 @@ use crate::{log, now, rx, Netd};
 use smoltcp::iface::SocketHandle;
 use smoltcp::socket::{tcp, udp};
 use smoltcp::time::{Duration, Instant};
-use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint, Ipv4Address};
+use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint, Ipv4Address, Ipv6Address};
 
 const OPEN: u32 = 1;
 const BIND: u32 = 2;
@@ -36,6 +36,7 @@ const OPT_KEEPALIVE: u32 = 2;
 const OPT_REUSEADDR: u32 = 3;
 const MSG: usize = 56; // sizeof(rx_netsock_msg_t)
 const AF_INET: u16 = 2;
+const AF_INET6: u16 = 10;
 const MAX_DGRAM: usize = 65000;
 const TCP_BUF: usize = 64 * 1024;
 const CONNECT_TIMEOUT: u64 = 30; // seconds
@@ -69,9 +70,10 @@ pub struct Sock {
     pub id: u64,
     pub ctl: rx::Handle, // 0 once the program has closed it
     stream: bool,
+    v6: bool, // an AF_INET6 socket (IPv4 peers show as ::ffff:a.b.c.d in the library)
     state: State,
-    local: Option<(Ipv4Address, u16)>, // UNSPECIFIED: any address
-    peer: Option<(Ipv4Address, u16)>,
+    local: Option<(IpAddress, u16)>, // UNSPECIFIED: any address
+    peer: Option<(IpAddress, u16)>,
     backlog: usize,
     reuse: bool,
     nodelay: bool,
@@ -94,6 +96,7 @@ fn new_sock(id: u64, ctl: rx::Handle) -> Sock {
         id,
         ctl,
         stream: true,
+        v6: false,
         state: State::New,
         local: None,
         peer: None,
@@ -141,15 +144,23 @@ struct Msg {
     status: i32,
     a: u32,
     b: u32,
-    addr: Option<(Ipv4Address, u16)>,
-    addr2: Option<(Ipv4Address, u16)>,
+    addr: Option<(IpAddress, u16)>,
+    addr2: Option<(IpAddress, u16)>,
 }
 
-fn put_addr(out: &mut [u8], a: Option<(Ipv4Address, u16)>) {
-    if let Some((ip, port)) = a {
-        out[..2].copy_from_slice(&AF_INET.to_le_bytes());
-        out[2..4].copy_from_slice(&port.to_le_bytes());
-        out[4..8].copy_from_slice(&ip.octets());
+fn put_addr(out: &mut [u8], a: Option<(IpAddress, u16)>) {
+    match a {
+        Some((IpAddress::Ipv4(ip), port)) => {
+            out[..2].copy_from_slice(&AF_INET.to_le_bytes());
+            out[2..4].copy_from_slice(&port.to_le_bytes());
+            out[4..8].copy_from_slice(&ip.octets());
+        }
+        Some((IpAddress::Ipv6(ip), port)) => {
+            out[..2].copy_from_slice(&AF_INET6.to_le_bytes());
+            out[2..4].copy_from_slice(&port.to_le_bytes());
+            out[4..20].copy_from_slice(&ip.octets());
+        }
+        None => {}
     }
 }
 
@@ -165,25 +176,40 @@ fn encode(m: &Msg, data: &[u8]) -> Vec<u8> {
     b
 }
 
-fn get_addr(b: &[u8]) -> Result<(Ipv4Address, u16), i32> {
+fn get_addr(b: &[u8]) -> Result<(IpAddress, u16), i32> {
     let fam = u16::from_le_bytes([b[0], b[1]]);
-    if fam != AF_INET {
-        return Err(EAFNOSUPPORT);
+    let port = u16::from_le_bytes([b[2], b[3]]);
+    match fam {
+        AF_INET => Ok((IpAddress::Ipv4(Ipv4Address::new(b[4], b[5], b[6], b[7])), port)),
+        AF_INET6 => {
+            let mut o = [0u8; 16];
+            o.copy_from_slice(&b[4..20]);
+            Ok((IpAddress::Ipv6(Ipv6Address::from_octets(o)), port))
+        }
+        _ => Err(EAFNOSUPPORT),
     }
-    Ok((Ipv4Address::new(b[4], b[5], b[6], b[7]), u16::from_le_bytes([b[2], b[3]])))
+}
+
+/// "any address" of the socket's family
+fn any(v6: bool) -> IpAddress {
+    if v6 {
+        IpAddress::Ipv6(Ipv6Address::UNSPECIFIED)
+    } else {
+        IpAddress::Ipv4(Ipv4Address::UNSPECIFIED)
+    }
 }
 
 fn send(ch: rx::Handle, m: Msg, data: &[u8], handles: &[rx::Handle]) -> bool {
     ch != 0 && rx::channel_write(ch, &encode(&m, data), handles) == rx::OK
 }
 
-fn answer(ch: rx::Handle, op: u32, status: i32, addr: Option<(Ipv4Address, u16)>) {
+fn answer(ch: rx::Handle, op: u32, status: i32, addr: Option<(IpAddress, u16)>) {
     send(ch, Msg { op, status: -status.abs(), a: 0, b: 0, addr, addr2: None }, &[], &[]);
 }
 
 // ---- ports ----
 
-fn port_used(n: &Netd, stream: bool, addr: Ipv4Address, port: u16, except: u64, reuse: bool) -> bool {
+fn port_used(n: &Netd, stream: bool, addr: IpAddress, port: u16, except: u64, reuse: bool) -> bool {
     n.socks.iter().any(|s| {
         if s.id == except || s.stream != stream || s.remove {
             return false;
@@ -201,7 +227,7 @@ fn port_used(n: &Netd, stream: bool, addr: Ipv4Address, port: u16, except: u64, 
     })
 }
 
-fn ephemeral(n: &mut Netd, stream: bool, addr: Ipv4Address) -> Option<u16> {
+fn ephemeral(n: &mut Netd, stream: bool, addr: IpAddress) -> Option<u16> {
     for _ in 0..16384 {
         let p = n.next_port;
         n.next_port = if n.next_port >= 65535 { 49152 } else { n.next_port + 1 };
@@ -225,14 +251,19 @@ fn udp_socket() -> udp::Socket<'static> {
     )
 }
 
-fn listen_endpoint(local: (Ipv4Address, u16)) -> IpListenEndpoint {
-    IpListenEndpoint { addr: if local.0.is_unspecified() { None } else { Some(IpAddress::Ipv4(local.0)) }, port: local.1 }
+fn listen_endpoint(local: (IpAddress, u16)) -> IpListenEndpoint {
+    IpListenEndpoint { addr: if local.0.is_unspecified() { None } else { Some(local.0) }, port: local.1 }
 }
 
 /// Does interface i serve a socket bound to `addr`?
-fn link_serves(n: &Netd, i: usize, addr: Ipv4Address) -> bool {
+fn link_serves(n: &Netd, i: usize, addr: IpAddress) -> bool {
     let l = &n.links[i];
-    addr.is_unspecified() || l.is_lo() && n.is_local(addr) || l.v4().iter().any(|c| c.address() == addr)
+    match addr {
+        _ if addr.is_unspecified() => true,
+        _ if l.is_lo() => n.is_local(addr),
+        IpAddress::Ipv4(a) => l.v4().iter().any(|c| c.address() == a),
+        IpAddress::Ipv6(a) => l.v6().iter().any(|c| c.address() == a),
+    }
 }
 
 // A listener's smoltcp sockets on interface i (its backlog)
@@ -414,6 +445,7 @@ fn request(n: &mut Netd, si: usize, who: &rx::Sender, m: Msg, fam_ok: bool, data
                 2 => s.stream = false,
                 _ => return answer(ctl, OPEN, EINVAL, None),
             }
+            s.v6 = m.b == AF_INET6 as u32;
             s.state = State::Open;
             answer(ctl, OPEN, 0, None);
         }
@@ -432,7 +464,7 @@ fn request(n: &mut Netd, si: usize, who: &rx::Sender, m: Msg, fam_ok: bool, data
                 return answer(ctl, LISTEN, if stream { EINVAL } else { EOPNOTSUPP }, None);
             }
             if state == State::Open {
-                if let Err(e) = bind(n, si, who, Ipv4Address::UNSPECIFIED, 0) {
+                if let Err(e) = bind(n, si, who, any(n.socks[si].v6), 0) {
                     return answer(ctl, LISTEN, e, None);
                 }
             }
@@ -488,7 +520,7 @@ fn request(n: &mut Netd, si: usize, who: &rx::Sender, m: Msg, fam_ok: bool, data
                     return answer(ctl, CONNECT, ENETUNREACH, None);
                 }
                 if n.socks[si].local.is_none() {
-                    if let Err(e) = bind(n, si, who, Ipv4Address::UNSPECIFIED, 0) {
+                    if let Err(e) = bind(n, si, who, any(n.socks[si].v6), 0) {
                         return answer(ctl, CONNECT, e, None);
                     }
                 }
@@ -513,7 +545,7 @@ fn request(n: &mut Netd, si: usize, who: &rx::Sender, m: Msg, fam_ok: bool, data
                     None => return,
                 },
             };
-            if n.socks[si].local.is_none() && bind(n, si, who, Ipv4Address::UNSPECIFIED, 0).is_err() {
+            if n.socks[si].local.is_none() && bind(n, si, who, any(n.socks[si].v6), 0).is_err() {
                 return;
             }
             send_udp(n, si, dst, &data);
@@ -545,7 +577,10 @@ fn request(n: &mut Netd, si: usize, who: &rx::Sender, m: Msg, fam_ok: bool, data
     }
 }
 
-fn bind(n: &mut Netd, si: usize, who: &rx::Sender, addr: Ipv4Address, port: u16) -> Result<(Ipv4Address, u16), i32> {
+fn bind(n: &mut Netd, si: usize, who: &rx::Sender, addr: IpAddress, port: u16) -> Result<(IpAddress, u16), i32> {
+    if !n.socks[si].v6 && matches!(addr, IpAddress::Ipv6(_)) {
+        return Err(EAFNOSUPPORT);
+    }
     if !addr.is_unspecified() && !n.is_local(addr) {
         return Err(EADDRNOTAVAIL);
     }
@@ -576,9 +611,12 @@ fn bind(n: &mut Netd, si: usize, who: &rx::Sender, addr: Ipv4Address, port: u16)
     Ok((addr, port))
 }
 
-fn connect_tcp(n: &mut Netd, si: usize, who: &rx::Sender, addr: Ipv4Address, port: u16, data: rx::Handle) -> Result<(), i32> {
+fn connect_tcp(n: &mut Netd, si: usize, who: &rx::Sender, addr: IpAddress, port: u16, data: rx::Handle) -> Result<(), i32> {
     if port == 0 || addr.is_unspecified() {
         return Err(EADDRNOTAVAIL);
+    }
+    if !n.socks[si].v6 && matches!(addr, IpAddress::Ipv6(_)) {
+        return Err(EAFNOSUPPORT);
     }
     let (i, mut src) = n.route(addr).ok_or(ENETUNREACH)?;
     if !n.links[i].usable() {
@@ -586,7 +624,7 @@ fn connect_tcp(n: &mut Netd, si: usize, who: &rx::Sender, addr: Ipv4Address, por
     }
     let local = match n.socks[si].local {
         Some(l) => l,
-        None => bind(n, si, who, Ipv4Address::UNSPECIFIED, 0)?,
+        None => bind(n, si, who, any(n.socks[si].v6), 0)?,
     };
     if !local.0.is_unspecified() {
         src = local.0;
@@ -596,7 +634,7 @@ fn connect_tcp(n: &mut Netd, si: usize, who: &rx::Sender, addr: Ipv4Address, por
     t.set_nagle_enabled(!s.nodelay);
     t.set_keep_alive(s.keepalive.then(|| Duration::from_secs(75)));
     let l = &mut n.links[i];
-    t.connect(l.iface.context(), IpEndpoint::new(IpAddress::Ipv4(addr), port), IpListenEndpoint { addr: Some(IpAddress::Ipv4(src)), port: local.1 })
+    t.connect(l.iface.context(), IpEndpoint::new(addr, port), IpListenEndpoint { addr: Some(src), port: local.1 })
         .map_err(|_| EADDRNOTAVAIL)?;
     let h = l.sockets.add(t);
     let link = l.id;
@@ -611,7 +649,7 @@ fn connect_tcp(n: &mut Netd, si: usize, who: &rx::Sender, addr: Ipv4Address, por
     Ok(())
 }
 
-fn send_udp(n: &mut Netd, si: usize, dst: (Ipv4Address, u16), data: &[u8]) {
+fn send_udp(n: &mut Netd, si: usize, dst: (IpAddress, u16), data: &[u8]) {
     let Some((i, src)) = n.route(dst.0) else { return };
     let local = n.socks[si].local.unwrap();
     let src = if local.0.is_unspecified() { src } else { local.0 };
@@ -622,8 +660,8 @@ fn send_udp(n: &mut Netd, si: usize, dst: (Ipv4Address, u16), data: &[u8]) {
     let Some(&(_, h)) = n.socks[si].per_link.iter().find(|(l, _)| *l == id) else { return };
     let u = n.links[i].sockets.get_mut::<udp::Socket>(h);
     let meta = udp::UdpMetadata {
-        endpoint: IpEndpoint::new(IpAddress::Ipv4(dst.0), dst.1),
-        local_address: Some(IpAddress::Ipv4(src)),
+        endpoint: IpEndpoint::new(dst.0, dst.1),
+        local_address: Some(src),
         meta: Default::default(),
     };
     let _ = u.send_slice(data, meta); // full: dropped, as UDP may
@@ -700,20 +738,21 @@ fn accept(n: &mut Netd, si: usize) -> bool {
         let local = t.local_endpoint();
         let lst = n.socks[si].ctl;
         n.socks[si].per_link.remove(k);
+        if !n.socks[si].v6 && matches!(peer, Some(IpEndpoint { addr: IpAddress::Ipv6(_), .. })) {
+            // An IPv6 connection to an IPv4 socket's port (smoltcp listened
+            // on both): refused
+            n.links[i].sockets.get_mut::<tcp::Socket>(h).abort();
+            add_listeners(n, si, i);
+            continue;
+        }
         let pair = rx::socket_create();
         let chans = rx::channel_create();
         let (Some((data_ours, data_theirs)), Some((ctl_ours, ctl_theirs))) = (pair, chans) else {
             n.links[i].sockets.get_mut::<tcp::Socket>(h).abort();
             continue;
         };
-        let v4 = |e: Option<IpEndpoint>| {
-            e.and_then(|e| match e.addr {
-                IpAddress::Ipv4(a) => Some((a, e.port)),
-                #[allow(unreachable_patterns)]
-                _ => None,
-            })
-        };
-        let (peer, local) = (v4(peer), v4(local));
+        let ep = |e: Option<IpEndpoint>| e.map(|e| (e.addr, e.port));
+        let (peer, local) = (ep(peer), ep(local));
         let msg = Msg { op: ACCEPTED, status: 0, a: 0, b: 0, addr: peer, addr2: local };
         if !send(lst, msg, &[], &[data_theirs, ctl_theirs]) {
             // Nobody to take it (the program's queue is full): refuse it
@@ -875,17 +914,17 @@ fn datagrams(n: &mut Netd, si: usize) -> bool {
         let u = n.links[i].sockets.get_mut::<udp::Socket>(h);
         while u.can_recv() {
             let Ok((payload, meta)) = u.recv() else { break };
-            let IpAddress::Ipv4(from) = meta.endpoint.addr else { continue };
+            let from = meta.endpoint.addr;
+            if !n.socks[si].v6 && matches!(from, IpAddress::Ipv6(_)) {
+                continue; // an IPv4 socket gets IPv4 datagrams only
+            }
             // A connected UDP socket takes its peer's datagrams only
             if let Some((pa, pp)) = peer {
                 if pa != from || pp != meta.endpoint.port {
                     continue;
                 }
             }
-            let to = match meta.local_address {
-                Some(IpAddress::Ipv4(a)) => Some((a, 0)),
-                _ => None,
-            };
+            let to = meta.local_address.map(|a| (a, 0));
             send(ctl, Msg { op: DGRAM, status: 0, a: 0, b: 0, addr: Some((from, meta.endpoint.port)), addr2: to }, payload, &[]);
             busy = true;
         }
@@ -896,7 +935,8 @@ fn datagrams(n: &mut Netd, si: usize) -> bool {
 /// The `sockets` request (`ss`): PROTO STATE LOCAL PEER QUEUES
 pub fn list(n: &Netd) -> String {
     let mut out = String::new();
-    let ep = |e: Option<(Ipv4Address, u16)>| match e {
+    let ep = |e: Option<(IpAddress, u16)>| match e {
+        Some((IpAddress::Ipv6(a), p)) => format!("[{a}]:{p}"),
         Some((a, p)) => format!("{}:{}", if a.is_unspecified() { "0.0.0.0".to_string() } else { a.to_string() }, p),
         None => "*:*".into(),
     };

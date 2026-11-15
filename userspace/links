@@ -111,3 +111,4 @@ groups coreutils
 systemctl svc
 journalctl logs
 nslookup host
+ping6 ping

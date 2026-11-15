@@ -25,7 +25,7 @@
 #include <string.h>
 
 static const char *prog = "ip";
-static int stats, brief;
+static int stats, brief, fam;  // fam: 4 (-4), 6 (-6) or 0 (both)
 
 static int is(const char *word, const char *full) {
     size_t n = strlen(word);
@@ -34,7 +34,7 @@ static int is(const char *word, const char *full) {
 
 static void usage(void) {
     fprintf(stderr,
-            "usage: ip [-s] [-br] link [show [IF]] | link set IF up|down\n"
+            "usage: ip [-4|-6] [-s] [-br] link [show [IF]] | link set IF up|down\n"
             "       ip [-br] addr [show [dev] IF] | addr add|del ADDRESS/PREFIX dev IF\n"
             "       ip route [show] | route add default via GATEWAY | route del default\n");
     exit(1);
@@ -153,8 +153,11 @@ static void addr_show(const char *only) {
         int lo = !strcmp(l->name, "lo");
         if (brief) {
             printf("%-16s %-14s", l->name, upper_state(l));
-            for (int k = 0; k < na; k++)
+            for (int k = 0; k < na; k++) {
+                int v6 = strchr(addrs[k][1], ':') != 0;
+                if ((fam == 4 && v6) || (fam == 6 && !v6)) continue;
                 if (!strcmp(addrs[k][0], l->name)) printf(" %s", addrs[k][1]);
+            }
             printf("\n");
             continue;
         }
@@ -162,7 +165,10 @@ static void addr_show(const char *only) {
         for (int k = 0; k < na; k++) {
             if (strcmp(addrs[k][0], l->name)) continue;
             int v6 = strchr(addrs[k][1], ':') != 0;
-            printf("    %s %s scope %s %s%s\n", v6 ? "inet6" : "inet", addrs[k][1], lo ? "host" : "global", left[k] ? "dynamic " : "", l->name);
+            if ((fam == 4 && v6) || (fam == 6 && !v6)) continue;
+            const char *scope = lo ? "host" : v6 && !strncmp(addrs[k][1], "fe80:", 5) ? "link" : "global";
+            if (v6) printf("    inet6 %s scope %s %s\n", addrs[k][1], scope, left[k] ? "dynamic " : "");
+            else printf("    inet %s scope %s %s%s\n", addrs[k][1], scope, left[k] ? "dynamic " : "", l->name);
             if (left[k]) printf("       valid_lft %s%s\n", left[k], strcmp(left[k], "forever") ? "sec" : "");
         }
     }
@@ -173,8 +179,9 @@ int main(int argc, char **argv) {
     for (; i < argc && argv[i][0] == '-'; i++) {
         if (!strcmp(argv[i], "-s") || !strcmp(argv[i], "-stats")) stats = 1;
         else if (!strcmp(argv[i], "-br") || !strcmp(argv[i], "-brief")) brief = 1;
-        else if (!strcmp(argv[i], "-4")) {
-        } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help") || !strcmp(argv[i], "-help")) {
+        else if (!strcmp(argv[i], "-4")) fam = 4;
+        else if (!strcmp(argv[i], "-6")) fam = 6;
+        else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help") || !strcmp(argv[i], "-help")) {
             usage();
         } else {
             fprintf(stderr, "%s: unknown option %s\n", prog, argv[i]);
@@ -211,15 +218,27 @@ int main(int argc, char **argv) {
         }
     } else if (is(obj, "route")) {
         if (is(cmd, "show") || is(cmd, "list")) {
+            // IPv4's by default, IPv6's with -6, as iproute2
             char *text = net_request(prog, "routes");
-            char *ok = strstr(text, "ok\n");
-            if (ok) *ok = 0;
-            fputs(text, stdout);
+            for (char *line = strtok(text, "\n"); line; line = strtok(0, "\n")) {
+                if (!strcmp(line, "ok")) break;
+                char first[64] = "";
+                {
+                    const char *p = line;
+                    if (!strncmp(p, "default via ", 12)) p += 12;
+                    size_t k = 0;
+                    while (p[k] && p[k] != ' ' && k < sizeof first - 1) first[k] = p[k], k++;
+                    first[k] = 0;
+                }
+                int v6 = strchr(first, ':') != 0;
+                if (v6 != (fam == 6)) continue;
+                puts(line);
+            }
         } else if (!strcmp(cmd, "add") && argc - i == 3 && !strcmp(argv[i], "default") && !strcmp(argv[i + 1], "via")) {
-            snprintf(req, sizeof req, "route add default via %s", argv[i + 2]);
+            snprintf(req, sizeof req, "%s add default via %s", strchr(argv[i + 2], ':') || fam == 6 ? "route6" : "route", argv[i + 2]);
             net_request(prog, req);
         } else if (is(cmd, "delete") && i < argc && !strcmp(argv[i], "default")) {
-            net_request(prog, "route del default");
+            net_request(prog, fam == 6 ? "route6 del default" : "route del default");
         } else {
             usage();
         }

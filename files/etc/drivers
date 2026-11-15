@@ -27,3 +27,47 @@ usb=08:06:50    /bin/usb-storage
 # virtio-net (NETWORK.md step D1): frames to and from netd
 1af4:1000   /bin/virtio-net
 1af4:1041   /bin/virtio-net
+#
+# e1000e (NETWORK.md step D4): Intel 82574L (QEMU's -device e1000e), and the
+# I217/I218/I219 of laptops (written from the same registers; not yet tested
+# on hardware)
+8086:10d3   /bin/e1000e
+8086:153a   /bin/e1000e
+8086:153b   /bin/e1000e
+8086:155a   /bin/e1000e
+8086:1559   /bin/e1000e
+8086:15a0   /bin/e1000e
+8086:15a1   /bin/e1000e
+8086:15a2   /bin/e1000e
+8086:15a3   /bin/e1000e
+8086:156f   /bin/e1000e
+8086:1570   /bin/e1000e
+8086:15b7   /bin/e1000e
+8086:15b8   /bin/e1000e
+8086:15b9   /bin/e1000e
+8086:15bb   /bin/e1000e
+8086:15bc   /bin/e1000e
+8086:15bd   /bin/e1000e
+8086:15be   /bin/e1000e
+8086:15d6   /bin/e1000e
+8086:15d7   /bin/e1000e
+8086:15d8   /bin/e1000e
+8086:15e3   /bin/e1000e
+8086:0d4c   /bin/e1000e
+8086:0d4d   /bin/e1000e
+8086:0d4e   /bin/e1000e
+8086:0d4f   /bin/e1000e
+8086:0d53   /bin/e1000e
+8086:0d55   /bin/e1000e
+8086:15f9   /bin/e1000e
+8086:15fa   /bin/e1000e
+8086:15fb   /bin/e1000e
+8086:15fc   /bin/e1000e
+8086:1a1c   /bin/e1000e
+8086:1a1d   /bin/e1000e
+8086:1a1e   /bin/e1000e
+8086:1a1f   /bin/e1000e
+8086:0dc5   /bin/e1000e
+8086:0dc6   /bin/e1000e
+8086:0dc7   /bin/e1000e
+8086:0dc8   /bin/e1000e

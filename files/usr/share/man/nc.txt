@@ -19,8 +19,10 @@ USAGE
                 standard input, end when nothing has come for this long
     -s ADDRESS  the local address to use
     -p PORT     the local port (with -l: the port to listen on)
+    -4, -6      IPv4 or IPv6 only (nc -l listens on IPv4 unless -6;
+                nc -6 -l takes both)
 
-    HOST is an IPv4 address or a name (/etc/hosts, then DNS). Ports below 1024 are root's to listen on.
+    HOST is an IPv4 or IPv6 address or a name (/etc/hosts, then DNS). Ports below 1024 are root's to listen on.
 
 EXAMPLES
     nc -l 8080 > received.txt             wait for a file

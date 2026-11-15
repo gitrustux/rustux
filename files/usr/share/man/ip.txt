@@ -1,7 +1,7 @@
 ip - show and change network interfaces, addresses and routes
 
 USAGE
-    ip [-s] [-br] link [show [IF]]
+    ip [-4|-6] [-s] [-br] link [show [IF]]
     ip link set IF up|down
     ip [-br] addr [show [dev] IF]
     ip addr add|del ADDRESS/PREFIX dev IF
@@ -14,6 +14,13 @@ USAGE
 
     -s       link: packet and byte counters
     -br      one line per interface: name, state, MAC or addresses
+    -4, -6   IPv4 or IPv6 only (ip route shows IPv4's routes without
+             -6, IPv6's with it)
+
+    IPv6: each card has its link-local address (fe80::, scope link) and
+    the addresses and default route routers advertise (SLAAC: dynamic,
+    proto ra). ip addr add takes IPv6 addresses (fd00::1/64);
+    ip -6 route add default via ADDRESS sets an IPv6 default route.
 
     Interfaces are named eth0, eth1, ... in PCI order (lspci). lo is the
     loopback interface (127.0.0.1).

@@ -365,7 +365,13 @@ TCP) answers `host`, `nslookup`, a short name with the search domain,
 `ping` and `nettest` by name; `curl` over HTTP (by name, `-o`, `-w`, a
 redirect with and without `-L`, `-I`, `-f` 22, `-d`) and HTTPS with a
 test CA made by openssl: refused (60) without `--cacert`, the page with
-it, `-k`; a name that does not resolve is 6.
+it, `-k`; a name that does not resolve is 6. Real cards and IPv6 (step
+D4): a third card, an e1000e on a second user-mode network
+(10.0.5.0/24, fd05::/64), is eth2 with its DHCP lease, and ping and curl
+go through it; IPv6 link-local and SLAAC addresses and the routers'
+default routes (`ip -6`), `ping -6` to both routers and ::1, an address
+added by hand, `nc -6`; `nettest local` checks IPv6 TCP and UDP and a
+dual-stack `[::]` listener.
 
 ## Run in QEMU
 

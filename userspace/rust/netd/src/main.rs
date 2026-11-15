@@ -28,7 +28,10 @@ use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::{dhcpv4, icmp};
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress, Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr};
+use smoltcp::wire::{
+    EthernetAddress, HardwareAddress, Icmpv4Packet, Icmpv4Repr, Icmpv6Packet, Icmpv6Repr, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr,
+    Ipv6Address, Ipv6Cidr,
+};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::str::FromStr;
@@ -151,6 +154,10 @@ pub struct Link {
     dhcp_router: bool,
     pub dns: Vec<Ipv4Address>,
     lease: Option<(Instant, u32)>,
+    // IPv6 (step D4): addresses given with `ip`, and an IPv6 default
+    // route set by hand (SLAAC's come from router advertisements)
+    static6: Vec<Ipv6Cidr>,
+    gateway6: Option<Ipv6Address>,
 }
 
 impl Link {
@@ -171,6 +178,40 @@ impl Link {
             .collect()
     }
 
+    /// Its IPv6 addresses (lo: ::1)
+    pub fn v6(&self) -> Vec<Ipv6Cidr> {
+        if self.is_lo() {
+            return vec![Ipv6Cidr::new(Ipv6Address::LOCALHOST, 128)];
+        }
+        self.iface
+            .ip_addrs()
+            .iter()
+            .filter_map(|c| if let IpCidr::Ipv6(c) = c { Some(*c) } else { None })
+            .collect()
+    }
+
+    pub fn link_local(&self) -> Option<Ipv6Address> {
+        self.v6().iter().map(|c| c.address()).find(|a| a.is_unicast_link_local())
+    }
+
+    /// The IPv6 default route: SLAAC's (from a router advertisement) or ours
+    pub fn default6(&mut self) -> Option<(Ipv6Address, bool)> {
+        if let Some(g) = self.gateway6 {
+            return Some((g, false));
+        }
+        let mut r = None;
+        self.iface.routes_mut().update(|v| {
+            for x in v.iter() {
+                if let (IpCidr::Ipv6(c), IpAddress::Ipv6(g)) = (x.cidr, x.via_router) {
+                    if c.prefix_len() == 0 {
+                        r = Some((g, true));
+                    }
+                }
+            }
+        });
+        r
+    }
+
     pub fn usable(&self) -> bool {
         self.admin_up && (self.carrier || self.is_lo())
     }
@@ -186,7 +227,7 @@ fn configure(link: &mut Link) {
         if w.len() < 2 || w[0] != link.name {
             continue;
         }
-        found = true;
+        found |= w[1] != "static6";
         match w[1] {
             "static" => {
                 if let Some(c) = w.get(2).and_then(|s| Ipv4Cidr::from_str(s).ok()) {
@@ -201,6 +242,21 @@ fn configure(link: &mut Link) {
                         log(&format!("{}: default route via {}", link.name, g));
                     }
                 }
+            }
+            "static6" => {
+                if let Some(c) = w.get(2).and_then(|s| Ipv6Cidr::from_str(s).ok()) {
+                    link.iface.update_ip_addrs(|a| {
+                        let _ = a.push(IpCidr::Ipv6(c));
+                    });
+                    link.static6.push(c);
+                    log(&format!("{}: address {}", link.name, c));
+                }
+                if let Some(g) = w.get(3).and_then(|s| Ipv6Address::from_str(s).ok()) {
+                    if link.iface.routes_mut().add_default_ipv6_route(g).is_ok() {
+                        link.gateway6 = Some(g);
+                    }
+                }
+                // IPv4 still gets DHCP unless the card has a line for it too
             }
             "dhcp" => start_dhcp(link),
             "off" | "manual" => log(&format!("{}: not configured (/etc/network.conf)", link.name)),
@@ -250,7 +306,24 @@ fn new_link(id: u32, name: String, ch: rx::Handle, hello: &[u8]) -> Link {
     let mut dev = ChanDev { ch, lo: false, rxq: VecDeque::new(), rx_frames: 0, tx_frames: 0, rx_bytes: 0, tx_bytes: 0, up: true };
     let mut config = Config::new(HardwareAddress::Ethernet(EthernetAddress(mac)));
     config.random_seed = rx::monotonic() ^ (u64::from_le_bytes([mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], 0, 0]));
-    let iface = Interface::new(config, &mut dev, now());
+    // SLAAC: addresses and the default route from router advertisements
+    config.slaac = true;
+    let mut iface = Interface::new(config, &mut dev, now());
+    // The link-local address, fe80::/64 with the EUI-64 of the MAC address
+    let eui = [mac[0] ^ 2, mac[1], mac[2], 0xff, 0xfe, mac[3], mac[4], mac[5]];
+    let ll = Ipv6Address::new(
+        0xfe80,
+        0,
+        0,
+        0,
+        u16::from_be_bytes([eui[0], eui[1]]),
+        u16::from_be_bytes([eui[2], eui[3]]),
+        u16::from_be_bytes([eui[4], eui[5]]),
+        u16::from_be_bytes([eui[6], eui[7]]),
+    );
+    iface.update_ip_addrs(|a| {
+        let _ = a.push(IpCidr::Ipv6(Ipv6Cidr::new(ll, 64)));
+    });
     let mut sockets = SocketSet::new(vec![]);
     let icmp = icmp_socket(&mut sockets);
     let mut l = Link {
@@ -270,6 +343,8 @@ fn new_link(id: u32, name: String, ch: rx::Handle, hello: &[u8]) -> Link {
         dhcp_router: false,
         dns: Vec::new(),
         lease: None,
+        static6: Vec::new(),
+        gateway6: None,
     };
     configure(&mut l);
     l
@@ -299,6 +374,8 @@ fn new_lo() -> Link {
         dhcp_router: false,
         dns: Vec::new(),
         lease: None,
+        static6: Vec::new(),
+        gateway6: None,
     }
 }
 
@@ -339,9 +416,16 @@ impl Netd {
         self.links.iter().position(|l| l.id == id)
     }
 
-    /// Is `a` this computer's (127/8 or an interface's address)?
-    pub fn is_local(&self, a: Ipv4Address) -> bool {
+    /// Is `a` this computer's (127/8, ::1 or an interface's address)?
+    pub fn is_local4(&self, a: Ipv4Address) -> bool {
         a.octets()[0] == 127 || self.links.iter().any(|l| !l.is_lo() && l.v4().iter().any(|c| c.address() == a))
+    }
+
+    pub fn is_local(&self, a: IpAddress) -> bool {
+        match a {
+            IpAddress::Ipv4(a) => self.is_local4(a),
+            IpAddress::Ipv6(a) => a.is_loopback() || self.links.iter().any(|l| !l.is_lo() && l.v6().iter().any(|c| c.address() == a)),
+        }
     }
 
     // The interface (not lo) for an address: the one whose subnet holds
@@ -359,8 +443,49 @@ impl Netd {
     }
 
     /// Where a packet to `dst` goes: the interface and the source address
-    pub fn route(&self, dst: Ipv4Address) -> Option<(usize, Ipv4Address)> {
-        if self.is_local(dst) {
+    pub fn route(&mut self, dst: IpAddress) -> Option<(usize, IpAddress)> {
+        match dst {
+            IpAddress::Ipv4(d) => self.route4(d).map(|(i, s)| (i, IpAddress::Ipv4(s))),
+            IpAddress::Ipv6(d) => self.route6(d).map(|(i, s)| (i, IpAddress::Ipv6(s))),
+        }
+    }
+
+    // IPv6: this computer's addresses through lo; link-local ones on the
+    // first card up; else the card whose prefix holds it, else the one
+    // with an IPv6 default route; the source: a global address of that
+    // card (link-local for link-local destinations)
+    fn route6(&mut self, dst: Ipv6Address) -> Option<(usize, Ipv6Address)> {
+        if self.is_local(IpAddress::Ipv6(dst)) {
+            let lo = self.link_index(LO_ID)?;
+            return Some((lo, if dst.is_loopback() { Ipv6Address::LOCALHOST } else { dst }));
+        }
+        if dst.is_unicast_link_local() || dst.is_multicast() {
+            let i = self.links.iter().position(|l| !l.is_lo() && l.usable() && l.link_local().is_some())?;
+            return Some((i, self.links[i].link_local()?));
+        }
+        let global = |l: &Link| l.v6().iter().map(|c| c.address()).find(|a| !a.is_unicast_link_local());
+        let mut pick = None;
+        for (i, l) in self.links.iter().enumerate() {
+            if !l.is_lo() && l.v6().iter().any(|c| !c.address().is_unicast_link_local() && c.contains_addr(&dst)) {
+                pick = Some(i);
+                break;
+            }
+        }
+        if pick.is_none() {
+            for i in 0..self.links.len() {
+                if !self.links[i].is_lo() && self.links[i].default6().is_some() && global(&self.links[i]).is_some() {
+                    pick = Some(i);
+                    break;
+                }
+            }
+        }
+        let i = pick?;
+        let src = self.links[i].v6().iter().map(|c| c.address()).find(|a| !a.is_unicast_link_local() && Ipv6Cidr::new(*a, 64).contains_addr(&dst)).or(global(&self.links[i]))?;
+        Some((i, src))
+    }
+
+    pub fn route4(&self, dst: Ipv4Address) -> Option<(usize, Ipv4Address)> {
+        if self.is_local4(dst) {
             let lo = self.link_index(LO_ID)?;
             let src = if dst.octets()[0] == 127 { Ipv4Address::new(127, 0, 0, 1) } else { dst };
             return Some((lo, src));
@@ -373,7 +498,7 @@ impl Netd {
 
     /// lo carries every interface's addresses too (/32), so traffic to
     /// them stays inside
-    fn sync_lo(&mut self) {
+    pub fn sync_lo(&mut self) {
         let mut all: Vec<Ipv4Address> = Vec::new();
         for l in &self.links {
             if !l.is_lo() {
@@ -384,12 +509,27 @@ impl Netd {
                 }
             }
         }
+        let mut all6: Vec<Ipv6Address> = Vec::new();
+        for l in &self.links {
+            if !l.is_lo() {
+                for c in l.v6() {
+                    if !c.address().is_unicast_link_local() && !all6.contains(&c.address()) {
+                        all6.push(c.address());
+                    }
+                }
+            }
+        }
+        let mut want: Vec<IpCidr> = vec![IpCidr::Ipv4(Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8)), IpCidr::Ipv6(Ipv6Cidr::new(Ipv6Address::LOCALHOST, 128))];
+        want.extend(all.iter().map(|x| IpCidr::Ipv4(Ipv4Cidr::new(*x, 32))));
+        want.extend(all6.iter().map(|x| IpCidr::Ipv6(Ipv6Cidr::new(*x, 128))));
         if let Some(i) = self.link_index(LO_ID) {
+            if self.links[i].iface.ip_addrs() == &want[..want.len().min(16)] {
+                return;
+            }
             self.links[i].iface.update_ip_addrs(|a| {
                 a.clear();
-                let _ = a.push(IpCidr::Ipv4(Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 1), 8)));
-                for x in &all {
-                    let _ = a.push(IpCidr::Ipv4(Ipv4Cidr::new(*x, 32)));
+                for x in want.iter().take(16) {
+                    let _ = a.push(*x);
                 }
             });
         }
@@ -463,9 +603,22 @@ impl Netd {
                                 out.push_str(&format!("{} {}\n", l.name, c));
                             }
                         }
+                        for c in l.v6() {
+                            if l.is_lo() || c.address().is_unicast_link_local() || l.static6.contains(&c) {
+                                out.push_str(&format!("{} {}\n", l.name, c));
+                            } else {
+                                out.push_str(&format!("{} {} dynamic forever\n", l.name, c)); // SLAAC
+                            }
+                        }
                     }
                 }
                 ["routes"] => {
+                    let mut d6: Vec<(String, Ipv6Address, bool)> = Vec::new();
+                    for l in self.links.iter_mut() {
+                        if let Some((g, ra)) = l.default6() {
+                            d6.push((l.name.clone(), g, ra));
+                        }
+                    }
                     for l in self.sorted() {
                         if l.is_lo() {
                             continue;
@@ -475,6 +628,21 @@ impl Netd {
                         }
                         for c in l.v4() {
                             out.push_str(&format!("{} dev {} src {}\n", c.network(), l.name, c.address()));
+                        }
+                        for (n, g, ra) in &d6 {
+                            if *n == l.name {
+                                out.push_str(&format!("default via {} dev {}{}\n", g, l.name, if *ra { " proto ra" } else { "" }));
+                            }
+                        }
+                        for c in l.v6() {
+                            let net = Ipv6Cidr::new(c.address(), c.prefix_len());
+                            let mut b = net.address().octets();
+                            let p = c.prefix_len() as usize;
+                            for (k, x) in b.iter_mut().enumerate() {
+                                let bits = (p.saturating_sub(k * 8)).min(8);
+                                *x &= if bits == 0 { 0 } else { 0xffu8 << (8 - bits) };
+                            }
+                            out.push_str(&format!("{}/{} dev {} src {}\n", Ipv6Address::from_octets(b), p, l.name, c.address()));
                         }
                     }
                 }
@@ -490,21 +658,27 @@ impl Netd {
                     if !root {
                         return Err("only root changes addresses".into());
                     }
-                    let c = Ipv4Cidr::from_str(cidr).map_err(|_| format!("{cidr}: not an address/prefix"))?;
+                    let c = IpCidr::from_str(cidr)
+                        .ok()
+                        .filter(|c| match c {
+                            IpCidr::Ipv4(x) => x.prefix_len() <= 32,
+                            IpCidr::Ipv6(x) => x.prefix_len() <= 128,
+                        })
+                        .ok_or(format!("{cidr}: not an address/prefix"))?;
                     let i = self.link_by_name(ifname).ok_or(format!("{ifname}: no such interface"))?;
                     if self.links[i].is_lo() {
-                        return Err("lo has 127.0.0.1/8 only".into());
+                        return Err("lo has 127.0.0.1/8 and ::1 only".into());
                     }
                     let l = &mut self.links[i];
                     let mut err = None;
                     l.iface.update_ip_addrs(|a| {
                         if *op == "add" {
-                            if a.iter().any(|x| *x == IpCidr::Ipv4(c)) {
+                            if a.iter().any(|x| *x == c) {
                                 err = Some("the address is there already".to_string());
-                            } else if a.push(IpCidr::Ipv4(c)).is_err() {
+                            } else if a.push(c).is_err() {
                                 err = Some("too many addresses".to_string());
                             }
-                        } else if let Some(p) = a.iter().position(|x| *x == IpCidr::Ipv4(c)) {
+                        } else if let Some(p) = a.iter().position(|x| *x == c) {
                             a.remove(p);
                         } else {
                             err = Some("no such address".to_string());
@@ -512,6 +686,13 @@ impl Netd {
                     });
                     if let Some(e) = err {
                         return Err(e);
+                    }
+                    if let IpCidr::Ipv6(c6) = c {
+                        if *op == "add" {
+                            l.static6.push(c6);
+                        } else {
+                            l.static6.retain(|x| *x != c6);
+                        }
                     }
                     addrs_changed = true;
                     log(&format!("{}: address {} {}", l.name, if *op == "add" { "added" } else { "removed" }, c));
@@ -535,6 +716,42 @@ impl Netd {
                     l.iface.routes_mut().add_default_ipv4_route(g).map_err(|_| "too many routes".to_string())?;
                     l.gateway = Some(g);
                     log(&format!("{}: default route via {}", l.name, g));
+                }
+                ["route6", "add", "default", "via", gw] => {
+                    if !root {
+                        return Err("only root changes routes".into());
+                    }
+                    let g = Ipv6Address::from_str(gw).map_err(|_| format!("{gw}: not an IPv6 address"))?;
+                    let i = self
+                        .links
+                        .iter()
+                        .position(|l| !l.is_lo() && (g.is_unicast_link_local() && l.link_local().is_some() || l.v6().iter().any(|c| c.contains_addr(&g))))
+                        .ok_or("no interface reaches it")?;
+                    for l in self.links.iter_mut() {
+                        if l.gateway6.take().is_some() {
+                            l.iface.routes_mut().remove_default_ipv6_route();
+                        }
+                    }
+                    let l = &mut self.links[i];
+                    l.iface.routes_mut().add_default_ipv6_route(g).map_err(|_| "too many routes".to_string())?;
+                    l.gateway6 = Some(g);
+                    log(&format!("{}: IPv6 default route via {}", l.name, g));
+                }
+                ["route6", "del", "default", ..] => {
+                    if !root {
+                        return Err("only root changes routes".into());
+                    }
+                    let mut any = false;
+                    for l in self.links.iter_mut() {
+                        if l.default6().is_some() {
+                            l.gateway6 = None;
+                            l.iface.routes_mut().remove_default_ipv6_route();
+                            any = true;
+                        }
+                    }
+                    if !any {
+                        return Err("there is no IPv6 default route".into());
+                    }
                 }
                 ["route", "del", "default", ..] => {
                     if !root {
@@ -562,11 +779,11 @@ impl Netd {
                     log(&format!("{}: {}", l.name, state));
                 }
                 ["ping", addr, seq, timeout, size] => {
-                    let a = Ipv4Address::from_str(addr).map_err(|_| format!("{addr}: not an IPv4 address"))?;
+                    let a = IpAddress::from_str(addr).map_err(|_| format!("{addr}: not an address"))?;
                     let cseq: u32 = seq.parse().map_err(|_| "bad sequence number")?;
                     let tmo: u64 = timeout.parse().map_err(|_| "bad time-out")?;
                     let size: usize = size.parse::<usize>().map_err(|_| "bad size")?.min(1000);
-                    let (i, _) = self.route(a).ok_or("network unreachable")?;
+                    let (i, src) = self.route(a).ok_or("network unreachable")?;
                     let t = now();
                     let seq_no = self.next_seq;
                     self.next_seq = self.next_seq.wrapping_add(1);
@@ -578,11 +795,21 @@ impl Netd {
                     for (k, b) in data.iter_mut().enumerate() {
                         *b = k as u8;
                     }
-                    let repr = Icmpv4Repr::EchoRequest { ident: PING_IDENT, seq_no, data: &data };
                     let s = l.sockets.get_mut::<icmp::Socket>(l.icmp);
-                    let buf = s.send(repr.buffer_len(), IpAddress::Ipv4(a)).map_err(|_| "too many pings at once")?;
-                    let mut pkt = Icmpv4Packet::new_unchecked(buf);
-                    repr.emit(&mut pkt, &ChecksumCapabilities::default());
+                    match (a, src) {
+                        (IpAddress::Ipv6(d6), IpAddress::Ipv6(s6)) => {
+                            let repr = Icmpv6Repr::EchoRequest { ident: PING_IDENT, seq_no, data: &data };
+                            let buf = s.send(repr.buffer_len(), a).map_err(|_| "too many pings at once")?;
+                            let mut pkt = Icmpv6Packet::new_unchecked(buf);
+                            repr.emit(&s6, &d6, &mut pkt, &ChecksumCapabilities::default());
+                        }
+                        _ => {
+                            let repr = Icmpv4Repr::EchoRequest { ident: PING_IDENT, seq_no, data: &data };
+                            let buf = s.send(repr.buffer_len(), a).map_err(|_| "too many pings at once")?;
+                            let mut pkt = Icmpv4Packet::new_unchecked(buf);
+                            repr.emit(&mut pkt, &ChecksumCapabilities::default());
+                        }
+                    }
                     self.pings.push(Ping {
                         client: ch,
                         link: l.id,
@@ -614,9 +841,23 @@ impl Netd {
             let s = l.sockets.get_mut::<icmp::Socket>(l.icmp);
             while s.can_recv() {
                 let Ok((payload, from)) = s.recv() else { break };
-                let Ok(pkt) = Icmpv4Packet::new_checked(payload) else { continue };
-                let Ok(Icmpv4Repr::EchoReply { ident, seq_no, data }) = Icmpv4Repr::parse(&pkt, &ChecksumCapabilities::default()) else {
-                    continue;
+                let (ident, seq_no, len) = match from {
+                    IpAddress::Ipv4(_) => {
+                        let Ok(pkt) = Icmpv4Packet::new_checked(payload) else { continue };
+                        let Ok(Icmpv4Repr::EchoReply { ident, seq_no, data }) = Icmpv4Repr::parse(&pkt, &ChecksumCapabilities::default()) else {
+                            continue;
+                        };
+                        (ident, seq_no, data.len())
+                    }
+                    IpAddress::Ipv6(f6) => {
+                        let Ok(pkt) = Icmpv6Packet::new_checked(payload) else { continue };
+                        let Ok(Icmpv6Repr::EchoReply { ident, seq_no, data }) =
+                            Icmpv6Repr::parse(&f6, &Ipv6Address::UNSPECIFIED, &pkt, &ChecksumCapabilities::ignored())
+                        else {
+                            continue;
+                        };
+                        (ident, seq_no, data.len())
+                    }
                 };
                 if ident != PING_IDENT {
                     continue;
@@ -624,7 +865,7 @@ impl Netd {
                 if let Some(p) = self.pings.iter().position(|p| p.link == l.id && p.seq == seq_no) {
                     let p = self.pings.remove(p);
                     let us = (t - p.sent).total_micros();
-                    reply(p.client, &format!("reply {} {} {} {}\n", from, p.client_seq, data.len(), us));
+                    reply(p.client, &format!("reply {} {} {} {}\n", from, p.client_seq, len, us));
                 }
             }
         }
@@ -652,6 +893,9 @@ impl Netd {
                 Some(dhcpv4::Event::Deconfigured) => None,
             };
             changed = true;
+            if ev.is_none() && l.dhcp_addr.is_some() {
+                log(&format!("{}: DHCP lease lost", l.name));
+            }
             // Out with the old lease
             if let Some(old) = l.dhcp_addr.take() {
                 l.iface.update_ip_addrs(|a| a.retain(|x| *x != IpCidr::Ipv4(old)));
@@ -688,7 +932,7 @@ impl Netd {
                         lease.map(|s| format!(", {s} s")).unwrap_or_default()
                     ));
                 }
-                None => log(&format!("{}: DHCP lease lost", l.name)),
+                None => {}
             }
         }
         if changed {
@@ -828,6 +1072,7 @@ fn main() {
                 }
             }
             n.pings();
+            n.sync_lo();
             if n.dhcp_events() {
                 busy = true;
             }

@@ -6,7 +6,7 @@ description = "Rustica's network service (NETWORK.md): the TCP/IP stack on smolt
 license = "MIT"
 
 [dependencies]
-smoltcp = { version = "0.14", default-features = false, features = ["std", "medium-ethernet", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-raw", "socket-icmp", "socket-udp", "socket-tcp", "socket-dhcpv4", "socket-dns", "proto-dns", "async", "auto-icmp-echo-reply"] }
+smoltcp = { version = "0.14", default-features = false, features = ["std", "medium-ethernet", "medium-ip", "proto-ipv4", "proto-ipv6", "proto-ipv6-slaac", "socket-raw", "socket-icmp", "socket-udp", "socket-tcp", "socket-dhcpv4", "socket-dns", "proto-dns", "async", "auto-icmp-echo-reply"] }
 
 [profile.release]
 panic = "abort"

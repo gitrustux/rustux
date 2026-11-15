@@ -3,15 +3,16 @@
 Rustica's network: card drivers in userspace, one network service (`netd`)
 with the TCP/IP stack, `ip` and `ping` (`NETWORK.md` in the planning
 documents, step D1), POSIX sockets for programs, C and Rust (`nc`,
-`ss`, `std::net`; step D2), and DHCP, DNS and `curl` over HTTPS (step
-D3).
+`ss`, `std::net`; step D2), DHCP, DNS and `curl` over HTTPS (step D3),
+and Intel's e1000e cards with IPv6 beside IPv4 (step D4).
 
 ```
   ping, ip, ss ──/svc/net──────┐                    ┌── virtio-net 00:02.0 (eth0)
                                netd (smoltcp) ──/svc/netdev──┤
-  socket() ────/svc/netsock────┘ interfaces, ARP,   └── virtio-net 00:03.0 (eth1)
-  (C library)   + data sockets   IPv4, ICMP, TCP,
-                                 UDP, routes, lo
+  socket() ────/svc/netsock────┘ interfaces, ARP,   └── e1000e 00:03.0 (eth1)
+  (C library)   + data sockets   IPv4, IPv6, ICMP,
+                                 TCP, UDP, routes,
+                                 DHCP, SLAAC, lo
 ```
 
 The kernel has no network code. A driver only moves Ethernet frames; netd
@@ -25,6 +26,8 @@ devmgr starts a network driver from `/etc/drivers` like any PCI driver
 ```
 1af4:1000   /bin/virtio-net     # transitional virtio-net (QEMU's default)
 1af4:1041   /bin/virtio-net     # modern-only (disable-legacy=on)
+8086:10d3   /bin/e1000e         # Intel 82574L (QEMU's -device e1000e)
+8086:0d4f   /bin/e1000e         # Intel I219-V, and the other I217/I218/I219s
 ```
 
 The driver connects to `/svc/netdev`, which netd publishes, and keeps
@@ -54,6 +57,22 @@ Interrupts by MSI-X vector 0 on a thread that drains the receive queue
 (and polling every millisecond if there is no MSI-X); the link status is
 read every second. The main thread reads netd's channel and transmits.
 
+### e1000e (step D4)
+
+`/bin/e1000e BDF` (`c-progs/e1000e.c`): Intel's PCI Express gigabit
+cards with the e1000e register set: the 82574L that QEMU emulates
+(`-device e1000e`), and the I217, I218 and I219 built into laptop and
+desktop chipsets (their IDs are in `/etc/drivers`). A reset, the MAC
+address from the receive-address registers (or the NVM through `EERD`),
+legacy descriptor rings of 256 for each direction with 2 KiB buffers,
+broadcast and every multicast address taken (IPv6's neighbour discovery
+needs them), the FCS stripped by the card and added on sending. MSI on a
+thread that drains the receive ring (polling without it); the link
+(`STATUS.LU`) on the link-change interrupt and every second. **Tested in
+QEMU only:** on the I219 of a laptop the PHY may first need waking from
+its low-power state (ULP) and the LANPHYPC toggle that Linux's e1000e
+does; that is for the laptop session.
+
 ## netd
 
 `/bin/netd` (`rust/netd`, Rust, on [smoltcp](https://github.com/smoltcp-rs/smoltcp)
@@ -72,6 +91,16 @@ read every second. The main thread reads netd's channel and transmits.
   at most), one default route.
 - **IPv4, ARP, ICMP**: netd answers ARP and echo requests (pings) on every
   interface, and sends pings for `ping`.
+- **IPv6** (step D4): each card gets its link-local address (fe80::/64
+  from the MAC address, EUI-64) and, from routers' advertisements
+  (smoltcp's SLAAC), global addresses and an IPv6 default route; lo has
+  ::1. Neighbour discovery, ICMPv6 echo both ways (`ping -6`), TCP and UDP
+  sockets. `/etc/network.conf`'s `NAME static6 ADDRESS/PREFIX [GATEWAY]`
+  and `ip addr add fd00::1/64 dev eth0` add addresses by hand. No DHCPv6.
+- **Several interfaces**: each has its own addresses and routes; a
+  destination in an interface's subnet goes out there, others through the
+  first interface with a default route (DHCP may give each one; `ip
+  route` lists them all, the first one counts).
 - **TCP and UDP sockets** for programs (below).
 - One thread: it waits (`wait_many`) on the three listeners, the drivers'
   channels, the clients' and the sockets', until a frame, a request, a
@@ -109,8 +138,8 @@ The resolver is the C library's (`libc/src/resolv.c`, `<resolv.h>`), as
 on Unix: `getaddrinfo`, `getnameinfo` and `gethostbyname` look in
 `/etc/hosts` first, then ask the servers of `/etc/resolv.conf` over UDP
 (each in turn, `timeout`, `attempts`), and over TCP when the answer is
-truncated; short names get the `search` domains (`ndots`). A records only
-until IPv6 (D4); CNAMEs followed by the server. `res_query`,
+truncated; short names get the `search` domains (`ndots`). A and AAAA
+records (IPv4 addresses first); CNAMEs followed by the server. `res_query`,
 `res_search` and `dn_expand` are there for programs that read DNS
 messages themselves, such as `host`. Rust's `std::net` and everything on
 it resolve through `getaddrinfo`.
@@ -150,9 +179,11 @@ usual service names (names on the network need DNS, step D3).
 `socketpair(AF_UNIX, SOCK_STREAM)` gives two connected pipe-like fds (a
 kernel socket pair). Layouts and numbers are Linux's (musl's), so Rust's
 `std::net` (`TcpStream`, `TcpListener`, `UdpSocket`, `connect_timeout`,
-`to_socket_addrs`) works unchanged: `nettest` checks it. IPv4 only for
-now: `AF_INET6` sockets fail with `EAFNOSUPPORT`, IPv4-mapped IPv6
-addresses are taken as IPv4.
+`to_socket_addrs`) works unchanged: `nettest` checks it. IPv6 too since
+step D4: an `AF_INET6` socket is dual-stack, as Linux's by default (one
+bound to `::` takes IPv4 connections too, their addresses shown as
+`::ffff:a.b.c.d`); an `AF_INET` socket is IPv4 only. `IPV6_V6ONLY` is
+accepted but has no effect yet.
 
 **How a socket works.** `socket()` connects to `/svc/netsock`: that
 channel is the socket's control channel to netd (`<rustux/netsock.h>`).
@@ -187,7 +218,7 @@ and lo.
 | `SO_ERROR`, `SO_TYPE`, `SO_ACCEPTCONN`, `SO_RCVBUF`/`SO_SNDBUF` (64 KiB) | read |
 | `SO_BROADCAST`, `SO_LINGER`, `SO_REUSEPORT`, `IP_TTL`, ... | accepted, no effect |
 
-Not yet: IPv6 (D4), broadcast and multicast, raw sockets, Unix-domain
+Not yet: broadcast and multicast, raw sockets, Unix-domain
 sockets with names, passing sockets to other programs (spawned programs
 get fds 0-2 only, as before).
 
@@ -212,7 +243,9 @@ get fds 0-2 only, as before).
   -I -i -f -s -S -v -k -H -d -X -A -u -m -w --cacert --connect-timeout`,
   gzip; curl's exit statuses. The clock must be right for certificates
   (the UEFI clock, `timedatectl`).
-- `ping` takes names too.
+- `ping` takes names too, and IPv6 addresses (`-6`, `-4`; `ping6`).
+- `ip -6 addr`, `ip -6 route`, `ip -6 route add default via ADDRESS`;
+  `nc -6`, `host -t AAAA`.
 - `nettest` (Rust, `rust/nettest`): `nettest local` checks `std::net`
   inside the computer; `connect`, `serve`, `udp` for tests across the
   network.
@@ -238,8 +271,9 @@ qemu-system-x86_64 ... -netdev user,id=n0 -device virtio-net-pci,netdev=n0
 ```
 
 QEMU's user-mode network has the gateway at 10.0.2.2 (it answers pings),
-DNS at 10.0.2.3 and gives 10.0.2.15 by DHCP; the image's
-`/etc/network.conf` sets that address statically until step D3. Pings beyond
+DNS at 10.0.2.3 and gives 10.0.2.15 by DHCP; for IPv6 it advertises
+fec0::/64 from fe80::2 (fec0::2 answers pings). `-device e1000e` instead
+of virtio-net-pci gives the Intel card. Pings beyond
 it reach the outside world only if the host lets QEMU use unprivileged
 ICMP sockets (Linux's `net.ipv4.ping_group_range`). The host is 10.0.2.2 from the guest: a server listening
 on the host's 127.0.0.1 is reached there (`nc 10.0.2.2 PORT`). The host
@@ -253,5 +287,6 @@ The network test reaches the guest at the frame level on a second card
 too, a `-netdev dgram` "wire" to a peer written in Python
 (`docs/TESTS.md`, network test).
 
-Proxmox and KVM use the same virtio-net device; the laptop's Intel card
-comes with step D4 (e1000e).
+Proxmox and KVM use the same virtio-net device (or an "Intel E1000E"
+card); the laptop's Intel I219 has the e1000e driver, untested there
+yet.

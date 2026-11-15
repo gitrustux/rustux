@@ -6,6 +6,9 @@ ok address in use
 ok read time-out, non-blocking
 ok connect_timeout, addresses
 ok udp 127.0.0.1 send_to, recv_from, connect
+ok tcp [::1] (IPv6): 300000 bytes, half-close, answer
+ok udp [::1] (IPv6)
+ok [::] listener: IPv4 and IPv6 clients
 ok localhost:80 resolves
 nettest local: all passed
 through lo
