@@ -104,6 +104,16 @@ double atan2(double y, double x) {
     return (double)r;
 }
 double atan(double x) { return atan2(x, 1.0); }
+// asin and acos from atan2 (tiny-skia's curve maths, step F5)
+double asin(double x) { return atan2(x, sqrt((1.0 - x) * (1.0 + x))); }
+double acos(double x) { return atan2(sqrt((1.0 - x) * (1.0 + x)), x); }
+float sinf(float x) { return (float)sin(x); }
+float cosf(float x) { return (float)cos(x); }
+float tanf(float x) { return (float)tan(x); }
+float atan2f(float y, float x) { return (float)atan2(y, x); }
+float atanf(float x) { return (float)atan(x); }
+float asinf(float x) { return (float)asin(x); }
+float acosf(float x) { return (float)acos(x); }
 
 double frexp(double x, int *e) {
     *e = 0;

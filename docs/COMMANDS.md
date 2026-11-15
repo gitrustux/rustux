@@ -93,6 +93,7 @@ uses).
 | `compositor` | windows on the screen (step F4, `WINDOWS.md`): click to focus, drag to move and resize, title bar buttons, Alt+Tab, Alt+F4, F11; `-v` prints what happens; root |
 | `wintest` | a test window: `NAME [-c RRGGBB] [-s WxH] [-p X,Y] [-a] [-n] [-k] [-t TEXT]`; prints the events it gets |
 | `rustica-window` | a window from Rust (the `rustica-window` crate's demo) |
+| `uidemo` | the toolkit's demo (step F5, `GUI.md`): menus, tabs, a form, a long list, a tree, a text editor field, images, dialogs; `--scale 2` |
 | `screenshot` | `screenshot FILE.png`: the screen (text console or graphics) as a PNG, with the CRC-32 of its pixels; root |
 | `logger` | `-t TAG -p [FACILITY.]PRIO -s -f FILE [MESSAGE]`; to logd (`/svc/log`); no `--journald`, `-u` |
 | `dmesg` | the kernel's log since boot (the last 64 KiB); `logs -k` has it with times |

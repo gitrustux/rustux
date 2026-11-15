@@ -39,9 +39,14 @@ passes:
 | `-C linker=userspace/rust/rxld.sh`, `-C linker-flavor=ld`, `-C link-self-contained=no` | The wrapper drops musl's `crt1.o`/`crti.o`/`crtbegin.o`/... and `-lc`, then links with `rustux.ld`, the library's `crt0.o`, `libc.a` and gcc's `libgcc` |
 
 A new program is a new Cargo package under `userspace/rust/` (its binary
-named like the package); the built binary is committed in `userspace/bin/`
-and goes into the boot image like the C programs. Rebuild the kernel
-afterwards.
+named like the package; a package whose programs have other names lists
+them in a `rustux-bins` file, as `rustica-ui` does for `uidemo`); the
+built binary is committed in `userspace/bin/` and goes into the boot image
+like the C programs. Rebuild the kernel afterwards.
+
+Library packages for programs: `rustica-window` (windows on the
+compositor, `WINDOWS.md`) and `rustica-ui` (the toolkit, `GUI.md`), used
+with a path dependency (`rustica-ui = { path = "../rustica-ui" }`).
 
 `userspace/rust/hello-std` exercises std: printing, arguments and the
 environment, files and directories, metadata, `/dev/null`, threads with a

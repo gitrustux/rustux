@@ -1,6 +1,7 @@
 # Rust
 /target/
 /rboot/target/
+/userspace/rust/*/target/
 **/*.rs.bk
 *.pdb
 

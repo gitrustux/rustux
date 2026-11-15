@@ -30,8 +30,15 @@ for dir in rust/*/; do
     [ -f "$dir/rustux-build" ] && . "$dir/rustux-build"
     # cargo doesn't see changes to the C library: always link again
     rm -f "build/rust/$TARGET/release/$name" "build/rust/$TARGET/release/deps/${name//-/_}"-*
+    [ -f "$dir/rustux-bins" ] && for b in $(cat "$dir/rustux-bins"); do rm -f "build/rust/$TARGET/release/$b" "build/rust/$TARGET/release/deps/${b//-/_}"-*; done
     (cd "$dir" && cargo build --release --target $TARGET -Zbuild-std=std,panic_abort \
         --target-dir "$U/build/rust" "${CARGO_ARGS[@]}")
-    strip -o "bin/$name" "build/rust/$TARGET/release/$name"
+    # The package's programs: its own name, or those listed in rustux-bins
+    # (a library package with its demos, e.g. rustica-ui)
+    bins=$name
+    [ -f "$dir/rustux-bins" ] && bins=$(cat "$dir/rustux-bins")
+    for b in $bins; do
+        [ -f "build/rust/$TARGET/release/$b" ] && strip -o "bin/$b" "build/rust/$TARGET/release/$b"
+    done
 done
 echo "built: $(cd rust && ls -d */Cargo.toml | cut -d/ -f1 | tr '\n' ' ')"

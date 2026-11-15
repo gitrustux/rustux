@@ -281,6 +281,17 @@ clipboard between two windows; a killed client loses its window, a client
 ignoring a close request loses it after 5 s, an animating client is paced
 by frames; killing the compositor leaves the text console on the screen.
 
+## Toolkit test (step F5)
+
+`scripts/run-ui-test.sh` (`GUI.md`): one QEMU boot with a USB tablet; the
+compositor and `uidemo`. The form with the keyboard (typing, Ctrl+A,
+Ctrl+C, Tab, Ctrl+V, Space on the check box, Enter on Submit, the dialog
+over the dimmed window, closed with Enter), Reset with the mouse; menus
+with F10 and arrows and with the mouse; the text editor field; the list of
+1000 items (click, End, Home, Page Down) and the tree (Right, Down); a PNG
+and a JPEG drawn and anti-aliased text (screendump pixels); File > Quit
+through its dialog; `--scale 2` gives a window twice the size.
+
 ## Run in QEMU
 
 ```bash

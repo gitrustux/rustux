@@ -1,0 +1,13 @@
+uidemo - the toolkit's demo
+
+USAGE
+    uidemo [--scale N] [X,Y]
+
+    A window built with rustica-ui, Rustica's toolkit: a menu bar (F10),
+    tabs with a form, a list of 1000 items and a tree, a text editor field
+    and images, and dialogs. Tab moves the focus, Enter and Space press
+    buttons, arrows move in lists and trees, Ctrl+C and Ctrl+V copy and
+    paste. --scale 2 doubles everything. Needs the compositor.
+
+SEE ALSO
+    compositor, rustux (docs/GUI.md)

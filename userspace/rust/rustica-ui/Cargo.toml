@@ -1,0 +1,23 @@
+[package]
+name = "rustica-ui"
+version = "0.1.0"
+edition = "2021"
+description = "Rustica's toolkit prototype (DESKTOP.md step F5): fonts, 2D drawing and widgets on rustica-window"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "uidemo"
+path = "src/bin/uidemo.rs"
+
+[dependencies]
+rustica-window = { path = "../rustica-window" }
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd", "png-format"] }
+fontdue = "0.9"
+zune-jpeg = "0.4"
+
+[profile.release]
+panic = "abort"
+opt-level = 3
