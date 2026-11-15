@@ -96,6 +96,11 @@ uses).
 | `desktop` | start the desktop (root; the `desktop` unit: compositor, graphical login, session); `--stop`; `--run` is the unit's program (step F6, `SESSION.md`) |
 | `notify` | `notify TEXT...`: a notification on the desktop (top right, 5 s) |
 | `greeter`, `panel`, `launcher` | the graphical login, the panel and the application launcher (started by `desktop` and the panel) |
+| `terminal` | the Terminal (step F7, `APPS.md`): the shell (or `-e PROG ARGS`) on a pseudo-terminal in a window; tabs, copy and paste, font size, scrollback |
+| `files` | the file manager (step F7): `files [FOLDER]`; copy, cut, paste, rename, trash, new folders, properties, open with an application; USB sticks mounted under `/media` and ejected |
+| `settings` | Settings (step F7): `settings [display|keyboard|mouse|time|users|disks|about]`; system changes as root, or with the user's password through `sudo -S` |
+| `editor`, `viewer` | the Text Editor (`editor [FILE]`, Ctrl+S, Ctrl+Q) and the Image Viewer (`viewer FILE`, Left/Right) |
+| `inputctl` | the input service's settings in `/etc/input.conf`: `status`, `set-pointer-speed PERCENT` (25-400; root) |
 | `uidemo` | the toolkit's demo (step F5, `GUI.md`): menus, tabs, a form, a long list, a tree, a text editor field, images, dialogs; `--scale 2` |
 | `screenshot` | `screenshot FILE.png`: the screen (text console or graphics) as a PNG, with the CRC-32 of its pixels; root |
 | `logger` | `-t TAG -p [FACILITY.]PRIO -s -f FILE [MESSAGE]`; to logd (`/svc/log`); no `--journald`, `-u` |
@@ -107,5 +112,6 @@ uses).
 
 `runtests` runs the command test suite (`files/usr/share/tests/`, see
 `TESTS.md`); `edutest`, `blktest` and `drvtest` test the drivers
-(`DRIVERS.md`); `systest`, `fstest`, `libctest`, `threadtest`, `hello-std`
-and the kernel tests are listed in `USERSPACE.md` and `SYSCALL.md`.
+(`DRIVERS.md`); `ptytest` tests pseudo-terminals (`APPS.md`); `systest`,
+`fstest`, `libctest`, `threadtest`, `hello-std` and the kernel tests are
+listed in `USERSPACE.md` and `SYSCALL.md`.

@@ -61,7 +61,7 @@ if [ -n "$BOOTFS" ]; then
 fi
 cp $RB/fakeos.efi "$W/other/EFI/Microsoft/Boot/bootmgfw.efi"
 cp $RB/fakeos.efi "$W/other/EFI/debian/shimx64.efi"
-truncate -s 64M "$W/esp.fat"; mkfs.fat -F 32 -n ESP "$W/esp.fat" >/dev/null; mcopy -i "$W/esp.fat" -s "$W/esp/EFI" "$W/esp/loader" ::
+truncate -s 128M "$W/esp.fat"; mkfs.fat -F 32 -n ESP "$W/esp.fat" >/dev/null; mcopy -i "$W/esp.fat" -s "$W/esp/EFI" "$W/esp/loader" ::
 truncate -s 40M "$W/other.fat"; mkfs.fat -F 32 "$W/other.fat" >/dev/null; mcopy -i "$W/other.fat" -s "$W/other/EFI" ::
 python3 scripts/gpt-wrap.py --disk 1 "$W/esp.img" esp:"$W/esp.fat"
 python3 scripts/gpt-wrap.py --disk 2 "$W/other.img" esp:"$W/other.fat"

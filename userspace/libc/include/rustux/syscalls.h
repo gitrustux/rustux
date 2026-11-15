@@ -151,6 +151,8 @@ typedef struct {
 } rx_info_task_runtime_t;
 
 #define RX_PROP_NAME 3
+// A console channel's terminal size: uint16_t columns, rows (<rustux/ldisc.h>)
+#define RX_PROP_TTY_SIZE 5
 #define RX_MAX_NAME_LEN 32
 typedef struct {
     int64_t return_code;

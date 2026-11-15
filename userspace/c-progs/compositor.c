@@ -191,9 +191,39 @@ static void fill(int x, int y, int w, int h, uint32_t c, const rx_display_rect_t
     }
 }
 
+// The next character of UTF-8 text as the 8x16 font has it: ASCII, a few
+// look-alikes (dashes, x, bullet, quotes), '?' for the rest
+static unsigned char next_char(const char **sp) {
+    const unsigned char *s = (const unsigned char *)*sp;
+    if (*s < 0x80) {
+        *sp += 1;
+        return *s;
+    }
+    uint32_t cp = 0;
+    int n = *s >= 0xF0 ? 4 : *s >= 0xE0 ? 3 : *s >= 0xC0 ? 2 : 1;
+    cp = n == 1 ? 0 : *s & (0x3F >> (n - 1));
+    for (int i = 1; i < n; i++) {
+        if ((s[i] & 0xC0) != 0x80) {
+            n = i;
+            break;
+        }
+        cp = cp << 6 | (s[i] & 0x3F);
+    }
+    *sp += n;
+    switch (cp) {
+    case 0x2013: case 0x2014: case 0x2212: return '-';
+    case 0xD7: return 'x';
+    case 0x2022: case 0xB7: return '*';
+    case 0x2018: case 0x2019: return '\'';
+    case 0x201C: case 0x201D: return '"';
+    case 0x2026: return '.';
+    default: return '?';
+    }
+}
+
 static void text(int x, int y, const char *s, int maxw, uint32_t c, const rx_display_rect_t *r) {
-    for (; *s && maxw >= 8; s++, x += 8, maxw -= 8) {
-        const uint8_t *g = font8x16_glyph((unsigned char)*s);
+    while (*s && maxw >= 8) {
+        const uint8_t *g = font8x16_glyph(next_char(&s));
         for (int row = 0; row < 16; row++) {
             int yy = y + row;
             if (yy < (int)r->y || yy >= (int)(r->y + r->h)) continue;
@@ -202,6 +232,8 @@ static void text(int x, int y, const char *s, int maxw, uint32_t c, const rx_dis
                 if ((g[row] & (0x80 >> b)) && xx >= (int)r->x && xx < (int)(r->x + r->w)) fbp[(uint64_t)yy * W + xx] = c;
             }
         }
+        x += 8;
+        maxw -= 8;
     }
 }
 

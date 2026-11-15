@@ -1,0 +1,7 @@
+NAME="Rustica"
+VERSION="0.1 (RedFox)"
+ID=rustica
+VERSION_ID=0.1
+VERSION_CODENAME=redfox
+PRETTY_NAME="Rustica 0.1 (RedFox)"
+HOME_URL="https://rustux.com"

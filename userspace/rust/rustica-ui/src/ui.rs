@@ -77,6 +77,46 @@ pub mod keys {
 const MOD_CTRL: u32 = 0x11;
 const MOD_SHIFT: u32 = 0x22;
 
+/// Small pictures for table rows
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Icon {
+    None,
+    Folder,
+    File,
+    Image,
+    Program,
+    Drive,
+    Trash,
+}
+
+/// A row of a table: its icon and its cells, one per column
+#[derive(Clone, Debug)]
+pub struct Row {
+    pub icon: Icon,
+    pub cells: Vec<String>,
+}
+
+/// A column of a table: header, width in units (0: what is left), right-aligned
+#[derive(Clone, Copy)]
+pub struct Column<'a> {
+    pub title: &'a str,
+    pub width: f32,
+    pub right: bool,
+}
+
+/// What happened to a table this frame
+#[derive(Default, Debug)]
+pub struct TableResponse {
+    /// The selection changed
+    pub changed: bool,
+    /// A row was opened: double-click or Enter
+    pub activated: Option<usize>,
+    /// The right button went down on a row (it is selected)
+    pub context: Option<usize>,
+    /// Keys the table did not use while it had the focus (Delete, F2, Ctrl+C...)
+    pub keys: Vec<Key>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Key {
     pub usage: u32,
@@ -85,10 +125,10 @@ pub struct Key {
 }
 
 impl Key {
-    fn ctrl(&self) -> bool {
+    pub fn ctrl(&self) -> bool {
         self.mods & MOD_CTRL != 0
     }
-    fn shift(&self) -> bool {
+    pub fn shift(&self) -> bool {
         self.mods & MOD_SHIFT != 0
     }
     /// Text to insert: printable, not a control character or escape sequence
@@ -106,6 +146,9 @@ impl Key {
 pub struct Input {
     pub mouse: (f32, f32),
     pub down: bool,
+    /// The right button went down (this frame)
+    pub right_pressed: bool,
+    pub right_held: bool,
     pub pressed: bool,
     pub released: bool,
     pub wheel: f32,
@@ -188,6 +231,7 @@ pub struct Ui {
     consumed: HashSet<usize>, // keys used this frame
     id_stack: Vec<Id>,
     pub redraw: bool, // something wants another frame (e.g. a scroll settled)
+    last_click: Option<(Id, usize, std::time::Instant)>, // for double-clicks
     /// Around the window's content, in units (12)
     pub padding: f32,
 }
@@ -234,6 +278,7 @@ impl Ui {
             consumed: HashSet::new(),
             id_stack: vec![0],
             redraw: false,
+            last_click: None,
             padding: 12.0,
         }
     }
@@ -346,6 +391,7 @@ impl Ui {
             self.active = None;
         }
         self.input.pressed = false;
+        self.input.right_pressed = false;
         self.input.released = false;
         self.input.wheel = 0.0;
         self.input.keys.clear();
@@ -998,6 +1044,198 @@ impl Ui {
         *selected != before
     }
 
+    /// The height left below the current position (down to the padding)
+    pub fn remaining_height(&self) -> f32 {
+        let l = self.layouts.last().unwrap();
+        (self.canvas.height() - l.y - self.u(self.padding)).max(self.u(40.0))
+    }
+
+    /// Draw an icon of size `sz` with its top left at x, y
+    pub fn icon(&mut self, icon: Icon, x: f32, y: f32, sz: f32) {
+        let s = sz / 16.0;
+        let r = |dx: f32, dy: f32, w: f32, h: f32| Rect::new((x + dx * s).round(), (y + dy * s).round(), (w * s).round().max(1.0), (h * s).round().max(1.0));
+        match icon {
+            Icon::None => {}
+            Icon::Folder => {
+                self.canvas.fill_rounded(r(1.0, 2.0, 6.0, 3.0), s, 0xBD93F9);
+                self.canvas.fill_rounded(r(1.0, 4.0, 14.0, 10.0), 1.5 * s, 0xBD93F9);
+                self.canvas.fill_rounded(r(1.0, 6.0, 14.0, 8.0), 1.5 * s, 0xD6ACFF);
+            }
+            Icon::File | Icon::Image | Icon::Program => {
+                self.canvas.fill_rounded(r(3.0, 1.0, 10.0, 14.0), 1.5 * s, 0xF8F8F2);
+                let c = match icon {
+                    Icon::Image => 0x50FA7B,
+                    Icon::Program => 0xFF79C6,
+                    _ => 0x9EA3BD,
+                };
+                for k in 0..3 {
+                    self.canvas.fill_rect(r(5.0, 5.0 + 3.0 * k as f32, 6.0, 1.0), c);
+                }
+            }
+            Icon::Drive => {
+                self.canvas.fill_rounded(r(1.0, 4.0, 14.0, 8.0), 2.0 * s, 0x8BE9FD);
+                self.canvas.fill_rect(r(11.0, 7.0, 2.0, 2.0), 0x282A36);
+            }
+            Icon::Trash => {
+                self.canvas.fill_rect(r(2.0, 3.0, 12.0, 2.0), 0x9EA3BD);
+                self.canvas.fill_rect(r(6.0, 1.0, 4.0, 2.0), 0x9EA3BD);
+                self.canvas.fill_rounded(r(3.0, 5.0, 10.0, 10.0), 1.5 * s, 0x9EA3BD);
+            }
+        }
+    }
+
+    /// A table with column headers (only the visible rows are drawn; h 0:
+    /// down to the bottom).
+    /// Arrows, Page Up/Down, Home and End move the selection; Enter or a
+    /// double-click opens a row; the right button selects one and reports
+    /// it (a context menu is the program's).
+    pub fn table(&mut self, name: &str, columns: &[Column], rows: &[Row], selected: &mut Option<usize>, h: f32) -> TableResponse {
+        let id = self.id(name);
+        let r = self.alloc(0.0, if h <= 0.0 { self.remaining_height() } else { self.u(h) });
+        let focused = self.focusable(id, r);
+        let rh = self.line_h() + self.u(8.0);
+        let hh = rh; // the header
+        let body = Rect::new(r.x, r.y + hh, r.w, r.h - hh);
+        let mut scroll = *self.scrolls.get(&id).unwrap_or(&0.0);
+        let content = rows.len() as f32 * rh;
+        let before = *selected;
+        let mut out = TableResponse::default();
+        if self.hover(body) && self.input.wheel != 0.0 {
+            scroll -= self.input.wheel * rh * 3.0;
+        }
+        let page = ((body.h / rh) as usize).max(1);
+        let mut moved = false;
+        for k in self.keys_for(id) {
+            let n = rows.len();
+            let cur = selected.unwrap_or(0);
+            let new = match k.usage {
+                keys::DOWN if n > 0 => Some(if selected.is_none() { 0 } else { (cur + 1).min(n - 1) }),
+                keys::UP if n > 0 => Some(cur.saturating_sub(1)),
+                keys::PAGE_DOWN if n > 0 => Some((cur + page).min(n - 1)),
+                keys::PAGE_UP if n > 0 => Some(cur.saturating_sub(page)),
+                keys::HOME if n > 0 => Some(0),
+                keys::END if n > 0 => Some(n - 1),
+                keys::ENTER | keys::KP_ENTER if selected.is_some() => {
+                    out.activated = *selected;
+                    None
+                }
+                _ => {
+                    out.keys.push(k);
+                    None
+                }
+            };
+            if let Some(v) = new {
+                *selected = Some(v);
+                moved = true;
+            }
+        }
+        let inner = Rect::new(body.x, body.y, body.w - self.u(12.0), body.h);
+        let hit = |ui: &Ui| -> Option<usize> {
+            let i = ((ui.input.mouse.1 - body.y + scroll) / rh) as usize;
+            (i < rows.len()).then_some(i)
+        };
+        if (self.input.pressed || self.input.right_pressed) && self.hover(inner) {
+            let i = hit(self);
+            if self.input.right_pressed {
+                self.focus = Some(id);
+                if let Some(i) = i {
+                    *selected = Some(i);
+                    out.context = Some(i);
+                }
+            } else {
+                *selected = i;
+                if let Some(i) = i {
+                    let now = std::time::Instant::now();
+                    if let Some((lid, li, t)) = self.last_click {
+                        if lid == id && li == i && now.duration_since(t).as_millis() < 500 {
+                            out.activated = Some(i);
+                        }
+                    }
+                    self.last_click = if out.activated.is_some() { None } else { Some((id, i, now)) };
+                }
+            }
+        }
+        if moved {
+            if let Some(s) = *selected {
+                let y = s as f32 * rh;
+                if y < scroll {
+                    scroll = y;
+                }
+                if y + rh > scroll + body.h {
+                    scroll = y + rh - body.h;
+                }
+            }
+        }
+        scroll = scroll.clamp(0.0, (content - body.h).max(0.0));
+        let th = self.theme;
+        self.canvas.fill_rounded(r, self.u(6.0), th.surface);
+        // Column positions
+        let fixed: f32 = columns.iter().map(|c| self.u(c.width)).sum();
+        let pad = self.u(10.0);
+        let mut xs = Vec::new();
+        let mut x = r.x + pad;
+        for c in columns {
+            let w = if c.width <= 0.0 { (inner.w - fixed - 2.0 * pad).max(self.u(60.0)) } else { self.u(c.width) };
+            xs.push((x, w));
+            x += w;
+        }
+        let px = self.font_px();
+        let ty_h = self.u(4.0);
+        for (c, &(x, w)) in columns.iter().zip(xs.iter()) {
+            let tx = if c.right { x + w - self.u(12.0) - self.face.width(c.title, px * 0.9) } else { x };
+            self.canvas.push_clip(Rect::new(x, r.y, w - self.u(8.0), hh));
+            self.draw_text(true, tx, r.y + ty_h, c.title, px * 0.9, th.dim);
+            self.canvas.pop_clip();
+        }
+        self.canvas.fill_rect(Rect::new(r.x, (r.y + hh - 1.0).round(), r.w, 1.0), th.border);
+        self.canvas.push_clip(body.shrink(1.0));
+        let first = (scroll / rh) as usize;
+        let isz = (self.line_h() * 0.9).round();
+        for i in first..rows.len() {
+            let y = body.y + i as f32 * rh - scroll;
+            if y > body.bottom() {
+                break;
+            }
+            if Some(i) == *selected {
+                self.canvas.fill_rect(Rect::new(r.x + 2.0, y.round(), inner.w - 4.0, rh), if focused { th.selection } else { th.surface_hi });
+            }
+            for (ci, (cell, &(x, w))) in rows[i].cells.iter().zip(xs.iter()).enumerate() {
+                let mut tx = x;
+                if ci == 0 && rows[i].icon != Icon::None {
+                    self.icon(rows[i].icon, x, y + (rh - isz) / 2.0, isz);
+                    tx += isz + self.u(8.0);
+                }
+                let col = columns.get(ci).copied().unwrap_or(Column { title: "", width: 0.0, right: false });
+                if col.right {
+                    tx = x + w - self.u(12.0) - self.face.width(cell, px);
+                }
+                self.canvas.push_clip(Rect::new(x, y, w - self.u(8.0), rh));
+                let c = if ci == 0 { th.text } else { th.dim };
+                self.draw_text(false, tx, y + self.u(4.0), cell, px, c);
+                self.canvas.pop_clip();
+            }
+        }
+        self.canvas.pop_clip();
+        self.scrollbar(body, content, &mut scroll, id);
+        self.canvas.stroke_rounded(r, self.u(6.0), 1.0, if focused { th.accent } else { th.border });
+        self.focus_ring(r, focused);
+        self.scrolls.insert(id, scroll);
+        out.changed = *selected != before;
+        out
+    }
+
+    /// Give the keyboard focus to a widget by name only if nothing has it
+    pub fn focus_if_none(&mut self, name: &str) {
+        if self.focus.is_none() {
+            self.focus = Some(self.id(name));
+        }
+    }
+
+    /// Whether the widget with this name has the focus
+    pub fn has_focus(&self, name: &str) -> bool {
+        self.focus == Some(self.id(name))
+    }
+
     /// A tree: Right opens a node, Left closes it, a click on the
     /// triangle toggles it. Returns the selected node's labels from the
     /// root when the selection changed.
@@ -1340,8 +1578,8 @@ impl Ui {
         text.chars().count() as f32 * px * 0.55
     }
 
-    /// A modal dialog over the window: Some(button index) when a button
-    /// is chosen (Esc: the last one). Call it every frame while it is up,
+    /// A modal dialog over the window (the message may have several lines):
+    /// Some(button index) when a button is chosen (Esc: the last one). Call it every frame while it is up,
     /// after the rest of the window.
     pub fn dialog(&mut self, title: &str, message: &str, buttons: &[&str]) -> Option<usize> {
         self.modal_now = true;
@@ -1356,14 +1594,19 @@ impl Ui {
             p[2] = (p[2] as u32 * 45 / 100) as u8;
         }
         let px = self.font_px();
-        let dw = (self.face.width(message, px) + 48.0 * s).max(320.0 * s).min(w - 40.0 * s);
-        let dh = 150.0 * s;
+        let lines: Vec<&str> = message.split('\n').collect();
+        let widest = lines.iter().map(|l| self.face.width(l, px)).fold(0.0, f32::max);
+        let dw = (widest + 48.0 * s).max(320.0 * s).min(w - 40.0 * s);
+        let lh = self.line_h() + 4.0 * s;
+        let dh = 126.0 * s + lines.len() as f32 * lh;
         let d = Rect::new(((w - dw) / 2.0).round(), ((h - dh) / 2.0).round(), dw.round(), dh);
         self.canvas.fill_rounded(Rect::new(d.x + 4.0 * s, d.y + 6.0 * s, d.w, d.h), 10.0 * s, 0x101118);
         self.canvas.fill_rounded(d, 10.0 * s, th.surface);
         self.canvas.stroke_rounded(d, 10.0 * s, 1.0, th.accent);
         self.draw_text(true, d.x + 24.0 * s, d.y + 20.0 * s, title, px * 1.15, th.text);
-        self.draw_text(false, d.x + 24.0 * s, d.y + 56.0 * s, message, px, th.dim);
+        for (i, l) in lines.iter().enumerate() {
+            self.draw_text(false, d.x + 24.0 * s, d.y + 56.0 * s + i as f32 * lh, l, px, th.dim);
+        }
         // The buttons, right-aligned; the first has the focus
         let bh = self.row_h();
         let mut x = d.right() - 24.0 * s;

@@ -85,8 +85,11 @@ handle; `init` holds the other end.
   0 with `VTIME` makes `read` wait at most VTIME tenths of a second) or
   `cfmakeraw()`; `tcsetattr` sends `[u32 op = 3][u32 lflag][u32 iflag]`.
   The mode belongs to the console, not the program: the shell sets cooked
-  mode before it starts one. `ioctl(fd, TIOCGWINSZ)` gives the screen
-  size.
+  mode before it starts one. `ioctl(fd, TIOCGWINSZ)` gives the terminal's
+  size (the channel's `TTY_SIZE` property; the screen's for the text
+  console). The line discipline is in the C library (`<rustux/ldisc.h>`,
+  DESKTOP.md step F7), shared by init and pseudo-terminals
+  (`posix_openpt`, `APPS.md`).
 - **Keyboard layouts:** `/etc/keymap` names the layout (`us` built in;
   `de` and `uk` in `/usr/share/keymaps`, a text file per layout, format in
   `c-progs/keymap.h`), applied by the input service `inputd` (desktop step

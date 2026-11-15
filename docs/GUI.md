@@ -54,7 +54,8 @@ iced is the fallback to build next (MIT, tiny-skia renderer).
   arrows, Home, End, Page Up and Down in lists, trees and tabs; F10 opens
   the menus; Esc closes menus and dialogs.
 - **Theme**: Dracula. **Scaling**: integer, 1x and 2x (`RUSTICA_SCALE`,
-  or `uidemo --scale 2`).
+  or `uidemo --scale 2`; else `scale=` in `~/.config/rustica.conf`, which
+  Settings writes: step F7).
 - **Password fields** (`password_field`): dots, nothing copied out (step
   F6).
 - **Control** (step F6): the frame function can ask for a frame after a
@@ -62,6 +63,17 @@ iced is the fallback to build next (MIT, tiny-skia renderer).
   window system (`requests`: the panel role, activating a window, lock,
   notify, full screen), and read the events that are not input (`events`:
   the window list for the panel). `Ui::padding` sets the margin.
+- **Step F7** added, for the applications (`APPS.md`): a **table**
+  (`ui.table`: column headers, widths and alignment, a small icon per row
+  (folder, file, picture, program, drive, trash), only the visible rows
+  drawn; arrows, Page Up/Down, Home, End; Enter or a double-click opens a
+  row; the right button selects one; the keys it does not use are handed
+  back), multi-line dialog messages, `Request::Title` (the window's title,
+  sent when it changes), `Control::waker` (another thread wakes the frame
+  function), the right mouse button in `Input`, `focus_if_none`,
+  `has_focus`, `remaining_height`. `Key::ctrl()` and `shift()` are public.
+  `RUSTICA_WINDOW_AT=X,Y` places a window that has no position of its own
+  (scripts and tests).
 - **Running** (`app.rs`): `rustica_ui::run(title, w, h, position, frame)`
   opens the window, turns the compositor's events into input, calls the
   frame function, copies the canvas into the window's buffer and commits.

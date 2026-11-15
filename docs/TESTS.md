@@ -304,6 +304,20 @@ console) in; Lock shows the lock screen, refuses a wrong password, takes
 hers; the console works throughout; the system log records it all, and no
 program of either session is left after logging out (`ps`).
 
+## Applications test (step F7)
+
+`scripts/run-apps-test.sh` (`APPS.md`): one QEMU boot with `desktop`, a
+USB tablet and a USB stick (a FAT image made by the script). Terminal runs
+a command, a second tab, `top`, and closes with its last tab; Files copies
+a file to the stick (mounted from the side bar), pastes into a folder,
+renames, moves to the trash (with its `.trashinfo`), makes a folder, shows
+properties, opens a text file in the Text Editor (changed and saved), and
+ejects the stick; Settings as root sets the mouse speed, the time zone,
+the scale and a new administrator, carol, who logs in and changes the
+mouse speed with her password (`sudo -S`); last the keyboard layout. The
+file copied is then looked for on the stick image (`mdir`).
+`runtests terminal` (every build) tests pseudo-terminals with `ptytest`.
+
 ## Run in QEMU
 
 ```bash

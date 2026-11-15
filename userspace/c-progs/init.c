@@ -26,7 +26,9 @@
 //!   (and mice) with the PS/2 driver and the kernel, applies the layout
 //!   and repeats held keys, and sends the console the bytes of each press
 //!   while the console has the focus.
-//! - In cooked mode (the default) it edits the typed line (echo,
+//! - The line discipline (<rustux/ldisc.h>, in the C library since
+//!   DESKTOP.md step F7, shared with pseudo-terminals):
+//!   in cooked mode (the default) it edits the typed line (echo,
 //!   Backspace, Ctrl+U, Ctrl+W) and sends it to whoever reads the console
 //!   when Enter is pressed; Ctrl+D sends end of input. In raw mode (set
 //!   with tcsetattr) every key goes out as it is pressed.
@@ -44,6 +46,7 @@
 #include <rustux/auth.h>
 #include <rustux/console.h>
 #include <rustux/input.h>
+#include <rustux/ldisc.h>
 #include <rustux/process.h>
 #include <rustux/service.h>
 #include <sys/mount.h>
@@ -72,123 +75,31 @@ static int input_failures;
 
 // ---- console ----
 
-// Terminal mode, set by programs with tcsetattr (termios bits)
-#define LF_ISIG   0000001u
-#define LF_ICANON 0000002u
-#define LF_ECHO   0000010u
-#define IF_ICRNL  0000400u
-static uint32_t lflag = LF_ISIG | LF_ICANON | LF_ECHO, iflag = IF_ICRNL;
+static rx_ldisc_t ldisc; // the line discipline (<rustux/ldisc.h>), shared with pseudo-terminals
+static int scrolled;     // the screen shows the scrollback
 
-static char line[RX_CONSOLE_MAX_DATA - 96];
-static size_t line_len;
-static int scrolled; // the screen shows the scrollback
-
-static void echo(const char *s, size_t n) {
+static void echo(rx_ldisc_t *ld, const char *s, size_t n) {
+    (void)ld;
     write(1, s, n);
-}
-
-static void send_input(const char *s, size_t n) {
-    char msg[4 + RX_CONSOLE_MAX_DATA];
-    uint32_t op = RX_CONSOLE_OP_INPUT;
-    memcpy(msg, &op, 4);
-    memcpy(msg + 4, s, n);
-    rx_channel_write(con_server, 0, msg, (uint32_t)(4 + n), 0, 0); // dropped if nobody reads for a long time
-}
-
-// Remove the last character (a whole UTF-8 sequence) from the line
-static void rubout(void) {
-    if (!line_len) return;
-    while (line_len > 1 && (line[line_len - 1] & 0xC0) == 0x80) line_len--;
-    line_len--;
-    if (lflag & LF_ECHO) echo("\b \b", 3);
-}
-
-static void interrupt(void) {
-    if (lflag & LF_ECHO) echo("^C\n", 3);
-    line_len = 0;
-    rx_object_signal_peer(con_server, 0, RX_CONSOLE_SIGNAL_INTERRUPT);
-}
-
-// Cooked mode: edit the line, send it on Enter
-static void cooked(const char *s, int n) {
-    if (n > 1 && s[0] == 0x1B) return; // arrows, function keys: no line editing here
-    unsigned char c = (unsigned char)s[0];
-    if (n > 1 || c >= 0x80) { // a UTF-8 character
-        if (line_len + (size_t)n < sizeof line - 1) {
-            memcpy(line + line_len, s, (size_t)n);
-            line_len += (size_t)n;
-            if (lflag & LF_ECHO) echo(s, (size_t)n);
-        }
-        return;
-    }
-    switch (c) {
-    case '\r':
-    case '\n':
-        line[line_len++] = '\n';
-        if (lflag & LF_ECHO) echo("\n", 1);
-        send_input(line, line_len);
-        line_len = 0;
-        break;
-    case 0x08: // Backspace
-    case 0x7F:
-        rubout();
-        break;
-    case 0x15: // Ctrl+U: erase the line
-        while (line_len) rubout();
-        break;
-    case 0x17: // Ctrl+W: erase a word
-        while (line_len && line[line_len - 1] == ' ') rubout();
-        while (line_len && line[line_len - 1] != ' ') rubout();
-        break;
-    case 0x03: // Ctrl+C
-        if (lflag & LF_ISIG) interrupt();
-        break;
-    case 0x04: // Ctrl+D: end of input on an empty line, else send the line as is
-        send_input(line, line_len);
-        line_len = 0;
-        break;
-    default:
-        if ((c >= 0x20 || c == '\t') && line_len < sizeof line - 1) {
-            line[line_len++] = (char)c;
-            if (lflag & LF_ECHO) echo((char *)&c, 1);
-        }
-        break;
-    }
-}
-
-// The bytes of one key press, in the current mode
-static void key_bytes(char *s, int n) {
-    if (!(lflag & LF_ICANON)) {
-        if ((lflag & LF_ISIG) && n == 1 && s[0] == 0x03) {
-            interrupt();
-            return;
-        }
-        if (n == 1 && s[0] == '\r' && (iflag & IF_ICRNL)) s[0] = '\n';
-        if (lflag & LF_ECHO) echo(s, (size_t)n);
-        send_input(s, (size_t)n);
-        return;
-    }
-    cooked(s, n);
 }
 
 // A key press from the input service
 static void console_key(const rx_input_console_t *k) {
     // Shift+PgUp / Shift+PgDn: the console's scrollback, not for programs
     if ((k->mods & (RX_INPUT_MOD_LSHIFT | RX_INPUT_MOD_RSHIFT)) && (k->usage == 0x4B || k->usage == 0x4E)) {
-        echo(k->usage == 0x4B ? "\033[1^" : "\033[2^", 4);
+        write(1, k->usage == 0x4B ? "\033[1^" : "\033[2^", 4);
         scrolled = 1;
         return;
     }
     if (scrolled) {
-        echo("\033[0^", 4);
+        write(1, "\033[0^", 4);
         scrolled = 0;
     }
     char out[sizeof k->text];
     int n = k->len <= sizeof out ? k->len : (int)sizeof out;
     memcpy(out, k->text, (size_t)n);
     // Enter comes as CR: a newline unless the terminal wants CR (ICRNL off)
-    if ((iflag & IF_ICRNL) && (k->usage == 0x28 || k->usage == 0x58) && n == 1) out[0] = '\n';
-    if (n > 0) key_bytes(out, n);
+    if (n > 0) rx_ldisc_key(&ldisc, out, (size_t)n);
 }
 
 static void keys_from_input(void) {
@@ -212,20 +123,11 @@ static void console_output(void) {
     static char msg[4 + RX_CONSOLE_MAX_DATA];
     uint32_t n = 0;
     while (rx_channel_read(con_server, 0, msg, 0, sizeof msg, 0, &n, 0) == RX_OK) {
-        uint32_t op = 0;
-        if (n >= 4) memcpy(&op, msg, 4);
-        if (op == RX_CONSOLE_OP_WRITE && n > 4) {
-            write(1, msg + 4, n - 4);
+        const char *data;
+        size_t len;
+        if (rx_ldisc_message(&ldisc, msg, n, &data, &len) == 1 && len) {
+            write(1, data, len);
             scrolled = 0;
-        } else if (op == RX_CONSOLE_OP_SET_MODE && n >= 12) {
-            uint32_t was = lflag;
-            memcpy(&lflag, msg + 4, 4);
-            memcpy(&iflag, msg + 8, 4);
-            // Switching to raw mode hands over what was typed so far
-            if ((was & LF_ICANON) && !(lflag & LF_ICANON) && line_len) {
-                send_input(line, line_len);
-                line_len = 0;
-            }
         }
     }
 }
@@ -523,6 +425,12 @@ int main(int argc, char **argv) {
     rx_fd_bind(2, RX_FD_LOG, log2);
     setvbuf(stdout, 0, _IONBF, 0);
     rx_channel_create(0, &con_server, &con_client);
+    rx_ldisc_init(&ldisc, con_server, echo, 0);
+    {
+        rx_system_stats_t st;
+        memset(&st, 0, sizeof st);
+        if (rx_system_get_stats(&st) == RX_OK && st.console_cols) rx_tty_set_size(con_server, (unsigned)st.console_cols, (unsigned)st.console_rows);
+    }
 
     printf("Init process (PID 1) starting...\n");
     rx_handle_t bootfs = rx_take_startup_handle(RX_PA_VMO_BOOTFS);

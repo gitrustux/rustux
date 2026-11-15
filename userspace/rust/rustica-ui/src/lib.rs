@@ -25,4 +25,4 @@ pub mod ui;
 
 pub use app::{run, Control, Request};
 pub use rustica_window;
-pub use ui::{TreeNode, Ui};
+pub use ui::{Column, Icon, Key, Row, TableResponse, TreeNode, Ui};

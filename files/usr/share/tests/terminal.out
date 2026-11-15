@@ -1,0 +1,8 @@
+ptytest: size 100x30
+ptytest: cooked, echo, backspace
+ptytest: raw
+ptytest: end of the program, EIO
+ptytest: shell command
+ptytest: Ctrl+C
+ptytest: shell exit, EIO
+ptytest: ok

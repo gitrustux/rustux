@@ -79,6 +79,7 @@ extern "C" {
     fn rx_window_activate(w: *mut RawWindow, id: i32) -> i32;
     fn rx_window_lock(w: *mut RawWindow) -> i32;
     fn rx_window_notify(w: *mut RawWindow, text: *const u8) -> i32;
+    fn rx_window_wake(ch: u32) -> i32;
     fn clock_gettime(clock: i32, ts: *mut [i64; 2]) -> i32;
 }
 
@@ -105,6 +106,19 @@ pub enum Event {
     Frame,
     /// To the panel (step F6): id -1 starts a new list; then one per window
     WindowInfo { id: i32, title: String, focused: bool, minimized: bool },
+    /// [`Waker::wake`] was called
+    Wake,
+}
+
+/// Wakes a window's event loop from another thread: its next_event
+/// returns [`Event::Wake`]
+#[derive(Clone, Copy, Debug)]
+pub struct Waker(u32);
+
+impl Waker {
+    pub fn wake(&self) {
+        unsafe { rx_window_wake(self.0) };
+    }
 }
 
 /// The panel's role (set_role)
@@ -153,6 +167,11 @@ impl Window {
             return Err(errno(r));
         }
         Ok(Window { raw, gone: false })
+    }
+
+    /// Something that wakes this window's event loop from another thread
+    pub fn waker(&self) -> Waker {
+        Waker(self.raw.ch)
     }
 
     /// False once the compositor is gone (next_event said so)
@@ -212,6 +231,7 @@ impl Window {
         const FRAME: u32 = 106;
         const STATE: u32 = 107;
         const WINDOW_INFO: u32 = 108;
+        const WAKE: u32 = 109;
         Some(match ev.op {
             CONFIGURE => Event::Configure { width: ev.w, height: ev.h },
             KEY => {
@@ -233,6 +253,7 @@ impl Window {
                 minimized: ev.flags & 4 != 0,
             },
             FRAME => Event::Frame,
+            WAKE => Event::Wake,
             WINDOW_INFO => {
                 let len = ev.text.iter().position(|&b| b == 0).unwrap_or(ev.text.len());
                 Event::WindowInfo {

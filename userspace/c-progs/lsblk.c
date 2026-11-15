@@ -157,7 +157,13 @@ static void print_json(struct dev *d, int indent) {
         key[k] = 0;
         printf("%s\"%s\":", i ? ", " : "", key);
         if (show[i] == C_RM || show[i] == C_RO) printf("%s", s[0] == '1' ? "true" : "false");
-        else if (show[i] == C_MOUNT) printf("[null]");
+        else if (show[i] == C_MOUNT) {
+            if (*s) {
+                printf("[");
+                json_str(s);
+                printf("]");
+            } else printf("[null]");
+        }
         else if (!*s) printf("null");
         else if (num) printf("%s", s);
         else json_str(s);

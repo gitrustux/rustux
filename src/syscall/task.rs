@@ -469,12 +469,31 @@ pub fn sys_object_get_child(args: SyscallArgs) -> SyscallRet {
     })())
 }
 
-/// object_set_property(handle, property, *buf, len) — only REGISTER_FS
-/// (4) of a thread: its FS base, a u64 user address (thread-local storage)
+/// Property TTY_SIZE (5) of a channel: a terminal's size, u16 columns
+/// then u16 rows, the same on both ends (set with WRITE, read with READ)
+const PROP_TTY_SIZE: u32 = 5;
+
+/// object_set_property(handle, property, *buf, len) — REGISTER_FS (4) of
+/// a thread: its FS base, a u64 user address (thread-local storage);
+/// TTY_SIZE (5) of a channel
 pub fn sys_object_set_property(args: SyscallArgs) -> SyscallRet {
     let (h, prop, buf, len) = (args.arg_u32(0), args.arg_u32(1), args.arg(2), args.arg(3));
     ret((|| {
         const PROP_REGISTER_FS: u32 = 4;
+        if prop == PROP_TTY_SIZE {
+            let (obj, rights) = lookup(h, 0)?;
+            let KObject::Channel(c) = obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+            if !rights.has(Rights::WRITE) {
+                return Err(RxStatus::ERR_ACCESS_DENIED);
+            }
+            if len != 4 {
+                return Err(RxStatus::ERR_INVALID_ARGS);
+            }
+            let b = user::read_bytes(buf, 4)?;
+            let (cols, rows) = (u16::from_le_bytes([b[0], b[1]]) as u32, u16::from_le_bytes([b[2], b[3]]) as u32);
+            c.set_tty_size(cols << 16 | rows);
+            return Ok(0);
+        }
         let t = thread_of(h, Rights::SET_PROPERTY)?;
         if prop != PROP_REGISTER_FS {
             return Err(RxStatus::ERR_NOT_SUPPORTED);
@@ -499,13 +518,29 @@ pub fn sys_object_set_property(args: SyscallArgs) -> SyscallRet {
     })())
 }
 
-/// object_get_property(handle, property, *buf, len) — only NAME (3), of a
-/// process (a thread's name is its process's)
+/// object_get_property(handle, property, *buf, len) — NAME (3) of a
+/// process (a thread's name is its process's); TTY_SIZE (5) of a channel
 pub fn sys_object_get_property(args: SyscallArgs) -> SyscallRet {
     let (h, prop, buf, len) = (args.arg_u32(0), args.arg_u32(1), args.arg(2), args.arg(3));
     ret((|| {
         const PROP_NAME: u32 = 3;
         let (obj, rights) = lookup(h, 0)?;
+        if prop == PROP_TTY_SIZE {
+            let KObject::Channel(c) = &obj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+            if !rights.has(Rights::READ) {
+                return Err(RxStatus::ERR_ACCESS_DENIED);
+            }
+            if len < 4 {
+                return Err(RxStatus::ERR_BUFFER_TOO_SMALL);
+            }
+            let v = c.tty_size();
+            let (cols, rows) = ((v >> 16) as u16, v as u16);
+            let mut b = [0u8; 4];
+            b[..2].copy_from_slice(&cols.to_le_bytes());
+            b[2..].copy_from_slice(&rows.to_le_bytes());
+            user::write_bytes(buf, &b)?;
+            return Ok(0);
+        }
         if !rights.has(Rights::GET_PROPERTY) {
             return Err(RxStatus::ERR_ACCESS_DENIED);
         }

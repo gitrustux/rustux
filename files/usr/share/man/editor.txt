@@ -1,0 +1,11 @@
+editor - the Text Editor
+
+USAGE
+    editor [FILE]
+
+    One UTF-8 text file. Ctrl+S saves (a new file asks for a name),
+    Ctrl+Q quits (asking first about changes). Selection with Shift or the
+    mouse, Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+A. Files opens text files with it.
+
+SEE ALSO
+    files, viewer

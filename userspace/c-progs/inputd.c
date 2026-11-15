@@ -17,7 +17,8 @@
 //
 // Both sources send 4-byte key records (usage, modifiers, flags, 0) and
 // 8-byte pointer records (buttons, wheel, flags, 0x81, x, y). inputd
-// applies the layout (keymap.h, /etc/keymap), repeats held keys (USB; a
+// applies the layout (keymap.h, /etc/keymap) and the pointer speed
+// (/etc/input.conf, inputctl), repeats held keys (USB; a
 // PS/2 keyboard repeats by itself) and gives every event to the consumer
 // with the focus: a program that grabbed the input, else the display's
 // owner while graphics are shown, else the console. Ctrl+Alt+F1 and
@@ -29,6 +30,7 @@
 #include <rustux/process.h>
 #include <rustux/service.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "keymap.h"
 
@@ -44,6 +46,35 @@ static rx_handle_t grabber;     // the client with the focus, or 0
 static rx_handle_t gfx;         // the client for graphics (the compositor), or 0
 
 static rx_handle_t display_ch;  // connected when first needed
+
+// /etc/input.conf (step F7, inputctl): pointer_speed=PERCENT (25-400)
+// scales relative mouse motion; read at start and with the layout
+static int pointer_speed = 100;
+static int rem_x, rem_y; // motion left over from the scaling, in 1/100
+
+static void conf_load(void) {
+    FILE *f = fopen("/etc/input.conf", "r");
+    pointer_speed = 100;
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "pointer_speed", 13)) continue;
+        p += 13;
+        while (*p == ' ' || *p == '=') p++;
+        int v = atoi(p);
+        if (v >= 25 && v <= 400) pointer_speed = v;
+    }
+    fclose(f);
+}
+
+static int16_t scaled(int v, int *rem) {
+    int t = v * pointer_speed + *rem;
+    int out = t / 100;
+    *rem = t - out * 100;
+    return (int16_t)out;
+}
 
 static rx_handle_t repeat_timer;
 static uint8_t repeat_usage, repeat_mods;
@@ -176,7 +207,9 @@ static void repeat_fired(void) {
     rx_timer_set(repeat_timer, rx_clock_get_monotonic() + 33000000ull, 0);
 }
 
-static void pointer(const unsigned char *r) {
+static void pointer(const unsigned char *rec) {
+    unsigned char r[8];
+    memcpy(r, rec, 8);
     int16_t x = (int16_t)(r[4] | r[5] << 8), y = (int16_t)(r[6] | r[7] << 8);
     {
         rx_input_event_t e;
@@ -188,6 +221,14 @@ static void pointer(const unsigned char *r) {
             e.x = (uint16_t)x;
             e.y = (uint16_t)y;
         } else {
+            if (pointer_speed != 100) {
+                x = scaled(x, &rem_x);
+                y = scaled(y, &rem_y);
+                r[4] = (unsigned char)x; // for the display service too
+                r[5] = (unsigned char)((uint16_t)x >> 8);
+                r[6] = (unsigned char)y;
+                r[7] = (unsigned char)((uint16_t)y >> 8);
+            }
             e.x = x;
             e.y = y;
         }
@@ -263,6 +304,7 @@ static int request(int k) {
         break;
     case RX_INPUT_OP_RELOAD_KEYMAP:
         km_load();
+        conf_load();
         break;
     case RX_INPUT_OP_RESTART_KBD:
         if (who.euid != 0) st = -EPERM;
@@ -290,6 +332,7 @@ int main(void) {
     }
     rx_timer_create(0, 0, &repeat_timer);
     km_load();
+    conf_load();
     start_driver();
     rx_handle_t listen, theirs;
     if (rx_channel_create(0, &listen, &theirs) != RX_OK || rx_service_publish("/svc/input", theirs) < 0) {

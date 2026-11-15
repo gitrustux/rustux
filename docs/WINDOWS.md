@@ -57,7 +57,11 @@ animation to what the screen takes.
 
 Clients: `rx_window_*` in libc (`src/window.c`) for C, the
 `rustica-window` crate (`userspace/rust/rustica-window`, a safe wrapper of
-it) for Rust.
+it) for Rust. `rx_window_wake(ch)` (step F7; `Window::waker()` in Rust)
+may be called from any thread: the window's next `rx_window_next_event`
+returns `EV_WAKE` (a user signal on the client's own end of the channel,
+nothing goes to the compositor), so a program waiting for its window can
+be woken when, for example, a terminal's program prints.
 
 ## Window management
 
@@ -100,7 +104,9 @@ every window and take the keys until the session's user's password
 Software only, into the display's back buffer: for each damaged rectangle
 the wallpaper, the windows bottom to top (border, title bar with the
 8x16 console font, buttons, content) and the cursor; then one `PRESENT`
-of the damaged rectangles. Only what changed is drawn and copied.
+of the damaged rectangles. Only what changed is drawn and copied. Titles
+are UTF-8: the font has ASCII, dashes, a times sign and quotes are drawn
+as their ASCII look-alikes, anything else as '?' (step F7).
 
 ## Tests
 

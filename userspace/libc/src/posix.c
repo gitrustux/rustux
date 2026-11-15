@@ -17,6 +17,7 @@
 #include <getopt.h>
 #include <poll.h>
 #include <rustux/console.h>
+#include <rustux/ldisc.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -119,6 +120,14 @@ int poll(struct pollfd *fds, nfds_t n, int timeout_ms) {
                 map[m++] = (int)i;
             }
             break;
+        case RX_FD_PTY:
+            if (fds[i].events & POLLOUT) fds[i].revents |= POLLOUT;
+            if (fds[i].events & POLLIN) {
+                items[m].handle = f->handle;
+                items[m].waitfor = __pty_poll_signals();
+                map[m++] = (int)i;
+            }
+            break;
         case RX_FD_PIPE:
             items[m].handle = f->handle;
             items[m].waitfor = RX_PEER_CLOSED | ((fds[i].events & POLLIN) ? RX_CHANNEL_READABLE : 0) |
@@ -143,7 +152,7 @@ int poll(struct pollfd *fds, nfds_t n, int timeout_ms) {
         struct pollfd *p = &fds[map[k]];
         short before = p->revents;
         uint32_t s = items[k].pending;
-        if ((s & RX_CHANNEL_READABLE) && (p->events & POLLIN)) p->revents |= POLLIN;
+        if ((s & (RX_CHANNEL_READABLE | (__pty_poll_signals() & ~(RX_CHANNEL_READABLE | RX_PEER_CLOSED)))) && (p->events & POLLIN)) p->revents |= POLLIN;
         if ((s & RX_CHANNEL_WRITABLE) && (p->events & POLLOUT)) p->revents |= POLLOUT;
         if (s & RX_PEER_CLOSED) p->revents |= (p->events & POLLOUT) ? POLLERR | POLLHUP : POLLHUP;
         if (!before && p->revents) ready++;
@@ -251,7 +260,7 @@ unsigned __tty_lflag = ISIG | ICANON | ECHO, __tty_vmin = 1, __tty_vtime = 0;
 static struct fd *console(int fd) {
     struct fd *f = __fd_get(fd);
     if (!f) return 0;
-    if (f->kind != RX_FD_CONSOLE) {
+    if (f->kind != RX_FD_CONSOLE && f->kind != RX_FD_PTY) {
         errno = ENOTTY;
         return 0;
     }
@@ -268,6 +277,7 @@ int tcsetattr(int fd, int when, const struct termios *t) {
     (void)when;
     struct fd *f = console(fd);
     if (!f) return -1;
+    if (f->kind == RX_FD_PTY) return 0; // the slave's side sets the modes
     uint32_t msg[3] = { RX_CONSOLE_OP_SET_MODE, t->c_lflag & (ISIG | ICANON | ECHO), t->c_iflag & ICRNL };
     rx_status_t r = rx_channel_write(f->handle, 0, msg, sizeof msg, 0, 0);
     if (r != RX_OK) return __set_errno_status(r);
@@ -301,7 +311,14 @@ int tcflush(int fd, int queue) {
     return 0;
 }
 
-static int winsize(struct winsize *w) {
+static int winsize(struct fd *f, struct winsize *w) {
+    unsigned cols, rows;
+    w->ws_xpixel = w->ws_ypixel = 0;
+    if (rx_tty_get_size(f->handle, &cols, &rows) == 0) { // a pseudo-terminal, or the console
+        w->ws_col = (unsigned short)cols;
+        w->ws_row = (unsigned short)rows;
+        return 0;
+    }
     rx_system_stats_t s;
     memset(&s, 0, sizeof s);
     rx_system_get_stats(&s);
@@ -329,9 +346,14 @@ int ioctl(int fd, unsigned long req, ...) {
     case TCSETS: case TCSETSW: case TCSETSF: return tcsetattr(fd, TCSANOW, arg);
     case TIOCGWINSZ:
         if (!console(fd)) return -1;
-        return winsize(arg);
+        return winsize(f, arg);
+    case TIOCSWINSZ: {
+        if (!console(fd)) return -1;
+        const struct winsize *w = arg;
+        return rx_tty_set_size(f->handle, w->ws_col, w->ws_row) == 0 ? 0 : fail(EINVAL);
+    }
     default:
-        return fail(f->kind == RX_FD_CONSOLE ? EINVAL : ENOTTY);
+        return fail(f->kind == RX_FD_CONSOLE || f->kind == RX_FD_PTY ? EINVAL : ENOTTY);
     }
 }
 

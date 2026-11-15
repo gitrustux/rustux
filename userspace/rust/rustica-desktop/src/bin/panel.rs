@@ -53,9 +53,13 @@ struct Win {
     minimized: bool,
 }
 
+/// The keyboard layout (/etc/keymap; Settings or localectl change it)
+fn layout() -> String {
+    let l = std::fs::read_to_string("/etc/keymap").map(|s| s.trim().to_string()).unwrap_or_default();
+    if l.is_empty() { "us".to_string() } else { l }
+}
+
 fn main() {
-    let layout = std::fs::read_to_string("/etc/keymap").map(|s| s.trim().to_string()).unwrap_or_default();
-    let layout = if layout.is_empty() { "us".to_string() } else { layout };
     let user = std::env::var("USER").unwrap_or_default();
     if let Ok(list) = std::fs::read_to_string("/etc/autostart") {
         for line in list.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
@@ -89,7 +93,7 @@ fn main() {
         let h = ui.canvas.height();
         ui.canvas.fill_rect(rustica_ui::gfx::Rect::new(0.0, 0.0, w, h), th.surface);
         ui.canvas.fill_rect(rustica_ui::gfx::Rect::new(0.0, 0.0, w, 1.0), th.border);
-        let right = format!("{layout}    Vol \u{2014}    Net \u{2014}    {}", clock());
+        let right = format!("{}    Vol \u{2014}    Net \u{2014}    {}", layout(), clock());
         let right_w = ui.text_width(&right) + ui.text_width("Lock") + ui.text_width("Log out") + ui.u(32.0 * 2.0 + 8.0 * 4.0 + 16.0);
         ui.row(|ui| {
             if ui.primary_button("Applications") {

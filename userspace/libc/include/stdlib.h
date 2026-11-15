@@ -23,6 +23,12 @@ void *aligned_alloc(size_t align, size_t size);
 void *memalign(size_t align, size_t size);
 size_t malloc_usable_size(void *p);
 char *realpath(const char *restrict path, char *restrict resolved);
+// Pseudo-terminals (libc pty.c): the slave is open(ptsname(master)), once
+int posix_openpt(int flags);
+int grantpt(int fd);
+int unlockpt(int fd);
+char *ptsname(int fd);
+int ptsname_r(int fd, char *buf, size_t size);
 double strtod(const char *restrict s, char **restrict end);
 double atof(const char *s);
 

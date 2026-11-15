@@ -79,6 +79,8 @@ typedef struct {
 // To the panel: x -1 starts a new list, then one per window: x its id,
 // flags 1 focused, 2 minimised, text its title (cut to 15 characters)
 #define RX_WINDOW_EV_WINDOW_INFO   108u
+// Not from the compositor: rx_window_wake was called (from another thread)
+#define RX_WINDOW_EV_WAKE          109u
 
 // Pointer event flags
 #define RX_WINDOW_PTR_MOTION  0x01u
@@ -138,5 +140,8 @@ int rx_window_activate(rx_window_t *win, int id);
 int rx_window_lock(rx_window_t *win);
 // A notification, with or without a window (win 0: a connection of its own)
 int rx_window_notify(rx_window_t *win, const char *text);
+// From any thread: make the window's rx_window_next_event return
+// RX_WINDOW_EV_WAKE (ch is the window's ch; step F7)
+int rx_window_wake(rx_handle_t ch);
 
 #endif

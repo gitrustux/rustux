@@ -204,8 +204,8 @@ if result < 0 {
 | `OBJECT_GET_INFO` | 0x0A | Query an object (see topics below) | ✅ |
 | `PROCESS_SET_CREDS` | 0x0B | Change one's own credentials, or (root) those of a process not started yet (step 17; was `SPAWN_PROCESS`) | ✅ |
 | `OBJECT_GET_CHILD` | 0x0C | A job's child job or process, or a process's thread, by koid | ✅ |
-| `OBJECT_GET_PROPERTY` | 0x0D | Read a property (only `NAME`) | ✅ |
-| `OBJECT_SET_PROPERTY` | 0x0E | Set a property (only a thread's `REGISTER_FS`) | ✅ |
+| `OBJECT_GET_PROPERTY` | 0x0D | Read a property (`NAME`, a channel's `TTY_SIZE`) | ✅ |
+| `OBJECT_SET_PROPERTY` | 0x0E | Set a property (a thread's `REGISTER_FS`, a channel's `TTY_SIZE`) | ✅ |
 
 **Model** (Zircon): a **job** holds processes and child jobs. A **process**
 owns a handle table and an address space and starts with no threads;
@@ -375,13 +375,19 @@ if no such child. `ps` and `kill` walk the job tree with it.
 #### OBJECT_GET_PROPERTY (0x0D)
 
 `object_get_property(rx_handle_t h, uint32_t property, void *buf, size_t len)`
-— needs `GET_PROPERTY`. Only `PROP_NAME` (3): a process's name (a thread
-gives its process's), NUL-terminated, at most 31 bytes.
+— needs `GET_PROPERTY`. `PROP_NAME` (3): a process's name (a thread
+gives its process's), NUL-terminated, at most 31 bytes. `PROP_TTY_SIZE`
+(5) of a channel, with `READ` (channels have no property rights): the
+terminal size, `uint16_t` columns then rows (0, 0 if never set), the same
+on both ends (DESKTOP.md step F7, `APPS.md`).
 
 #### OBJECT_SET_PROPERTY (0x0E)
 
 `object_set_property(rx_handle_t h, uint32_t property, const void *value, size_t len)`
-— needs `SET_PROPERTY`. Only `PROP_REGISTER_FS` (4) on a thread, as in
+— `PROP_TTY_SIZE` (5) on a channel, with `WRITE`: `value` is `uint16_t`
+columns, rows (`len` 4), set for both ends (a pseudo-terminal's
+`TIOCSWINSZ`; init sets the text console's). Else it needs `SET_PROPERTY`:
+`PROP_REGISTER_FS` (4) on a thread, as in
 Zircon: `value` points to a `uint64_t`, the thread's FS base (`len` 8). The
 C library points it at the thread's control block, below which the
 thread's copy of the program's thread-local storage lies (x86-64 TLS

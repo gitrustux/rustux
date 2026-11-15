@@ -1,0 +1,16 @@
+settings - the desktop's settings
+
+USAGE
+    settings [SECTION]   display, keyboard, mouse, time, users, disks, about
+
+    Display: the scale of windows (~/.config/rustica.conf, scale=).
+    Keyboard: the layout (localectl). Mouse: the pointer speed (inputctl).
+    Date & Time: the clock and the time zone (timedatectl). Users: add,
+    remove, make administrator (useradd, userdel, usermod, chpasswd).
+    Disks: what lsblk shows. About: the system and the hardware.
+
+    What is the system's is root's: another user types their password
+    and the change is made with sudo -S (they must be in group sudo).
+
+SEE ALSO
+    localectl, inputctl, timedatectl, useradd, lsblk (docs/APPS.md)

@@ -1,0 +1,11 @@
+viewer - the Image Viewer
+
+USAGE
+    viewer FILE
+
+    A PNG or JPEG picture, made smaller to fit the window. Left and Right
+    show the other pictures in its folder; Esc closes. Files opens
+    pictures with it.
+
+SEE ALSO
+    files, editor

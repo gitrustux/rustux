@@ -1,0 +1,12 @@
+ptytest - test pseudo-terminals
+
+USAGE
+    ptytest
+
+    Runs a program of its own, then the shell, on pseudo-terminals
+    (posix_openpt) and checks the size (TIOCSWINSZ, TIOCGWINSZ), echo,
+    Backspace, cooked and raw mode, Ctrl+C and the end (EIO). Prints
+    "ptytest: ok" when all is well; runtests terminal runs it.
+
+SEE ALSO
+    terminal, runtests

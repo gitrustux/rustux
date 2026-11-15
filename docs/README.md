@@ -99,6 +99,7 @@ docs/
 ├── WINDOWS.md                    # The compositor and the window protocol (desktop step F4)
 ├── GUI.md                        # The toolkit, rustica-ui, and why (desktop step F5)
 ├── SESSION.md                    # The desktop session: login, panel, launcher, lock (desktop step F6)
+├── APPS.md                       # Pseudo-terminals, Terminal, Files, Settings, Text Editor, Image Viewer (desktop step F7)
 ├── ROADMAP.md                    # Architecture checklist (Jan 2026 plan)
 ├── HISTORY.md                    # Project history and decisions
 ├── usb-keyboard.md               # USB keyboard status and debugging history

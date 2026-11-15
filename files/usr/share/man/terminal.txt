@@ -1,0 +1,22 @@
+terminal - the shell in a window
+
+USAGE
+    terminal                 a window with the shell (/bin/shell)
+    terminal -e PROG ARGS    PROG instead
+
+    The program runs on a pseudo-terminal: the console's escape sequences
+    (colours, the cursor, the alternate screen of top and editors) and a
+    scrollback of 5000 lines. A tab closes when its program ends, the
+    window with the last tab.
+
+KEYS
+    Ctrl+Shift+T            a new tab (also the + button)
+    Ctrl+Shift+W            close the tab (also its x)
+    Ctrl+PgUp, Ctrl+PgDn    the tab before, after
+    Ctrl+Shift+C            copy what the mouse selected
+    Ctrl+Shift+V            paste (also the middle button)
+    Ctrl+= Ctrl+- Ctrl+0    bigger, smaller, normal text
+    Shift+PgUp, Shift+PgDn  scroll back (also the wheel)
+
+SEE ALSO
+    shell, files, ptytest (docs/APPS.md)

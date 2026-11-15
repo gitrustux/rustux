@@ -13,6 +13,12 @@
 #include <string.h>
 
 #define QSIZE ((int)(sizeof(((rx_window_t *)0)->queue) / sizeof(rx_window_event_t)))
+// Raised on the client's end of the channel by rx_window_wake
+#define WAKE_SIGNAL (RX_USER_SIGNAL_0 << 7)
+
+int rx_window_wake(rx_handle_t ch) {
+    return rx_object_signal(ch, 0, WAKE_SIGNAL) == RX_OK ? 0 : -EBADF;
+}
 
 static int send_req(rx_window_t *win, const rx_window_req_t *r, const void *payload, uint32_t len, rx_handle_t h) {
     char buf[sizeof(rx_window_req_t) + RX_WINDOW_MAX_CLIPBOARD];
@@ -33,9 +39,15 @@ static int read_one(rx_window_t *win, rx_window_event_t *ev, uint64_t deadline, 
         rx_handle_t h;
         rx_status_t s = rx_channel_read(win->ch, 0, buf, &h, sizeof buf, 1, &nb, &nh);
         if (s == RX_ERR_SHOULD_WAIT) {
-            if (!deadline) return 0;
             uint32_t pend = 0;
-            rx_object_wait_one(win->ch, RX_CHANNEL_READABLE | RX_PEER_CLOSED, deadline, &pend);
+            rx_object_wait_one(win->ch, RX_CHANNEL_READABLE | RX_PEER_CLOSED | WAKE_SIGNAL, deadline, &pend);
+            if (pend & WAKE_SIGNAL) { // another thread called rx_window_wake
+                rx_object_signal(win->ch, WAKE_SIGNAL, 0);
+                memset(ev, 0, sizeof *ev);
+                ev->op = RX_WINDOW_EV_WAKE;
+                if (extra_len) *extra_len = 0;
+                return 1;
+            }
             if (!(pend & (RX_CHANNEL_READABLE | RX_PEER_CLOSED))) return 0;
             continue;
         }

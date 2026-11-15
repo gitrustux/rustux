@@ -40,6 +40,8 @@ pub enum Request {
     Lock,
     Notify(String),
     Fullscreen(bool),
+    /// The window's title (sent only when it changes)
+    Title(String),
 }
 
 /// What the frame function asks for, and what it is told
@@ -54,26 +56,43 @@ pub struct Control {
     /// Events other than input since the last frame (window lists, focus,
     /// state); the frame function takes what it wants
     pub events: Vec<Event>,
+    /// Wakes the loop from another thread (a frame is drawn)
+    pub waker: Option<rustica_window::Waker>,
 }
 
-/// The scale: RUSTICA_SCALE=2 doubles everything (1 otherwise)
+/// The scale: RUSTICA_SCALE=2 doubles everything; else the user's
+/// setting (scale= in ~/.config/rustica.conf, which Settings writes); 1
+/// otherwise
 pub fn scale_from_env() -> f32 {
-    match std::env::var("RUSTICA_SCALE").ok().and_then(|s| s.parse::<f32>().ok()) {
+    let conf = || -> Option<String> {
+        let home = std::env::var("HOME").ok()?;
+        let text = std::fs::read_to_string(format!("{home}/.config/rustica.conf")).ok()?;
+        text.lines().find_map(|l| l.trim().strip_prefix("scale=").map(|v| v.trim().to_string()))
+    };
+    match std::env::var("RUSTICA_SCALE").ok().or_else(conf).and_then(|s| s.parse::<f32>().ok()) {
         Some(s) if (1.0..=4.0).contains(&s) => s.round(),
         _ => 1.0,
     }
 }
 
 /// Open a window of w x h units and run frame until it asks to quit or
-/// the window is closed
+/// the window is closed. Without a position, RUSTICA_WINDOW_AT=X,Y (for
+/// scripts and tests) gives one, else the compositor chooses.
 pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl FnMut(&mut Ui, &mut Control)) -> Result<(), String> {
     let scale = scale_from_env();
+    let at = at.or_else(|| {
+        let v = std::env::var("RUSTICA_WINDOW_AT").ok()?;
+        let (x, y) = v.split_once(',')?;
+        Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+    });
     let face = Face::load(FONT)?;
     let bold = Face::load(FONT_BOLD)?;
     let win = Window::new(title, (w as f32 * scale) as u32, (h as f32 * scale) as u32, at).map_err(|e| format!("no window: {e}"))?;
     let win = Rc::new(RefCell::new(win));
     let mut ui = Ui::new(face, bold, scale, Box::new(Clipboard(win.clone())));
     let mut ctl = Control::default();
+    let mut shown_title = title.to_string();
+    ctl.waker = Some(win.borrow().waker());
     let mut draw = |ui: &mut Ui, ctl: &mut Control, commit: bool| {
         loop {
             let (ww, wh) = {
@@ -97,6 +116,12 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
                 Request::Lock => w.lock(),
                 Request::Notify(t) => w.notify(&t),
                 Request::Fullscreen(on) => w.set_fullscreen(on),
+                Request::Title(t) => {
+                    if t != shown_title {
+                        w.set_title(&t);
+                        shown_title = t;
+                    }
+                }
             }
         }
         ctl.events.clear();
@@ -139,6 +164,11 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
                     if flags & rustica_window::PTR_LEAVE != 0 {
                         inp.mouse = (-1.0, -1.0);
                     }
+                    if buttons & 2 != 0 && !inp.right_held {
+                        inp.right_pressed = true;
+                        now = true;
+                    }
+                    inp.right_held = buttons & 2 != 0;
                     let down = buttons & 1 != 0;
                     if down != inp.down {
                         inp.down = down;
@@ -165,6 +195,7 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
                     ctl.events.push(e);
                     dirty = true;
                 }
+                Event::Wake => dirty = true,
                 Event::CloseRequest => return Ok(()),
             }
             if now {

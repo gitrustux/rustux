@@ -171,6 +171,7 @@ static int fail(int neg_errno) {
 
 int open(const char *path, int flags, ...) {
     char rel[PATH_MAX];
+    if (!strncmp(path, "/dev/pts/", 9)) return __pty_open_slave(path);
     int r = resolve(path, rel);
     if (r < 0) return fail(r);
     uint32_t mode = 0644;

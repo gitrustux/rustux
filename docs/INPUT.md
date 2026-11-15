@@ -31,6 +31,10 @@ inputd does, freeing the IRQs). inputd:
   is used from boot on (init read `/etc/keymap` before mounting, from the
   boot image: a layout set with `localectl` applied only until a reboot);
   `localectl set-keymap` and `loadkeys` reload it;
+- scales relative mouse movement by the pointer speed (`/etc/input.conf`,
+  `pointer_speed=PERCENT`, 25-400; `inputctl set-pointer-speed`, Settings >
+  Mouse; step F7), read at start and with the layout; absolute devices
+  (tablets) are not scaled;
 - repeats held USB keys (500 ms, then 30 a second; a PS/2 keyboard repeats
   by itself);
 - handles Ctrl+Alt+F1 (text console) and Ctrl+Alt+F7 (graphics) itself;

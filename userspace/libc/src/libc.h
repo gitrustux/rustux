@@ -24,7 +24,17 @@ struct fd {
     // Console input left over from the last message
     char *rbuf;
     uint32_t rlen, rpos;
+    struct pty *pty;      // a pseudo-terminal's master (pty.c)
 };
+
+// Pseudo-terminal masters (pty.c)
+struct pty;
+int __pty_open_slave(const char *path);
+long __pty_read(struct fd *f, char *buf, size_t n);
+long __pty_write(struct fd *f, const char *buf, size_t n);
+uint32_t __pty_poll_signals(void);
+void __pty_ref(struct fd *f);
+void __pty_release(struct fd *f);
 
 // Threads. The thread pointer (FS base) points at the thread's control
 // block; its thread-local storage lies just below it (x86-64 variant II).

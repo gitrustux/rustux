@@ -46,8 +46,10 @@ Ctrl+Alt+F1 throughout.
   every 5 seconds), Lock, Log out. It starts the commands in
   `/etc/autostart`.
 - **launcher** (Rust): the applications in `/usr/share/applications/*.app`
-  (`name=`, `exec=`, `comment=` lines), in a list; Enter or Open starts
-  one, Esc or Close ends it.
+  (`name=`, `exec=`, `comment=` lines; `types=` lists the file name
+  extensions an application opens, for Files: step F7, `APPS.md`), in a
+  list; Enter or Open starts one, Esc or Close ends it. Step F7 added
+  Terminal, Files, Settings, the Text Editor and the Image Viewer.
 - **compositor** (`WINDOWS.md`): the wallpaper (a dithered Dracula gradient
   with a purple glow, computed for the screen's size), notifications (top
   right, 5 seconds, three at most: `notify TEXT`, or `RX_WINDOW_NOTIFY`

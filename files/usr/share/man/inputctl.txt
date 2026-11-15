@@ -1,0 +1,12 @@
+inputctl - the input service's settings
+
+USAGE
+    inputctl [status]                   the settings
+    inputctl set-pointer-speed PERCENT  scale mouse movement (25-400; 100
+                                        as the mouse reports it)
+
+    Kept in /etc/input.conf; the input service takes a change at once.
+    Root's (sudo inputctl ...). Settings > Mouse uses it.
+
+SEE ALSO
+    localectl, evtest, settings

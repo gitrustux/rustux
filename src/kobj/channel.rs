@@ -17,6 +17,7 @@ use crate::sync::SpinMutex;
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Largest message payload in bytes (Zircon: 64 KiB)
 pub const MAX_MSG_BYTES: usize = 65536;
@@ -65,6 +66,9 @@ pub struct Channel {
     peer: SpinMutex<Weak<Channel>>,
     /// Messages waiting to be read from this endpoint
     queue: SpinMutex<VecDeque<Message>>,
+    /// A terminal's size (columns << 16 | rows; 0 unknown): a channel
+    /// that is a console keeps it for both ends (property TTY_SIZE)
+    tty_size: AtomicU32,
 }
 
 impl Channel {
@@ -73,6 +77,7 @@ impl Channel {
             signals: SignalState::new(signals::WRITABLE),
             peer: SpinMutex::new(Weak::new()),
             queue: SpinMutex::new(VecDeque::new()),
+            tty_size: AtomicU32::new(0),
         });
         let (a, b) = (mk(), mk());
         *a.peer.lock() = Arc::downgrade(&b);
@@ -82,6 +87,19 @@ impl Channel {
 
     pub fn peer(&self) -> Option<Arc<Channel>> {
         self.peer.lock().upgrade()
+    }
+
+    /// The terminal size (columns << 16 | rows), 0 if never set
+    pub fn tty_size(&self) -> u32 {
+        self.tty_size.load(Ordering::Relaxed)
+    }
+
+    /// Set the terminal size on both ends
+    pub fn set_tty_size(&self, v: u32) {
+        self.tty_size.store(v, Ordering::Relaxed);
+        if let Some(p) = self.peer() {
+            p.tty_size.store(v, Ordering::Relaxed);
+        }
     }
 
     /// Queue a message on the other endpoint. On failure the message is

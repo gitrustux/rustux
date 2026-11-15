@@ -1,0 +1,23 @@
+files - the file manager
+
+USAGE
+    files [FOLDER]
+
+    Folders and files; the side bar has Home, Computer (/), the Trash and
+    USB sticks: clicking a stick mounts it under /media/LABEL, Eject
+    unmounts it. Enter or a double-click opens a folder, or a file with
+    the application for its type (types= in /usr/share/applications);
+    File > Open in Terminal opens a terminal in the folder.
+
+KEYS
+    Ctrl+C, Ctrl+X, Ctrl+V   copy, cut, paste
+    F2                      rename
+    Delete                  move to the trash (~/.local/share/Trash)
+    Shift+Delete            delete for good
+    Ctrl+Shift+N            a new folder
+    Alt+Enter               properties: size, times, owner, permissions
+    Backspace, Alt+Up       the folder above; Alt+Left back
+    Ctrl+H                  hidden files; F5 reload
+
+SEE ALSO
+    mount, umount, editor, viewer, terminal (docs/APPS.md)

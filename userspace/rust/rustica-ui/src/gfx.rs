@@ -10,8 +10,8 @@
 //! Coordinates are in pixels; the UI scales its own units.
 
 use std::collections::HashMap;
-pub use tiny_skia::Pixmap;
-use tiny_skia::{FillRule, Mask, Paint, PathBuilder, PixmapPaint, Rect as SkRect, Transform};
+pub use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
+use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Rect as SkRect};
 
 /// A colour, 0xRRGGBB
 pub type Color = u32;

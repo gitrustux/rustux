@@ -1,0 +1,36 @@
+[package]
+name = "rustica-apps"
+version = "0.1.0"
+edition = "2021"
+description = "Rustica's first applications (DESKTOP.md step F7): Terminal, Files and Settings"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "terminal"
+path = "src/bin/terminal.rs"
+
+[[bin]]
+name = "files"
+path = "src/bin/files.rs"
+
+[[bin]]
+name = "editor"
+path = "src/bin/editor.rs"
+
+[[bin]]
+name = "viewer"
+path = "src/bin/viewer.rs"
+
+[[bin]]
+name = "settings"
+path = "src/bin/settings.rs"
+
+[dependencies]
+rustica-ui = { path = "../rustica-ui" }
+
+[profile.release]
+panic = "abort"
+opt-level = 3
