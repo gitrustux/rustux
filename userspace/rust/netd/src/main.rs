@@ -19,13 +19,14 @@
 //!   link set IF up|down                       (root)
 //!   ping ADDRESS SEQ TIMEOUT_MS SIZE          -> "reply FROM SEQ BYTES MICROSECONDS" or "timeout"
 //!   sockets                                   (anyone: what `ss` shows)
+//!   dns                                       (anyone: the DNS servers DHCP gave)
 
 mod rx;
 mod sock;
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken};
-use smoltcp::socket::icmp;
+use smoltcp::socket::{dhcpv4, icmp};
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, Icmpv4Packet, Icmpv4Repr, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr};
 use std::collections::VecDeque;
@@ -143,6 +144,13 @@ pub struct Link {
     pub sockets: SocketSet<'static>,
     icmp: SocketHandle,
     gateway: Option<Ipv4Address>,
+    // DHCP (step D3): its socket, the address and DNS servers it gave,
+    // when the lease began and how long it is
+    dhcp: Option<SocketHandle>,
+    dhcp_addr: Option<Ipv4Cidr>,
+    dhcp_router: bool,
+    pub dns: Vec<Ipv4Address>,
+    lease: Option<(Instant, u32)>,
 }
 
 impl Link {
@@ -168,14 +176,17 @@ impl Link {
     }
 }
 
-/// /etc/network.conf: "NAME static ADDRESS/PREFIX [GATEWAY]" or "NAME dhcp"
+/// /etc/network.conf: "NAME static ADDRESS/PREFIX [GATEWAY]", "NAME dhcp"
+/// or "NAME off"; an interface without a line gets DHCP
 fn configure(link: &mut Link) {
     let text = std::fs::read_to_string("/etc/network.conf").unwrap_or_default();
+    let mut found = false;
     for line in text.lines() {
         let w: Vec<&str> = line.split('#').next().unwrap_or("").split_whitespace().collect();
         if w.len() < 2 || w[0] != link.name {
             continue;
         }
+        found = true;
         match w[1] {
             "static" => {
                 if let Some(c) = w.get(2).and_then(|s| Ipv4Cidr::from_str(s).ok()) {
@@ -191,10 +202,34 @@ fn configure(link: &mut Link) {
                     }
                 }
             }
-            "dhcp" => log(&format!("{}: DHCP comes with step D3; no address", link.name)),
+            "dhcp" => start_dhcp(link),
+            "off" | "manual" => log(&format!("{}: not configured (/etc/network.conf)", link.name)),
             other => log(&format!("{}: unknown method {other} in /etc/network.conf", link.name)),
         }
     }
+    if !found {
+        start_dhcp(link);
+    }
+}
+
+/// This computer's name, for DHCP's host name option (12)
+fn hostname() -> String {
+    std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "rustica".into())
+}
+
+fn start_dhcp(link: &mut Link) {
+    if link.dhcp.is_some() {
+        return;
+    }
+    let mut d = dhcpv4::Socket::new();
+    // smoltcp keeps the options by reference for the socket's life
+    let name: &'static [u8] = Box::leak(hostname().into_bytes().into_boxed_slice());
+    let opts: &'static [smoltcp::wire::DhcpOption<'static>] = Box::leak(Box::new([smoltcp::wire::DhcpOption { kind: 12, data: name }]));
+    d.set_outgoing_options(opts);
+    // Keep the server's packet, for the lease time
+    d.set_receive_packet_buffer(Box::leak(vec![0u8; 1500].into_boxed_slice()));
+    link.dhcp = Some(link.sockets.add(d));
+    log(&format!("{}: DHCP", link.name));
 }
 
 fn icmp_socket(sockets: &mut SocketSet<'static>) -> SocketHandle {
@@ -230,6 +265,11 @@ fn new_link(id: u32, name: String, ch: rx::Handle, hello: &[u8]) -> Link {
         sockets,
         icmp,
         gateway: None,
+        dhcp: None,
+        dhcp_addr: None,
+        dhcp_router: false,
+        dns: Vec::new(),
+        lease: None,
     };
     configure(&mut l);
     l
@@ -254,6 +294,11 @@ fn new_lo() -> Link {
         sockets,
         icmp,
         gateway: None,
+        dhcp: None,
+        dhcp_addr: None,
+        dhcp_router: false,
+        dns: Vec::new(),
+        lease: None,
     }
 }
 
@@ -408,9 +453,15 @@ impl Netd {
                     }
                 }
                 ["addrs"] => {
+                    let t = now();
                     for l in self.sorted() {
                         for c in l.v4() {
-                            out.push_str(&format!("{} {}\n", l.name, c));
+                            if l.dhcp_addr == Some(c) {
+                                let left = l.lease.map(|(at, secs)| (secs as i64 - (t - at).secs() as i64).max(0).to_string()).unwrap_or("forever".into());
+                                out.push_str(&format!("{} {} dynamic {}\n", l.name, c, left));
+                            } else {
+                                out.push_str(&format!("{} {}\n", l.name, c));
+                            }
                         }
                     }
                 }
@@ -420,7 +471,7 @@ impl Netd {
                             continue;
                         }
                         if let Some(g) = l.gateway {
-                            out.push_str(&format!("default via {} dev {}\n", g, l.name));
+                            out.push_str(&format!("default via {} dev {}{}\n", g, l.name, if l.dhcp_router { " proto dhcp" } else { "" }));
                         }
                         for c in l.v4() {
                             out.push_str(&format!("{} dev {} src {}\n", c.network(), l.name, c.address()));
@@ -428,6 +479,13 @@ impl Netd {
                     }
                 }
                 ["sockets"] => out.push_str(&sock::list(self)),
+                ["dns"] => {
+                    for l in self.sorted() {
+                        for d in &l.dns {
+                            out.push_str(&format!("{} {}\n", l.name, d));
+                        }
+                    }
+                }
                 ["addr", op @ ("add" | "del"), cidr, "dev", ifname] => {
                     if !root {
                         return Err("only root changes addresses".into());
@@ -580,6 +638,106 @@ impl Netd {
         });
     }
 
+    /// DHCP leases gained, renewed with a change, or lost; true if any
+    fn dhcp_events(&mut self) -> bool {
+        let mut changed = false;
+        for l in self.links.iter_mut() {
+            let Some(h) = l.dhcp else { continue };
+            let ev = match l.sockets.get_mut::<dhcpv4::Socket>(h).poll() {
+                None => continue,
+                Some(dhcpv4::Event::Configured(c)) => {
+                    let lease = c.packet.as_ref().and_then(|p| smoltcp::wire::DhcpRepr::parse(p).ok().and_then(|r| r.lease_duration));
+                    Some((c.address, c.router, c.dns_servers.iter().copied().collect::<Vec<_>>(), lease))
+                }
+                Some(dhcpv4::Event::Deconfigured) => None,
+            };
+            changed = true;
+            // Out with the old lease
+            if let Some(old) = l.dhcp_addr.take() {
+                l.iface.update_ip_addrs(|a| a.retain(|x| *x != IpCidr::Ipv4(old)));
+            }
+            if l.dhcp_router {
+                l.iface.routes_mut().remove_default_ipv4_route();
+                l.gateway = None;
+                l.dhcp_router = false;
+            }
+            l.dns.clear();
+            l.lease = None;
+            match ev {
+                Some((addr, router, dns, lease)) => {
+                    l.iface.update_ip_addrs(|a| {
+                        if !a.contains(&IpCidr::Ipv4(addr)) {
+                            let _ = a.push(IpCidr::Ipv4(addr));
+                        }
+                    });
+                    l.dhcp_addr = Some(addr);
+                    if let Some(r) = router {
+                        if l.gateway.is_none() && l.iface.routes_mut().add_default_ipv4_route(r).is_ok() {
+                            l.gateway = Some(r);
+                            l.dhcp_router = true;
+                        }
+                    }
+                    l.dns = dns;
+                    l.lease = lease.map(|s| (now(), s));
+                    log(&format!(
+                        "{}: DHCP lease {}{}{}{}",
+                        l.name,
+                        addr,
+                        router.map(|r| format!(", router {r}")).unwrap_or_default(),
+                        if l.dns.is_empty() { String::new() } else { format!(", DNS {}", l.dns.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" ")) },
+                        lease.map(|s| format!(", {s} s")).unwrap_or_default()
+                    ));
+                }
+                None => log(&format!("{}: DHCP lease lost", l.name)),
+            }
+        }
+        if changed {
+            self.sync_lo();
+            self.write_resolv();
+        }
+        changed
+    }
+
+    /// /etc/resolv.conf from the DNS servers (network.conf's "dns" lines,
+    /// then DHCP's), unless it is the administrator's own (no netd line)
+    pub fn write_resolv(&self) {
+        const MARK: &str = "# Written by netd";
+        let path = "/etc/resolv.conf";
+        if let Ok(old) = std::fs::read_to_string(path) {
+            if !old.is_empty() && !old.starts_with(MARK) {
+                return;
+            }
+        }
+        let mut servers: Vec<Ipv4Address> = Vec::new();
+        let mut search: Vec<String> = Vec::new();
+        let conf = std::fs::read_to_string("/etc/network.conf").unwrap_or_default();
+        for line in conf.lines() {
+            let w: Vec<&str> = line.split('#').next().unwrap_or("").split_whitespace().collect();
+            match w.as_slice() {
+                ["dns", rest @ ..] => servers.extend(rest.iter().filter_map(|a| Ipv4Address::from_str(a).ok())),
+                ["search", rest @ ..] => search.extend(rest.iter().map(|s| s.to_string())),
+                _ => {}
+            }
+        }
+        for l in self.sorted() {
+            for d in &l.dns {
+                if !servers.contains(d) {
+                    servers.push(*d);
+                }
+            }
+        }
+        let mut text = format!("{MARK} (DHCP and /etc/network.conf); remove this line to keep your own\n");
+        if !search.is_empty() {
+            text.push_str(&format!("search {}\n", search.join(" ")));
+        }
+        for s in servers.iter().take(3) {
+            text.push_str(&format!("nameserver {s}\n"));
+        }
+        if std::fs::read_to_string(path).ok().as_deref() != Some(text.as_str()) {
+            let _ = std::fs::write(path, text);
+        }
+    }
+
     fn driver_message(&mut self, i: usize, buf: &[u8]) {
         if buf.len() < 8 {
             return;
@@ -656,6 +814,7 @@ fn main() {
         next_port: 49152,
     };
     n.sync_lo();
+    n.write_resolv();
     let mut buf = vec![0u8; 65536];
     loop {
         // The stack, then the sockets, until neither has more to do now
@@ -669,6 +828,9 @@ fn main() {
                 }
             }
             n.pings();
+            if n.dhcp_events() {
+                busy = true;
+            }
             if sock::service(&mut n) {
                 busy = true;
             }

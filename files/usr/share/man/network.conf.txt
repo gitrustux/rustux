@@ -6,19 +6,24 @@ FILE
     Read by the network service (netd) when it starts and each time a
     network card appears. One line per interface; # starts a comment.
 
+    NAME dhcp
+        an address, the default route and DNS servers from a DHCP
+        server, renewed as the lease runs; the host name (/etc/hostname)
+        goes with the requests
     NAME static ADDRESS/PREFIX [GATEWAY]
         a fixed address, and the default route through GATEWAY
-    NAME dhcp
-        an address from a DHCP server (NETWORK.md step D3: not yet)
+    NAME off
+        left alone
+    dns ADDRESS...
+        DNS servers, before DHCP's (netd writes /etc/resolv.conf)
+    search DOMAIN...
+        domains tried after short names
 
-    NAME is eth0, eth1, ... (ip link), the cards in PCI order.
-
-    The image's file gives eth0 QEMU's user-mode network address:
-
-        eth0 static 10.0.2.15/24 10.0.2.2
+    NAME is eth0, eth1, ... (ip link), the cards in PCI order. A card
+    without a line gets DHCP. The image's file says "eth0 dhcp".
 
     After changing it: sudo svc restart netd (ip changes the running
     state without the file).
 
 SEE ALSO
-    ip, ping, svc
+    ip, ping, svc, resolv.conf

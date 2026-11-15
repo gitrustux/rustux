@@ -1,0 +1,21 @@
+host, nslookup - ask DNS
+
+USAGE
+    host [-t TYPE] [-v] NAME|ADDRESS [SERVER]
+    nslookup [-type=TYPE] NAME|ADDRESS [SERVER]
+
+    Asks the DNS servers of /etc/resolv.conf (or SERVER, an address) for
+    NAME's records; without -t: A (IPv4), AAAA (IPv6) and MX (mail), as
+    BIND's host. An address is looked up backwards (its PTR record).
+    Short names are tried with resolv.conf's search domains.
+
+    -t TYPE   A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, ANY
+    -v        whole records (name, time to live, class, type, data)
+
+    nslookup prints the same in nslookup's form.
+
+    Exit status 0 if it was answered, 1 if the name does not exist or no
+    server answered.
+
+SEE ALSO
+    resolv.conf, ping, curl

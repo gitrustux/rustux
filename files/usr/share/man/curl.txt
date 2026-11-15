@@ -1,0 +1,39 @@
+curl - fetch URLs over HTTP and HTTPS
+
+USAGE
+    curl [OPTIONS] URL...
+
+    Prints what each URL has (or writes it to a file). HTTPS checks the
+    server's certificate against Mozilla's root certificates, built into
+    curl, and the name in the URL against the certificate's.
+
+    -o FILE       write to FILE            -O   to the URL's file name
+    -L            follow redirects (curl does not by default)
+    -I            headers only (HEAD)      -i   the headers, then the body
+    -f            HTTP errors (400 and up) are failures: exit status 22
+    -s            no messages              -S   but errors (with -s)
+    -v            the request and the answer's headers, on standard error
+    -k            do not check the certificate (testing only)
+    -H 'N: V'     a request header         -A AGENT   the User-Agent
+    -d DATA       POST DATA (@FILE: a file's contents); -X METHOD
+    -u USER:PASS  basic authentication
+    -m SECONDS    the whole transfer at most this long;
+                  --connect-timeout SECONDS for connecting
+    --cacert FILE more trusted certificates (PEM), for your own CA
+    -w FORMAT     print after the transfer: %{http_code},
+                  %{size_download}, %{url_effective}, %{content_type},
+                  %{time_total}, \n
+    -V            the version
+
+    Exit status as curl's: 0, 3 bad URL, 6 a name not found, 7 cannot
+    connect, 22 HTTP error (-f), 23 cannot write, 28 timed out, 35 TLS
+    error, 47 too many redirects, 56 the connection broke, 60 the
+    certificate is not trusted.
+
+EXAMPLES
+    curl https://rustux.com
+    curl -LO https://example.org/file.tar.gz
+    curl -s -o /dev/null -w '%{http_code}\n' https://rustux.com
+
+SEE ALSO
+    host, nc, resolv.conf

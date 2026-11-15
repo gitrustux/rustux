@@ -1264,6 +1264,9 @@ static int hosts_lookup(const char *name, uint8_t out[4], char *canon, size_t cl
     return found;
 }
 
+int __dns_lookup4(const char *name, uint8_t (*addrs)[4], int max, char *canon, size_t clen);
+int __dns_reverse4(const uint8_t a[4], char *name, size_t len);
+
 int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
     int flags = hints ? hints->ai_flags : 0;
     int family = hints ? hints->ai_family : AF_UNSPEC;
@@ -1276,27 +1279,31 @@ int getaddrinfo(const char *node, const char *service, const struct addrinfo *hi
     int port;
     int e = service_port(service, (flags & AI_NUMERICSERV) != 0, &port);
     if (e) return e;
-    uint8_t a[4];
+    uint8_t addrs[16][4];
+    int na = 1;
     char canon[256] = "";
     if (!node) {
         uint32_t v = htonl((flags & AI_PASSIVE) ? INADDR_ANY : INADDR_LOOPBACK);
-        memcpy(a, &v, 4);
-    } else if (inet_aton(node, (struct in_addr *)a)) {
+        memcpy(addrs[0], &v, 4);
+    } else if (inet_aton(node, (struct in_addr *)addrs[0])) {
         snprintf(canon, sizeof canon, "%s", node);
     } else if (flags & AI_NUMERICHOST) {
         return EAI_NONAME;
     } else if (!strcasecmp(node, "localhost") || !strcasecmp(node, "localhost.localdomain") || !strcasecmp(node, "ip6-localhost")) {
-        a[0] = 127, a[1] = 0, a[2] = 0, a[3] = 1;
+        addrs[0][0] = 127, addrs[0][1] = 0, addrs[0][2] = 0, addrs[0][3] = 1;
         snprintf(canon, sizeof canon, "localhost");
-    } else if (!hosts_lookup(node, a, canon, sizeof canon)) {
-        // Names on the network come with DNS (step D3)
-        return EAI_NONAME;
+    } else if (!hosts_lookup(node, addrs[0], canon, sizeof canon)) {
+        // DNS (step D3): the servers in /etc/resolv.conf
+        na = __dns_lookup4(node, addrs, 16, canon, sizeof canon);
+        if (na < 0) return na;
     }
     int types[2], nt = 0;
     if (socktype) types[nt++] = socktype;
     else { types[nt++] = SOCK_STREAM; types[nt++] = SOCK_DGRAM; }
     struct addrinfo *head = 0, **tail = &head;
+    for (int j = 0; j < na; j++)
     for (int k = 0; k < nt; k++) {
+        uint8_t *a = addrs[j];
         struct addrinfo *ai = calloc(1, sizeof *ai + sizeof(struct sockaddr_in));
         if (!ai) {
             freeaddrinfo(head);
@@ -1352,8 +1359,12 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, socklen_
         char num[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &in->sin_addr, num, sizeof num);
         const char *name = num;
-        if (!(flags & NI_NUMERICHOST) && !memcmp(&in->sin_addr, "\x7f\0\0\1", 4)) name = "localhost";
-        else if (flags & NI_NAMEREQD) return EAI_NONAME;
+        char found[NI_MAXHOST];
+        if (!(flags & NI_NUMERICHOST)) {
+            if (!memcmp(&in->sin_addr, "\x7f\0\0\1", 4)) name = "localhost";
+            else if (__dns_reverse4((const uint8_t *)&in->sin_addr, found, sizeof found) == 0) name = found;
+            else if (flags & NI_NAMEREQD) return EAI_NONAME;
+        }
         if (strlen(name) >= hostlen) return EAI_OVERFLOW;
         strcpy(host, name);
     }

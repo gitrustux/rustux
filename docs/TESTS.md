@@ -356,7 +356,16 @@ reach both servers at 10.0.2.2 (`nc -u` too); `ss -tln` shows `nc -l
 8080`, which the host reaches through its forwarded port, both ways; the
 host reaches `nettest serve` (a Rust `TcpListener`); `nobody` may not
 listen on port 80. `runtests sockets` (every build) runs `nettest local`
-and `nc` on lo.
+and `nc` on lo. DHCP, DNS and the web (step D3): the lease from QEMU's
+DHCP server (address, route, DNS 10.0.2.3 in a netd-written
+`/etc/resolv.conf`), the host name in eth1's DHCP requests (seen by the
+peer); a DNS server the script runs on the host's port 53 (A, CNAME,
+PTR, NXDOMAIN, 40 addresses: truncated over UDP, so asked again over
+TCP) answers `host`, `nslookup`, a short name with the search domain,
+`ping` and `nettest` by name; `curl` over HTTP (by name, `-o`, `-w`, a
+redirect with and without `-L`, `-I`, `-f` 22, `-d`) and HTTPS with a
+test CA made by openssl: refused (60) without `--cacert`, the page with
+it, `-k`; a name that does not resolve is 6.
 
 ## Run in QEMU
 

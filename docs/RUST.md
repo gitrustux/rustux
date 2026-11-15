@@ -88,8 +88,8 @@ the old binaries first, as cargo does not notice a changed `libc.a`.
 ## What does not work yet
 
 - **IPv6** (`std::net` with IPv6 addresses): network step D4; IPv4
-  works (`docs/NETWORK.md`, `nettest`). Host names other than
-  `localhost` and `/etc/hosts` wait for DNS (step D3).
+  works (`docs/NETWORK.md`, `nettest`), names through DNS too (step D3;
+  `curl` is ureq and rustls).
 - **Signals**: nothing is delivered. `Child::kill` works (it ends the
   process); a stack overflow is a page fault that ends the program
   (`[crashed (CPU exception)]`), not std's "stack overflow" message.

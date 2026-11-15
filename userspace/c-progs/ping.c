@@ -9,12 +9,14 @@
 // ping: netd sends the echo requests, as Linux's unprivileged ICMP
 // datagram sockets do.
 //
-//   ping [-c COUNT] [-i SECONDS] [-W SECONDS] [-s SIZE] [-q] ADDRESS
+//   ping [-c COUNT] [-i SECONDS] [-W SECONDS] [-s SIZE] [-q] HOST
 //
 // Without -c it pings until stopped (Ctrl+C). The exit status is 0 if a
 // reply came, 1 if none did, 2 on an error.
 
 #include "netclient.h"
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,7 +88,19 @@ int main(int argc, char **argv) {
     }
     if (optind != argc - 1) usage();
     const char *host = argv[optind];
-    const char *addr = !strcmp(host, "localhost") ? "127.0.0.1" : host;
+    // A name: through the resolver (/etc/hosts, DNS)
+    char addr[INET_ADDRSTRLEN];
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    int e = getaddrinfo(host, 0, &hints, &res);
+    if (e) {
+        fprintf(stderr, "%s: %s: %s\n", prog, host, gai_strerror(e));
+        return 2;
+    }
+    inet_ntop(AF_INET, &((struct sockaddr_in *)res->ai_addr)->sin_addr, addr, sizeof addr);
+    freeaddrinfo(res);
     if (interval < 200) interval = 200;  // as Linux's limit for users
     if (wait < 1) wait = 1;
 

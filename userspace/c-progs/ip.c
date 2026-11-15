@@ -129,8 +129,8 @@ static void addr_show(const char *only) {
     load_links();
     int one = only ? find_link(only) : -1;
     char *text = net_request(prog, "addrs");
-    // "IF ADDRESS/PREFIX" lines
-    char *addrs[64][2];
+    // "IF ADDRESS/PREFIX [dynamic SECONDS_LEFT]" lines
+    char *addrs[64][2], *left[64];
     int na = 0;
     for (char *line = strtok(text, "\n"); line && na < 64; line = strtok(0, "\n")) {
         if (!strcmp(line, "ok")) break;
@@ -139,6 +139,12 @@ static void addr_show(const char *only) {
         *sp = 0;
         addrs[na][0] = line;
         addrs[na][1] = sp + 1;
+        left[na] = 0;
+        char *dyn = strstr(sp + 1, " dynamic ");
+        if (dyn) {
+            *dyn = 0;
+            left[na] = dyn + 9;
+        }
         na++;
     }
     for (int i = 0; i < nlinks; i++) {
@@ -156,7 +162,8 @@ static void addr_show(const char *only) {
         for (int k = 0; k < na; k++) {
             if (strcmp(addrs[k][0], l->name)) continue;
             int v6 = strchr(addrs[k][1], ':') != 0;
-            printf("    %s %s scope %s %s\n", v6 ? "inet6" : "inet", addrs[k][1], lo ? "host" : "global", l->name);
+            printf("    %s %s scope %s %s%s\n", v6 ? "inet6" : "inet", addrs[k][1], lo ? "host" : "global", left[k] ? "dynamic " : "", l->name);
+            if (left[k]) printf("       valid_lft %s%s\n", left[k], strcmp(left[k], "forever") ? "sec" : "");
         }
     }
 }

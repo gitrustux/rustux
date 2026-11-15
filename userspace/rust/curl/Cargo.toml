@@ -1,0 +1,16 @@
+[package]
+name = "curl"
+version = "0.1.0"
+edition = "2021"
+description = "curl for Rustica (network step D3): HTTP and HTTPS (rustls, Mozilla's root certificates)"
+license = "MIT"
+
+[dependencies]
+ureq = { version = "2.12", default-features = false, features = ["tls", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"

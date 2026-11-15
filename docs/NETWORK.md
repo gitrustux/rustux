@@ -2,8 +2,9 @@
 
 Rustica's network: card drivers in userspace, one network service (`netd`)
 with the TCP/IP stack, `ip` and `ping` (`NETWORK.md` in the planning
-documents, step D1), and POSIX sockets for programs, C and Rust (`nc`,
-`ss`, `std::net`; step D2). DHCP and DNS come with D3.
+documents, step D1), POSIX sockets for programs, C and Rust (`nc`,
+`ss`, `std::net`; step D2), and DHCP, DNS and `curl` over HTTPS (step
+D3).
 
 ```
   ping, ip, ss ──/svc/net──────┐                    ┌── virtio-net 00:02.0 (eth0)
@@ -79,13 +80,40 @@ read every second. The main thread reads netd's channel and transmits.
 ### /etc/network.conf
 
 ```
-# NAME static ADDRESS/PREFIX [GATEWAY]
-# NAME dhcp          (step D3)
-eth0 static 10.0.2.15/24 10.0.2.2
+# NAME dhcp | NAME static ADDRESS/PREFIX [GATEWAY] | NAME off
+# dns ADDRESS...   search DOMAIN...
+eth0 dhcp
 ```
 
-The image's file gives `eth0` QEMU's user-mode network address. After
-editing it, `sudo svc restart netd`.
+A card without a line gets DHCP; the image's file says `eth0 dhcp`.
+After editing it, `sudo svc restart netd`.
+
+### DHCP (step D3)
+
+smoltcp's DHCPv4 client, one per interface configured `dhcp`: the
+address, the default route (unless one is set already) and up to three
+DNS servers, renewed and rebound as the lease runs out (and taken away if
+it is lost). The requests carry the host name (`/etc/hostname`, option
+12), so a router can list the computer by name. `ip addr` shows the
+address as `dynamic` with its `valid_lft`, `ip route` the route as `proto
+dhcp`; netd logs each lease (`logs -u netd`).
+
+netd writes `/etc/resolv.conf` from the `dns` and `search` lines of
+`network.conf` and DHCP's servers, with a first line `# Written by
+netd`; a file without that line is the administrator's own and is left
+alone (`man resolv.conf`).
+
+### DNS (step D3)
+
+The resolver is the C library's (`libc/src/resolv.c`, `<resolv.h>`), as
+on Unix: `getaddrinfo`, `getnameinfo` and `gethostbyname` look in
+`/etc/hosts` first, then ask the servers of `/etc/resolv.conf` over UDP
+(each in turn, `timeout`, `attempts`), and over TCP when the answer is
+truncated; short names get the `search` domains (`ndots`). A records only
+until IPv6 (D4); CNAMEs followed by the server. `res_query`,
+`res_search` and `dn_expand` are there for programs that read DNS
+messages themselves, such as `host`. Rust's `std::net` and everything on
+it resolve through `getaddrinfo`.
 
 ### The control protocol: /svc/net
 
@@ -177,6 +205,14 @@ get fds 0-2 only, as before).
   in goes to standard output; at the end of the input nc half-closes.
 - `ss` (`man ss`): netd's sockets, `-t`, `-u`, `-l`, `-a`, in iproute2's
   columns (`sockets` on `/svc/net`).
+- `host` and `nslookup` (`man host`): A, AAAA, MX by default, `-t
+  TYPE`, `-v`, a server to ask; addresses backwards (PTR).
+- `curl` (`man curl`, Rust: ureq on rustls with ring, Mozilla's root
+  certificates built in through webpki-roots): HTTP and HTTPS, `-o -O -L
+  -I -i -f -s -S -v -k -H -d -X -A -u -m -w --cacert --connect-timeout`,
+  gzip; curl's exit statuses. The clock must be right for certificates
+  (the UEFI clock, `timedatectl`).
+- `ping` takes names too.
 - `nettest` (Rust, `rust/nettest`): `nettest local` checks `std::net`
   inside the computer; `connect`, `serve`, `udp` for tests across the
   network.

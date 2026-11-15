@@ -1,0 +1,19 @@
+resolv.conf - the DNS servers
+
+FILE
+    /etc/resolv.conf
+
+    nameserver ADDRESS       a DNS server (at most 3, tried in turn)
+    search DOMAIN...         domains tried after short names
+    options timeout:N attempts:N ndots:N
+                             seconds per try (2), rounds (2), dots a name
+                             needs to be tried as it is first (1)
+
+    netd writes it from the DNS servers DHCP gives and the "dns" lines of
+    /etc/network.conf; its first line says so. Remove that line to keep
+    a file of your own: netd then leaves it alone.
+
+    Names in /etc/hosts are found before DNS is asked.
+
+SEE ALSO
+    network.conf, host

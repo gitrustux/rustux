@@ -20,8 +20,7 @@ USAGE
     -s ADDRESS  the local address to use
     -p PORT     the local port (with -l: the port to listen on)
 
-    HOST is an IPv4 address, localhost or a name in /etc/hosts (names on
-    the network: step D3, DNS). Ports below 1024 are root's to listen on.
+    HOST is an IPv4 address or a name (/etc/hosts, then DNS). Ports below 1024 are root's to listen on.
 
 EXAMPLES
     nc -l 8080 > received.txt             wait for a file

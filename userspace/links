@@ -110,3 +110,4 @@ groups coreutils
 # step 18: the service manager and the system log
 systemctl svc
 journalctl logs
+nslookup host
