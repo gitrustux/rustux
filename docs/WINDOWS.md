@@ -117,6 +117,18 @@ restore, minimise and Alt+Tab, F11, the clipboard, a killed client, a
 client ignoring a close request, an animating client paced by frames,
 Alt+F4, and the compositor killed (the console comes back).
 
+## The display's size and heads (step F8)
+
+On virtio-gpu (`DISPLAY.md`) the pointer is the display's hardware
+cursor (the arrow sent once, then only its position: moving the pointer
+redraws nothing); when the display changes size the compositor makes the
+wallpaper again, docks the panel at the new bottom, gives maximised and
+full-screen windows the new size, keeps other windows' title bars on the
+screen, and draws everything. With several heads the screen is one, side
+by side; the panel, maximised and full-screen windows, the lock screen
+and notifications stay on the first head, and a tablet's absolute
+position covers the first head (as QEMU's window).
+
 ## Not yet
 
 - Window decorations drawn with the toolkit's fonts (step F5); resizing

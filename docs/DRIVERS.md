@@ -69,10 +69,17 @@ Who may use a disk (step 17): devmgr connects a client to a block device
 class=01:08:02  /bin/nvme
 # usb=CLASS[:SUBCLASS[:PROTOCOL]]  PROGRAM   (USB devices the kernel set up)
 usb=08:06:50    /bin/usb-storage
+# a third word "display": the driver serves the screen (step F8)
+1af4:1050   /bin/virtio-gpu   display
 ```
 
 The first matching line for a device wins. Devices the kernel uses are
-never matched. The driver is started with the device's address as its
+never matched (display controllers, except virtio's since step F8, and
+xHCI). A driver marked `display` also gets the UEFI framebuffer if there
+is one (its VMO as `PA_USER1`, the claim as `PA_USER2`, the geometry as
+arguments after the address, as `/bin/display` gets them), and devmgr
+then does not start `/bin/display`, unless that driver keeps failing
+(`DISPLAY.md`). The driver is started with the device's address as its
 argument (`edu 00:03.0`), copies of devmgr's standard output and error,
 the namespace, and one handle, `PA_USER0`: the device channel.
 

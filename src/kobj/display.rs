@@ -16,7 +16,7 @@
 //! anew. A kernel panic shows the console whatever the claim says.
 
 use super::SignalState;
-use crate::sync::BootCell;
+use crate::sync::{BootCell, SpinMutex};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// The framebuffer as GOP described it (set once at boot)
@@ -51,6 +51,32 @@ pub fn boot_framebuffer() -> Option<BootFb> {
 /// Set while a claim exists
 static CLAIMED: AtomicBool = AtomicBool::new(false);
 
+/// The memory the console draws into instead of the framebuffer (a
+/// display driver's, step F8), kept alive while it does
+static REDIRECT: SpinMutex<Option<alloc::sync::Arc<super::vmo::Vmo>>> = SpinMutex::new(None);
+
+/// Redirect the console into a contiguous VMO at least the framebuffer's
+/// size (None: back to the framebuffer)
+pub fn redirect_console(vmo: Option<alloc::sync::Arc<super::vmo::Vmo>>) -> Result<(), crate::arch::amd64::mm::RxStatus> {
+    use crate::arch::amd64::mm::{kernel_map, RxStatus};
+    let base = match &vmo {
+        Some(v) => {
+            let fb = boot_framebuffer().ok_or(RxStatus::ERR_NOT_FOUND)?;
+            let need = fb.stride as u64 * 4 * fb.height as u64;
+            if v.kind != super::vmo::VmoKind::Contiguous || v.size() < need {
+                return Err(RxStatus::ERR_INVALID_ARGS);
+            }
+            Some(kernel_map::phys_to_virt(v.phys_pages(0, super::vmo::PAGE)?[0]))
+        }
+        None => None,
+    };
+    // The new memory first, then the old one goes (after the console moved)
+    let old = core::mem::replace(&mut *REDIRECT.lock(), vmo);
+    crate::drivers::display::console::redirect(base);
+    drop(old);
+    Ok(())
+}
+
 /// The right to the screen; see the module comment
 pub struct DisplayClaim {
     pub signals: SignalState,
@@ -68,7 +94,11 @@ impl DisplayClaim {
 
 impl Drop for DisplayClaim {
     fn drop(&mut self) {
-        // The display service is gone: the text console has the screen
+        // The display service is gone: the text console has the screen,
+        // the framebuffer itself again
+        if REDIRECT.lock().is_some() {
+            let _ = redirect_console(None);
+        }
         crate::drivers::display::show();
         CLAIMED.store(false, Ordering::Release);
     }

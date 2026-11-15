@@ -946,7 +946,7 @@ local time (as Windows does), correcting by the offset of the zone in
 | `USB_RESET` | 0x99 | Reset a stuck device's port; it is enumerated again | ✅ |
 | `EFI_VARIABLE` | 0x9A | Read, write and list the firmware's UEFI variables (step 19) | ✅ |
 | `DISPLAY_CLAIM` | 0x9B | The boot framebuffer and the claim on the screen (step F2) | ✅ |
-| `DISPLAY_CONSOLE` | 0x9C | Show the text console or the claim holder's graphics | ✅ |
+| `DISPLAY_CONSOLE` | 0x9C | Show the text console or the claim holder's graphics; redirect the console into a driver's memory (F8) | ✅ |
 
 `system_get_version(char *buf, size_t len)` writes
 `Rustux <version> (git <hash>, built <date>) x86_64` with a NUL and
@@ -1075,6 +1075,17 @@ holder's pixels stay; `RX_DISPLAY_QUERY` (2, any handle) returns which is
 shown. When the claim's last handle closes, the console is shown; a
 kernel panic shows it whatever the claim. `devmgr` claims the framebuffer
 and gives it to the display service (`docs/DISPLAY.md`).
+
+`display_console(claim, mode, vmo)`, step F8, for a display driver whose
+device shows only its own memory (virtio-gpu): `RX_DISPLAY_REDIRECT` (3)
+makes the console draw into `vmo` instead of the framebuffer (a
+contiguous VMO with WRITE, at least the framebuffer's stride times height:
+`ERR_INVALID_ARGS` otherwise); the kernel keeps a reference to it and
+draws the whole console there at once. `RX_DISPLAY_UNREDIRECT` (4) goes
+back to the framebuffer, as does closing the claim. `RX_DISPLAY_DRAWN`
+(5) returns 1 if the console drew anything since the last time it was
+asked, so the driver copies it to the device only then. A kernel panic
+draws into the redirected memory: with virtio-gpu it is not seen.
 
 `system_get_stats` (0x91) has two more fields after the console size
 (step F6): the kernel heap's size and the bytes of it in use (`free` shows

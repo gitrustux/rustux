@@ -18,3 +18,8 @@ class=01:08:02  /bin/nvme
 # USB mass storage, bulk-only (step 13): usb=CLASS:SUBCLASS:PROTOCOL.
 # The kernel's xHCI driver sets the device up; devmgr starts the driver
 usb=08:06:50    /bin/usb-storage
+#
+# virtio-gpu (DESKTOP.md step F8): QEMU's, KVM's and Proxmox's GPU, also
+# virtio-vga. "display": it serves the screen instead of /bin/display
+# (which takes over again if it keeps failing)
+1af4:1050   /bin/virtio-gpu   display

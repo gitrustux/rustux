@@ -68,7 +68,69 @@ so the copy itself can still cross a refresh of the screen.
 
 The client side is in libc (`src/display.c`): `rx_display_open`,
 `rx_display_present`, `rx_display_poll`, `rx_display_close` and
-`rx_display_snapshot`.
+`rx_display_snapshot`; since step F8 also `rx_display_cursor_set`,
+`rx_display_cursor_move` and `rx_display_primary`.
+
+Step F8 added, for virtio-gpu:
+
+| Op / event | What |
+|----|-----|
+| `CAPS` | reply `a` = `RX_DISPLAY_CAP_CURSOR` (a hardware cursor), `RX_DISPLAY_CAP_RESIZE` (the size can change); `rx_display_open` asks and keeps it in `caps` |
+| `CURSOR_SET` | (the owner) the pointer's image: a VMO of 64 x 64 `0xAARRGGBB` pixels attached, `a` = hot spot x \| y << 16; `ENOTSUP` without a hardware cursor |
+| `CURSOR_MOVE` | (the owner) `a` = x \| y << 16, `b` = shown; no reply |
+| `PRIMARY` | the first head's width and height (several heads make one screen, side by side) |
+| `EV_RESIZE` | the screen's new width and height, with a new back buffer attached; the client library maps it in place of the old one before handing the event on; the owner draws all of it again |
+
+The compositor uses the hardware cursor when there is one (then moving
+the pointer redraws nothing), keeps the panel, maximised and full-screen
+windows, the lock screen and notifications on the first head, maps a
+tablet onto it, and follows a resize (`WINDOWS.md`).
+
+## virtio-gpu (step F8)
+
+QEMU, KVM and Proxmox give a guest a virtual GPU: virtio-gpu, as
+`virtio-vga` (Proxmox's "VirtIO-GPU"; a VGA part UEFI draws on) or
+`virtio-gpu-pci` (no VGA: UEFI leaves no framebuffer). `/etc/drivers`
+names its driver with the word `display`: devmgr then hands it the UEFI
+framebuffer and its claim, if there is one, instead of starting
+`/bin/display` (which takes over if the driver keeps failing: the GOP
+framebuffer still works without virtio-gpu).
+
+`virtio-gpu` (`c-progs/virtio-gpu.c`) serves the same `/svc/display` with
+the same server code as `display` (`c-progs/displaysvc.h`, a backend
+each):
+
+- **2D**: the back buffer is guest memory (a VMO, pinned) backing a host
+  resource (`RESOURCE_CREATE_2D`, `ATTACH_BACKING`, B8G8R8X8, that is
+  `0x00RRGGBB`); PRESENT is `TRANSFER_TO_HOST_2D` and `RESOURCE_FLUSH` of
+  each rectangle (more than eight: of what holds them all). Commands go
+  through the control queue and are waited for by polling (they are
+  quick); no interrupts.
+- **The cursor** is the host's: a 64 x 64 resource (B8G8R8A8),
+  `UPDATE_CURSOR` and `MOVE_CURSOR` on the cursor queue.
+- **Size**: the device's configuration is looked at four times a second;
+  when the host says the display changed (a QEMU window, a VNC or SPICE
+  client, the Proxmox console resized), the driver asks for the heads'
+  sizes, makes a new back buffer and resource, and the owner gets
+  `EV_RESIZE`.
+- **Heads**: the enabled heads (scanouts) are laid side by side as one
+  screen, each scanout showing its part of the one resource; the first is
+  the primary (`PRIMARY`).
+- **The text console**: the device shows only its resources, not the VGA
+  framebuffer UEFI drew on, so the kernel draws its console into memory
+  of the driver's instead (`display_console` `REDIRECT`, `SYSCALL.md`),
+  which backs a third resource; while the console is shown the driver
+  copies it to the host when the kernel says it drew (`DRAWN`, looked at
+  30 times a second). With `virtio-gpu-pci` there is no console to
+  redirect: Ctrl+Alt+F1 shows black (the console is still there for the
+  log and the serial line).
+
+Not done: 3D (virgl, Venus) until something needs it; interrupts instead
+of polling; EDID; a kernel panic is not seen while the console is
+redirected (it draws into the driver's memory, which nobody copies any
+more); when devmgr gives up on the driver and starts `/bin/display`, a
+`virtio-vga` device still shows its last resource rather than the VGA
+framebuffer (nothing resets it).
 
 ## Commands
 
@@ -92,8 +154,9 @@ fbtest's animation, 1.4 ms to draw and 1.2 ms to present a frame.
 - Pixel layouts other than 32-bit BGRX and RGBX (16-bit, 10-bit colour):
   no framebuffer is offered. The RGBX path has only run on paper so far:
   QEMU's GOP is BGRX.
-- Changing the resolution (it is the firmware's; rboot could set a GOP mode
-  before starting the kernel).
+- Changing the resolution on the GOP framebuffer (it is the firmware's;
+  rboot could set a GOP mode before starting the kernel). virtio-gpu
+  changes it with the host (step F8).
 - Only root may own the screen or take snapshots; the compositor (F4) will
   be the only owner and give each window its own buffer.
 - While the display has the screen another CPU's kernel panic message only

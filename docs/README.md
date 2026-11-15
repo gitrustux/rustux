@@ -94,7 +94,7 @@ docs/
 ├── SERVICES.md                   # Services (init, svc) and the system log (step 18)
 ├── BOOT.md                       # The boot manager rboot, efibootmgr, bootctl (step 19)
 ├── INSTALL.md                    # The installer, rustica-install (step 20)
-├── DISPLAY.md                    # The display service on the GOP framebuffer (desktop step F2)
+├── DISPLAY.md                    # The display service: GOP framebuffer (desktop step F2), virtio-gpu (F8)
 ├── INPUT.md                      # The input service, mice and keyboards (desktop step F3)
 ├── WINDOWS.md                    # The compositor and the window protocol (desktop step F4)
 ├── GUI.md                        # The toolkit, rustica-ui, and why (desktop step F5)

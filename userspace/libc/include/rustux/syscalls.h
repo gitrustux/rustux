@@ -546,6 +546,15 @@ static inline rx_status_t rx_display_claim(rx_handle_t resource, rx_display_info
 #define RX_DISPLAY_GRAPHICS 1u
 #define RX_DISPLAY_QUERY    2u
 static inline rx_status_t rx_display_console(rx_handle_t claim, uint32_t mode) { return RX_SYS(0x9C, claim, mode, 0, 0); }
+// Step F8, for a display driver whose device does not show the UEFI
+// framebuffer: RX_DISPLAY_REDIRECT makes the console draw into `vmo`
+// (contiguous, the framebuffer's size and layout), RX_DISPLAY_UNREDIRECT
+// back into the framebuffer; RX_DISPLAY_DRAWN returns 1 if it drew since
+// the last time asked
+#define RX_DISPLAY_REDIRECT   3u
+#define RX_DISPLAY_UNREDIRECT 4u
+#define RX_DISPLAY_DRAWN      5u
+static inline rx_status_t rx_display_console_vmo(rx_handle_t claim, uint32_t mode, rx_handle_t vmo) { return RX_SYS(0x9C, claim, mode, vmo, 0); }
 
 // Ends the process at once (no stdio flush; use exit() for that)
 __attribute__((noreturn)) static inline void rx_exit(int64_t code) {

@@ -318,6 +318,21 @@ mouse speed with her password (`sudo -S`); last the keyboard layout. The
 file copied is then looked for on the stick image (`mdir`).
 `runtests terminal` (every build) tests pseudo-terminals with `ptytest`.
 
+## virtio-gpu test (step F8)
+
+`scripts/run-virtio-gpu-test.sh` (`DISPLAY.md`): three QEMU boots with
+`desktop`. With `virtio-vga` and a VNC server: the driver serves the
+screen (not `/bin/display`), the desktop comes up, the pointer is a
+hardware cursor (none in the screen's pixels), Ctrl+Alt+F1 shows the text
+console (redirected into the driver's memory) and Ctrl+Alt+F7 the desktop,
+and a VNC client's request for 1600x900 (RFB SetDesktopSize, sent by the
+script) resizes the screen and the desktop with it. With two heads (the
+second sized by a VNC client on it): one screen of 2080x800, the panel on
+the first head, the second showing its part (QMP screendumps of each
+head). With `virtio-gpu-pci` (no UEFI framebuffer): the desktop still
+comes up. The GOP framebuffer without virtio-gpu is every other
+graphical test's case.
+
 ## Run in QEMU
 
 ```bash

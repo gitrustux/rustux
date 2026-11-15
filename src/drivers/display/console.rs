@@ -759,6 +759,7 @@ impl TextConsole {
         if hidden() {
             return;
         }
+        DRAWN.store(true, Ordering::Release);
         if let Some(r) = self.cursor_row_drawn.take() {
             if r < self.rows {
                 self.dirty[r] = true;
@@ -1132,6 +1133,37 @@ pub fn show() {
         console.mark_all();
         console.flush();
     }
+}
+
+/// The framebuffer's own address (direct map), kept while the console
+/// draws into memory of the display driver's (DESKTOP.md step F8)
+static ORIG_BASE: AtomicUsize = AtomicUsize::new(0);
+/// Set when the console drew while redirected; read and cleared by
+/// [`take_drawn`]
+static DRAWN: AtomicBool = AtomicBool::new(false);
+
+/// Draw into other memory of the framebuffer's size and layout (`Some`:
+/// its direct-map address), or back into the framebuffer (`None`). The
+/// whole console is drawn there at once if it is shown.
+pub fn redirect(base: Option<u64>) {
+    let mut c = CONSOLE.lock();
+    let Some(console) = c.as_mut() else { return };
+    if ORIG_BASE.load(Ordering::Relaxed) == 0 {
+        ORIG_BASE.store(console.framebuffer.base_addr as usize, Ordering::Relaxed);
+    }
+    console.framebuffer.base_addr = base.unwrap_or(ORIG_BASE.load(Ordering::Relaxed) as u64);
+    console.cursor_row_drawn = None;
+    console.mark_all();
+    if !hidden() {
+        console.flush();
+    }
+    DRAWN.store(true, Ordering::Release);
+}
+
+/// Whether the console drew anything since the last call (for a driver
+/// that must copy the redirected console to its device)
+pub fn take_drawn() -> bool {
+    DRAWN.swap(false, Ordering::AcqRel)
 }
 
 /// For a kernel panic: show the console without waiting for its lock

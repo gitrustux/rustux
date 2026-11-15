@@ -97,6 +97,7 @@ static int verbose;
 
 static rx_display_t d;
 static uint32_t W, H;
+static uint32_t PW, PH; // the first head's part (the panel and maximised windows; step F8)
 static rx_handle_t input_ch;
 static int visible = 1;
 
@@ -169,6 +170,7 @@ static void damage_window(const window_t *w) {
 
 static int cx, cy;
 static uint32_t buttons;
+static int hwcursor;    // the display draws the pointer (virtio-gpu, step F8)
 static const char *arrow[] = {
     "1", "11", "121", "1221", "12221", "122221", "1222221", "12222221", "122222221", "1222222221",
     "12222211111", "1221221", "121 1221", "11  1221", "1    1221", "     1221", "      11",
@@ -287,6 +289,7 @@ static void draw_window(const window_t *w, int focused, const rx_display_rect_t 
 }
 
 static void draw_cursor(const rx_display_rect_t *r) {
+    if (hwcursor) return;
     for (int row = 0; row < ARROW_H; row++)
         for (int k = 0; arrow[row][k]; k++) {
             int x = cx + k, y = cy + row;
@@ -301,6 +304,7 @@ static void draw_cursor(const rx_display_rect_t *r) {
 static uint32_t *wallpaper;
 
 static void make_wallpaper(void) {
+    free(wallpaper);
     wallpaper = malloc((size_t)W * H * 4);
     if (!wallpaper) return;
     // Ordered dithering (4x4 Bayer) keeps the gradient free of bands
@@ -313,10 +317,11 @@ static void make_wallpaper(void) {
         for (uint32_t x = 0; x < W; x++) {
             // The glow: centre at (W/4, 3H/4), strength up to 16% of the accent
             int64_t dx = (int64_t)x - W / 4, dy = (int64_t)y - 3 * H / 4, d2 = dx * dx + dy * dy;
-            int64_t g = d2 < r2 ? 41 * (r2 - d2) / r2 : 0; // 0..41 of 256
-            g = g * (r2 - d2 > 0 ? (r2 - d2) : 0) / (r2 ? r2 : 1); // eased: falls off smoothly
-            int64_t r = br + ((0xBD * 256 - br) * g) / 256, gg = bg + ((0x93 * 256 - bg) * g) / 256,
-                    b = bb + ((0xF9 * 256 - bb) * g) / 256;
+            // (in 1/4096ths, eased: no steps where it falls off)
+            int64_t f = d2 < r2 ? (r2 - d2) * 4096 / r2 : 0;
+            int64_t g = 41 * f * f / 4096; // 0..41 of 256, times 4096
+            int64_t r = br + ((0xBD * 256 - br) * g) / (256 * 4096), gg = bg + ((0x93 * 256 - bg) * g) / (256 * 4096),
+                    b = bb + ((0xF9 * 256 - bb) * g) / (256 * 4096);
             int dth = bayer[y & 3][x & 3] * 16 + 8; // 0..255
             wallpaper[(uint64_t)y * W + x] = (uint32_t)((r + dth) >> 8) << 16 | (uint32_t)((gg + dth) >> 8) << 8 |
                                              (uint32_t)((b + dth) >> 8);
@@ -337,7 +342,7 @@ static void draw_wallpaper(const rx_display_rect_t *r) {
 #define LOCK_W 360
 #define LOCK_H 150
 static void draw_lock(const rx_display_rect_t *r) {
-    int x = ((int)W - LOCK_W) / 2, y = ((int)H - LOCK_H) / 2;
+    int x = ((int)PW - LOCK_W) / 2, y = ((int)PH - LOCK_H) / 2;
     fill(x, y, LOCK_W, LOCK_H, 0x343746, r);
     fill(x, y, LOCK_W, 2, C_BORDER, r);
     char line[96];
@@ -356,7 +361,7 @@ static void draw_lock(const rx_display_rect_t *r) {
 #define TOAST_W 320
 #define TOAST_H 48
 static void toast_rect(int i, int *x, int *y) {
-    *x = (int)W - TOAST_W - 16;
+    *x = (int)PW - TOAST_W - 16;
     *y = 16 + i * (TOAST_H + 8);
 }
 
@@ -588,7 +593,7 @@ static void toggle_maximize(int k) {
         damage_window(w);
         w->x = BORDER;
         w->y = TITLE_H + BORDER;
-        configure(w, W - 2 * BORDER, H - (uint32_t)panel_h - TITLE_H - 2 * BORDER);
+        configure(w, PW - 2 * BORDER, PH - (uint32_t)panel_h - TITLE_H - 2 * BORDER);
     }
     vlog("window \"%s\" %s\n", w->title, w->maximized ? "maximized" : "restored");
     send_state(w);
@@ -603,13 +608,13 @@ static void set_fullscreen(int k, int on) {
         damage_window(w);
         w->x = 0;
         w->y = 0;
-        configure(w, W, H);
+        configure(w, PW, PH);
     } else {
         w->fullscreen = 0;
         if (w->maximized) {
             w->x = BORDER;
             w->y = TITLE_H + BORDER;
-            configure(w, W - 2 * BORDER, H - (uint32_t)panel_h - TITLE_H - 2 * BORDER);
+            configure(w, PW - 2 * BORDER, PH - (uint32_t)panel_h - TITLE_H - 2 * BORDER);
         } else {
             restore_geometry(w);
         }
@@ -700,7 +705,7 @@ static void notify(const char *t, uint32_t n) {
     toasts[ntoasts].text[c] = 0;
     toasts[ntoasts].until = rx_clock_get_monotonic() + 5000000000ull;
     ntoasts++;
-    add_damage((int)W - TOAST_W - 16, 16, TOAST_W, MAX_TOASTS * (TOAST_H + 8));
+    add_damage((int)PW - TOAST_W - 16, 16, TOAST_W, MAX_TOASTS * (TOAST_H + 8));
     vlog("notification \"%s\"\n", toasts[ntoasts - 1].text);
 }
 
@@ -708,7 +713,7 @@ static void expire_toasts(uint64_t now) {
     int j = 0;
     for (int i = 0; i < ntoasts; i++)
         if (toasts[i].until > now) toasts[j++] = toasts[i];
-    if (j != ntoasts) add_damage((int)W - TOAST_W - 16, 16, TOAST_W, MAX_TOASTS * (TOAST_H + 8));
+    if (j != ntoasts) add_damage((int)PW - TOAST_W - 16, 16, TOAST_W, MAX_TOASTS * (TOAST_H + 8));
     ntoasts = j;
 }
 
@@ -753,7 +758,7 @@ static void lock_key(const rx_input_event_t *e) {
         lock_pw[n + 1] = 0;
     }
     lock_failed = 0;
-    add_damage(((int)W - LOCK_W) / 2, ((int)H - LOCK_H) / 2, LOCK_W, LOCK_H);
+    add_damage(((int)PW - LOCK_W) / 2, ((int)PH - LOCK_H) / 2, LOCK_W, LOCK_H);
 }
 
 // A client channel's messages: 0 if the client is gone
@@ -824,8 +829,8 @@ static int client_messages(int k) {
                 w->panel = 1;
                 panel_h = (int)w->h;
                 w->x = 0;
-                w->y = (int)H - panel_h;
-                configure(w, W, w->h);
+                w->y = (int)PH - panel_h;
+                configure(w, PW, w->h);
                 raise(k);
                 damage_window(w);
                 vlog("window \"%s\" is the panel\n", w->title);
@@ -977,17 +982,69 @@ static void move_cursor(int nx, int ny) {
     if (nx >= (int)W) nx = (int)W - 1;
     if (ny >= (int)H) ny = (int)H - 1;
     if (nx == cx && ny == cy) return;
+    if (hwcursor) {
+        cx = nx;
+        cy = ny;
+        rx_display_cursor_move(&d, cx, cy, 1);
+        return;
+    }
     add_damage(cx, cy, ARROW_W, ARROW_H);
     cx = nx;
     cy = ny;
     add_damage(cx, cy, ARROW_W, ARROW_H);
 }
 
+// The pointer as the display's hardware cursor, if it has one: the arrow
+// in a 64 x 64 image
+static void setup_hwcursor(void) {
+    if (!(d.caps & RX_DISPLAY_CAP_CURSOR)) return;
+    static uint32_t img[64 * 64];
+    for (int row = 0; row < ARROW_H; row++)
+        for (int k = 0; arrow[row][k]; k++)
+            if (arrow[row][k] != ' ') img[row * 64 + k] = arrow[row][k] == '1' ? 0xFF000000u : 0xFFFFFFFFu;
+    if (rx_display_cursor_set(&d, img, 0, 0) == 0) {
+        hwcursor = 1;
+        rx_display_cursor_move(&d, cx, cy, 1);
+        vlog("hardware cursor\n");
+    }
+}
+
+// The display changed size (step F8): everything follows
+static void screen_resized(void) {
+    W = d.width;
+    H = d.height;
+    rx_display_primary(&d, &PW, &PH);
+    fbp = d.pixels;
+    make_wallpaper();
+    if (cx >= (int)W) cx = (int)W - 1;
+    if (cy >= (int)H) cy = (int)H - 1;
+    for (int k = 0; k < MAX_WINDOWS; k++) {
+        window_t *w = &wins[k];
+        if (!w->used) continue;
+        if (w->panel) {
+            w->x = 0;
+            w->y = (int)PH - panel_h;
+            configure(w, PW, w->h);
+        } else if (w->fullscreen) {
+            configure(w, PW, PH);
+        } else if (w->maximized) {
+            configure(w, PW - 2 * BORDER, PH - (uint32_t)panel_h - TITLE_H - 2 * BORDER);
+        } else {
+            // Keep the title bar on the screen
+            if (w->x > (int)W - 64) w->x = (int)W - 64 > BORDER ? (int)W - 64 : BORDER;
+            if (w->y > (int)PH - panel_h - 8) w->y = (int)PH - panel_h - 8 > TITLE_H + BORDER ? (int)PH - panel_h - 8 : TITLE_H + BORDER;
+        }
+    }
+    if (hwcursor) rx_display_cursor_move(&d, cx, cy, 1);
+    vlog("the screen is %ux%u (the first head %ux%u)\n", W, H, PW, PH);
+    add_damage(0, 0, (int)W, (int)H);
+}
+
 static void pointer_event(const rx_input_event_t *e) {
     if (locked) {
         // The cursor moves; nothing else
         if (e->flags & RX_INPUT_ABSOLUTE)
-            move_cursor((int)((uint64_t)e->x * (W - 1) / 32767), (int)((uint64_t)e->y * (H - 1) / 32767));
+            move_cursor((int)((uint64_t)e->x * (PW - 1) / 32767), (int)((uint64_t)e->y * (PH - 1) / 32767));
         else
             move_cursor(cx + e->x, cy + e->y);
         buttons = e->code;
@@ -995,7 +1052,7 @@ static void pointer_event(const rx_input_event_t *e) {
     }
     int ox = cx, oy = cy;
     if (e->flags & RX_INPUT_ABSOLUTE)
-        move_cursor((int)((uint64_t)e->x * (W - 1) / 32767), (int)((uint64_t)e->y * (H - 1) / 32767));
+        move_cursor((int)((uint64_t)e->x * (PW - 1) / 32767), (int)((uint64_t)e->y * (PH - 1) / 32767));
     else
         move_cursor(cx + e->x, cy + e->y);
     int moved = cx != ox || cy != oy;
@@ -1195,10 +1252,12 @@ int main(int argc, char **argv) {
     }
     W = d.width;
     H = d.height;
+    rx_display_primary(&d, &PW, &PH);
     fbp = d.pixels;
-    cx = (int)W / 2;
-    cy = (int)H / 2;
+    cx = (int)PW / 2;
+    cy = (int)PH / 2;
     make_wallpaper();
+    setup_hwcursor();
     rx_handle_t control = rx_take_startup_handle(RX_PA_USER0); // from desktop --run, if it started us
     connect_input();
     rx_handle_t listen, theirs;
@@ -1258,11 +1317,16 @@ int main(int argc, char **argv) {
         if (items[i_disp].pending) {
             rx_display_msg_t ev;
             int pr;
-            while ((pr = rx_display_poll(&d, &ev)) > 0)
+            while ((pr = rx_display_poll(&d, &ev)) > 0) {
                 if (ev.op == RX_DISPLAY_EV_VISIBLE) {
                     visible = (int)ev.a;
-                    if (visible) add_damage(0, 0, (int)W, (int)H);
+                    if (visible) {
+                        add_damage(0, 0, (int)W, (int)H);
+                        if (hwcursor) rx_display_cursor_move(&d, cx, cy, 1);
+                    }
                 }
+                if (ev.op == RX_DISPLAY_EV_RESIZE) screen_resized();
+            }
             if (pr < 0) {
                 printf("compositor: the display service went away\n");
                 return 1;

@@ -159,11 +159,11 @@ def wallpaper(x, y, W=1280, H=800):
     br, bg, bb = 0x1E * 256 + (0x2B - 0x1E) * t, 0x1F * 256 + (0x2D - 0x1F) * t, 0x29 * 256 + (0x3C - 0x29) * t
     dx, dy = x - W // 4, y - 3 * H // 4
     d2 = dx * dx + dy * dy
-    g = 41 * (r2 - d2) // r2 if d2 < r2 else 0
-    g = g * max(r2 - d2, 0) // r2
-    r = br + ((0xBD * 256 - br) * g) // 256
-    gg = bg + ((0x93 * 256 - bg) * g) // 256
-    b = bb + ((0xF9 * 256 - bb) * g) // 256
+    f = (r2 - d2) * 4096 // r2 if d2 < r2 else 0
+    g = 41 * f * f // 4096
+    r = br + ((0xBD * 256 - br) * g) // (256 * 4096)
+    gg = bg + ((0x93 * 256 - bg) * g) // (256 * 4096)
+    b = bb + ((0xF9 * 256 - bb) * g) // (256 * 4096)
     d = BAYER[y & 3][x & 3] * 16 + 8
     return ((r + d) >> 8) << 16 | ((gg + d) >> 8) << 8 | ((b + d) >> 8)
 

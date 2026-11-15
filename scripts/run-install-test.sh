@@ -57,7 +57,7 @@ cp "$EFI" "$W/live/EFI/Rustica/rustux.efi"
 printf 'default rustica\ntimeout 2\n' > "$W/live/loader/loader.conf"
 printf 'title Try Rustica Server\nefi /EFI/Rustica/rustux.efi\nsort-key 1\n' > "$W/live/loader/entries/rustica.conf"
 printf 'title Install Rustica Server\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 2\n' > "$W/live/loader/entries/install.conf"
-truncate -s 64M "$W/live.fat"; mkfs.fat -F 32 -n RUSTICA "$W/live.fat" >/dev/null; mcopy -i "$W/live.fat" -s "$W/live/EFI" "$W/live/loader" ::
+truncate -s 128M "$W/live.fat"; mkfs.fat -F 32 -n RUSTICA "$W/live.fat" >/dev/null; mcopy -i "$W/live.fat" -s "$W/live/EFI" "$W/live/loader" ::
 python3 scripts/gpt-wrap.py --disk 9 "$W/live.img" esp:"$W/live.fat"
 truncate -s 2G "$W/nvme.img"
 # "Windows": its EFI partition (bootmgfw.efi and the fallback), a data partition, 1.6 GiB free

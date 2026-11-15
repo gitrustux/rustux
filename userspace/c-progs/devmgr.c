@@ -58,6 +58,7 @@ struct pci {
     uint64_t started;       // when it was (re)started, ns
     int quick_fails;
     int given_up;
+    int display;            // the driver serves the screen ("display" in /etc/drivers)
 };
 
 static struct pci devs[MAX_PCI];
@@ -143,6 +144,9 @@ static int setup_ecam(void) {
 // The kernel drives the USB keyboard (xHCI) and draws on the screen
 // (display controllers): leave those devices alone
 static int kernel_owned(const rx_pci_info_t *i) {
+    // A virtio GPU has a driver of its own (step F8): its BARs are sized
+    // like any device's (virtio-vga's VGA framebuffer is not among them)
+    if (i->class_code == 0x03 && i->vendor == 0x1AF4) return 0;
     return i->class_code == 0x03 || (i->class_code == 0x0C && i->subclass == 0x03);
 }
 
@@ -326,8 +330,9 @@ static void read_drivers(void) {
     if (!f) return;
     char line[256];
     while (fgets(line, sizeof line, f)) {
-        char pat[64], prog[128], *s = line;
+        char pat[64], prog[128], flag[16] = "", *s = line;
         if (line[0] == '#' || !word(&s, pat, sizeof pat) || !word(&s, prog, sizeof prog)) continue;
+        word(&s, flag, sizeof flag);
         if (!strncmp(pat, "usb=", 4)) {
             if (nusb_rules < 8) {
                 struct usb_rule *u = &usb_rules[nusb_rules];
@@ -341,6 +346,7 @@ static void read_drivers(void) {
             struct pci *p = &devs[k];
             if (p->prog[0] || (p->info.flags & RX_PCI_FLAG_KERNEL) || !matches(pat, &p->info)) continue;
             snprintf(p->prog, sizeof p->prog, "%s", prog);
+            p->display = !strcmp(flag, "display");
             const char *base = strrchr(prog, '/');
             snprintf(p->info.driver, sizeof p->info.driver, "%s", base ? base + 1 : prog);
         }
@@ -356,15 +362,38 @@ static void bdf_name(const rx_pci_info_t *i, char *buf, size_t n) {
     snprintf(buf, n, "%02x:%02x.%x", i->bus, i->dev, i->func);
 }
 
+static void start_display(void);
+
 static void start_driver(struct pci *p) {
     rx_handle_t ours, theirs;
     if (rx_channel_create(0, &ours, &theirs) != RX_OK) return;
     char bdf[16];
     bdf_name(&p->info, bdf, sizeof bdf);
-    char *argv[] = { p->info.driver, bdf, 0 };
-    rx_spawn_handle_t hs[] = { { RX_PA_USER0, theirs } };
+    char *argv[10] = { p->info.driver, bdf, 0 };
+    rx_spawn_handle_t hs[3] = { { RX_PA_USER0, theirs } };
+    int nh = 1;
+    // A display driver (step F8) gets the UEFI framebuffer, if there is
+    // one, as /bin/display would: the text console's
+    char g[7][12];
+    if (p->display) {
+        rx_display_info_t info;
+        rx_handle_t vmo, claim;
+        if (rx_display_claim(resource, &info, &vmo, &claim) == RX_OK) {
+            snprintf(g[0], 12, "%u", info.width);
+            snprintf(g[1], 12, "%u", info.height);
+            snprintf(g[2], 12, "%u", info.stride);
+            snprintf(g[3], 12, "%x", info.red);
+            snprintf(g[4], 12, "%x", info.green);
+            snprintf(g[5], 12, "%x", info.blue);
+            snprintf(g[6], 12, "%u", (unsigned)(info.phys & 0xFFF));
+            for (int k = 0; k < 7; k++) argv[2 + k] = g[k];
+            argv[9] = 0;
+            hs[nh++] = (rx_spawn_handle_t){ RX_PA_USER1, vmo };
+            hs[nh++] = (rx_spawn_handle_t){ RX_PA_USER2, claim };
+        }
+    }
     rx_handle_t proc;
-    if (rx_spawn(p->prog, argv, 0, RX_SPAWN_CLONE_ALL, hs, 1, &proc) != RX_OK) {
+    if (rx_spawn(p->prog, argv, 0, RX_SPAWN_CLONE_ALL, hs, (uint32_t)nh, &proc) != RX_OK) {
         printf("devmgr: cannot start %s for %s\n", p->prog, bdf);
         rx_handle_close(ours);
         p->given_up = 1;
@@ -399,6 +428,7 @@ static void driver_ended(struct pci *p) {
     if (p->quick_fails >= 5) {
         printf("devmgr: %s for %s keeps failing (code %lld); not restarting it\n", p->info.driver, bdf, (long long)code);
         p->given_up = 1;
+        if (p->display) start_display(); // back to the UEFI framebuffer
         return;
     }
     printf("devmgr: %s for %s ended (code %lld); restarting it\n", p->info.driver, bdf, (long long)code);
@@ -871,7 +901,15 @@ static struct {
     int quick_fails, given_up, none;
 } disp;
 
+// A display driver (virtio-gpu) that runs, or has not given up
+static int display_driver(void) {
+    for (int k = 0; k < ndevs; k++)
+        if (devs[k].display && devs[k].prog[0] && !devs[k].given_up) return 1;
+    return 0;
+}
+
 static void start_display(void) {
+    if (display_driver()) return; // it has the screen (step F8)
     rx_display_info_t info;
     rx_handle_t vmo, claim;
     rx_status_t s = rx_display_claim(resource, &info, &vmo, &claim);

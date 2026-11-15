@@ -550,11 +550,14 @@ pub fn sys_display_claim(args: SyscallArgs) -> SyscallRet {
     })())
 }
 
-/// display_console(claim, mode): mode 0 shows the text console, 1 the
-/// claim holder's graphics (the console stops drawing); 2 (any handle)
-/// returns which is shown, 0 or 1
+/// display_console(claim, mode, vmo): mode 0 shows the text console, 1
+/// the claim holder's graphics (the console stops drawing); 2 (any
+/// handle) returns which is shown, 0 or 1. Step F8, for a display driver
+/// whose device does not show the framebuffer: 3 makes the console draw
+/// into `vmo` (contiguous, the framebuffer's size and layout), 4 back
+/// into the framebuffer, 5 returns 1 if it drew since the last 5
 pub fn sys_display_console(args: SyscallArgs) -> SyscallRet {
-    let (h, mode) = (args.arg_u32(0), args.arg_u32(1));
+    let (h, mode, vh) = (args.arg_u32(0), args.arg_u32(1), args.arg_u32(2));
     ret((|| {
         if mode == 2 {
             return Ok(if crate::drivers::display::shown() { 0 } else { 1 });
@@ -564,6 +567,16 @@ pub fn sys_display_console(args: SyscallArgs) -> SyscallRet {
         match mode {
             0 => crate::drivers::display::show(),
             1 => crate::drivers::display::hide(),
+            3 => {
+                let (vobj, rights) = lookup(vh, 0)?;
+                let KObject::Vmo(v) = vobj else { return Err(RxStatus::ERR_WRONG_TYPE) };
+                if !rights.has(Rights::WRITE) {
+                    return Err(RxStatus::ERR_ACCESS_DENIED);
+                }
+                crate::kobj::display::redirect_console(Some(v))?;
+            }
+            4 => crate::kobj::display::redirect_console(None)?,
+            5 => return Ok(crate::drivers::display::console::take_drawn() as usize),
             _ => return Err(RxStatus::ERR_INVALID_ARGS),
         }
         Ok(0)
