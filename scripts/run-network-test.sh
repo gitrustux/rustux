@@ -214,6 +214,16 @@ try:
     out = run('ip route; ip -br link')
     check('default via 10.0.2.2 dev eth0' in out and '10.0.2.0/24 dev eth0 src 10.0.2.15' in out
           and re.search(r'eth1 +UP +52:54:00:ab:cd:ef', out), 'ip route, ip -br link', out)
+    # netcfg (step D6): the configuration and state; a change and back
+    out = run('netcfg')
+    check('eth0: dhcp, up (virtio-net' in out and re.search(r'address  10\.0\.2\.15/24 \(DHCP, \d+ s left\)', out)
+          and 'gateway  10.0.2.2' in out and 'DNS: 10.0.2.3 (DHCP on eth0)' in out, 'netcfg shows the cards', out)
+    out = run('netcfg eth1 static 10.0.4.9/24; ip -br a show eth1; netcfg eth1 bogus; netcfg eth1 static 10.0.4.9; echo st=$?')
+    check('netcfg: eth1 static 10.0.4.9/24' in out and '10.0.4.9/24' in out.split('ip -br a show eth1', 1)[-1] and 'usage:' in out
+          and 'not an IPv4 address with its prefix' in out and 'st=1' in out, 'netcfg eth1 static: applied at once; bad ones refused', out)
+    out = run('netcfg eth1 off; ip -br a show eth1; grep eth1 /etc/network.conf; sudo -u nobody netcfg eth1 dhcp; echo st=$?; netcfg eth1 dhcp')
+    check('10.0.4.9' not in out.split('ip -br a show eth1', 1)[-1] and '\neth1 off' in out and 'needs root' in out and 'st=1' in out,
+          'netcfg eth1 off; not for nobody', out)
     out = run('ping -c 3 10.0.2.2')
     check(re.search(r'64 bytes from 10.0.2.2: icmp_seq=3 time=[\d.]+ ms', out) and '3 packets transmitted, 3 received, 0% packet loss' in out
           and '=DONE' in out and re.search(r'=DONE\d+= 0', out), 'ping 10.0.2.2 (the gateway): 3 replies', out)

@@ -1,0 +1,38 @@
+netcfg - the network's configuration
+
+USAGE
+    netcfg
+    netcfg IFACE dhcp
+    netcfg IFACE static ADDRESS/PREFIX [GATEWAY]
+    netcfg IFACE off
+    netcfg dns [ADDRESS...]
+    netcfg search [DOMAIN...]
+    netcfg apply [IFACE]
+
+    netcfg changes /etc/network.conf and has the network service (netd)
+    apply it at once, without a restart: open connections stay. Settings
+    > Network runs it.
+
+    (none)      each card: how it is configured, its state, driver and
+                MAC address, its addresses (DHCP's with the time left on
+                the lease) and gateway; the DNS servers
+    dhcp        an address, gateway and DNS servers from a DHCP server
+    static      a fixed IPv4 address with its prefix, and the default
+                route through GATEWAY
+    off         the card is left without an IPv4 address
+    dns         DNS servers tried before DHCP's (IPv4 addresses); none:
+                DHCP's only (written to /etc/resolv.conf)
+    search      domains tried after short names
+    apply       /etc/network.conf again, after editing it by hand
+
+    Changes are root's (sudo netcfg ...). Comments in the file are kept,
+    and so are an interface's static6 lines. A line for a card that is
+    not there yet waits for it.
+
+EXAMPLES
+    sudo netcfg eth0 static 192.168.1.20/24 192.168.1.1
+    sudo netcfg dns 1.1.1.1 9.9.9.9
+    sudo netcfg eth0 dhcp
+
+SEE ALSO
+    network.conf, ip, resolv.conf, settings

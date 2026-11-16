@@ -71,4 +71,13 @@ typedef struct {
 // The largest datagram (UDP payload) netd carries
 #define RX_NETSOCK_MAX_DGRAM 65000u
 
+// One request on netd's control protocol (/svc/net: "links", "addrs",
+// "routes", "dns", ...; docs/NETWORK.md), for programs that are not C
+// tools (the panel and Settings, step D6): the answer into out,
+// NUL-terminated, its last line "ok" or "error: ...". The connection is
+// kept for the next request. Returns the answer's length, or -1 (errno
+// ENETDOWN) if netd cannot be reached.
+#include <stddef.h>
+int rx_net_control(const char *req, char *out, size_t cap);
+
 #endif

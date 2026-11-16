@@ -4,8 +4,8 @@ Rustica's network: card drivers in userspace, one network service (`netd`)
 with the TCP/IP stack, `ip` and `ping` (`NETWORK.md` in the planning
 documents, step D1), POSIX sockets for programs, C and Rust (`nc`,
 `ss`, `std::net`; step D2), DHCP, DNS and `curl` over HTTPS (step D3),
-Intel's e1000e cards with IPv6 beside IPv4 (step D4), and the SSH server
-and the firewall (step D5).
+Intel's e1000e cards with IPv6 beside IPv4 (step D4), the SSH server
+and the firewall (step D5), and the desktop's network settings (step D6).
 
 ```
   ping, ip, ss ──/svc/net──────┐                    ┌── virtio-net 00:02.0 (eth0)
@@ -116,7 +116,10 @@ eth0 dhcp
 ```
 
 A card without a line gets DHCP; the image's file says `eth0 dhcp`.
-After editing it, `sudo svc restart netd`.
+`netcfg` changes it and applies it at once (step D6); after editing it by
+hand, `sudo netcfg apply` (netd's `reconfigure` request: the card's
+addresses, routes and DHCP are set again from the file, other cards and
+open connections are left alone) or `sudo svc restart netd`.
 
 ### DHCP (step D3)
 
@@ -295,6 +298,22 @@ host key, chacha20-poly1305 or aes256-ctr; OpenSSH's clients connect.
 Not yet: scp and sftp (subsystems), port and agent forwarding, RSA and
 ECDSA user keys, environment from the client (`AcceptEnv`).
 
+## The desktop (step D6)
+
+- **The panel** shows `Net: eth0 10.0.2.15` (the first card that is up
+  with an address), `connecting` (up, no address yet), `no cable`, `down`
+  or `off` (netd not running), asked again every 3 seconds; a click opens
+  Settings > Network.
+- **Settings > Network**: the cards (state, address, gateway), the one
+  selected with its driver, MAC address, traffic, DHCP lease and IPv6
+  addresses; Automatic (DHCP), Fixed address (address/prefix and gateway,
+  starting from what DHCP gave) or Off, then Apply; DNS servers of your
+  own, tried before DHCP's. The changes are `netcfg` commands, as root
+  (another user types their password: `sudo -S`).
+- Programs that are not C tools ask netd with the C library's
+  `rx_net_control(request, out, size)` (`<rustux/netsock.h>`; the
+  toolkit's `rustica_ui::net` for Rust).
+
 ## Commands
 
 - `ip` (`man ip`): `ip link`, `ip addr`, `ip route` in iproute2's form;
@@ -319,6 +338,10 @@ ECDSA user keys, environment from the client (`AcceptEnv`).
 - `ping` takes names too, and IPv6 addresses (`-6`, `-4`; `ping6`).
 - `ip -6 addr`, `ip -6 route`, `ip -6 route add default via ADDRESS`;
   `nc -6`, `host -t AAAA`.
+- `netcfg` (`man netcfg`): `/etc/network.conf` changed and applied:
+  `netcfg eth0 dhcp`, `netcfg eth0 static 192.168.1.20/24 192.168.1.1`,
+  `netcfg eth0 off`, `netcfg dns 1.1.1.1`, `netcfg search lan`, `netcfg
+  apply`; `netcfg` alone shows each card's configuration and state.
 - `fwctl` (`man fwctl`): the firewall's rules.
 - `sshd` (`man sshd`), `sshd-session` (sshd's helper).
 - `nettest` (Rust, `rust/nettest`): `nettest local` checks `std::net`

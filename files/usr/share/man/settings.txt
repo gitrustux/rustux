@@ -1,10 +1,12 @@
 settings - the desktop's settings
 
 USAGE
-    settings [SECTION]   display, keyboard, mouse, time, users, disks, about
+    settings [SECTION]   display, keyboard, mouse, network, time, users, disks, about
 
     Display: the scale of windows (~/.config/rustica.conf, scale=).
     Keyboard: the layout (localectl). Mouse: the pointer speed (inputctl).
+    Network: the cards, each with DHCP, a fixed address or off, and DNS
+    servers of your own (netcfg).
     Date & Time: the clock and the time zone (timedatectl). Users: add,
     remove, make administrator (useradd, userdel, usermod, chpasswd).
     Disks: what lsblk shows. About: the system and the hardware.
@@ -13,4 +15,4 @@ USAGE
     and the change is made with sudo -S (they must be in group sudo).
 
 SEE ALSO
-    localectl, inputctl, timedatectl, useradd, lsblk (docs/APPS.md)
+    localectl, inputctl, netcfg, timedatectl, useradd, lsblk (docs/APPS.md)

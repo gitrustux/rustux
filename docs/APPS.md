@@ -116,6 +116,7 @@ server): in a user's session Files shows mount's error.
 | Display | the scale of windows: 100% or 200% (`RUSTICA_SCALE` still wins) | `~/.config/rustica.conf` (`scale=`), the user's |
 | Keyboard | the layout, for the console too | `/etc/keymap` (`localectl set-keymap`) |
 | Mouse | the pointer speed, 25-400% of the mouse's own movement (relative mice; a tablet is exact) | `/etc/input.conf` (`inputctl set-pointer-speed`) |
+| Network | the cards (state, address, gateway, traffic, the DHCP lease); each one Automatic (DHCP), a fixed address and gateway, or off; DNS servers of your own (network step D6) | `/etc/network.conf` (`netcfg`, applied at once) |
 | Date & Time | the clock (local time) and the time zone (a list to filter) | the RTC (`timedatectl set-time`), `/etc/timezone` |
 | Users | the users (root and uid 1000 and up), add one (name, password, administrator), remove one with their home, make one an administrator or not | `/etc/passwd`, `group`, `shadow` (`useradd -m`, `chpasswd`, `usermod -G`, `userdel -r`) |
 | Disks | disks and partitions: size, filesystem, where mounted (read only) | `lsblk` |
@@ -147,8 +148,10 @@ layout is reloaded (`INPUT.md`); the panel shows the layout as it changes.
   the stick mounted from the side bar, paste, rename, trash, new folder,
   properties, a file opened and saved in the Text Editor, eject; the copy
   is checked on the stick image afterwards), Settings as root (mouse
-  speed, time zone, scale, a new administrator) and as that user (her
-  password through sudo), and the keyboard layout.
+  speed, time zone, scale, a new administrator, the network: a fixed
+  address and a DNS server, then DHCP again, with the panel's Net
+  following) and as that user (her password through sudo), and the
+  keyboard layout.
 
 ## Not yet
 
@@ -156,8 +159,9 @@ layout is reloaded (`INPUT.md`); the panel shows the layout as it changes.
   crashes ends its tabs' shells (they get end of input).
 - Drag and drop, several selected files, thumbnails, searching; mounting
   as a user (a polkit-like rule); trash on USB sticks.
-- Settings: the screen resolution (step F8), key repeat, network and
-  sound (phases D and later), per-user keyboard layouts.
+- Settings: the screen resolution (step F8), key repeat, sound, per-user
+  keyboard layouts; in Network: IPv6 settings, the host name, the
+  firewall (`fwctl`), Wi-Fi.
 - The System Monitor and the Calculator (the other applications "next in
   line").
 - Seen in QEMU only: while Files reads a USB stick (every 3 seconds, for

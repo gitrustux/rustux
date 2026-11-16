@@ -7,14 +7,16 @@
 //! panel: the desktop's panel (DESKTOP.md step F6), docked at the bottom
 //! of the screen: Applications (the launcher), a button per window (click:
 //! focus it, or minimise it if it has the focus), the keyboard layout,
-//! volume and network (not there yet), the clock, Lock and Log out. The
-//! session lasts as long as the panel: Log out ends it.
+//! volume (not there yet), the network (Net: the interface and its
+//! address, network step D6; a click opens Settings > Network), the
+//! clock, Lock and Log out. The session lasts as long as the panel: Log
+//! out ends it.
 //!
 //! It also starts the programs in /etc/autostart (one command a line).
 
 use rustica_ui::rustica_window::{Event, ROLE_PANEL};
 use rustica_ui::{Control, Request, Ui};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[repr(C)]
 #[derive(Default)]
@@ -71,6 +73,9 @@ fn main() {
     }
     let mut wins: Vec<Win> = Vec::new();
     let mut first = true;
+    // The network's state, asked again every 3 seconds
+    let mut net = String::new();
+    let mut net_at: Option<Instant> = None;
     println!("panel: session of {user}");
     let r = rustica_ui::run("Panel", 800, 36, Some((0, 0)), |ui: &mut Ui, ctl: &mut Control| {
         if first {
@@ -93,8 +98,22 @@ fn main() {
         let h = ui.canvas.height();
         ui.canvas.fill_rect(rustica_ui::gfx::Rect::new(0.0, 0.0, w, h), th.surface);
         ui.canvas.fill_rect(rustica_ui::gfx::Rect::new(0.0, 0.0, w, 1.0), th.border);
-        let right = format!("{}    Vol \u{2014}    Net \u{2014}    {}", layout(), clock());
-        let right_w = ui.text_width(&right) + ui.text_width("Lock") + ui.text_width("Log out") + ui.u(32.0 * 2.0 + 8.0 * 4.0 + 16.0);
+        if net_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(3)) {
+            let s = format!("Net: {}", rustica_ui::net::summary(rustica_ui::net::interfaces().as_deref()));
+            if s != net {
+                println!("panel: {s}");
+                net = s;
+            }
+            net_at = Some(Instant::now());
+        }
+        let left_text = format!("{}    Vol \u{2014}", layout());
+        let right_text = clock();
+        let right_w = ui.text_width(&left_text)
+            + ui.text_width(&net)
+            + ui.text_width(&right_text)
+            + ui.text_width("Lock")
+            + ui.text_width("Log out")
+            + ui.u(32.0 * 3.0 + 8.0 * 6.0 + 16.0);
         ui.row(|ui| {
             if ui.primary_button("Applications") {
                 println!("panel: launcher");
@@ -118,12 +137,20 @@ fn main() {
                 ui.alloc(left, 1.0);
             }
             // The status text, centred on the buttons' line
-            let tw = ui.text_width(&right);
-            let bh = ui.line_h() + ui.u(12.0);
-            let r = ui.alloc(tw, bh);
-            let px = ui.font_px();
-            let ty = r.y + (bh - ui.line_h()) / 2.0;
-            ui.canvas.text(&mut ui.face, r.x, ty, &right, px, th.dim);
+            let status = |ui: &mut Ui, text: &str| {
+                let tw = ui.text_width(text);
+                let bh = ui.line_h() + ui.u(12.0);
+                let r = ui.alloc(tw, bh);
+                let px = ui.font_px();
+                let ty = r.y + (bh - ui.line_h()) / 2.0;
+                ui.canvas.text(&mut ui.face, r.x, ty, text, px, th.dim);
+            };
+            status(ui, &left_text);
+            if ui.button(&net) {
+                println!("panel: network settings");
+                let _ = std::process::Command::new("/bin/settings").arg("network").spawn();
+            }
+            status(ui, &right_text);
             if ui.button("Lock") {
                 println!("panel: lock");
                 ctl.requests.push(Request::Lock);

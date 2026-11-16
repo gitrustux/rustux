@@ -6,27 +6,31 @@
 
 //! settings: Rustica's Settings (DESKTOP.md step F7). Display (the scale,
 //! ~/.config/rustica.conf), keyboard layout (localectl), mouse speed
-//! (inputctl), date, time and time zone (timedatectl), users (useradd,
-//! userdel, chpasswd, usermod), disks (lsblk, read only), about.
+//! (inputctl), network (the interfaces, DHCP or a fixed address, DNS
+//! servers: netcfg; network step D6), date, time and time zone
+//! (timedatectl), users (useradd, userdel, chpasswd, usermod), disks
+//! (lsblk, read only), about.
 //!
-//!   settings [SECTION]     display, keyboard, mouse, time, users, disks, about
+//!   settings [SECTION]     display, keyboard, mouse, network, time, users, disks, about
 //!
 //! What is the system's (in /etc) is root's: another user is asked for
 //! their password and the change goes through sudo -S. Prints what it
 //! changes ("settings: ...") for the tests.
 
 use rustica_apps::sys;
+use rustica_ui::net::Iface;
 use rustica_ui::{Column, Control, Icon, Row, Ui};
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn say(s: &str) {
     println!("settings: {s}");
     let _ = std::io::stdout().flush();
 }
 
-const SECTIONS: [&str; 7] = ["Display", "Keyboard", "Mouse", "Date & Time", "Users", "Disks", "About"];
+const SECTIONS: [&str; 8] = ["Display", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "About"];
+const METHODS: [&str; 3] = ["Automatic (DHCP)", "Fixed address", "Off"];
 
 /// A change that needs root, waiting for the password
 struct Pending {
@@ -54,12 +58,50 @@ struct Settings {
     disks: Vec<Row>,
     disk_sel: Option<usize>,
     about: Vec<(String, String)>,
+    // Network: the interfaces as netd has them (None: netd not running),
+    // when they were asked, the one selected; the editor's method (an
+    // index into METHODS), address and gateway, for the interface named
+    // in net_for; the DNS servers of /etc/network.conf
+    ifaces: Option<Vec<Iface>>,
+    net_at: Option<Instant>,
+    iface_sel: Option<usize>,
+    net_for: String,
+    method: usize,
+    addr_text: String,
+    gw_text: String,
+    dns_text: String,
     password: Option<String>, // the user's, once sudo took it
     pending: Option<Pending>,
     pw_text: String,
     message: Option<(String, String)>,
     confirm_delete: Option<String>,
     status: String,
+}
+
+/// /etc/network.conf's lines, as words (comments left out)
+fn conf_lines() -> Vec<Vec<String>> {
+    std::fs::read_to_string("/etc/network.conf")
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").split_whitespace().map(str::to_string).collect::<Vec<_>>())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// What /etc/network.conf says for an interface: the method (an index
+/// into METHODS), address and gateway; DHCP when it has no line
+fn conf_method(name: &str) -> (usize, String, String) {
+    for w in conf_lines() {
+        if w.len() >= 2 && w[0] == name {
+            match w[1].as_str() {
+                "dhcp" => return (0, String::new(), String::new()),
+                "static" => return (1, w.get(2).cloned().unwrap_or_default(), w.get(3).cloned().unwrap_or_default()),
+                "off" | "manual" => return (2, String::new(), String::new()),
+                _ => {}
+            }
+        }
+    }
+    (0, String::new(), String::new())
 }
 
 fn read_first_line(p: &str) -> String {
@@ -88,6 +130,14 @@ impl Settings {
             disks: Vec::new(),
             disk_sel: None,
             about: Vec::new(),
+            ifaces: None,
+            net_at: None,
+            iface_sel: Some(0),
+            net_for: String::new(),
+            method: 0,
+            addr_text: String::new(),
+            gw_text: String::new(),
+            dns_text: String::new(),
             password: None,
             pending: None,
             pw_text: String::new(),
@@ -120,6 +170,9 @@ impl Settings {
         self.load_users();
         self.load_disks();
         self.load_about();
+        self.net_at = None;
+        self.net_for.clear();
+        self.dns_text = conf_lines().iter().filter(|w| w[0] == "dns").flat_map(|w| w[1..].to_vec()).collect::<Vec<_>>().join(" ");
     }
 
     fn filtered_zones(&self) -> Vec<String> {
@@ -326,6 +379,132 @@ impl Settings {
         }
     }
 
+    fn network(&mut self, ui: &mut Ui, ctl: &mut Control) {
+        ctl.wake_after = Some(Duration::from_secs(2));
+        if self.net_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(2)) {
+            self.ifaces = rustica_ui::net::interfaces();
+            self.net_at = Some(Instant::now());
+        }
+        ui.heading("Network");
+        let Some(ifaces) = self.ifaces.clone() else {
+            ui.label("The network service is not running.");
+            ui.dim_label("Start it with: sudo svc start netd");
+            return;
+        };
+        if ifaces.is_empty() {
+            ui.label("No network card was found.");
+            return;
+        }
+        let rows: Vec<Row> = ifaces
+            .iter()
+            .map(|i| Row {
+                icon: Icon::None,
+                cells: vec![
+                    i.name.clone(),
+                    match i.state.as_str() {
+                        "up" => "connected".into(),
+                        "no-carrier" => "no cable".into(),
+                        s => s.to_string(),
+                    },
+                    i.v4.first().map(|(a, _)| a.clone()).unwrap_or_else(|| "\u{2014}".into()),
+                    i.gateway.clone().unwrap_or_else(|| "\u{2014}".into()),
+                ],
+            })
+            .collect();
+        let cols = [
+            Column { title: "Interface", width: 0.0, right: false },
+            Column { title: "State", width: 110.0, right: false },
+            Column { title: "Address", width: 150.0, right: false },
+            Column { title: "Gateway", width: 120.0, right: false },
+        ];
+        if self.iface_sel.map_or(true, |k| k >= ifaces.len()) {
+            self.iface_sel = Some(0);
+        }
+        ui.table("ifaces", &cols, &rows, &mut self.iface_sel, (ui.line_h() * 1.6 * (ifaces.len() as f32 + 1.5)) / ui.scale);
+        let Some(i) = self.iface_sel.and_then(|k| ifaces.get(k)).cloned() else { return };
+        // The editor follows the selection, from /etc/network.conf (a
+        // fixed address starts as the one DHCP gave)
+        if self.net_for != i.name {
+            let (m, a, g) = conf_method(&i.name);
+            self.method = m;
+            self.addr_text = if a.is_empty() { i.v4.first().map(|(a, _)| a.clone()).unwrap_or_default() } else { a };
+            self.gw_text = if g.is_empty() && m != 1 { i.gateway.clone().unwrap_or_default() } else { g };
+            self.net_for = i.name.clone();
+        }
+        ui.dim_label(&format!("{} \u{b7} {} \u{b7} received {}, sent {}", i.driver, i.mac, sys::human_size(i.rx_bytes), sys::human_size(i.tx_bytes)));
+        for (a, left) in &i.v4 {
+            if let Some(s) = left {
+                ui.dim_label(&format!("{a}: from DHCP, {} min left on the lease", s / 60));
+            }
+        }
+        for a in i.v6.iter().filter(|a| !a.starts_with("fe80:")) {
+            ui.dim_label(&format!("IPv6 {a}"));
+        }
+        ui.space(4.0);
+        let mut chosen = None;
+        ui.row(|ui| {
+            for (k, m) in METHODS.iter().enumerate() {
+                if if self.method == k { ui.primary_button(m) } else { ui.button(m) } {
+                    chosen = Some(k);
+                }
+            }
+        });
+        if let Some(k) = chosen {
+            self.method = k;
+        }
+        let mut enter = false;
+        if self.method == 1 {
+            let (_, e1) = ui.row(|ui| {
+                ui.column(ui.u(90.0), |ui| ui.label("Address"));
+                ui.text_field("addr", &mut self.addr_text, 180.0)
+            });
+            let (_, e2) = ui.row(|ui| {
+                ui.column(ui.u(90.0), |ui| ui.label("Gateway"));
+                ui.text_field("gw", &mut self.gw_text, 180.0)
+            });
+            ui.dim_label("The address with its prefix: 192.168.1.20/24. The gateway may be left empty.");
+            enter = e1 || e2;
+        }
+        if ui.primary_button(&format!("Apply to {}", i.name)) || enter {
+            let mut argv: Vec<String> = vec!["/bin/netcfg".into(), i.name.clone()];
+            match self.method {
+                0 => argv.push("dhcp".into()),
+                1 => {
+                    let a = self.addr_text.trim().to_string();
+                    if !a.contains('/') {
+                        self.message = Some(("Not an address".into(), "Give the address with its prefix, such as 192.168.1.20/24".into()));
+                        return;
+                    }
+                    argv.push("static".into());
+                    argv.push(a);
+                    let g = self.gw_text.trim().to_string();
+                    if !g.is_empty() {
+                        argv.push(g);
+                    }
+                }
+                _ => argv.push("off".into()),
+            }
+            let what = format!("network {}", argv[1..].join(" "));
+            self.admin(&what, vec![(argv, String::new())]);
+        }
+        ui.space(8.0);
+        ui.label("DNS servers");
+        let now = rustica_ui::net::dns_servers();
+        ui.dim_label(&format!("In use: {}", if now.is_empty() { "none".to_string() } else { now.join(", ") }));
+        let (set, enter) = ui.row(|ui| {
+            ui.column(ui.u(90.0), |ui| ui.label("Your own"));
+            let (_, e) = ui.text_field("dns", &mut self.dns_text, 220.0);
+            (ui.button("Use these servers"), e)
+        });
+        ui.dim_label("Tried before the ones DHCP gives; empty: DHCP's only. Addresses apart with spaces.");
+        if set || enter {
+            let mut argv: Vec<String> = vec!["/bin/netcfg".into(), "dns".into()];
+            argv.extend(self.dns_text.split(|c: char| c == ' ' || c == ',').filter(|s| !s.is_empty()).map(str::to_string));
+            let what = format!("dns {}", argv[2..].join(" "));
+            self.admin(what.trim(), vec![(argv, String::new())]);
+        }
+    }
+
     fn time(&mut self, ui: &mut Ui, ctl: &mut Control) {
         ctl.wake_after = Some(Duration::from_secs(1));
         ui.heading("Date & Time");
@@ -478,9 +657,10 @@ impl Settings {
                 0 => self.display(ui),
                 1 => self.keyboard(ui),
                 2 => self.mouse(ui),
-                3 => self.time(ui, ctl),
-                4 => self.users_section(ui),
-                5 => self.disks_section(ui),
+                3 => self.network(ui, ctl),
+                4 => self.time(ui, ctl),
+                5 => self.users_section(ui),
+                6 => self.disks_section(ui),
                 _ => self.about_section(ui),
             });
         });
@@ -489,7 +669,7 @@ impl Settings {
             if let Some(s) = self.section {
                 say(&format!("section {}", SECTIONS[s]));
             }
-            if self.section == Some(5) || self.section == Some(6) {
+            if self.section == Some(6) || self.section == Some(7) {
                 self.load_disks();
                 self.load_about();
             }

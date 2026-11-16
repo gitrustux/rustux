@@ -9,7 +9,10 @@
 #      properties, a text file opened in the Text Editor and saved, the
 #      stick ejected;
 #   3. Settings (root): mouse speed, time zone, scale, a new user (an
-#      administrator), the keyboard layout;
+#      administrator), the keyboard layout; the network (step D6): the
+#      panel's Net shows the address DHCP gave, Settings > Network gives
+#      eth0 a fixed address and a DNS server (the panel follows), then
+#      DHCP again;
 #   4. Settings as that user: a change of the system's asks for her
 #      password (sudo -S);
 #   5. the console works throughout.
@@ -310,6 +313,29 @@ check('Europe/Berlin' in out, 'Settings: time zone Europe/Berlin (/etc/timezone)
 check('scale=2' in out, 'Settings: scale 2 (~/.config/rustica.conf)')
 check(re.search(r'carol:x:1\d\d\d:', out) is not None and re.search(r'sudo:x:27:[^\n]*carol', out) is not None, 'Settings: a new user, carol, an administrator')
 
+# The network (step D6): a fixed address and a DNS server of our own, then DHCP again
+# (focus: the sections, the interfaces, Automatic, Fixed address, Off, the
+# address, the gateway (the one DHCP gave), Apply, the DNS servers, Use these servers)
+settings('network', ['tab', 'tab', 'tab', 'ret', 'tab', 'tab', 'ctrl-a', 'T:10.0.2.50/24', 'tab', 'tab', 'ret',
+                     'tab', 'ctrl-a', 'T:9.9.9.9', 'tab', 'ret'])
+out = console('cat /etc/network.conf /etc/resolv.conf; ip addr show eth0; ping -c 1 10.0.2.2', 6)
+check('eth0 static 10.0.2.50/24 10.0.2.2' in out, 'Settings > Network: eth0 static 10.0.2.50/24 10.0.2.2 (/etc/network.conf)')
+check('nameserver 9.9.9.9' in out and 'dns 9.9.9.9' in out, 'Settings > Network: DNS server 9.9.9.9 (network.conf, resolv.conf)')
+check('inet 10.0.2.50/24' in out and 'inet 10.0.2.15' not in out, 'Settings > Network: eth0 has 10.0.2.50 now, not 10.0.2.15')
+check(re.search(r'1 (packets )?received', out) is not None, 'Settings > Network: the gateway answers from the fixed address')
+settings('network', ['tab', 'tab', 'ret', 'tab', 'tab', 'tab', 'ret', 'tab', 'ctrl-a', 'backspace', 'tab', 'ret'])
+time.sleep(4)
+out = console('cat /etc/network.conf /etc/resolv.conf; logs | grep -c "configured again"; logs | grep "panel: Net"', 5)
+check(re.search(r'\n[2-9]\s', out.split('configured again', 1)[-1]) is not None, "netd applied the changes without a restart (its log)")
+check(re.search(r'(?m)^eth0 dhcp', out) is not None and re.search(r'(?m)^(eth0 static|dns )', out) is None and 'nameserver 9.9.9.9' not in out,
+      'Settings > Network: eth0 dhcp again, no DNS server of our own')
+nets = re.findall(r'panel: Net: (\S+ \S+)', out)
+check(nets[:1] == ['eth0 10.0.2.15'], "the panel's Net: eth0 and the address DHCP gave (%s)" % nets)
+check('eth0 10.0.2.50' in nets and nets[-1:] == ['eth0 10.0.2.15'], "the panel's Net follows: the fixed address, then DHCP's again")
+lg = log()
+for what in ['settings: network eth0 static 10.0.2.50/24 10.0.2.2', 'settings: dns 9.9.9.9', 'settings: network eth0 dhcp', 'settings: dns']:
+    check(what in lg, what)
+
 # 4. Settings as carol: her password for the system's settings
 click(1187, 782)                        # Log out
 time.sleep(5)
@@ -357,7 +383,7 @@ PY
     kill $Q 2>/dev/null; wait $Q 2>/dev/null
     return $r
 }
-boot desktop -device qemu-xhci,id=x -device usb-tablet,bus=x.0 \
+boot desktop -nic user,model=virtio-net-pci -device qemu-xhci,id=x -device usb-tablet,bus=x.0 \
     -drive if=none,id=stick,file="$W/stick.img",format=raw -device usb-storage,bus=x.0,drive=stick ||
     { echo "run-apps-test: some checks failed"; exit 1; }
 # What Files copied onto the stick

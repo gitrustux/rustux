@@ -26,8 +26,9 @@ FILE
     NAME is eth0, eth1, ... (ip link), the cards in PCI order. A card
     without a line gets DHCP. The image's file says "eth0 dhcp".
 
-    After changing it: sudo svc restart netd (ip changes the running
-    state without the file).
+    netcfg changes it and applies it at once (Settings > Network runs
+    netcfg); after editing it by hand: sudo netcfg apply. ip changes the
+    running state without the file.
 
 SEE ALSO
-    ip, ping, svc, resolv.conf
+    netcfg, ip, ping, svc, resolv.conf

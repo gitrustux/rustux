@@ -314,7 +314,13 @@ renames, moves to the trash (with its `.trashinfo`), makes a folder, shows
 properties, opens a text file in the Text Editor (changed and saved), and
 ejects the stick; Settings as root sets the mouse speed, the time zone,
 the scale and a new administrator, carol, who logs in and changes the
-mouse speed with her password (`sudo -S`); last the keyboard layout. The
+mouse speed with her password (`sudo -S`); last the keyboard layout.
+Network (step D6, a virtio-net card on QEMU's user-mode network):
+Settings > Network gives eth0 10.0.2.50/24 and DNS server 9.9.9.9
+(`/etc/network.conf`, `/etc/resolv.conf`, `ip addr`, the gateway pings),
+then DHCP again with no DNS server of its own; netd applied both without
+a restart (its log), and the panel's Net went 10.0.2.15, 10.0.2.50,
+10.0.2.15 (the system log). The
 file copied is then looked for on the stick image (`mdir`).
 `runtests terminal` (every build) tests pseudo-terminals with `ptytest`.
 

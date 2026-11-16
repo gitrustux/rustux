@@ -216,6 +216,27 @@ impl Link {
         r
     }
 
+    /// Forget the addresses, routes and DNS servers configure() and DHCP
+    /// gave (the link-local address and SLAAC's stay), before configure()
+    /// again (the request "reconfigure", step D6)
+    fn unconfigure(&mut self) {
+        if let Some(h) = self.dhcp.take() {
+            self.sockets.remove(h);
+        }
+        self.dhcp_addr = None;
+        self.dhcp_router = false;
+        self.lease = None;
+        self.dns.clear();
+        if self.gateway.take().is_some() {
+            self.iface.routes_mut().remove_default_ipv4_route();
+        }
+        if self.gateway6.take().is_some() {
+            self.iface.routes_mut().remove_default_ipv6_route();
+        }
+        let static6 = std::mem::take(&mut self.static6);
+        self.iface.update_ip_addrs(|a| a.retain(|c| !matches!(c, IpCidr::Ipv4(_)) && !matches!(c, IpCidr::Ipv6(x) if static6.contains(x))));
+    }
+
     pub fn usable(&self) -> bool {
         self.admin_up && (self.carrier || self.is_lo())
     }
@@ -836,6 +857,36 @@ impl Netd {
                     if !any {
                         return Err("there is no default route".into());
                     }
+                }
+                // /etc/network.conf again, for one interface or all of
+                // them (netcfg, Settings > Network; step D6)
+                ["reconfigure", rest @ ..] => {
+                    if !root {
+                        return Err("only root changes interfaces".into());
+                    }
+                    let only = rest.first().copied();
+                    if let Some(n) = only {
+                        if self.link_by_name(n).is_none() {
+                            return Err(format!("{n}: no such interface"));
+                        }
+                    }
+                    for l in self.links.iter_mut() {
+                        if l.is_lo() || only.is_some_and(|n| n != l.name) {
+                            continue;
+                        }
+                        log(&format!("{}: configured again from /etc/network.conf", l.name));
+                        l.unconfigure();
+                        configure(l);
+                    }
+                    addrs_changed = true;
+                    self.write_resolv();
+                }
+                // network.conf's dns and search lines again (netcfg dns)
+                ["resolv"] => {
+                    if !root {
+                        return Err("only root changes the DNS servers".into());
+                    }
+                    self.write_resolv();
                 }
                 ["link", "set", ifname, state @ ("up" | "down")] => {
                     if !root {

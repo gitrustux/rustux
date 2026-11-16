@@ -1531,3 +1531,43 @@ struct servent *getservbyname(const char *name, const char *proto) {
     }
     return 0;
 }
+
+// ---- netd's control protocol (/svc/net), step D6 ----
+
+static rx_handle_t netctl_ch;
+static volatile int netctl_lock;
+
+int rx_net_control(const char *req, char *out, size_t cap) {
+    if (!out || cap < 2) return fail(EINVAL);
+    __lock(&netctl_lock);
+    int ret = -1;
+    for (int attempt = 0; attempt < 2 && ret < 0; attempt++) {
+        if (!netctl_ch && rx_service_connect("/svc/net", &netctl_ch) < 0) {
+            netctl_ch = 0;
+            break;
+        }
+        if (rx_channel_write(netctl_ch, 0, req, (uint32_t)strlen(req), 0, 0) != RX_OK) goto again;
+        for (;;) {
+            uint32_t nb = 0;
+            rx_status_t s = rx_channel_read(netctl_ch, 0, out, 0, (uint32_t)(cap - 1), 0, &nb, 0);
+            if (s == RX_ERR_SHOULD_WAIT) {
+                uint32_t seen = 0;
+                rx_object_wait_one(netctl_ch, RX_CHANNEL_READABLE | RX_PEER_CLOSED, RX_TIME_INFINITE, &seen);
+                if (!(seen & RX_CHANNEL_READABLE) && (seen & RX_PEER_CLOSED)) goto again;
+                continue;
+            }
+            if (s != RX_OK) goto again;
+            out[nb] = 0;
+            ret = (int)nb;
+            break;
+        }
+        continue;
+    again:
+        // netd restarted: connect again once
+        rx_handle_close(netctl_ch);
+        netctl_ch = 0;
+    }
+    __unlock(&netctl_lock);
+    if (ret < 0) errno = ENETDOWN;
+    return ret;
+}

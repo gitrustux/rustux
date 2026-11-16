@@ -21,6 +21,8 @@
 
 pub mod app;
 pub mod gfx;
+/// The network's state, for the panel and Settings (network step D6)
+pub mod net;
 pub mod ui;
 
 pub use app::{run, Control, Request};
