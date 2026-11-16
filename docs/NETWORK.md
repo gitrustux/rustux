@@ -4,7 +4,8 @@ Rustica's network: card drivers in userspace, one network service (`netd`)
 with the TCP/IP stack, `ip` and `ping` (`NETWORK.md` in the planning
 documents, step D1), POSIX sockets for programs, C and Rust (`nc`,
 `ss`, `std::net`; step D2), DHCP, DNS and `curl` over HTTPS (step D3),
-and Intel's e1000e cards with IPv6 beside IPv4 (step D4).
+Intel's e1000e cards with IPv6 beside IPv4 (step D4), and the SSH server
+and the firewall (step D5).
 
 ```
   ping, ip, ss ──/svc/net──────┐                    ┌── virtio-net 00:02.0 (eth0)
@@ -222,6 +223,78 @@ Not yet: broadcast and multicast, raw sockets, Unix-domain
 sockets with names, passing sockets to other programs (spawned programs
 get fds 0-2 only, as before).
 
+## The firewall (step D5)
+
+In netd (`rust/netd/src/fw.rs`): each frame a card gives netd, and each
+one netd sends, is looked at before smoltcp and the wire (lo is never
+filtered). Rules decide about **new conversations** only: a TCP
+connection's first packet (SYN without ACK), a UDP datagram that is not
+an answer, an ICMP or ICMPv6 echo request. The rest passes: TCP packets
+with ACK (connections already made, and the answers to this computer's
+own), UDP datagrams to a local port this computer sent from in the last
+3 minutes (DNS and DHCP answers among them), ICMP answers and errors,
+IPv6's neighbour discovery and router advertisements, ARP. So it is
+stateful enough for a computer's own firewall, without a connection
+table; a forged non-SYN TCP packet gets through to smoltcp, which drops
+or resets it as for no connection.
+
+```
+allow|deny in|out tcp|udp|icmp|any [PORT[-PORT]] [from|to ADDRESS[/PREFIX]]
+default in|out allow|deny
+```
+
+First match wins, then the direction's default. `/etc/firewall.conf` at
+netd's start (`man firewall.conf`); `fwctl` shows and changes the
+running rules (`fw ...` requests on `/svc/net`, root's) and `fwctl save`
+writes them back. The image's rules deny new connections in but SSH's
+and pings, and allow everything out:
+
+```
+enabled yes
+default in deny
+default out allow
+allow in tcp 22
+allow in icmp
+```
+
+`fwctl allow tcp 8080` puts a rule first (it wins over the others);
+`fwctl` lists the rules with their hits and the packets dropped.
+
+## SSH (step D5)
+
+`sshd` (Rust, `rust/sshd`, the service `sshd`): the SSH protocol is the
+[sunset](https://github.com/mkj/sunset) crate's (0BSD, by Dropbear's
+author), vendored in `rust/vendor/sunset` with what a server needed: the
+exit status, EOF and close of a session, the pty request's terminal and
+size, window changes, and a window and packets larger than its embedded
+defaults. curve25519-sha256 or mlkem768x25519 key exchange, an Ed25519
+host key, chacha20-poly1305 or aes256-ctr; OpenSSH's clients connect.
+
+- **Listening:** `[::]:22` (IPv4 too), `/etc/ssh/sshd_config` for the
+  port, addresses and the rest (`man sshd_config`); it listens again when
+  netd restarts.
+- **The host key:** `/etc/ssh/ssh_host_ed25519_key` (Rustux's own form:
+  the 32-byte seed in hexadecimal, mode 600) and `.pub` in OpenSSH's,
+  made at the first start; its fingerprint is logged.
+- **Logging in:** passwords through `sshd-session --check` (C, the same
+  user database code as `login`: `/etc/shadow`); keys from
+  `~/.ssh/authorized_keys` (Ed25519 only; options before the key type
+  are not supported). root with a key only by default
+  (`PermitRootLogin prohibit-password`); accounts with no password or a
+  locked one cannot log in with a password. 6 failures close the
+  connection.
+- **Sessions:** `sshd-session USER [COMMAND]` runs the user's shell (or
+  `shell -c COMMAND`) acting as the user (`rx_spawn_as`), in the home
+  directory, with the login's environment, `TERM` when there is a
+  terminal, `SSH_CONNECTION` and `SSH_CLIENT`; on a pseudo-terminal
+  (step F7's) when the client asks for one, else on pipes (stdout and
+  stderr apart). The exit status goes back to the client.
+- **One thread per connection**, a loop over `poll()` on the socket and a
+  pipe that the session's reader threads write to when the programs print.
+
+Not yet: scp and sftp (subsystems), port and agent forwarding, RSA and
+ECDSA user keys, environment from the client (`AcceptEnv`).
+
 ## Commands
 
 - `ip` (`man ip`): `ip link`, `ip addr`, `ip route` in iproute2's form;
@@ -246,6 +319,8 @@ get fds 0-2 only, as before).
 - `ping` takes names too, and IPv6 addresses (`-6`, `-4`; `ping6`).
 - `ip -6 addr`, `ip -6 route`, `ip -6 route add default via ADDRESS`;
   `nc -6`, `host -t AAAA`.
+- `fwctl` (`man fwctl`): the firewall's rules.
+- `sshd` (`man sshd`), `sshd-session` (sshd's helper).
 - `nettest` (Rust, `rust/nettest`): `nettest local` checks `std::net`
   inside the computer; `connect`, `serve`, `udp` for tests across the
   network.

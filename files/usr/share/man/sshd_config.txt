@@ -1,0 +1,20 @@
+sshd_config - the SSH server's settings
+
+FILE
+    /etc/ssh/sshd_config
+
+    One setting a line, "Name value"; # starts a comment.
+
+    Port N                     the port (22); more than one line: more ports
+    ListenAddress ADDRESS      where to listen (:: by default: every
+                               address, IPv4 too); more than one line allowed
+    PermitRootLogin VALUE      prohibit-password (the default: a key only),
+                               yes, or no
+    PasswordAuthentication yes|no
+    PubkeyAuthentication yes|no
+    MaxAuthTries N             failed logins before the connection is closed (6)
+
+    After a change: sudo svc restart sshd
+
+SEE ALSO
+    sshd

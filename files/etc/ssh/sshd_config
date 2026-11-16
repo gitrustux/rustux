@@ -1,0 +1,9 @@
+# The SSH server (sshd, docs/NETWORK.md, man sshd_config).
+# After a change: sudo svc restart sshd
+Port 22
+# ListenAddress ::          (the default: every address, IPv4 and IPv6)
+# root: with a key only (prohibit-password), yes, or no
+PermitRootLogin prohibit-password
+PasswordAuthentication yes
+PubkeyAuthentication yes
+MaxAuthTries 6

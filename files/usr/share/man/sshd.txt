@@ -1,0 +1,34 @@
+sshd - the SSH server
+
+USAGE
+    sshd [-d]
+
+    Lets people log in, and run commands, from other computers with an
+    SSH client (ssh, PuTTY, ...). Started by the service sshd
+    (svc status sshd), on port 22 of every address, IPv4 and IPv6.
+
+    Logging in: a password (the user's, as for login), or a key in the
+    user's ~/.ssh/authorized_keys (Ed25519 keys: lines "ssh-ed25519 AAAA...
+    comment", as ssh-keygen -t ed25519 makes them). root may log in with a
+    key only (PermitRootLogin prohibit-password); accounts without a
+    password cannot log in with one.
+
+    A session runs the user's shell, on a pseudo-terminal when the client
+    asks for one (ssh does for an interactive login), or the command given
+    (ssh HOST COMMAND), with its exit status back to the client.
+
+    The host key: /etc/ssh/ssh_host_ed25519_key, made at the first start;
+    its fingerprint is in the log (logs -u sshd) and in .pub beside it.
+    The protocol: curve25519 or ML-KEM key exchange, chacha20-poly1305 or
+    AES encryption (the sunset library).
+
+    -d   also the protocol's own messages, for debugging
+
+    Not yet: scp and sftp, port forwarding, agent forwarding, RSA and
+    ECDSA user keys, options in authorized_keys.
+
+FILES
+    /etc/ssh/sshd_config, ~/.ssh/authorized_keys, /etc/ssh/ssh_host_ed25519_key
+
+SEE ALSO
+    sshd_config, fwctl

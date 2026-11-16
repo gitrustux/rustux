@@ -1,0 +1,39 @@
+fwctl - the firewall
+
+USAGE
+    fwctl [status]
+    fwctl allow|deny [in|out] PROTO [PORT[-PORT]] [from|to ADDRESS[/PREFIX]]
+    fwctl append allow|deny ...
+    fwctl delete N
+    fwctl delete allow|deny ...
+    fwctl default in|out allow|deny
+    fwctl enable | disable
+    fwctl reload | save
+
+    The firewall is in the network service (netd). Its rules decide which
+    new conversations may start: a TCP connection, a UDP datagram that is
+    not an answer, a ping. Answers to what this computer started always
+    pass, and so does everything on lo.
+
+    status      the rules, numbered, with how often each matched
+    allow, deny a rule, put first (so it wins over the others); "in"
+                when neither in nor out is given
+    append      a rule, put last
+    delete      a rule, by its number or by its words
+    default     what happens when no rule matches
+    enable, disable   the firewall on or off
+    reload      /etc/firewall.conf again; save: the rules into it
+
+    PROTO is tcp, udp, icmp (pings) or any. Changes are root's; they last
+    until netd restarts, unless saved.
+
+    The image's rules: new connections in are denied, but SSH's (tcp 22)
+    and pings; out, everything is allowed.
+
+EXAMPLES
+    sudo fwctl allow tcp 8080            let others reach a server on 8080
+    sudo fwctl deny tcp 22 from 10.0.0.0/8
+    sudo fwctl delete 1; sudo fwctl save
+
+SEE ALSO
+    firewall.conf, ss, ip

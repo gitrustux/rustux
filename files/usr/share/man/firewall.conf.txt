@@ -1,0 +1,17 @@
+firewall.conf - the firewall's rules
+
+FILE
+    /etc/firewall.conf
+
+    Read by netd when it starts (and by fwctl reload).
+
+    enabled yes|no
+    default in|out allow|deny
+    allow|deny in|out tcp|udp|icmp|any [PORT[-PORT]] [from|to ADDRESS[/PREFIX]]
+
+    Rules are tried in order; the first that matches decides, else the
+    default. They are about new conversations only (see fwctl). Without
+    the file everything is allowed.
+
+SEE ALSO
+    fwctl

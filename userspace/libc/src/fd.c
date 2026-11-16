@@ -170,6 +170,10 @@ static ssize_t pipe_read(struct fd *f, char *p, size_t n) {
         if (r == RX_OK) return (ssize_t)got;
         if (r == RX_ERR_PEER_CLOSED) return 0; // writer gone, nothing left
         if (r != RX_ERR_SHOULD_WAIT) return __set_errno_status(r);
+        if (f->flags & 04000) { // O_NONBLOCK
+            errno = EAGAIN;
+            return -1;
+        }
         rx_object_wait_one(f->handle, RX_CHANNEL_READABLE | RX_PEER_CLOSED, RX_TIME_INFINITE, 0);
     }
 }
@@ -184,6 +188,11 @@ static ssize_t pipe_write(struct fd *f, const char *p, size_t n) {
             continue;
         }
         if (r == RX_ERR_SHOULD_WAIT) {
+            if (f->flags & 04000) { // O_NONBLOCK
+                if (done) break;
+                errno = EAGAIN;
+                return -1;
+            }
             rx_object_wait_one(f->handle, RX_CHANNEL_WRITABLE | RX_PEER_CLOSED, RX_TIME_INFINITE, 0);
             continue;
         }

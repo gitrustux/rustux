@@ -1,0 +1,16 @@
+[package]
+name = "sshd"
+version = "0.1.0"
+edition = "2021"
+description = "Rustica's SSH server (network step D5), on sunset"
+license = "MIT"
+
+[dependencies]
+sunset = { path = "../vendor/sunset", default-features = false, features = ["mlkem"] }
+ed25519-dalek = { version = "3.0", default-features = false, features = ["zeroize", "rand_core"] }
+sha2 = { version = "0.11", default-features = false }
+log = { version = "0.4", features = ["std"] }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"

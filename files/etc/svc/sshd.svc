@@ -1,0 +1,7 @@
+# The SSH server (docs/NETWORK.md): logins and commands over the network,
+# with passwords or keys (~/.ssh/authorized_keys); /etc/ssh/sshd_config
+description=SSH server (port 22)
+exec=/bin/sshd
+after=netd
+restart=always
+target=multi-user

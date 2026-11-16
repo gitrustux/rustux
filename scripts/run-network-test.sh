@@ -34,12 +34,21 @@
 # link-local and SLAAC addresses, the router's default route (proto ra),
 # ping -6 to QEMU's router on both networks and to ::1, an address added
 # by hand, and nc over IPv6 (nettest local's IPv6 checks run above).
+# SSH and the firewall (step D5): the image's firewall (new connections
+# in denied but SSH's and pings; the tests above open 8080 and 8081 with
+# fwctl), `fwctl deny tcp 8080` keeps the host's connection from nc -l
+# 8080 and `fwctl delete 1` lets it in again; from the host (OpenSSH's
+# ssh, through a forwarded port), a key login runs a command (its output
+# and exit status), a session on a pseudo-terminal, a user's password
+# login (useradd, chpasswd), root's password refused (prohibit-password),
+# a wrong key refused, and 1 MB each way. The SSH checks are skipped
+# without ssh and ssh-keygen on the host.
 # Exit status 0 if all is well.
 #
 #   scripts/run-network-test.sh [KERNEL.efi]
 #
 # Needs qemu-system-x86_64 (7.2 or later, for dgram), OVMF, mtools, python3,
-# openssl.
+# openssl; ssh and ssh-keygen (OpenSSH's client) for the SSH checks.
 set -u
 cd "$(dirname "$0")/.."
 EFI=${1:-target/x86_64-unknown-uefi/release/rustux.efi}
@@ -76,7 +85,7 @@ import http.server
 W, OVMF = sys.argv[1], sys.argv[2]
 def free_port(kind=socket.SOCK_STREAM):
     t = socket.socket(socket.AF_INET, kind); t.bind(('127.0.0.1', 0)); p = t.getsockname()[1]; t.close(); return p
-FWD_NC, FWD_RUST = free_port(), free_port()   # host ports forwarded to the guest's 8080, 8081
+FWD_NC, FWD_RUST, FWD_SSH = free_port(), free_port(), free_port()   # host ports forwarded to the guest's 8080, 8081, 22
 LOG, MON = W + '/console.log', W + '/mon'
 
 # The wire: QEMU sends eth1's frames to UDP port B and listens on port A
@@ -88,7 +97,7 @@ s2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s2.bind(('127.0.0.1', 0))
 qemu = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35', '-m', '512M', '-smp', '2', '-bios', OVMF,
     '-drive', f'file={W}/boot.img,format=raw', '-display', 'none', '-debugcon', f'file:{LOG}', '-no-reboot',
     '-monitor', f'unix:{MON},server,nowait',
-    '-netdev', f'user,id=n0,hostfwd=tcp:127.0.0.1:{FWD_NC}-:8080,hostfwd=tcp:127.0.0.1:{FWD_RUST}-:8081', '-device', 'virtio-net-pci,netdev=n0,mac=52:54:00:12:34:56',
+    '-netdev', f'user,id=n0,hostfwd=tcp:127.0.0.1:{FWD_NC}-:8080,hostfwd=tcp:127.0.0.1:{FWD_RUST}-:8081,hostfwd=tcp:127.0.0.1:{FWD_SSH}-:22', '-device', 'virtio-net-pci,netdev=n0,mac=52:54:00:12:34:56',
     '-netdev', f'dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port={A},remote.type=inet,remote.host=127.0.0.1,remote.port={B}',
     '-device', 'virtio-net-pci,netdev=n1,disable-legacy=on,mac=52:54:00:ab:cd:ef',
     '-netdev', 'user,id=n2,net=10.0.5.0/24,ipv6-prefix=fd05::,ipv6-prefixlen=64', '-device', 'e1000e,netdev=n2,mac=52:54:00:00:00:e1'],
@@ -283,6 +292,11 @@ try:
     out = run(f'echo hi-udp | nc -u -w 2 10.0.2.2 {HU}')
     check('echo: hi-udp' in out, 'nc -u to the host', out)
     # The host reaches the guest (hostfwd)
+    # The image's firewall lets SSH in and pings, nothing else new: open
+    # the two ports the host connects to (step D5 checks the rest)
+    out = run('fwctl allow tcp 8080; fwctl allow tcp 8081; fwctl')
+    check('Firewall: on' in out and 'New connections in: denied by default' in out and 'allow in tcp 22' in out
+          and 'allow in tcp 8081' in out, 'the firewall is on; fwctl opens 8080 and 8081', out)
     out = run('nc -l 8080 < /etc/hostname > /tmp/nc-in.txt &', 3)
     out = run('ss -tln')
     check(re.search(r'tcp +LISTEN +0 +0 +0.0.0.0:8080', out), 'ss shows nc listening on 8080', out)
@@ -462,6 +476,69 @@ try:
     out = run('echo over ipv6 | nc -6 ::1 9106; sleep 1; cat /tmp/nc6.txt')
     check(out.count('over ipv6') >= 2, 'nc -6 over ::1', out)
     web.shutdown(); webs.shutdown()
+
+    # ---- the firewall and SSH (step D5) ----
+    def host_send(port, data, wait=6):
+        got = b''
+        try:
+            c = socket.create_connection(('127.0.0.1', port), timeout=wait)
+            c.sendall(data); c.shutdown(socket.SHUT_WR)
+            while True:
+                x = c.recv(4096)
+                if not x: break
+                got += x
+            c.close()
+        except OSError:
+            pass
+        return got
+    out = run('fwctl deny tcp 8080; nc -l 8080 > /tmp/fw.txt &', 3)
+    host_send(FWD_NC, b'through the firewall?\n')
+    time.sleep(1)
+    out = run('cat /tmp/fw.txt; fwctl')
+    check('through the firewall?' not in out and re.search(r'1  deny in tcp 8080 +[1-9]\d* hits', out), 'fwctl deny tcp 8080: the host cannot reach nc -l 8080', out)
+    out = run('fwctl delete 1', 2)
+    host_send(FWD_NC, b'through the firewall again\n')
+    time.sleep(1)
+    out = run('cat /tmp/fw.txt')
+    check('through the firewall again' in out, 'fwctl delete 1: it can again', out)
+    import shutil
+    if not (shutil.which('ssh') and shutil.which('ssh-keygen')):
+        print('skip  SSH checks: no ssh and ssh-keygen on the host')
+    else:
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', W + '/id'], check=True)
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', W + '/other'], check=True)
+        pub = open(W + '/id.pub').read().strip()
+        with open(W + '/askpass', 'w') as f:
+            f.write('#!/bin/sh\necho ssh-secret-1\n')
+        os.chmod(W + '/askpass', 0o755)
+        out = run(f'mkdir -p /root/.ssh; echo "{pub}" > /root/.ssh/authorized_keys; useradd -m tester; echo tester:ssh-secret-1 | chpasswd; logs | grep sshd:', 5)
+        check(re.search(r'host key SHA256:\S+', out) and 'listening on [::]:22' in out, 'sshd is running (its host key made at the first start)', out)
+        O = ['-p', str(FWD_SSH), '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR']
+        K = ['ssh', '-i', W + '/id', '-o', 'BatchMode=yes'] + O
+        def ssh(args, inp=None, env=None):
+            try:
+                r = subprocess.run(args, input=inp, capture_output=True, timeout=60, env=env)
+                return r.returncode, r.stdout, r.stderr
+            except subprocess.TimeoutExpired:
+                return 'timeout', b'', b''
+        c, o, e = ssh(K + ['root@127.0.0.1', 'echo hello from $(hostname); id -u; exit 3'])
+        check(c == 3 and b'hello from rustica' in o and b'\n0\n' in o, 'ssh root@guest COMMAND (a key): its output and exit status', f'{c} {o!r} {e!r}')
+        c, o, e = ssh(K[:1] + ['-tt'] + K[1:] + ['root@127.0.0.1'], b'echo on a terminal: $TERM\nexit 5\n')
+        # The interactive shell (its prompt and the echo of what was typed): a pseudo-terminal
+        check(c == 5 and b'on a terminal: ' in o and b'rustux' in o and b'> exit 5' in o, 'ssh -tt: a shell on a pseudo-terminal', f'{c} {o[-400:]!r} {e!r}')
+        env = dict(os.environ, SSH_ASKPASS=W + '/askpass', SSH_ASKPASS_REQUIRE='force', DISPLAY=':0')
+        c, o, e = ssh(['ssh', '-o', 'PubkeyAuthentication=no'] + O + ['tester@127.0.0.1', 'id -un; pwd'], env=env)
+        check(c == 0 and b'tester\n/home/tester' in o, 'a password login (tester)', f'{c} {o!r} {e!r}')
+        c, o, e = ssh(['ssh', '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1'] + O + ['root@127.0.0.1', 'id'], env=env)
+        check(c == 255 and b'Permission denied' in e, "root's password refused (PermitRootLogin prohibit-password)", f'{c} {e!r}')
+        c, o, e = ssh(['ssh', '-i', W + '/other', '-o', 'BatchMode=yes'] + O + ['root@127.0.0.1', 'id'])
+        check(c == 255 and b'Permission denied' in e, 'a key not in authorized_keys refused', f'{c} {e!r}')
+        data = os.urandom(1000000)
+        c, o, e = ssh(K + ['root@127.0.0.1', 'cat > /tmp/up.bin; wc -c < /tmp/up.bin'], data)
+        c2, o2, e2 = ssh(K + ['root@127.0.0.1', 'cat /tmp/up.bin'])
+        check(c == 0 and b'1000000' in o and o2 == data, '1 MB up and down over ssh', f'{c} {o!r} {c2} {len(o2)}')
+        out = run('logs | grep sshd: | tail -12')
+        check('accepted password for tester' in out and 'root logged in from' in out, 'sshd logs the logins', out)
 finally:
     qemu.kill(); qemu.wait()
 print('network test:', 'all passed' if fails == 0 else f'{fails} failed')

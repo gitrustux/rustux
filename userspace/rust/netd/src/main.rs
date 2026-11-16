@@ -21,6 +21,7 @@
 //!   sockets                                   (anyone: what `ss` shows)
 //!   dns                                       (anyone: the DNS servers DHCP gave)
 
+mod fw;
 mod rx;
 mod sock;
 
@@ -32,7 +33,9 @@ use smoltcp::wire::{
     EthernetAddress, HardwareAddress, Icmpv4Packet, Icmpv4Repr, Icmpv6Packet, Icmpv6Repr, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr,
     Ipv6Address, Ipv6Cidr,
 };
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::io::Write;
 use std::str::FromStr;
 
@@ -61,6 +64,7 @@ fn now() -> Instant {
 pub struct ChanDev {
     ch: rx::Handle, // 0 for lo
     lo: bool,
+    fw: Rc<RefCell<fw::Firewall>>,
     rxq: VecDeque<Vec<u8>>,
     rx_frames: u64,
     tx_frames: u64,
@@ -97,7 +101,7 @@ impl<'a> TxToken for TxT<'a> {
         let mut buf = vec![0u8; 8 + len];
         buf[..4].copy_from_slice(&NETDEV_FRAME.to_le_bytes());
         let r = f(&mut buf[8..]);
-        if self.dev.up {
+        if self.dev.up && self.dev.fw.borrow_mut().allow_out(&buf[8..], rx::monotonic() / 1_000_000_000) {
             rx::channel_write(self.dev.ch, &buf, &[]);
             self.dev.tx_frames += 1;
             self.dev.tx_bytes += len as u64;
@@ -298,12 +302,12 @@ fn icmp_socket(sockets: &mut SocketSet<'static>) -> SocketHandle {
     h
 }
 
-fn new_link(id: u32, name: String, ch: rx::Handle, hello: &[u8]) -> Link {
+fn new_link(id: u32, name: String, ch: rx::Handle, hello: &[u8], fw: &Rc<RefCell<fw::Firewall>>) -> Link {
     let mut mac = [0u8; 6];
     mac.copy_from_slice(&hello[..6]);
     let link_up = u16::from_le_bytes([hello[6], hello[7]]) != 0;
     let driver = String::from_utf8_lossy(&hello[8..32]).trim_end_matches('\0').to_string();
-    let mut dev = ChanDev { ch, lo: false, rxq: VecDeque::new(), rx_frames: 0, tx_frames: 0, rx_bytes: 0, tx_bytes: 0, up: true };
+    let mut dev = ChanDev { ch, lo: false, fw: fw.clone(), rxq: VecDeque::new(), rx_frames: 0, tx_frames: 0, rx_bytes: 0, tx_bytes: 0, up: true };
     let mut config = Config::new(HardwareAddress::Ethernet(EthernetAddress(mac)));
     config.random_seed = rx::monotonic() ^ (u64::from_le_bytes([mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], 0, 0]));
     // SLAAC: addresses and the default route from router advertisements
@@ -350,8 +354,8 @@ fn new_link(id: u32, name: String, ch: rx::Handle, hello: &[u8]) -> Link {
     l
 }
 
-fn new_lo() -> Link {
-    let mut dev = ChanDev { ch: 0, lo: true, rxq: VecDeque::new(), rx_frames: 0, tx_frames: 0, rx_bytes: 0, tx_bytes: 0, up: true };
+fn new_lo(fw: &Rc<RefCell<fw::Firewall>>) -> Link {
+    let mut dev = ChanDev { ch: 0, lo: true, fw: fw.clone(), rxq: VecDeque::new(), rx_frames: 0, tx_frames: 0, rx_bytes: 0, tx_bytes: 0, up: true };
     let mut config = Config::new(HardwareAddress::Ip);
     config.random_seed = rx::monotonic();
     let iface = Interface::new(config, &mut dev, now());
@@ -401,6 +405,7 @@ pub struct Netd {
     pub socks: Vec<sock::Sock>,
     pub next_sock: u64,
     pub next_port: u16,
+    fw: Rc<RefCell<fw::Firewall>>,
 }
 
 fn reply(ch: rx::Handle, text: &str) {
@@ -647,6 +652,70 @@ impl Netd {
                     }
                 }
                 ["sockets"] => out.push_str(&sock::list(self)),
+                ["fw", "list"] => out.push_str(&self.fw.borrow().list()),
+                ["fw", rest @ ..] => {
+                    if !root {
+                        return Err("only root changes the firewall".into());
+                    }
+                    let mut f = self.fw.borrow_mut();
+                    match rest {
+                        ["add", pos, rule @ ..] if pos.parse::<usize>().is_ok() => {
+                            let r = fw::parse_rule(rule)?;
+                            let at = pos.parse::<usize>().unwrap().clamp(1, f.rules.len() + 1) - 1;
+                            log(&format!("firewall: rule {}: {}", at + 1, r.text()));
+                            f.rules.insert(at, r);
+                            f.enabled = true;
+                        }
+                        ["add", rule @ ..] => {
+                            let r = fw::parse_rule(rule)?;
+                            log(&format!("firewall: rule {}: {}", f.rules.len() + 1, r.text()));
+                            f.rules.push(r);
+                            f.enabled = true;
+                        }
+                        ["del", num] => {
+                            let k: usize = num.parse().map_err(|_| format!("{num}: not a rule number"))?;
+                            if k == 0 || k > f.rules.len() {
+                                return Err(format!("there is no rule {k}"));
+                            }
+                            let r = f.rules.remove(k - 1);
+                            log(&format!("firewall: removed {}", r.text()));
+                        }
+                        ["delrule", rule @ ..] => {
+                            let r = fw::parse_rule(rule)?;
+                            let k = f.rules.iter().position(|x| x.text() == r.text()).ok_or("no such rule")?;
+                            f.rules.remove(k);
+                            log(&format!("firewall: removed {}", r.text()));
+                        }
+                        ["default", dir @ ("in" | "out"), act @ ("allow" | "deny")] => {
+                            if *dir == "in" {
+                                f.default_in = *act == "allow";
+                            } else {
+                                f.default_out = *act == "allow";
+                            }
+                            log(&format!("firewall: default {dir} {act}"));
+                        }
+                        ["enable"] => {
+                            f.enabled = true;
+                            log("firewall: on");
+                        }
+                        ["disable"] => {
+                            f.enabled = false;
+                            log("firewall: off");
+                        }
+                        ["reload"] => {
+                            let errs = f.load();
+                            log(&format!("firewall: {} read again", fw::CONF));
+                            if !errs.is_empty() {
+                                return Err(errs.join("; "));
+                            }
+                        }
+                        ["save"] => {
+                            f.save().map_err(|e| format!("{}: {e}", fw::CONF))?;
+                            log(&format!("firewall: saved to {}", fw::CONF));
+                        }
+                        _ => return Err(format!("unknown firewall request: {}", rest.join(" "))),
+                    }
+                }
                 ["dns"] => {
                     for l in self.sorted() {
                         for d in &l.dns {
@@ -991,6 +1060,9 @@ impl Netd {
         let l = &mut self.links[i];
         match op {
             NETDEV_FRAME => {
+                if !self.fw.borrow_mut().allow_in(&buf[8..], rx::monotonic() / 1_000_000_000) {
+                    return;
+                }
                 if l.admin_up && l.dev.rxq.len() < 256 {
                     l.dev.rx_frames += 1;
                     l.dev.rx_bytes += (buf.len() - 8) as u64;
@@ -1009,7 +1081,7 @@ impl Netd {
         let name = self.name_for(hello);
         let id = self.next_link;
         self.next_link += 1;
-        let l = new_link(id, name, d, hello);
+        let l = new_link(id, name, d, hello, &self.fw);
         log(&format!("{}: {} ({}), link {}", l.name, mac_str(&l.mac), l.driver, if l.carrier { "up" } else { "down" }));
         self.links.push(l);
         self.sync_lo();
@@ -1045,8 +1117,20 @@ fn main() {
         std::process::exit(3);
     };
     log("started (/svc/net, /svc/netdev, /svc/netsock)");
+    let firewall = Rc::new(RefCell::new(fw::Firewall::new()));
+    {
+        let f = firewall.borrow();
+        if f.enabled {
+            log(&format!(
+                "firewall: {} rules, new connections in {} by default, out {}",
+                f.rules.len(),
+                if f.default_in { "allowed" } else { "denied" },
+                if f.default_out { "allowed" } else { "denied" }
+            ));
+        }
+    }
     let mut n = Netd {
-        links: vec![new_lo()],
+        links: vec![new_lo(&firewall)],
         next_link: 1,
         pending_drivers: Vec::new(),
         clients: Vec::new(),
@@ -1056,6 +1140,7 @@ fn main() {
         socks: Vec::new(),
         next_sock: 1,
         next_port: 49152,
+        fw: firewall.clone(),
     };
     n.sync_lo();
     n.write_resolv();

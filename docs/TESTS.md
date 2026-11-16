@@ -371,7 +371,15 @@ D4): a third card, an e1000e on a second user-mode network
 go through it; IPv6 link-local and SLAAC addresses and the routers'
 default routes (`ip -6`), `ping -6` to both routers and ::1, an address
 added by hand, `nc -6`; `nettest local` checks IPv6 TCP and UDP and a
-dual-stack `[::]` listener.
+dual-stack `[::]` listener. SSH and the firewall (step D5): the image's
+firewall is on (the tests above open 8080 and 8081 with `fwctl`);
+`fwctl deny tcp 8080` keeps the host from `nc -l 8080` (the rule's hits
+counted) and `fwctl delete 1` lets it through again; from the host,
+OpenSSH's `ssh` through a forwarded port: a key login runs a command
+(output, exit status 3), `ssh -tt` gets the interactive shell (exit 5),
+a password login as a new user (`useradd`, `chpasswd`, `SSH_ASKPASS`),
+root's password refused, an unknown key refused, 1 MB up and down;
+sshd's log. (Skipped without `ssh` on the host.)
 
 ## Run in QEMU
 
