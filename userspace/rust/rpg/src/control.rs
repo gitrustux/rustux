@@ -92,6 +92,10 @@ impl Control {
         }
     }
 
+    pub fn remove(&mut self, k: &str) {
+        self.fields.retain(|(f, _)| !f.eq_ignore_ascii_case(k));
+    }
+
     pub fn name(&self) -> &str {
         self.get("Package").unwrap_or("")
     }

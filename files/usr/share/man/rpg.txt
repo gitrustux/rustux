@@ -3,22 +3,31 @@ rpg - Rustica's package tool
 USAGE
     rpg [--root DIR] COMMAND ...
 
-    build DIR [-o FILE]          make a package from DIR/RPG/control and DIR's files
-    install ./FILE.rpg...        install or upgrade from package files
+    update                       get the sources' package lists (signatures checked)
+    upgrade [-y]                 upgrade what a source has newer versions of
+    install [-y] NAME|./FILE.rpg...   install packages, with what they need
     remove [--purge] NAME...     remove packages (--purge: their configuration files too)
-    list [--installed] [--json]  the installed packages
-    show NAME | ./FILE.rpg       a package's control fields
-    info ./FILE.rpg              a package file's control fields and files
-    files NAME                   the files a package installed
-    owner PATH...                the package a file belongs to
-    verify [NAME...]             files changed or missing since they were installed
+    autoremove [-y]              remove packages installed for others, no longer needed
+    search WORD... [--names-only]
+    show NAME | ./FILE.rpg       a package's fields
+    policy [NAME...]             installed and candidate versions, and where from
+    list [--installed|--upgradable|--held] [--json]
+    depends NAME | rdepends NAME
+    hold NAME... | unhold NAME...
+    download NAME...             a package file into the current folder
+    clean                        empty the download cache
+    source list | add URL SUITE SECTION... | remove N
+    key list | add FILE [NAME] | remove ID
+    files NAME | owner PATH... | verify [NAME...]
     fix                          finish an install a power cut or crash interrupted
+    build DIR [-o FILE] | info ./FILE.rpg
+    index REPO [--suite S] [--section S] [--arch A]   (publishing)
     version
 
     rpg is Rustica's one package tool: what Debian splits between dpkg
-    and apt. Step E1 has package files and the database; repositories
-    (rpg update, rpg upgrade, rpg install NAME, rpg search) come with
-    step E2. Changes are root's (sudo rpg ...); anyone may look.
+    and apt. Changes are root's (sudo rpg ...); anyone may look and
+    search. -y answers yes to the question; without it, no answer (a
+    script) is no.
 
 PACKAGES
     A .rpg file is a gzipped tar: control (the package's fields), files
@@ -65,12 +74,45 @@ INSTALLING
     (and the next rpg install or remove) finishes it, or, if the new
     files were not all written yet, undoes it and the old version stays.
 
+REPOSITORIES
+    /etc/rpg/sources.list (and sources.list.d/*.list) has a line per
+    repository: URL SUITE SECTION..., such as
+
+        https://rustux.com/download/rustica  redfox  main
+
+    rpg update fetches each one's dists/SUITE/Release and Release.sig,
+    and takes it only if a key in /etc/rpg/keys signed it; then the
+    indexes, whose SHA-256s Release gives. A source that fails keeps the
+    lists it had. A downloaded package must have the SHA-256 the index
+    gives. A private repository's CA certificate goes in
+    /etc/rpg/ca-certificates.pem.
+
+    rpg install NAME takes the highest version any source has, and the
+    packages it needs (marked as installed for it: rpg autoremove removes
+    them once nothing needs them). rpg upgrade upgrades everything it
+    can; a held package (rpg hold) and an upgrade that does not fit are
+    kept back.
+
+    Publishing: put the packages under REPO/pool (rpg pool-path FILE
+    says where), run rpg index REPO, then sign:
+
+        openssl pkeyutl -sign -inkey KEY.pem -rawin \
+            -in REPO/dists/redfox/Release -out REPO/dists/redfox/Release.sig
+
 FILES
+    /etc/rpg/sources.list        where packages come from
+    /etc/rpg/keys/*.pub          the keys trusted to sign them
+    /var/lib/rpg/lists/          the sources' package lists (rpg update)
+    /var/cache/rpg/archives/     downloaded packages (rpg clean)
     /var/lib/rpg/status          the installed packages
     /var/lib/rpg/info/NAME.files what each one installed
     /var/lib/rpg/journal         an operation in progress
 
 EXAMPLES
+    sudo rpg update
+    sudo rpg upgrade
+    rpg search editor
+    sudo rpg install hello
     rpg build hello                     (makes hello_1.0-1_all.rpg)
     sudo rpg install ./hello_1.0-1_all.rpg
     rpg owner /etc/hello.conf
@@ -78,4 +120,4 @@ EXAMPLES
     sudo rpg remove --purge hello
 
 SEE ALSO
-    tar, gzip (docs/PACKAGES.md)
+    tar, gzip, curl (docs/PACKAGES.md)

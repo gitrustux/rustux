@@ -1,17 +1,18 @@
 # Packages
 
 Rustica's packages and their one tool, `rpg` (`PACKAGES.md` in the
-planning documents, phase E; `man rpg`). Step E1, here: the `.rpg`
-format, `rpg build`, installing and removing package files, the
-package database, and recovery from a power cut. Repositories, signed
-indexes and `rpg update`/`rpg upgrade` come with step E2; the system
-itself split into packages with E3; FoxDen's apps (`FOXDEN.md`) after
-E2.
+planning documents, phase E; `man rpg`). Step E1: the `.rpg` format,
+`rpg build`, installing and removing package files, the package
+database, and recovery from a power cut. Step E2: signed repositories,
+`rpg update`, `rpg upgrade`, `rpg install NAME` with dependencies, and
+`rpg index` for the publishing side. The system itself split into
+packages comes with E3; FoxDen's apps (`FOXDEN.md`) after E2.
 
 `rpg` is Rust (`userspace/rust/rpg`): flate2 for gzip, sha2, its own tar
-reader and writer, a few C library calls (`sys.rs`). It builds for
-Rustux and for Linux alike: packages are built, and from E2 indexed, on
-the publishing side too.
+reader and writer, ed25519-dalek for signatures, ureq on rustls (ring)
+with Mozilla's root certificates for HTTPS, as `curl`, and a few C
+library calls (`sys.rs`). It builds for Rustux and for Linux alike:
+packages are built and indexed on the publishing side too.
 
 ## The `.rpg` file
 
@@ -144,14 +145,123 @@ with the folders that hold them, and the package becomes
   marked), else `NAME: N files as installed`; exit status 1 if anything
   but a configuration file differs
 
+## Repositories (step E2)
+
+A repository is static files, Debian's layout (any web server, mirror or
+disk serves it):
+
+```
+dists/SUITE/Release                   Origin, Suite, Date, Architectures, Sections,
+                                      and SHA256: " HASH SIZE SECTION/ARCH/Packages.gz" lines
+dists/SUITE/Release.sig               the 64-byte Ed25519 signature of Release
+dists/SUITE/SECTION/ARCH/Packages.gz  a stanza per package: its control fields,
+                                      Filename, Size, SHA256 (Architecture: all ones in each)
+pool/SECTION/L/NAME/NAME_VERSION_ARCH.rpg   (L: the first letter; lib + one more for lib...)
+```
+
+Rustica's own is `https://rustux.com/download/rustica`, suite `redfox`,
+section `main` (published from step E5), signed with the archive key
+`rustux-archive-2026` (key ID `65527118d2c1e504`), whose public key the
+image has in `/etc/rpg/keys/rustux-archive-2026.pub`.
+
+**Sources**: `/etc/rpg/sources.list` and `/etc/rpg/sources.list.d/*.list`,
+a line per repository, `URL SUITE SECTION...` (https://, http:// or
+file://; `apps URL ...` lines are FoxDen's, step FD3). `rpg source
+list`, `rpg source add URL SUITE SECTION...`, `rpg source remove N`.
+
+**Keys**: `/etc/rpg/keys/*.pub` for system sources, `/etc/rpg/keys/apps/`
+for app sources (a key is trusted only for its kind): a line
+`rpg-ed25519 HEX NAME`. `rpg key add FILE [NAME]` also takes OpenSSL's
+PEM public key; `rpg key list` shows each key's ID (the first 8 bytes of
+the SHA-256 of the public key); `rpg key remove ID|NAME`.
+
+**Trust: one signature covers everything.** `rpg update` fetches each
+source's `Release` and `Release.sig` and refuses the source unless a
+trusted key signed exactly those bytes and `Suite:` is the one asked
+for; then each section's `Packages.gz`, refused unless its size and
+SHA-256 are the ones `Release` gives, and each of its entries is checked
+(a clean `Filename`, a `Size`, a `SHA256`, the control fields). Only
+when the whole source is checked do its lists go into
+`/var/lib/rpg/lists/` (`PREFIX_Release`, `PREFIX_Release.sig`,
+`PREFIX_SECTION_ARCH_Packages`, the prefix made from the address and
+suite); a refused source keeps the lists it had ("its lists from before
+are kept"), and `rpg update` exits 1. Lists of sources no longer
+configured are removed. A downloaded package is refused unless its size
+and SHA-256 are the index's ("refused, nothing was installed"), and the
+package inside must be the name and version the index says. HTTPS (with
+Mozilla's roots, and `/etc/rpg/ca-certificates.pem` for a private
+repository's CA) keeps downloads private; the signature makes even a
+mirror or a broken-into server unable to change a package.
+
+**Choosing versions**: a package's candidate is the highest version any
+source has (the first source's, when two have the same).
+
+**`rpg install NAME...`** (with `./FILE.rpg` too, in one command): the
+named packages' candidates; then for each dependency not met by what is
+installed or going in, the first alternative a source can satisfy, at
+the highest version that fits (by name, or by `Provides` for a
+relation without a version); then the whole result is checked: every
+package's `Depends` met, no `Conflicts`. The plan is shown ("To
+install", with what each dependency is for; "To upgrade"; the download
+and installed sizes) and asked about (`Continue? [Y/n]`; `-y` does not
+ask; no answer, as from a script, is no). Downloads go to
+`/var/cache/rpg/archives/` (a copy there whose hash matches is used
+again), then everything installs as in E1, dependencies first. A
+package installed already at its candidate is left (if it was installed
+for another, it is now marked as the administrator's).
+
+**`Auto: yes`** in the status marks a package installed for another;
+`rpg autoremove` removes those nothing installed by the administrator
+needs any more (following `Depends` from them). **`Hold: yes`**
+(`rpg hold NAME`, `rpg unhold`) keeps a package at its version.
+
+**`rpg upgrade`**: every installed package whose candidate is newer, with
+new dependencies as for install. A held package is kept back, and so is
+an upgrade that cannot be made to fit (each one tried alone, then the
+ones that fit together): "Kept back: NAME: the reason"; the rest go
+ahead.
+
+**Queries**: `rpg search WORD...` (names and descriptions; `--names-only`;
+marks what is installed), `rpg show NAME` (the installed entry, else the
+candidate with its source), `rpg policy NAME` (installed, candidate,
+held, every version and where from; `rpg policy` alone lists the
+sources), `rpg list --upgradable`, `--held`, `rpg depends NAME`, `rpg
+rdepends NAME`, `rpg download NAME` (into the current folder, checked),
+`rpg clean` (empties the cache).
+
+**Publishing** (`rpg index REPO [--suite redfox] [--section main] [--arch
+x86_64] [--origin Rustux]`): every `.rpg` under `REPO/pool` read and
+checked whole (twice the same name, version and architecture refused),
+`Packages.gz` for each architecture and `Release`; then `Release` is
+signed apart, with the private key and nothing but OpenSSL 3:
+
+```
+openssl pkeyutl -sign -inkey rustux-archive-2026.key -rawin \
+    -in REPO/dists/redfox/Release -out REPO/dists/redfox/Release.sig
+```
+
+`rpg pool-path FILE.rpg [SECTION]` prints where in the pool a package
+file belongs. Step E5 puts this in the handoffs.
+
+Not yet: a `Valid-Until` in `Release` (a mirror could serve an old,
+correctly signed release, holding back updates), delta downloads,
+signatures on the packages themselves.
+
 ## Tests
 
-`cargo test` in `userspace/rust/rpg` (versions, control files, the tar),
-and `scripts/run-packages-test.sh` (`TESTS.md`): a package built on the
+`cargo test` in `userspace/rust/rpg` (versions, control files, the tar,
+keys and signatures), and `scripts/run-packages-test.sh` (`TESTS.md`): a package built on the
 host with the host's rpg, installed in QEMU on an ext4 root; packages
 built in Rustux; an upgrade with a changed configuration file;
 conflicts, dependencies, removal, `--purge`, a user refused; then two
 real power cuts (QEMU killed) in a 300-file upgrade, one during the
 renames (`rpg fix` finishes it) and one while staging (`rpg fix` undoes
 it). `RPG_TEST_PAUSE=stage:N` or `rename:N` makes rpg stop after that
-file, synced, for the test to cut the power there.
+file, synced, for the test to cut the power there. A fourth boot (step
+E2) uses repositories the host built with its rpg (`rpg index`), signed
+with a test key (OpenSSL) and served over HTTPS behind a test CA, one
+address whose contents the guest switches: a dependency installed with
+its package, a newer release (hold, kept back, upgrade), autoremove, and
+the refusals: an index changed after signing, a Release signed by another
+key (the old lists kept), a package changed in the pool, an unknown CA,
+a user updating.

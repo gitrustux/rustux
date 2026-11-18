@@ -387,7 +387,7 @@ a password login as a new user (`useradd`, `chpasswd`, `SSH_ASKPASS`),
 root's password refused, an unknown key refused, 1 MB up and down;
 sshd's log. (Skipped without `ssh` on the host.)
 
-## Packages test (step E1)
+## Packages test (steps E1 and E2)
 
 `cargo test` in `userspace/rust/rpg` checks versions (Debian's order),
 control files and the tar. `scripts/run-packages-test.sh`
@@ -406,7 +406,22 @@ configuration files until `--purge`; a user cannot install. Then a
 (`RPG_TEST_PAUSE`) and QEMU killed: a power cut. Boot 2: `rpg fix`
 finishes it (every file version 2, no `.rpg-tmp` left); another upgrade
 is cut while its files are being written. Boot 3: `rpg fix` undoes it
-(version 2 untouched), `big` is removed, poweroff; the host's
+(version 2 untouched), `big` is removed, poweroff. Boot 4 (step E2,
+`boot4.sh`, a virtio-net card): the host builds repositories with its
+rpg (`rpg index`), signs them with a test key (`openssl pkeyutl -sign
+-rawin`) and serves them over HTTPS with a test CA's certificate for
+10.0.2.2, at one address whose contents the guest switches (`curl
+.../switch/NAME`). The image's default source and archive key are
+listed, then replaced with the test ones (`rpg source`, `rpg key add` of
+a PEM key); `rpg update`, `search`, `show`, `install -y hello` brings
+`libgreet` with it (marked as installed for it), `policy`; a newer
+release: `list --upgradable`, a held `libgreet` keeps hello's upgrade
+back while `tool` upgrades, then `upgrade` brings hello 2.0 and the new
+`libcolour`; `autoremove` after removing hello; no answer to the
+question installs nothing; an index changed after signing and a Release
+signed by another key are refused (exit 1, the lists from before kept),
+a package changed in the pool is refused at download; without the CA the
+certificate is refused; `nobody` can search but not update. The host's
 `e2fsck -f` finds the disk clean.
 
 ## Run in QEMU

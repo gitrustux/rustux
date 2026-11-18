@@ -345,20 +345,11 @@ impl Ctx {
     }
 
     /// rpg install ./FILE.rpg ...
-    pub fn install(&self, files: &[String]) -> Result<(), String> {
-        let mut pkgs = Vec::new();
-        for f in files {
-            let bytes = std::fs::read(f).map_err(|e| format!("{f}: {e}"))?;
-            let p = Package::read(&bytes).map_err(|e| format!("{f}: {e}"))?;
-            let a = p.control.arch();
-            if a != "all" && a != std::env::consts::ARCH {
-                return Err(format!("{f}: a package for {a}; this computer is {}", std::env::consts::ARCH));
-            }
-            if p.control.kind() == "app" {
-                return Err(format!("{f}: an app (Kind: app): apps are installed by FoxDen's steps (FOXDEN.md), not yet"));
-            }
-            pkgs.push(p);
-        }
+    /// Install packages read already (from files, or downloaded), each
+    /// with its mark: Some(true) installed for another package,
+    /// Some(false) asked for, None as the database has it
+    pub fn install_packages(&self, items: Vec<(Package, Option<bool>)>) -> Result<(), String> {
+        let (pkgs, marks): (Vec<Package>, Vec<Option<bool>>) = items.into_iter().unzip();
         // Dependencies and conflicts, with the whole set as installed
         let installed = self.db.installed()?;
         let names: BTreeSet<String> = pkgs.iter().map(|p| p.control.name().to_string()).collect();
@@ -420,12 +411,12 @@ impl Ctx {
             }
         }
         for i in order {
-            self.install_one(&pkgs[i])?;
+            self.install_one(&pkgs[i], marks[i])?;
         }
         Ok(())
     }
 
-    fn install_one(&self, p: &Package) -> Result<(), String> {
+    fn install_one(&self, p: &Package, auto: Option<bool>) -> Result<(), String> {
         let c = &p.control;
         let name = c.name().to_string();
         let old_entry = self.db.entry(&name)?;
@@ -499,6 +490,16 @@ impl Ctx {
         }
         let mut control = c.clone();
         control.set("Status", "installed");
+        // Installed for another package (rpg autoremove), held (rpg hold):
+        // kept across upgrades
+        let was = |f: &str| old_entry.as_ref().filter(|_| old.is_some()).and_then(|e| e.get(f)).map(str::to_string);
+        match auto.unwrap_or(was("Auto").as_deref() == Some("yes")) {
+            true => control.set("Auto", "yes"),
+            false => control.remove("Auto"),
+        }
+        if was("Hold").as_deref() == Some("yes") {
+            control.set("Hold", "yes");
+        }
         let mut op = Op {
             op: "install".into(),
             name: name.clone(),
@@ -625,6 +626,20 @@ impl Ctx {
         Ok(())
     }
 
+    /// Change one field of an installed package's status entry (Hold,
+    /// Auto); None removes it. Under the lock.
+    pub fn set_field(&self, name: &str, field: &str, value: Option<&str>) -> Result<(), String> {
+        let mut all = self.db.status()?;
+        let Some(e) = all.iter_mut().find(|c| c.name() == name && c.get("Status") == Some("installed")) else {
+            return Err(format!("{name} is not installed"));
+        };
+        match value {
+            Some(v) => e.set(field, v),
+            None => e.remove(field),
+        }
+        self.db.save_status(&all)
+    }
+
     /// rpg remove [--purge] NAME...
     pub fn remove(&self, names: &[String], purge: bool) -> Result<(), String> {
         let status = self.db.status()?;
@@ -740,6 +755,25 @@ impl Ctx {
         }
         Ok(())
     }
+}
+
+/// A package file, read and checked: whole, for this computer, not an app
+pub fn read_file(f: &str) -> Result<Package, String> {
+    let bytes = std::fs::read(f).map_err(|e| format!("{f}: {e}"))?;
+    let p = Package::read(&bytes).map_err(|e| format!("{f}: {e}"))?;
+    check_installable(&p).map_err(|e| format!("{f}: {e}"))?;
+    Ok(p)
+}
+
+pub fn check_installable(p: &Package) -> Result<(), String> {
+    let a = p.control.arch();
+    if a != "all" && a != std::env::consts::ARCH {
+        return Err(format!("a package for {a}; this computer is {}", std::env::consts::ARCH));
+    }
+    if p.control.kind() == "app" {
+        return Err("an app (Kind: app): apps are installed by FoxDen's steps (FOXDEN.md), not yet".into());
+    }
+    Ok(())
 }
 
 /// /etc, /opt, /var...: never removed with a package, even if empty
