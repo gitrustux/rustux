@@ -244,7 +244,9 @@ openssl pkeyutl -sign -inkey rustux-archive-2026.key -rawin \
 ```
 
 `rpg pool-path FILE.rpg [SECTION]` prints where in the pool a package
-file belongs. Step E5 puts this in the handoffs.
+file belongs. Step E5 puts this in the handoffs: `scripts/publish-repo.sh`
+builds, indexes, signs and checks the repository rustux.com serves
+(`RELEASES.md`).
 
 Not yet: a `Valid-Until` in `Release` (a mirror could serve an old,
 correctly signed release, holding back updates), delta downloads,

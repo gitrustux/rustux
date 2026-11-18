@@ -406,6 +406,18 @@ a password login as a new user (`useradd`, `chpasswd`, `SSH_ASKPASS`),
 root's password refused, an unknown key refused, 1 MB up and down;
 sshd's log. (Skipped without `ssh` on the host.)
 
+## Publishing test (package step E5)
+
+`scripts/run-publish-test.sh` runs on the host alone (no QEMU; it needs
+openssl, cargo, the kernel and rboot built): `scripts/publish-repo.sh`
+into a web root of its own with a test key. A key inside the web root
+and a key that is not the trusted one are refused; 0.1.1 is published and
+a client (`rpg --root`, with only the public key) reads the index and
+installs the system from it; publishing 0.1.1 again does nothing; after
+0.1.2-0.1.4 three versions are kept and 0.1.1's files are gone; the
+client's `rpg upgrade` brings 0.1.4; a package changed on the server is
+refused by the client (`RELEASES.md`).
+
 ## Packages test (steps E1 and E2)
 
 `cargo test` in `userspace/rust/rpg` checks versions (Debian's order),
