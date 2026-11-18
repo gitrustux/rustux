@@ -250,6 +250,15 @@ Events the controller posts while the kernel waits for one transfer
 (keyboard reports, port changes) are kept for the keyboard loop, so
 typing during disk transfers is not lost.
 
+Events are read cycle bit first (`EventRing::pop`): the TRB's control
+word on its own, then a fence, then the whole TRB. Reading the 16 bytes
+at once could take the parameter from the ring's previous lap and the
+cycle bit from this one while the controller was writing the event; the
+transfer's waiter then saw an "old" event of its endpoint, dropped it,
+and timed out with the endpoint's dequeue pointer past its TRB and no
+event ("bulk transfer timed out ... (past our TRB)", with a tablet
+sending reports; found in package step E1's regression, 2026-11-18).
+
 ### Partitions
 
 GPT (UEFI specification, chapter 5) is read from the primary header, or

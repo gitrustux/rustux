@@ -1,0 +1,81 @@
+rpg - Rustica's package tool
+
+USAGE
+    rpg [--root DIR] COMMAND ...
+
+    build DIR [-o FILE]          make a package from DIR/RPG/control and DIR's files
+    install ./FILE.rpg...        install or upgrade from package files
+    remove [--purge] NAME...     remove packages (--purge: their configuration files too)
+    list [--installed] [--json]  the installed packages
+    show NAME | ./FILE.rpg       a package's control fields
+    info ./FILE.rpg              a package file's control fields and files
+    files NAME                   the files a package installed
+    owner PATH...                the package a file belongs to
+    verify [NAME...]             files changed or missing since they were installed
+    fix                          finish an install a power cut or crash interrupted
+    version
+
+    rpg is Rustica's one package tool: what Debian splits between dpkg
+    and apt. Step E1 has package files and the database; repositories
+    (rpg update, rpg upgrade, rpg install NAME, rpg search) come with
+    step E2. Changes are root's (sudo rpg ...); anyone may look.
+
+PACKAGES
+    A .rpg file is a gzipped tar: control (the package's fields), files
+    (each file's SHA-256, mode and owner), scripts/postinst and
+    scripts/prerm (optional) and data/ (the files, rooted at /). The
+    file name is NAME_VERSION_ARCH.rpg.
+
+    rpg build DIR makes one from DIR/RPG/control, the optional scripts
+    DIR/RPG/postinst and DIR/RPG/prerm, and every other file under DIR
+    (DIR/usr/bin/x becomes /usr/bin/x). Everything belongs to root; the
+    modes are the files' own. The control file:
+
+        Package: hello
+        Version: 1.0-1
+        Architecture: x86_64        (or all, aarch64)
+        Depends: rustica-base (>= 0.1), foo | bar
+        Conflicts: ...
+        Provides: ...
+        Maintainer: ...
+        Description: a one-line summary
+         Longer text, each line starting with a space.
+
+    Versions compare as Debian's: 1.10 > 1.9, 1.0~rc1 < 1.0, 1.0-2 >
+    1.0-1, an epoch first (2:0.1 > 1.9).
+
+INSTALLING
+    rpg install ./FILE.rpg checks the package (every file's SHA-256), its
+    dependencies and conflicts, and that no file belongs to another
+    package; then writes the new files beside their places, and renames
+    each over the old one. An upgrade removes the files the new version
+    no longer has. postinst runs with "install", or "upgrade OLD-VERSION".
+
+    On Rustux /bin, /usr and /boot are the boot image, read-only, until
+    step E3: packages install into /opt, /etc, /var and the like; a
+    package with files in the boot image is refused, nothing changed.
+
+    Configuration files (everything in /etc) are yours: one changed since
+    its package installed it is never overwritten; the package's new one
+    goes beside it as FILE.rpg-new. rpg remove keeps them; rpg remove
+    --purge (also later, for a removed package) deletes them.
+
+    A power cut or crash in the middle is safe: before anything changes
+    the plan is written to /var/lib/rpg/journal and pending/. rpg fix
+    (and the next rpg install or remove) finishes it, or, if the new
+    files were not all written yet, undoes it and the old version stays.
+
+FILES
+    /var/lib/rpg/status          the installed packages
+    /var/lib/rpg/info/NAME.files what each one installed
+    /var/lib/rpg/journal         an operation in progress
+
+EXAMPLES
+    rpg build hello                     (makes hello_1.0-1_all.rpg)
+    sudo rpg install ./hello_1.0-1_all.rpg
+    rpg owner /etc/hello.conf
+    rpg verify
+    sudo rpg remove --purge hello
+
+SEE ALSO
+    tar, gzip (docs/PACKAGES.md)

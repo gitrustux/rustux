@@ -387,6 +387,28 @@ a password login as a new user (`useradd`, `chpasswd`, `SSH_ASKPASS`),
 root's password refused, an unknown key refused, 1 MB up and down;
 sshd's log. (Skipped without `ssh` on the host.)
 
+## Packages test (step E1)
+
+`cargo test` in `userspace/rust/rpg` checks versions (Debian's order),
+control files and the tar. `scripts/run-packages-test.sh`
+(`PACKAGES.md`; it needs cargo to build rpg for the host) builds a
+package on the host with the host's rpg (the host's `tar` must read it)
+and puts it on a FAT disk, then boots QEMU three times with the root on
+ext4. Boot 1 (`/usr/share/rpg/tests/boot1.sh`): the host's package
+installs (its postinst runs; `rpg owner`, `files`, `verify`); version
+1.1-1, built in Rustux, upgrades it: a configuration file changed by the
+administrator is kept and the new one written beside it as `.rpg-new`,
+an unchanged one replaced, a dropped file gone; a package with a file of
+another, and one with an unmet `Depends`, are refused; `rpg remove`
+refuses while a package needs it, then removes both, keeping the
+configuration files until `--purge`; a user cannot install. Then a
+300-file upgrade is paused half-way through its renames
+(`RPG_TEST_PAUSE`) and QEMU killed: a power cut. Boot 2: `rpg fix`
+finishes it (every file version 2, no `.rpg-tmp` left); another upgrade
+is cut while its files are being written. Boot 3: `rpg fix` undoes it
+(version 2 untouched), `big` is removed, poweroff; the host's
+`e2fsck -f` finds the disk clean.
+
 ## Run in QEMU
 
 ```bash

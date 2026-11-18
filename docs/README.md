@@ -101,6 +101,7 @@ docs/
 ├── SESSION.md                    # The desktop session: login, panel, launcher, lock (desktop step F6)
 ├── APPS.md                       # Pseudo-terminals, Terminal, Files, Settings, Text Editor, Image Viewer (desktop step F7)
 ├── NETWORK.md                    # Networking: virtio-net, netd (smoltcp), ip, ping (network step D1)
+├── PACKAGES.md                   # Packages: the .rpg format, rpg, the database (package step E1)
 ├── ROADMAP.md                    # Architecture checklist (Jan 2026 plan)
 ├── HISTORY.md                    # Project history and decisions
 ├── usb-keyboard.md               # USB keyboard status and debugging history

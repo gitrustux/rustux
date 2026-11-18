@@ -123,13 +123,22 @@ impl EventRing {
         self.buf.phys + (self.dequeue * 16) as u64
     }
 
-    /// Take the next event, if the controller has written one
+    /// Take the next event, if the controller has written one.
+    ///
+    /// The cycle bit is read on its own first, and the rest of the TRB only
+    /// after it: one read of the whole TRB could take the parameter from
+    /// the previous lap and the cycle bit from this one, while the
+    /// controller is writing it. Such an event names an old TRB, so the
+    /// waiter dropped it as stale and timed out ("past our TRB", "no
+    /// event"); seen with the USB stick while the tablet sent reports.
     pub fn pop(&mut self) -> Option<Trb> {
-        let trb = unsafe { core::ptr::read_volatile((self.buf.virt as *const Trb).add(self.dequeue)) };
-        if trb.control & TRB_CYCLE != self.cycle {
+        let p = unsafe { (self.buf.virt as *const Trb).add(self.dequeue) };
+        let control = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*p).control)) };
+        if control & TRB_CYCLE != self.cycle {
             return None;
         }
         fence(Ordering::Acquire);
+        let trb = unsafe { core::ptr::read_volatile(p) };
         self.dequeue += 1;
         if self.dequeue == RING_TRBS {
             self.dequeue = 0;
