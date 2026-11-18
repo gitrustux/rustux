@@ -60,6 +60,7 @@ The image's units:
 | `netd` | the network service, `ready=/svc/net` (`NETWORK.md`) | multi-user |
 | `sshd` | the SSH server, after netd (`NETWORK.md`) | multi-user |
 | `emergency` | built in, never in a file: a root shell when nothing else can hold the console | none |
+| `boot-complete` | built in, never in a file (package step E4): `bootctl bless` once a multi-user or graphical boot has started everything (nothing waiting or starting): rboot's boot counter goes, the image is good | started by init |
 
 Without `/etc/svc` init uses the same units built in (`svc list` says
 `builtin`). A disk root made before step 18 gets `/etc/svc` from the boot

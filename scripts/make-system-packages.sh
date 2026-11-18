@@ -107,6 +107,7 @@ Architecture: all
 Section: editions
 Depends: rustica-system
 Conflicts: rustica-$other
+Replaces: rustica-$other
 Maintainer: The Rustux Authors
 Description: Rustica's ${ed} edition
  The same system image, $what.

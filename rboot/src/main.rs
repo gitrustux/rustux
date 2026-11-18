@@ -16,6 +16,14 @@
 //!   entry (`root=live`: the system from memory, disks untouched);
 //! - Windows Boot Manager and Linux loaders (shim, GRUB, systemd-boot)
 //!   found on any EFI partition, and the firmware setup;
+//! - boot counting (package step E4), as systemd-boot's: an entry file
+//!   named `ID+LEFT[-DONE].conf` has LEFT tries; rboot lowers it
+//!   (`ID+LEFT-1-DONE+1.conf`) before starting it and names the file in
+//!   the LoaderBootCountPath variable, and the system, once up, renames it
+//!   to `ID.conf` (`bootctl bless`). An entry at +0 failed to start: every
+//!   entry of its image goes to the end of the menu, marked so, and is
+//!   not chosen by default: the next one is (the previous image). A
+//!   Rustica entry's command line also gets `BOOT_IMAGE=PATH`;
 //! - `\loader\loader.conf`: `default` (an entry id, `*` at the end matches
 //!   any rest), `timeout` (seconds; 0 boots at once unless a key is held),
 //!   `editor` (no: no `e`), `auto-entries`, `auto-firmware` (no: none).
@@ -44,7 +52,7 @@ use uefi::proto::console::text::{Color, Key, ScanCode};
 use uefi::proto::device_path::build::{self, DevicePathBuilder};
 use uefi::proto::device_path::{DevicePath, DeviceSubType, DeviceType};
 use uefi::proto::loaded_image::LoadedImage;
-use uefi::proto::media::file::{Directory, File, FileAttribute, FileMode};
+use uefi::proto::media::file::{Directory, File, FileAttribute, FileInfo, FileMode};
 use uefi::proto::media::fs::SimpleFileSystem;
 use uefi::runtime::{self, ResetType, VariableAttributes, VariableVendor};
 use uefi::{guid, CString16, Guid};
@@ -69,6 +77,13 @@ struct Entry {
     path: String,
     options: String,
     sort: String,
+    /// The .conf file of an entry with a boot counter (not for the
+    /// recovery and live entries made from it)
+    file: Option<String>,
+    /// Tries left and done (`+LEFT-DONE` in the file name)
+    tries: Option<(u32, u32)>,
+    /// Its image failed to start (an entry of it at +0)
+    bad: bool,
 }
 
 struct Config {
@@ -256,6 +271,37 @@ fn is_rustica(path: &str) -> bool {
     name == "rustux.efi" || (name.starts_with("rustux-") && name.ends_with(".efi"))
 }
 
+/// `ID+LEFT[-DONE]`: the id and the counter
+fn split_counter(stem: &str) -> (&str, Option<(u32, u32)>) {
+    if let Some(k) = stem.rfind('+') {
+        let rest = &stem[k + 1..];
+        let (l, d) = rest.split_once('-').unwrap_or((rest, "0"));
+        let num = |t: &str| if !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) { t.parse::<u32>().ok() } else { None };
+        if let (Some(l), Some(d)) = (num(l), num(d)) {
+            return (&stem[..k], Some((l, d)));
+        }
+    }
+    (stem, None)
+}
+
+/// Rename a file in \loader\entries (FAT renames through SetInfo)
+fn rename_entry(fs: Handle, from: &str, to: &str) -> bool {
+    let Some(mut root) = open_root(fs) else { return false };
+    let Some(p) = wide(&format!("\\loader\\entries\\{}", from)) else { return false };
+    let Ok(h) = root.open(&p, FileMode::ReadWrite, FileAttribute::empty()) else { return false };
+    let Some(mut f) = h.into_regular_file() else { return false };
+    let Ok(info) = f.get_boxed_info::<FileInfo>() else { return false };
+    let Ok(name) = CString16::try_from(to) else { return false };
+    let mut storage = vec![0u64; 128];
+    let buf = unsafe { core::slice::from_raw_parts_mut(storage.as_mut_ptr() as *mut u8, storage.len() * 8) };
+    let Ok(new) = FileInfo::new(buf, info.file_size(), info.physical_size(), *info.create_time(), *info.last_access_time(), *info.modification_time(), info.attribute(), &name) else {
+        return false;
+    };
+    let ok = f.set_info(new).is_ok();
+    let _ = f.flush();
+    ok
+}
+
 fn conf_entries(esp: Handle) -> Vec<Entry> {
     let mut out = Vec::new();
     for (name, dir) in list_dir(esp, "\\loader\\entries") {
@@ -263,8 +309,20 @@ fn conf_entries(esp: Handle) -> Vec<Entry> {
             continue;
         }
         let Some(b) = read_file(esp, &format!("\\loader\\entries\\{}", name)) else { continue };
-        let id = name[..name.len() - 5].to_string();
-        let mut e = Entry { id: id.clone(), title: id.clone(), kind: Kind::Other, fs: Some(esp), path: String::new(), options: String::new(), sort: String::new() };
+        let (id, tries) = split_counter(&name[..name.len() - 5]);
+        let id = id.to_string();
+        let mut e = Entry {
+            id: id.clone(),
+            title: id.clone(),
+            kind: Kind::Other,
+            fs: Some(esp),
+            path: String::new(),
+            options: String::new(),
+            sort: String::new(),
+            file: tries.map(|_| name.clone()),
+            tries,
+            bad: false,
+        };
         let mut bootfs = String::new();
         for line in text(&b).lines() {
             match key_value(line) {
@@ -324,6 +382,8 @@ fn add_rustica_extras(entries: Vec<Entry>) -> Vec<Entry> {
         // already, nor the desktop's: its recovery is the other's)
         if !words.iter().any(|w| *w == "rescue" || *w == "single" || *w == "installer" || *w == "desktop") {
             let mut r = e.clone();
+            r.file = None;
+            r.tries = None;
             r.id = format!("{}-recovery", e.id);
             r.title = format!("{} (recovery)", e.title);
             r.options = format!("{} rescue", without_word(&without_word(&opts, "autologin"), "quiet")).trim().to_string();
@@ -332,6 +392,8 @@ fn add_rustica_extras(entries: Vec<Entry>) -> Vec<Entry> {
         let has_root = words.iter().any(|w| w.starts_with("root=") && *w != "root=live");
         if has_root && !live_done {
             let mut l = e.clone();
+            l.file = None;
+            l.tries = None;
             l.id = format!("{}-live", e.id);
             l.title = format!("{} (live, in memory)", e.title);
             l.options = format!("{} root=live", without_word(&opts, "root")).trim().to_string();
@@ -383,7 +445,7 @@ fn auto_entries(esp: Handle, have: &[Entry]) -> Vec<Entry> {
             if out.iter().any(|e| e.id == id) {
                 id = format!("{}-{}", id, out.len() + 1);
             }
-            out.push(Entry { id, title, kind: Kind::Other, fs: Some(fs), path, options: String::new(), sort: String::new() });
+            out.push(Entry { id, title, kind: Kind::Other, fs: Some(fs), path, options: String::new(), sort: String::new(), file: None, tries: None, bad: false });
         }
     }
     let _ = esp;
@@ -407,11 +469,28 @@ fn all_entries(esp: Handle, cfg: &Config) -> Vec<Entry> {
             path: "\\EFI\\Rustica\\rustux.efi".into(),
             options: String::new(),
             sort: String::new(),
+            file: None,
+            tries: None,
+            bad: false,
         });
     }
     let mut entries = add_rustica_extras(entries);
+    // Images that failed to start: all their entries last
+    let bad: Vec<String> = entries.iter().filter(|e| e.kind == Kind::Rustica && e.tries.is_some_and(|t| t.0 == 0)).map(|e| e.path.to_ascii_lowercase()).collect();
+    if !bad.is_empty() {
+        for e in entries.iter_mut() {
+            if e.kind == Kind::Rustica && bad.contains(&e.path.to_ascii_lowercase()) {
+                e.bad = true;
+                e.title = format!("{} (failed to start)", e.title);
+            }
+        }
+    }
+    let (good, failed): (Vec<Entry>, Vec<Entry>) = entries.into_iter().partition(|e| !e.bad);
+    let mut entries = good;
     if cfg.auto_entries {
-        let auto = auto_entries(esp, &entries);
+        let mut have = entries.clone();
+        have.extend(failed.iter().cloned());
+        let auto = auto_entries(esp, &have);
         entries.extend(auto);
     }
     if cfg.auto_firmware && firmware_setup_supported() {
@@ -423,8 +502,12 @@ fn all_entries(esp: Handle, cfg: &Config) -> Vec<Entry> {
             path: String::new(),
             options: String::new(),
             sort: String::new(),
+            file: None,
+            tries: None,
+            bad: false,
         });
     }
+    entries.extend(failed);
     entries
 }
 
@@ -485,12 +568,32 @@ fn boot_entry(e: &Entry, options: &str) -> Result<(), String> {
     b = b.push(&build::media::FilePath { path_name: &file }).map_err(|_| "device path too long")?;
     let full = b.finalize().map_err(|_| "device path")?;
     drop(dp);
+    // Boot counting: one try fewer, before it starts
+    let mut count_path = String::new();
+    if let (Some(file), Some((left, done))) = (&e.file, e.tries) {
+        if left > 0 {
+            let to = format!("{}+{}-{}.conf", e.id, left - 1, done + 1);
+            if rename_entry(fs, file, &to) {
+                count_path = format!("\\loader\\entries\\{}", to);
+                debugcon(&format!("rboot: {}: try {} of {} ({})\n", e.id, done + 1, left + done, to));
+            } else {
+                debugcon(&format!("rboot: {}: could not count this try (renaming {} failed)\n", e.id, file));
+            }
+        }
+    }
+    if count_path.is_empty() {
+        delete_var("LoaderBootCountPath");
+    } else {
+        set_var("LoaderBootCountPath", &utf16z(&count_path), false);
+    }
     let image = boot::load_image(boot::image_handle(), LoadImageSource::FromDevicePath { device_path: full, boot_policy: uefi::proto::BootPolicy::ExactMatch })
         .map_err(|err| format!("cannot load {}: {:?}", e.path, err.status()))?;
-    // The command line: UTF-16 with its NUL; it must live until the program has read it
-    let opts: Vec<u16> = options.encode_utf16().chain(core::iter::once(0)).collect();
+    // The command line: UTF-16 with its NUL; it must live until the program has read it.
+    // The kernel learns which image it is (as GRUB's BOOT_IMAGE)
+    let full_opts = if e.kind == Kind::Rustica { format!("{} BOOT_IMAGE={}", options, e.path).trim().to_string() } else { options.to_string() };
+    let opts: Vec<u16> = full_opts.encode_utf16().chain(core::iter::once(0)).collect();
     let opts = alloc::boxed::Box::leak(opts.into_boxed_slice());
-    if !options.is_empty() {
+    if !full_opts.is_empty() {
         let mut li = boot::open_protocol_exclusive::<LoadedImage>(image).map_err(|_| "no loaded image protocol")?;
         unsafe { li.set_load_options(opts.as_ptr() as *const u8, (opts.len() * 2) as u32) };
     }
@@ -625,12 +728,20 @@ fn main() -> Status {
     }
     let saved = get_var_str("LoaderEntryDefault");
     let mut sel = 0;
-    for pat in [oneshot.clone(), saved, Some(cfg.default.clone())].into_iter().flatten() {
+    for (i, pat) in [oneshot.clone(), saved, Some(cfg.default.clone())].into_iter().enumerate() {
+        let Some(pat) = pat else { continue };
         if pat.is_empty() {
             continue;
         }
         if let Some(k) = entries.iter().position(|e| pattern_match(&pat, &e.id)) {
-            sel = k;
+            // A failed image is not the default (a one-shot choice is kept)
+            if entries[k].bad && i > 0 {
+                let next = entries.iter().position(|e| !e.bad && e.kind != Kind::Firmware).unwrap_or(k);
+                debugcon(&format!("rboot: {} failed to start: {} instead\n", entries[k].id, entries[next].id));
+                sel = next;
+            } else {
+                sel = k;
+            }
             break;
         }
     }

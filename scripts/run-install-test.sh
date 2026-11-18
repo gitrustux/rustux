@@ -12,8 +12,12 @@
 #      file; rpg knows the image (rpg list, verify, boot list); an upgrade
 #      to image 0.1.2 from a repository on another disk (signed with a
 #      test key); sudo poweroff; the next boot starts 0.1.2, with 0.1.1 in
-#      the menu as the previous one, and still has the file; e2fsck -f
-#      clean;
+#      the menu as the previous one, and still has the file; package step
+#      E4: 0.1.2 was counted (rboot's +3 entry) and the boot made it good
+#      (bootctl bless); an upgrade to 0.1.3 removes 0.1.1 (two images
+#      kept); 0.1.3, made to fail (crash=boot on its entry), panics three
+#      times (panic=10 restarts it) and rboot falls back to 0.1.2, which
+#      rpg boot status reports; e2fsck -f clean;
 #   B. the same disk again from the live session: replace the earlier
 #      Rustica (rustica-install --mode replace) with the desktop edition:
 #      rboot starts the graphical login by default; the new user logs in
@@ -75,15 +79,21 @@ HOSTT=$(rustc -vV | sed -n 's/^host: //p')
 export RPG="$W/cargo/$HOSTT/release/rpg"
 KERNEL="$EFI" RBOOT_EFI=$RB/rboot.efi scripts/make-system-packages.sh "$W/live/rustica/packages" 0.1.1 || { echo "make-system-packages.sh failed"; exit 2; }
 truncate -s 128M "$W/live.fat"; mkfs.fat -F 32 -n RUSTICA "$W/live.fat" >/dev/null; mcopy -i "$W/live.fat" -s "$W/live/EFI" "$W/live/loader" "$W/live/rustica" ::
-# A repository with image 0.1.2 on a disk of its own, signed with a test key
-KERNEL="$EFI" RBOOT_EFI=$RB/rboot.efi scripts/make-system-packages.sh "$W/new" 0.1.2 > /dev/null || { echo "make-system-packages.sh failed"; exit 2; }
-for f in "$W"/new/*.rpg; do
-    p="$W/repo/repo/$("$RPG" pool-path "$f")"; mkdir -p "$(dirname "$p")"; mv "$f" "$p"
-done
-"$RPG" index "$W/repo/repo" > /dev/null || { echo "rpg index failed"; exit 2; }
+# Repositories with image 0.1.2 (repo) and 0.1.3 (repo2) on a disk of
+# their own, signed with a test key
+mkdir -p "$W/repo"
 openssl genpkey -algorithm ed25519 -out "$W/test.key" 2>/dev/null
-openssl pkey -in "$W/test.key" -pubout -out "$W/repo/test.pub.pem"
-openssl pkeyutl -sign -inkey "$W/test.key" -rawin -in "$W/repo/repo/dists/redfox/Release" -out "$W/repo/repo/dists/redfox/Release.sig"
+openssl pkey -in "$W/test.key" -pubout -out "$W/repo/test.pub.pem" || { echo "openssl failed"; exit 2; }
+for rv in repo:0.1.2 repo2:0.1.3; do
+    rd=${rv%%:*}; v=${rv#*:}
+    rm -rf "$W/new"
+    KERNEL="$EFI" RBOOT_EFI=$RB/rboot.efi scripts/make-system-packages.sh "$W/new" $v > /dev/null || { echo "make-system-packages.sh failed"; exit 2; }
+    for f in "$W"/new/*.rpg; do
+        p="$W/repo/$rd/$("$RPG" pool-path "$f")"; mkdir -p "$(dirname "$p")"; mv "$f" "$p"
+    done
+    "$RPG" index "$W/repo/$rd" > /dev/null || { echo "rpg index failed"; exit 2; }
+    openssl pkeyutl -sign -inkey "$W/test.key" -rawin -in "$W/repo/$rd/dists/redfox/Release" -out "$W/repo/$rd/dists/redfox/Release.sig"
+done
 cat > "$W/repo/upgrade.sh" <<'UP'
 rpg key add /mnt/test.pub.pem rpg-test
 rpg source remove 1
@@ -92,7 +102,18 @@ rpg update
 rpg upgrade -y
 rpg boot list
 UP
-truncate -s 64M "$W/repo.fat"; mkfs.fat -F 32 -n RPGREPO "$W/repo.fat" >/dev/null; mcopy -i "$W/repo.fat" -s "$W/repo/repo" "$W/repo/test.pub.pem" "$W/repo/upgrade.sh" ::
+# The next image, and it made to fail: its entry gets crash=boot (the
+# kernel then panics before init, as a broken image would)
+cat > "$W/repo/upgrade2.sh" <<'UP'
+rpg source remove 1
+rpg source add file:///mnt/repo2 redfox main
+rpg update
+rpg upgrade -y
+rpg boot status
+ls /boot/efi/loader/entries
+echo "options crash=boot" >> /boot/efi/loader/entries/rustica+3.conf
+UP
+truncate -s 128M "$W/repo.fat"; mkfs.fat -F 32 -n RPGREPO "$W/repo.fat" >/dev/null; mcopy -i "$W/repo.fat" -s "$W/repo/repo" "$W/repo/repo2" "$W/repo/test.pub.pem" "$W/repo/upgrade.sh" "$W/repo/upgrade2.sh" ::
 python3 scripts/gpt-wrap.py --disk 9 "$W/live.img" esp:"$W/live.fat"
 truncate -s 2G "$W/nvme.img"
 # "Windows": its EFI partition (bootmgfw.efi and the fallback), a data partition, 1.6 GiB free
@@ -122,7 +143,7 @@ start_qemu() {  # VARS-FILE DEVICES...
     rm -f "$W/dbg.log" "$W/mon.sock"
     qemu-system-x86_64 -machine q35 -m 1G -smp 2 \
         -drive if=pflash,format=raw,readonly=on,file="$CODE" -drive if=pflash,format=raw,file="$vars" \
-        $* -nic none -display none -debugcon file:"$W/dbg.log" -no-reboot -monitor unix:"$W/mon.sock",server,nowait >/dev/null 2>&1 &
+        $* -nic none -display none -debugcon file:"$W/dbg.log" $([ -n "${ALLOW_REBOOT:-}" ] || echo -no-reboot) -monitor unix:"$W/mon.sock",server,nowait >/dev/null 2>&1 &
     QPID=$!
 }
 wait_for() {  # TEXT COUNT SECONDS
@@ -217,7 +238,7 @@ fi
 wait_end 60
 log | grep -a "rboot: booting rustica (\|uid=\|nvme0n1p\|rustica \|power-off" | head -12
 expect "root=UUID="
-expect "nvme=rw)"
+expect "nvme=rw panic=10)"
 expect "uid=1000(alice) gid=1000(alice) groups=1000(alice),27(sudo)"
 expect "Europe/Berlin"
 expect "/dev/nvme0n1p2 on / type ext4 (rw)"
@@ -230,24 +251,55 @@ expect "rustica-system-0.1.1: 1 files as installed"
 expect "newest    0.1.1"
 expect "file:///mnt/repo redfox: 5 packages"
 expect "rustica-system: 0.1.1 -> 0.1.2 (0 files)"
-expect "rpg boot: Rustica Server 0.1.2 (the server edition); 1 previous image in the menu"
+expect "rpg boot: Rustica Server 0.1.2 (the server edition); 1 previous image in the menu; 0.1.2 starts next, 3 tries before the previous one is used again"
 expect "previous  0.1.1"
 expect "init: power-off"
 
-echo "== A3: again: the new image starts, the previous one in the menu; the file is there"
-start_qemu "$W/vars-a.fd" $NVME
+echo "== A3: again: the new image starts (counted, then good), the previous one in the menu; the file is there; the next image, made to fail"
+start_qemu "$W/vars-a.fd" $NVME $REPO
 if answer "testbox $LOGIN" $'alice\n' 120; then
     answer "Password: " $'secret1\n'
-    answer "alice@" $'cat notes; bootctl list; rpg list --installed | grep system; sudo -S poweroff\n'
-    sleep 1; type_text $'secret1\n'
+    answer "alice@" $'cat notes; bootctl list; rpg list --installed | grep system; rpg boot status; ls /boot/efi/loader/entries\n'
+    wait_for "alice@" 2 120 && type_text $'echo secret1 | sudo -S sh -c "mount \\$(blkid -L RPGREPO) /mnt && sh /mnt/upgrade2.sh"; echo UPGRADED-$((40+2))\n'
+    wait_for "UPGRADED-42" 1 300 && type_text $'sudo poweroff\n'
+    answer "assword" $'secret1\n'
 fi
 wait_end 60
 expect "kept"
 expect "rboot: booting rustica (\\EFI\\Rustica\\rustux-0.1.2.efi root="
+expect "rboot: rustica: try 1 of 3 (rustica+2-1.conf)"
 expect "Rustica 0.1.1 (previous)"
 expect "rustica-0.1.1-recovery"
 expect "rustica-recovery"
 expect "rustica-system-0.1.2  0.1.2"
+expect "Running: 0.1.2 (/EFI/Rustica/rustux-0.1.2.efi)"
+expect "newest    0.1.2                    good: it started"
+expect "rpg: two system images are kept (the newest and the running one): removing rustica-system-0.1.1"
+expect "0.1.3 starts next, 3 tries before the previous one is used again"
+expect "newest    0.1.3                    new: starts next (3 tries)"
+expect "rustica+3.conf"
+
+echo "== A4: 0.1.3 fails to start three times (panic=10 restarts it); rboot falls back to 0.1.2"
+ALLOW_REBOOT=1 start_qemu "$W/vars-a.fd" $NVME
+if wait_for "rboot: rustica failed to start: rustica-0.1.2 instead" 1 600 && answer "testbox $LOGIN" $'alice\n' 120; then
+    answer "Password: " $'secret1\n'
+    answer "alice@" $'cat notes; rpg boot status; bootctl list; sudo -S poweroff\n'
+    sleep 1; type_text $'secret1\n'
+fi
+wait_end 60
+log | grep -a "^rboot: \|PANIC\|Restarting" | head -16
+expect "rboot: rustica: try 1 of 3 (rustica+2-1.conf)"
+expect "rboot: rustica: try 2 of 3 (rustica+1-2.conf)"
+expect "rboot: rustica: try 3 of 3 (rustica+0-3.conf)"
+expect "[PANIC] panicked at src/main.rs"
+expect "crash=boot on the command line"
+expect "Restarting in 10 s (panic=10)"
+expect "rboot: booting rustica-0.1.2 (\\EFI\\Rustica\\rustux-0.1.2.efi"
+expect "Running: 0.1.2 (/EFI/Rustica/rustux-0.1.2.efi)"
+expect "newest    0.1.3                    FAILED to start (3 tries): not started by default"
+expect "previous  0.1.2                    good: it started"
+expect "Rustica Server (failed to start)"
+expect "kept"
 fsck_part "$W/nvme.img" 2 "A: nvme0n1p2"
 
 echo "== B: replace that Rustica from the live session"

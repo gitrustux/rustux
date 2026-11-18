@@ -267,14 +267,15 @@ built kernel and rboot (VERSION defaults to 0.1.N, N the commits so far):
 | `rustica-desktop` | the same file: `desktop`, the graphical login by default |
 
 The two editions conflict: one is installed, and installing the other
-switches (`rpg install rustica-desktop` replaces `rustica-server`). Each
+switches (`rpg install rustica-desktop` replaces `rustica-server`: each
+says `Replaces:` the other beside `Conflicts:`, as Debian's do, and rpg
+removes the replaced package first; step E4 made this work). Each
 image's name holds its version, so `rpg upgrade` installs the new image
 package beside the old one, as Debian does kernels: `rustica-system`'s
 new version depends on it. Image packages are never autoremoved (the
 previous one is the way back); removing one is `rpg remove
-rustica-system-0.1.1`. Step E4 keeps two and removes the oldest beyond
-them, and falls back to the previous image when a new one fails to
-start.
+rustica-system-0.1.1`. Step E4 keeps two and falls back to the previous
+image when a new one fails to start (below).
 
 The image and edition packages' scripts (`postinst`, and `postrm`, new in
 E3: run after removing) run `rpg boot update`, which writes rboot's
@@ -305,6 +306,51 @@ installer (`INSTALL.md`) asks for the edition and installs them with
 partition: rpg and the packages' scripts then find `/boot/efi` there), so
 an installed system's database knows its image from the start; a medium without them gets the kernel copied, as before.
 
+## Boot counting and two images (step E4)
+
+A new image is tried before it is trusted, as systemd-boot's automatic
+boot assessment does it:
+
+1. `rpg boot update` writes a new image's entries with a counter in the
+   file name, `rustica+3.conf`: three tries (only when there is an older
+   image to fall back to; the first image installed has none). Every
+   entry's command line gets `panic=10`, so a kernel that panics restarts
+   after 10 seconds instead of waiting on its message.
+2. rboot lowers the counter before it starts the entry (`rustica+2-1.conf`,
+   `rboot: rustica: try 1 of 3`) and names the file in the
+   `LoaderBootCountPath` variable. It also adds `BOOT_IMAGE=PATH` to a
+   Rustica entry's command line, so the system knows which image runs.
+3. When a multi-user or graphical boot has started everything, init's
+   built-in `boot-complete` unit runs `bootctl bless`: the entry becomes
+   `rustica.conf`, the image is good. (Built into init, which comes with
+   the image, it reaches installations whose `/etc/svc` is older.)
+4. An entry at `+0` failed: rboot puts every entry of that image at the
+   end of its menu, "(failed to start)", and starts the first good one
+   by default instead, the previous image (`rboot: rustica failed to
+   start: rustica-0.1.2 instead`). A one-shot choice (`bootctl
+   set-oneshot`) or the menu can still start it.
+
+Each image's state (good, on trial, failed) is in its entries' file
+names, and `rpg boot update` carries it over when it writes the entries
+again (another edition, an image that becomes the previous one). `rpg
+boot status` says which image runs and how each one did:
+
+```
+Running: 0.1.2 (/EFI/Rustica/rustux-0.1.2.efi)
+newest    0.1.3                    FAILED to start (3 tries): not started by default
+previous  0.1.2                    good: it started
+```
+
+**Two images are kept:** after an install or upgrade, image packages
+beyond the newest and the running one are removed ("rpg: two system
+images are kept ...: removing rustica-system-0.1.1"); the two newest when
+it is not known which runs (`--root`, or a boot without `BOOT_IMAGE=`).
+The running image is never removed.
+
+Not done: a kernel that hangs instead of panicking is not restarted (that
+needs a watchdog: the firmware's stops at ExitBootServices); a boot that
+reaches its target but is broken otherwise counts as good.
+
 ## Tests
 
 `cargo test` in `userspace/rust/rpg` (versions, control files, the tar,
@@ -329,4 +375,8 @@ step E3: the server edition installed as packages 0.1.1, `rpg list`,
 `verify` and `boot list` on the installed system, an upgrade to image
 0.1.2 from a signed repository on a second disk (0.1.2 starts next, 0.1.1
 in rboot's menu as the previous one), and the desktop edition installed
-over it (rboot starts the graphical login).
+over it (rboot starts the graphical login). Step E4 in the same test:
+image 0.1.2 counted then blessed; an upgrade to 0.1.3 removes 0.1.1 (two
+images kept); 0.1.3, made to fail with the test word `crash=boot` on its
+entry (the kernel panics just before init), panics three times and
+rboot falls back to 0.1.2, as `rpg boot status` then says.

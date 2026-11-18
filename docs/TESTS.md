@@ -257,6 +257,15 @@ the next boot starts 0.1.2 with 0.1.1 in the menu as "(previous)". The
 `rustica-desktop`, and the new user logs in on the text console
 (Ctrl+Alt+F1).
 
+Package step E4: the 0.1.2 boot is counted (`rustica+2-1.conf`) and made
+good by init's boot-complete unit (`rpg boot status`: "good: it
+started"); an upgrade to 0.1.3 from a second repository on the same disk
+removes 0.1.1 (two images kept, the running one among them). The test
+puts `crash=boot` on 0.1.3's entry, and one more boot, with QEMU allowed
+to restart, sees three tries end in a panic and a restart (`panic=10`),
+then rboot start 0.1.2 by itself; `rpg boot status` reports 0.1.3 as
+failed and `bootctl list` marks its entry.
+
 ## Display test (step F2)
 
 `scripts/run-display-test.sh` (`DISPLAY.md`): one QEMU boot. `fbtest

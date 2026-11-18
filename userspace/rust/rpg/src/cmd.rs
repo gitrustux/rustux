@@ -157,7 +157,14 @@ fn carry_out(ctx: &Ctx, plan: Plan, files: Vec<Package>) -> Result<(), String> {
         };
         items.push((p, s.auto));
     }
-    ctx.install_packages(items)
+    ctx.install_packages(items)?;
+    // Two system images are kept (step E4): the newest and the running one
+    let extra = crate::boot::extra_images(&ctx.db, &ctx.db.installed()?);
+    if !extra.is_empty() {
+        println!("rpg: two system images are kept (the newest and the running one): removing {}", extra.join(", "));
+        ctx.remove(&extra, false)?;
+    }
+    Ok(())
 }
 
 /// rpg install NAME... and ./FILE.rpg... together: names from the
@@ -200,11 +207,31 @@ pub fn install(ctx: &Ctx, args: &[String], yes: bool) -> Result<(), String> {
     if targets.is_empty() {
         return Ok(());
     }
-    let plan = solve::resolve(&installed, &av, targets)?;
+    // Replaces (with Conflicts, as Debian's): an installed package that a
+    // new one takes the place of is removed first (the editions: rpg
+    // install rustica-desktop replaces rustica-server)
+    let mut replaced: Vec<String> = Vec::new();
+    for t in &targets {
+        for r in t.c.rels("Replaces").iter().flatten() {
+            if let Some(i) = installed.iter().find(|i| i.name() == r.name && i.name() != t.c.name() && ops::satisfied(r, std::slice::from_ref(*i))) {
+                if !replaced.contains(&i.name().to_string()) {
+                    replaced.push(i.name().to_string());
+                }
+            }
+        }
+    }
+    let staying: Vec<Control> = installed.iter().filter(|i| !replaced.contains(&i.name().to_string())).cloned().collect();
+    let plan = solve::resolve(&staying, &av, targets)?;
+    for n in &replaced {
+        println!("{n} is replaced: removed first");
+    }
     // Package files alone install without a question (as dpkg -i);
     // anything from a source is shown and asked about
     if plan.steps.iter().any(|s| s.avail.is_some()) && !confirm(&plan, yes)? {
         return Ok(());
+    }
+    if !replaced.is_empty() {
+        ctx.remove(&replaced, false)?;
     }
     carry_out(ctx, plan, files)
 }

@@ -20,7 +20,16 @@ rboot - the boot manager
     timeout, editor, auto-entries, auto-firmware) and one file per entry
     in \loader\entries (title, efi, options, bootfs, sort-key), as
     systemd-boot's. Kernel command line words: root=, rescue, quiet,
-    autologin=, noefi, bootfs= (man rustux, docs/FS.md).
+    autologin=, noefi, bootfs=, panic=N (restart N s after a kernel
+    panic) (man rustux, docs/FS.md).
+
+    Boot counting: an entry file ID+LEFT.conf has LEFT tries. rboot counts
+    each one before starting it (ID+LEFT-1-1.conf); the system makes it
+    ID.conf once it is up (bootctl bless). At +0 the entry failed to
+    start: it and the other entries of its image go to the end of the
+    menu, "(failed to start)", and the next one starts by default (the
+    previous system image). rpg writes new images' entries this way (man
+    rpg, THE SYSTEM).
 
 SEE ALSO
     bootctl, efibootmgr, docs/BOOT.md

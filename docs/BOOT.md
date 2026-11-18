@@ -61,6 +61,17 @@ bootfs  /EFI/Rustica/bootfs.img   (optional: a boot image from a file)
 sort-key 1                         (optional: the order; then the id)
 ```
 
+**Boot counting** (package step E4, `PACKAGES.md`), as systemd-boot's:
+`ID+LEFT.conf` or `ID+LEFT-DONE.conf` is entry ID with LEFT tries left.
+Before starting it rboot renames it to `ID+(LEFT-1)-(DONE+1).conf` (FAT's
+rename, through SetInfo) and sets `LoaderBootCountPath` to that file; the
+started system renames it to `ID.conf` once it is up (`bootctl bless`).
+An entry at `+0` failed to start: all entries of its program go to the
+end of the menu, "(failed to start)", and the default falls to the first
+other entry (rboot logs `rboot: ID failed to start: OTHER instead`). A
+Rustica entry's command line also gets `BOOT_IMAGE=PATH` (as GRUB gives
+Linux), which rboot's log line leaves out.
+
 `linux` is taken for `efi`. For each entry whose program is `rustux.efi` (or `rustux-VERSION.efi`)
 rboot adds **ID-recovery** ("(recovery)": the options without `quiet` and
 `autologin`, plus `rescue`: the rescue target, a root shell) and, for the
@@ -105,6 +116,7 @@ rboot speaks systemd's boot loader interface (vendor GUID
 | `LoaderEntryDefault` | bootctl, `d` | the default (kept) |
 | `LoaderEntryOneShot` | bootctl | the next boot's (removed when used) |
 | `LoaderConfigTimeout`, `...OneShot` | bootctl | the timeout |
+| `LoaderBootCountPath` | rboot | the counted entry this boot started (package step E4; `bootctl bless`) |
 
 ## The kernel's side
 
@@ -114,7 +126,10 @@ rboot speaks systemd's boot loader interface (vendor GUID
   screen; `dmesg` has them), `noefi` (no runtime services), `bootfs=PATH`
   (the boot image from that file on the kernel's partition, loaded before
   ExitBootServices into memory the kernel then leaves alone). FS.md lists
-  them all.
+  them all. Package step E4: `panic=N` restarts the machine N seconds
+  after a kernel panic (the message stays on the screen meanwhile;
+  without it the CPU stops), and `crash=boot`, for tests, makes the
+  kernel panic just before it starts init, as a broken image would.
 - **Runtime services**: at boot the kernel keeps the UEFI memory map's
   runtime regions and calls SetVirtualAddressMap with their kernel
   addresses (code and data in the direct map, MMIO uncached), so the
@@ -152,8 +167,9 @@ and an entry with `bootfs=`.
 - Secure Boot: rboot and the kernel are not signed (turn Secure Boot off,
   or enrol them yourself); no shim.
 - No graphical menu, no mouse; the text console's 80x25 mode.
-- No boot counting (automatic fallback after failed boots), no
-  `LoaderTimeInitUSec`/`LoaderTimeExecUSec` timing variables.
+- No `LoaderTimeInitUSec`/`LoaderTimeExecUSec` timing variables. Boot
+  counting came with package step E4; a kernel that hangs (rather than
+  panics) is not restarted: no watchdog.
 - Linux kernels are not started directly (no EFI-stub `linux` with
   `initrd`): their own loaders (shim, GRUB) are.
 - `bootctl install`, `update`, `remove`: `rustica-install` installs rboot

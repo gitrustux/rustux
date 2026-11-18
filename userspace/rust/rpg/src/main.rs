@@ -73,7 +73,7 @@ const USAGE: &str = "usage: rpg [--root DIR] COMMAND ...
   build DIR [-o FILE]          make a package from DIR/RPG/control and DIR's files
   info ./FILE.rpg              a package file's control fields and files
   index REPO [--suite S] [--section S] [--arch A]   Packages.gz and Release for REPO/pool
-  boot list | boot update      the system images, and rboot's entries for them
+  boot list | boot status | boot update   the system images, how each one started, and rboot's entries
   version                      rpg's version";
 
 fn die(msg: &str) -> ! {
@@ -182,7 +182,8 @@ fn main() {
                 boot::update(&ctx.db)
             }
             None | Some("list") => boot::list(&ctx.db),
-            Some(x) => Err(format!("boot {x}: update or list")),
+            Some("status") => boot::status(&ctx.db),
+            Some(x) => Err(format!("boot {x}: update, list or status")),
         },
         "pool-path" => cmd::pool_path(rest),
         "remove" | "purge" => {
@@ -211,7 +212,7 @@ fn main() {
         "owner" | "search-file" => owner(&ctx, rest),
         "verify" => verify(&ctx, rest),
         "version" | "--version" => {
-            println!("rpg {} (step E3: the system as packages)", env!("CARGO_PKG_VERSION"));
+            println!("rpg {} (step E4: boot counting, two images kept)", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         "help" | "--help" | "-h" => {

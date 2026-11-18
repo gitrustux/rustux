@@ -19,7 +19,9 @@ USAGE
     source list | add URL SUITE SECTION... | remove N
     key list | add FILE [NAME] | remove ID
     files NAME | owner PATH... | verify [NAME...]
-    boot list | boot update      the system images; write rboot's entries
+    boot list | boot status | boot update
+                                 the system images, how each one started;
+                                 write rboot's entries
     fix                          finish an install a power cut or crash interrupted
     build DIR [-o FILE] | info ./FILE.rpg
     index REPO [--suite S] [--section S] [--arch A]   (publishing)
@@ -113,9 +115,19 @@ THE SYSTEM
         rustica-desktop          or the graphical login (they conflict)
 
     rpg upgrade installs a new image beside the old one: the new one
-    starts next, the previous one stays in rboot's menu. Images are never
-    autoremoved; sudo rpg remove rustica-system-VERSION removes one.
-    sudo rpg install rustica-desktop switches the edition.
+    starts next, the previous one stays in rboot's menu. Two images are
+    kept: after an install or upgrade the others go, but never the one
+    running (rpg autoremove leaves images alone); sudo rpg remove
+    rustica-system-VERSION removes one. sudo rpg install rustica-desktop
+    switches the edition (Replaces: the other, which goes first).
+
+    A new image is tried three times before it is trusted: its entries
+    are written as rustica+3.conf; rboot counts each try (rustica+2-1.conf)
+    and a boot that reaches its target removes the count (init's
+    boot-complete unit runs bootctl bless). An image that used its tries
+    without getting there failed: rboot starts the previous one instead.
+    Every entry has panic=10, so a kernel that panics restarts by itself.
+    rpg boot status says which image runs and how each one did.
 
     rpg boot update (the image and edition packages run it) writes
     rboot's entries in /boot/efi/loader/entries: rustica.conf (the newest

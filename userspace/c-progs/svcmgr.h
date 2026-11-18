@@ -88,6 +88,13 @@ static const char *const builtin_units[][2] = {
     { "installer", "description=The installer on the console (install mode)\nexec=/bin/rustica-install\nafter=logd mounts\nconsole=yes\nsystem_job=yes\ntarget=install\n" },
 };
 // Never in a file: what init falls back to when nothing else holds the console
+// Built in too (package step E4): once a multi-user or graphical boot has
+// started everything, this boot is good for the boot manager: rboot's
+// boot counter on the entry goes (bootctl bless), so a new image that gets
+// this far is kept; one that does not is tried again, then rboot falls
+// back to the previous image
+static const char boot_complete_unit[] = "description=This boot is good: rboot's boot counter goes (bootctl bless)\nexec=/bin/bootctl bless\ntype=oneshot\ntarget=\n";
+static int boot_complete_done;
 static const char emergency_unit[] = "description=Root shell when nothing else runs on the console\nexec=/bin/shell\nconsole=yes\ntarget=\n";
 
 static int log_connect(void) {
@@ -262,7 +269,7 @@ static void svc_load(void) {
             if (l < 5 || strcmp(e->d_name + l - 4, ".svc")) continue;
             char name[32];
             snprintf(name, sizeof name, "%.*s", (int)(l - 4), e->d_name);
-            if (!valid_unit_name(name) || !strcmp(name, "emergency")) {
+            if (!valid_unit_name(name) || !strcmp(name, "emergency") || !strcmp(name, "boot-complete")) {
                 ulog(LOG_WARNING, "%s/%s: not a usable unit name", SVC_DIR, e->d_name);
                 continue;
             }
@@ -290,6 +297,12 @@ static void svc_load(void) {
             unit_parse(&u->c, builtin_units[i][0], builtin_units[i][1], "(built in)");
             u->present = u->builtin = u->enabled = 1;
         }
+    }
+    unit_t *bc = add_unit("boot-complete");
+    if (bc) {
+        unit_parse(&bc->c, "boot-complete", boot_complete_unit, "(built in)");
+        bc->present = bc->builtin = 1;
+        bc->enabled = 0;
     }
     unit_t *em = add_unit("emergency");
     if (em) {
@@ -483,6 +496,7 @@ static int dep_ready(const unit_t *d) {
 }
 
 static void ensure_console(void);
+static const char *target_name(int t);
 
 static void svc_schedule(void) {
     if (svc_shutting_down) return;
@@ -525,6 +539,20 @@ static void svc_schedule(void) {
                 unit_spawn(u);
                 changed = 1;
             }
+        }
+    }
+    // Everything of a multi-user or graphical boot started: boot-complete
+    if (!boot_complete_done && (svc_target == TGT_MULTI || svc_target == TGT_GRAPHICAL)) {
+        int busy = 0;
+        for (int i = 0; i < nunits; i++) {
+            const unit_t *u = &units[i];
+            if (u->state == U_WAITING || u->state == U_STARTING || (u->state == U_RUNNING && u->c.type == T_ONESHOT)) busy = 1;
+        }
+        unit_t *bc = find_unit("boot-complete");
+        if (!busy && bc) {
+            boot_complete_done = 1;
+            ulog(LOG_INFO, "the %s target is up", target_name(svc_target));
+            unit_spawn(bc);
         }
     }
     ensure_console();
@@ -753,7 +781,7 @@ static void unit_line(const unit_t *u) {
     if (u->c.targets & TGT_RESCUE) strcat(tg, tg[0] ? ",rescue" : "rescue");
     if (u->c.targets & TGT_INSTALL) strcat(tg, tg[0] ? ",install" : "install");
     if (u->c.targets & TGT_GRAPHICAL) strcat(tg, tg[0] ? ",graphical" : "graphical");
-    const char *en = !strcmp(u->c.name, "emergency") ? "static" : u->builtin ? "builtin" : u->enabled ? "enabled" : "disabled";
+    const char *en = !strcmp(u->c.name, "emergency") || !strcmp(u->c.name, "boot-complete") ? "static" : u->builtin ? "builtin" : u->enabled ? "enabled" : "disabled";
     char code[24] = "-";
     if (u->have_code) snprintf(code, sizeof code, "%lld", (long long)u->last_code);
     reply_add("%s\t%s\t%s\t%llu\t%lld\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u->c.name, ustate_names[u->state], en,

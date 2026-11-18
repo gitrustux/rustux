@@ -376,6 +376,11 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
             debug_print(line);
             debug_print("\n");
         }
+        // A test of boot counting (package step E4): an image that fails
+        // to start, as a broken one would (with panic=N it restarts)
+        if cmdline_value("crash") == Some("boot") {
+            panic!("crash=boot on the command line: failing to start, as asked (a test)");
+        }
         for word in line.split(' ').filter(|w| !w.is_empty()) {
             args.args.extend_from_slice(word.as_bytes());
             args.args.push(0);
@@ -1179,5 +1184,13 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // The text console comes back even if the display service has the screen
     rustux::drivers::display::force_show();
     let _ = write!(Out, "\n[PANIC] {}\n", info);
+    // panic=N (as Linux's): restart after N seconds, so that the boot
+    // manager can try again or fall back to the previous image (package
+    // step E4). Without it the CPU stops, the message stays on the screen.
+    if let Some(secs) = cmdline_value("panic").and_then(|v| v.parse::<u64>().ok()).filter(|&n| n > 0) {
+        let _ = write!(Out, "Restarting in {} s (panic={})\n", secs, secs);
+        rustux::arch::amd64::tsc::delay_ms(secs.min(3600) * 1000);
+        rustux::arch::amd64::platform::reboot();
+    }
     loop { unsafe { asm!("cli", "hlt", options(nostack, nomem)) }; }
 }

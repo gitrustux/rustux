@@ -56,6 +56,9 @@ are `init`'s arguments and are in `/run/cmdline`:
 | `quiet` | the kernel's own boot lines stay off the screen (still in `dmesg`) (step 19) |
 | `noefi` | no UEFI runtime services: no firmware variables, for firmware that misbehaves (step 19, `BOOT.md`) |
 | `bootfs=PATH` | the boot image from that file on the kernel's EFI partition instead of the one built in (step 19) |
+| `panic=N` | restart N seconds after a kernel panic (as Linux's; without it the CPU stops); rpg's boot entries have `panic=10` (package step E4, `PACKAGES.md`) |
+| `BOOT_IMAGE=PATH` | the kernel file rboot started (rboot adds it, as GRUB does; `rpg boot status` reads it) |
+| `crash=boot` | for tests: the kernel panics just before init, as a broken image would (package step E4) |
 
 If the root filesystem cannot be mounted, `init` says so and the system
 runs from memory.

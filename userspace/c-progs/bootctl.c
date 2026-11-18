@@ -14,6 +14,8 @@
 //   bootctl set-timeout SECONDS      overrides loader.conf ("" removes it)
 //   bootctl reboot-to-firmware [yes|no]   the next boot goes into the firmware setup
 //   bootctl is-installed             rboot is on the EFI partition
+//   bootctl bless                    this boot is good: the entry's boot counter goes
+//                                    (package step E4: ID+LEFT-DONE.conf becomes ID.conf)
 //   --esp-path=DIR                   the EFI partition's mount point (default /boot/efi)
 //
 // Changing needs root.
@@ -54,6 +56,61 @@ static void conf_value(const char *path, const char *key, char *out, size_t cap)
     fclose(f);
 }
 
+// "ID+LEFT[-DONE]": the length of ID (the whole if there is no counter);
+// *left and *done set when there is one
+static size_t counter_split(const char *stem, size_t len, int *left, int *done) {
+    for (size_t k = len; k-- > 0;) {
+        if (stem[k] != '+') continue;
+        int l = 0, d = 0, nl = 0, nd = 0, dash = 0;
+        size_t i;
+        for (i = k + 1; i < len; i++) {
+            char c = stem[i];
+            if (c >= '0' && c <= '9') {
+                if (dash) d = d * 10 + (c - '0'), nd++;
+                else l = l * 10 + (c - '0'), nl++;
+            } else if (c == '-' && !dash && nl) dash = 1;
+            else break;
+        }
+        if (i == len && nl && (!dash || nd)) {
+            if (left) *left = l;
+            if (done) *done = d;
+            return k;
+        }
+        break;
+    }
+    if (left) *left = -1;
+    return len;
+}
+
+// The .conf file of entry id (ID.conf or ID+LEFT-DONE.conf) into path
+static int entry_file(const char *id, char *path, size_t cap, int *left, int *done) {
+    char dir[300];
+    snprintf(dir, sizeof dir, "%s/loader/entries", esp);
+    snprintf(path, cap, "%s/%s.conf", dir, id);
+    struct stat st;
+    if (left) *left = -1;
+    if (stat(path, &st) == 0) return 0;
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    struct dirent *e;
+    int found = -1;
+    while ((e = readdir(d))) {
+        size_t l = strlen(e->d_name);
+        if (l <= 5 || strcmp(e->d_name + l - 5, ".conf")) continue;
+        int lf, dn;
+        size_t k = counter_split(e->d_name, l - 5, &lf, &dn);
+        if (k != l - 5 && k == strlen(id) && !strncmp(e->d_name, id, k)) {
+            snprintf(path, cap, "%s/%s", dir, e->d_name);
+            if (left) *left = lf;
+            if (done) *done = dn;
+            found = 0;
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
 // The menu's entry ids: LoaderEntries from rboot, else the .conf files
 static int entry_ids(char ids[][96], int max, int *from_loader) {
     uint16_t buf[4096];
@@ -76,7 +133,7 @@ static int entry_ids(char ids[][96], int max, int *from_loader) {
     struct dirent *e;
     while ((e = readdir(d)) && k < max) {
         size_t l = strlen(e->d_name);
-        if (l > 5 && !strcmp(e->d_name + l - 5, ".conf")) snprintf(ids[k++], 96, "%.*s", (int)(l - 5), e->d_name);
+        if (l > 5 && !strcmp(e->d_name + l - 5, ".conf")) snprintf(ids[k++], 96, "%.*s", (int)counter_split(e->d_name, l - 5, 0, 0), e->d_name);
     }
     closedir(d);
     return k;
@@ -89,7 +146,9 @@ static void title_of(const char *id, char *out, size_t cap) {
     size_t l = strlen(base);
     if (l > 9 && !strcmp(base + l - 9, "-recovery")) base[l - 9] = 0, suffix = " (recovery)";
     else if (l > 5 && !strcmp(base + l - 5, "-live")) base[l - 5] = 0, suffix = " (live, in memory)";
-    snprintf(path, sizeof path, "%s/loader/entries/%s.conf", esp, base);
+    int left = -1;
+    entry_file(base, path, sizeof path, &left, 0);
+    if (left == 0) suffix = !strcmp(suffix, "") ? " (failed to start)" : suffix;
     char t[200];
     conf_value(path, "title", t, sizeof t);
     if (!t[0]) {
@@ -152,6 +211,15 @@ static int cmd_status(void) {
     printf("      Product: %s\n", info[0] ? info : "(not rboot: this boot did not go through it)");
     if (part[0]) printf("    Partition: %s\n", part);
     printf("Current entry: %s\n", sel[0] ? sel : "-");
+    char cp[300] = "";
+    if (ev_get_str(EFI_LOADER_GUID, "LoaderBootCountPath", cp, sizeof cp) == 0 && cp[0]) {
+        const char *n = strrchr(cp, '\\');
+        n = n ? n + 1 : cp;
+        char path[400];
+        struct stat st;
+        snprintf(path, sizeof path, "%s/loader/entries/%s", esp, n);
+        printf(" Boot counted: %s (%s)\n", n, stat(path, &st) == 0 ? "not yet blessed: bootctl bless" : "blessed");
+    }
     printf("Default entry: %s%s\n", def[0] ? def : "(the first)", from_var ? " (set with bootctl set-default)" : "");
     printf("      Timeout: %s\n", timeout[0] ? timeout : "5 (default)");
     struct stat st;
@@ -192,6 +260,41 @@ static int set_entry_var(const char *var, const char *id) {
     return r < 0 ? fail(var, r) : 0;
 }
 
+// This boot reached the multi-user target: the entry rboot counted
+// (LoaderBootCountPath) loses its counter, so it is good from now on.
+// The boot-complete unit runs it.
+static int cmd_bless(void) {
+    char cp[300] = "";
+    if (ev_get_str(EFI_LOADER_GUID, "LoaderBootCountPath", cp, sizeof cp) < 0 || !cp[0]) {
+        printf("bootctl: this boot was not counted: nothing to do\n");
+        return 0;
+    }
+    // \loader\entries\ID+LEFT-DONE.conf
+    const char *name = strrchr(cp, '\\');
+    name = name ? name + 1 : cp;
+    size_t l = strlen(name);
+    if (l <= 5 || strcmp(name + l - 5, ".conf")) {
+        fprintf(stderr, "bootctl: LoaderBootCountPath is not an entry: %s\n", cp);
+        return 1;
+    }
+    size_t k = counter_split(name, l - 5, 0, 0);
+    char from[400], to[400];
+    snprintf(from, sizeof from, "%s/loader/entries/%s", esp, name);
+    snprintf(to, sizeof to, "%s/loader/entries/%.*s.conf", esp, (int)k, name);
+    struct stat st;
+    if (k == l - 5 || stat(from, &st) != 0) {
+        printf("bootctl: %s: no longer counted (good already, or written again)\n", name);
+        return 0;
+    }
+    if (rename(from, to) != 0) {
+        perror(to);
+        return 1;
+    }
+    sync();
+    printf("bootctl: this boot is good: %s is now %.*s.conf\n", name, (int)k, name);
+    return 0;
+}
+
 static int cmd_firmware(const char *arg) {
     uint8_t b[16];
     int n = ev_get(EFI_GLOBAL_GUID, "OsIndicationsSupported", b, sizeof b, 0);
@@ -214,7 +317,7 @@ static int cmd_firmware(const char *arg) {
 static int usage(int code) {
     fprintf(code ? stderr : stdout,
             "usage: bootctl [status] | list | set-default ID | set-oneshot ID | set-timeout SECONDS\n"
-            "               | set-timeout-oneshot SECONDS | reboot-to-firmware [yes|no] | is-installed\n"
+            "               | set-timeout-oneshot SECONDS | reboot-to-firmware [yes|no] | is-installed | bless\n"
             "               [--esp-path=DIR]\n"
             "The boot manager (rboot) and its entries; see man bootctl. Changes need root.\n");
     return code;
@@ -239,6 +342,7 @@ int main(int argc, char **argv) {
         int r = args[1][0] ? ev_set_str(EFI_LOADER_GUID, var, EV_DEFAULT, args[1]) : ev_delete(EFI_LOADER_GUID, var);
         return r < 0 ? fail(var, r) : 0;
     }
+    if (!strcmp(cmd, "bless")) return cmd_bless();
     if (!strcmp(cmd, "reboot-to-firmware")) return cmd_firmware(na > 1 ? args[1] : 0);
     if (!strcmp(cmd, "is-installed")) {
         char p[300];

@@ -7,6 +7,7 @@ USAGE
     bootctl set-timeout SECONDS | set-timeout-oneshot SECONDS
     bootctl reboot-to-firmware [yes|no]
     bootctl is-installed
+    bootctl bless
     --esp-path=DIR    the EFI partition (default /boot/efi)
 
     rboot, Rustica's boot manager, shows a menu at power-on: Rustica,
@@ -21,6 +22,14 @@ USAGE
     for the next boot. set-timeout overrides loader.conf's timeout (0:
     no menu unless a key is held). reboot-to-firmware: the next restart
     goes into the firmware's setup.
+
+    bless: this boot is good. An entry with a boot counter
+    (ID+LEFT-DONE.conf, the tries rboot counts down for a new system
+    image) becomes ID.conf. init's boot-complete unit runs it once the
+    system is up; an image whose tries run out without that is not
+    started by default any more (rboot falls back to the previous one).
+    list shows such an entry as "(failed to start)"; status shows the
+    counted entry of this boot.
 
     Changes need root.
 
