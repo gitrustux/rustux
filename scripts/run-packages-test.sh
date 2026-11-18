@@ -198,7 +198,7 @@ sleep 1
 power_cut
 OUT=$(section start)
 printf '%s\n' "$OUT" | sed -n '/PKGTEST start/,/PKGTEST cut/p'
-expect "rpg 0.1.0 (step E2"
+expect "rpg 0.1.0 (step E3"
 expect "No packages are installed."
 expect "hello 1.0-1: installed (6 files)"
 expect "postinst install"
@@ -223,7 +223,7 @@ expect "rpg: needs-hello 1 needs hello (>= 1.1); remove it too (rpg remove hello
 expect "hello 1.1-1: removed; its configuration files are kept (rpg remove --purge hello removes them)"
 expect "needs-hello 1: removed"
 expect "hello: its configuration files removed"
-expect "(on Rustux, /bin, /usr and /boot are the boot image, read-only, until step E3: packages go in /opt, /etc and /var); nothing was changed"
+expect "(on Rustux, /bin, /usr and /boot are the boot image, read-only: packages go in /opt, /etc and /var, the system image in /boot/efi); nothing was changed"
 refuse "rpg: the install of in-usr"
 expect "rpg: changing the system's packages needs root (sudo rpg ...)"
 expect "big 1: installed (300 files)"
@@ -288,7 +288,7 @@ wait_end 120
 kill $HTTPS 2>/dev/null
 OUT=$(section boot4)
 printf '%s\n' "$OUT" | sed -n '/PKGTEST boot4/,/PKGTEST done4/p'
-expect "rpg 0.1.0 (step E2: signed repositories)"
+expect "rpg 0.1.0 (step E3: the system as packages)"
 expect "https://rustux.com/download/rustica  redfox  main"
 expect "65527118d2c1e504  rustux-archive-2026"
 expect "removed: https://rustux.com/download/rustica  redfox  main"

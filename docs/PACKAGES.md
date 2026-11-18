@@ -5,8 +5,10 @@ planning documents, phase E; `man rpg`). Step E1: the `.rpg` format,
 `rpg build`, installing and removing package files, the package
 database, and recovery from a power cut. Step E2: signed repositories,
 `rpg update`, `rpg upgrade`, `rpg install NAME` with dependencies, and
-`rpg index` for the publishing side. The system itself split into
-packages comes with E3; FoxDen's apps (`FOXDEN.md`) after E2.
+`rpg index` for the publishing side. Step E3: the system as packages,
+image-based: the kernel file with its read-only boot image is one
+package per version, beside an edition package, and `rpg boot update`
+writes rboot's entries. FoxDen's apps (`FOXDEN.md`) come after.
 
 `rpg` is Rust (`userspace/rust/rpg`): flate2 for gzip, sha2, its own tar
 reader and writer, ed25519-dalek for signatures, ureq on rustls (ring)
@@ -56,17 +58,18 @@ other file under `DIR` the data (`DIR/usr/bin/x` is `/usr/bin/x`), owned
 by root, with the files' own modes; files under `/etc` are configuration
 files. The tar's times are 0, so the same tree gives the same package.
 
-## Where packages can go (until step E3)
+## Where packages can go
 
 On Rustux `/bin`, `/usr` and `/boot` are the boot image (`FS.md`): they
 come with the kernel and are read-only, on an installed system too. So a
 package installs into what the root filesystem holds: `/etc`, `/var`,
-`/opt`, `/home`, or a new folder at the top. A package with a file in
-the boot image is refused before anything changes ("...read-only, until
-step E3: packages go in /opt, /etc and /var; nothing was changed").
-Step E3, the system as packages, changes this: an installed system's
-`/bin` and `/usr` come from its disk, and the boot image only serves the
-live medium and recovery.
+`/opt`, `/home`, or a new folder at the top, and onto the EFI partition,
+mounted at `/boot/efi` (the system's own packages, below). A package
+with another file in the boot image is refused before anything changes
+("...read-only: packages go in /opt, /etc and /var; nothing was
+changed"). The system's programs change by changing the whole image:
+step E3 decided this (image-based, as against splitting `/bin` and
+`/usr` into packages on the disk).
 
 ## The database
 
@@ -247,6 +250,61 @@ Not yet: a `Valid-Until` in `Release` (a mirror could serve an old,
 correctly signed release, holding back updates), delta downloads,
 signatures on the packages themselves.
 
+## The system's packages (step E3)
+
+The system is image-based: the kernel file `rustux.efi` carries the boot
+image (every program, `/bin` and `/usr`), so a version of the system is
+one file, and an upgrade puts a new one beside the old.
+`scripts/make-system-packages.sh OUTDIR [VERSION]` makes them from a
+built kernel and rboot (VERSION defaults to 0.1.N, N the commits so far):
+
+| Package | Holds |
+| --- | --- |
+| `rustica-system-VERSION` | `/boot/efi/EFI/Rustica/rustux-VERSION.efi` (Section: images) |
+| `rustica-system` | nothing: depends on `rustica-system-VERSION (= VERSION)` and `rboot (>= VERSION)` |
+| `rboot` | `/boot/efi/EFI/Rustica/rboot.efi`, the boot manager |
+| `rustica-server` | `/var/lib/rustica/edition`: `server`, the text login by default |
+| `rustica-desktop` | the same file: `desktop`, the graphical login by default |
+
+The two editions conflict: one is installed, and installing the other
+switches (`rpg install rustica-desktop` replaces `rustica-server`). Each
+image's name holds its version, so `rpg upgrade` installs the new image
+package beside the old one, as Debian does kernels: `rustica-system`'s
+new version depends on it. Image packages are never autoremoved (the
+previous one is the way back); removing one is `rpg remove
+rustica-system-0.1.1`. Step E4 keeps two and removes the oldest beyond
+them, and falls back to the previous image when a new one fails to
+start.
+
+The image and edition packages' scripts (`postinst`, and `postrm`, new in
+E3: run after removing) run `rpg boot update`, which writes rboot's
+entries in `/boot/efi/loader/entries` from what is on the EFI partition:
+
+- `rustica.conf`: the newest image, "Rustica Server"; with the desktop
+  edition "Rustica (text console)";
+- `rustica-desktop.conf`: the desktop edition's, "Rustica", the newest
+  image with `desktop` on its command line;
+- `rustica-VERSION.conf`: each older image, "Rustica VERSION (previous)".
+
+The command line comes from `/etc/rustica/boot.conf` (`options
+root=UUID=... quiet`, which the installer writes), the edition from
+`/var/lib/rustica/edition`; `loader.conf`'s `default` follows the edition
+and its other lines stay. Entries rpg wrote start with `# Written by rpg
+boot update`, and it removes its own that are gone; rboot adds each
+entry's recovery entry itself (`BOOT.md`). `rpg boot list` shows the
+images, the edition and the running command line. An installation from
+before E3 (an unversioned `rustux.efi`, its own `rustica.conf`) keeps
+working: `rpg boot update` takes the options from its entry and shows
+its image as "(before packages)".
+
+The live medium carries these packages in `\rustica\packages`
+(`build-live-image.sh`, which needs cargo for the host's rpg;
+`PACKAGES=0` leaves them out, `PKG_VERSION` sets the version). The
+installer (`INSTALL.md`) asks for the edition and installs them with
+`rpg --root` (with `RPG_ESP`, where it mounted the new system's EFI
+partition: rpg and the packages' scripts then find `/boot/efi` there), so
+an installed system's database knows its image from the start; a medium without them gets the kernel copied, as before.
+
 ## Tests
 
 `cargo test` in `userspace/rust/rpg` (versions, control files, the tar,
@@ -265,3 +323,10 @@ its package, a newer release (hold, kept back, upgrade), autoremove, and
 the refusals: an index changed after signing, a Release signed by another
 key (the old lists kept), a package changed in the pool, an unknown CA,
 a user updating.
+
+The installer test (`scripts/run-install-test.sh`, `TESTS.md`) covers
+step E3: the server edition installed as packages 0.1.1, `rpg list`,
+`verify` and `boot list` on the installed system, an upgrade to image
+0.1.2 from a signed repository on a second disk (0.1.2 starts next, 0.1.1
+in rboot's menu as the previous one), and the desktop edition installed
+over it (rboot starts the graphical login).

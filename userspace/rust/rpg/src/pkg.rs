@@ -17,6 +17,7 @@
 //!   scripts/postinst     optional: run after installing (install, or
 //!                        upgrade OLD-VERSION)
 //!   scripts/prerm        optional: run before removing (remove)
+//!   scripts/postrm       optional: run after removing (remove)
 //!   data/...             the files, rooted at /
 
 use crate::archive::{self, Entry, Kind};
@@ -123,6 +124,7 @@ pub struct Package {
     pub files: Vec<FileEntry>,
     pub postinst: Option<Vec<u8>>,
     pub prerm: Option<Vec<u8>>,
+    pub postrm: Option<Vec<u8>>,
     /// The data: path -> content (files) or target (links)
     pub data: BTreeMap<String, Vec<u8>>,
 }
@@ -132,7 +134,7 @@ impl Package {
         let entries = archive::read(bytes)?;
         let mut control = None;
         let mut files = None;
-        let (mut postinst, mut prerm) = (None, None);
+        let (mut postinst, mut prerm, mut postrm) = (None, None, None);
         let mut data = BTreeMap::new();
         let mut data_kinds: BTreeMap<String, FType> = BTreeMap::new();
         for e in entries {
@@ -141,6 +143,7 @@ impl Package {
                 ("files", Kind::File(d)) => files = Some(String::from_utf8(d.clone()).map_err(|_| "the files list is not UTF-8")?),
                 ("scripts/postinst", Kind::File(d)) => postinst = Some(d.clone()),
                 ("scripts/prerm", Kind::File(d)) => prerm = Some(d.clone()),
+                ("scripts/postrm", Kind::File(d)) => postrm = Some(d.clone()),
                 ("scripts", Kind::Dir) | ("data", Kind::Dir) => {}
                 (p, k) if p.starts_with("data/") => {
                     let path = format!("/{}", &p[5..]);
@@ -196,11 +199,11 @@ impl Package {
                 return Err(format!("{p}: in the package but not in its files list"));
             }
         }
-        Ok(Package { control, files, postinst, prerm, data })
+        Ok(Package { control, files, postinst, prerm, postrm, data })
     }
 }
 
-/// rpg build DIR: DIR/RPG/control (and RPG/postinst, RPG/prerm), the
+/// rpg build DIR: DIR/RPG/control (and RPG/postinst, prerm, postrm), the
 /// rest of DIR is the data, rooted at /. Everything belongs to root;
 /// the modes are the files' own. Returns the package and its file name.
 pub fn build(dir: &Path) -> Result<(Vec<u8>, String), String> {
@@ -210,8 +213,8 @@ pub fn build(dir: &Path) -> Result<(Vec<u8>, String), String> {
     control.check()?;
     for f in std::fs::read_dir(&rpgdir).map_err(|e| format!("{}: {e}", rpgdir.display()))?.flatten() {
         let n = f.file_name().to_string_lossy().to_string();
-        if !["control", "postinst", "prerm"].contains(&n.as_str()) {
-            return Err(format!("RPG/{n}: the RPG folder holds control, postinst and prerm"));
+        if !["control", "postinst", "prerm", "postrm"].contains(&n.as_str()) {
+            return Err(format!("RPG/{n}: the RPG folder holds control, postinst, prerm and postrm"));
         }
     }
     let mut files = Vec::new();
@@ -226,7 +229,7 @@ pub fn build(dir: &Path) -> Result<(Vec<u8>, String), String> {
         Entry { path: "control".into(), mode: 0o644, kind: Kind::File(control.text().into_bytes()) },
         Entry { path: "files".into(), mode: 0o644, kind: Kind::File(files_text(&files).into_bytes()) },
     ];
-    for s in ["postinst", "prerm"] {
+    for s in ["postinst", "prerm", "postrm"] {
         if let Ok(d) = std::fs::read(rpgdir.join(s)) {
             entries.push(Entry { path: format!("scripts/{s}"), mode: 0o755, kind: Kind::File(d) });
         }

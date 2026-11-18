@@ -16,8 +16,10 @@ the console (`svc isolate multi-user`).
 
 ## What it asks
 
-1. Language (English, for now) and keyboard layout (used at once, so the
-   passwords are typed in it).
+1. The edition (package step E3, `PACKAGES.md`): server, the text login,
+   or desktop, the graphical login (the default when the live system
+   runs the desktop; `--edition`). Then the language (English, for now)
+   and keyboard layout (used at once, so the passwords are typed in it).
 2. Host name, time zone (`?` lists them).
 3. The first user: full name, user name, password; it is an
    administrator (group `sudo`). Root: locked (the default: use `sudo`),
@@ -60,7 +62,18 @@ the console (`svc isolate multi-user`).
    locked (`!`) or its hash; `/home/USER` (0750); with Windows on the disk
    `/etc/adjtime` says LOCAL (Windows keeps the hardware clock in local
    time).
-5. The EFI partition: `\EFI\Rustica\rustux.efi` (the kernel the live system
+5. The EFI partition, mounted at `/run/install/esp` (beside the new
+   root: fsd mounts nothing inside another filesystem), and
+   `/etc/rustica/boot.conf` (`options root=UUID=... quiet`, and `nvme=rw`
+   on NVMe). When the medium has the system's packages (`\rustica\packages`,
+   package step E3): an earlier Rustica's `\EFI\Rustica\rustux*` and
+   `rustica*` entries removed, then `rpg --root` installs `rboot`,
+   `rustica-system-VERSION`, `rustica-system` and the edition
+   (`RPG_ESP=/run/install/esp`: the new system's `/boot/efi`), whose
+   scripts write the entries (`rpg boot update`: "Rustica Server", or
+   "Rustica" and "Rustica (text console)" for the desktop edition), and
+   the installed system's package database knows its image. A medium
+   without them gets the earlier way: `\EFI\Rustica\rustux.efi` (the kernel the live system
    started from: `\EFI\Rustica\rustux.efi` on the medium, or its
    `\EFI\BOOT\BOOTX64.EFI` when that is the kernel) and `rboot.efi` (from
    the medium, or `/usr/lib/rboot/rboot.efi` in the boot image), written

@@ -19,6 +19,9 @@ x86_64-unknown-uefi`; `build.sh` builds it), the kernel's side in
 \EFI\BOOT\BOOTX64.EFI          rboot (what the firmware starts from a stick)
 \EFI\Rustica\rboot.efi         rboot (what a firmware entry names)
 \EFI\Rustica\rustux.efi        the kernel (with its boot image built in)
+\EFI\Rustica\rustux-V.efi      on an installed system: each system image
+                               (package step E3: rpg installs them)
+\rustica\packages\             on the live medium: the system's packages
 \loader\loader.conf            the menu's settings
 \loader\entries\*.conf         one file per entry
 ```
@@ -30,7 +33,11 @@ Server" with no options (the kernel then still reads
 (`installer`: INSTALL.md), and a third (desktop step F6): "Try Rustica
 (desktop)" (`desktop`: the graphical target, `SESSION.md`). rboot adds no
 recovery entry for an entry whose options say `installer` or `desktop`. An installed system's ESP is laid out the same
-way by `rustica-install`.
+way by `rustica-install`, with the kernel as versioned images that `rpg`
+installs (package step E3, `PACKAGES.md`): `rpg boot update` writes
+`rustica.conf` for the newest, `rustica-desktop.conf` for the desktop
+edition, and `rustica-VERSION.conf` ("Rustica VERSION (previous)") for
+each older one, and sets `default` in `loader.conf`.
 
 ### loader.conf
 
@@ -54,7 +61,7 @@ bootfs  /EFI/Rustica/bootfs.img   (optional: a boot image from a file)
 sort-key 1                         (optional: the order; then the id)
 ```
 
-`linux` is taken for `efi`. For each entry whose program is `rustux.efi`
+`linux` is taken for `efi`. For each entry whose program is `rustux.efi` (or `rustux-VERSION.efi`)
 rboot adds **ID-recovery** ("(recovery)": the options without `quiet` and
 `autologin`, plus `rescue`: the rescue target, a root shell) and, for the
 first one with a `root=` other than `live`, **ID-live** ("(live, in

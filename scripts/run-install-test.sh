@@ -1,16 +1,24 @@
 #!/bin/bash
-# The installer test (step 20, docs/INSTALL.md). QEMU with OVMF's code and
-# a variable store of its own, a live medium as build-live-image.sh makes
-# it (rboot; "Try Rustica Server" and "Install Rustica Server"), and:
+# The installer test (step 20, docs/INSTALL.md; package step E3,
+# docs/PACKAGES.md). QEMU with OVMF's code and a variable store of its
+# own, a live medium as build-live-image.sh makes it (rboot; "Try Rustica
+# Server" and "Install Rustica Server"; the system's packages 0.1.1 in
+# \rustica\packages, made with the host's rpg), and:
 #
 #   A. an empty 2 GiB NVMe disk (the laptop's kind: write-locked until the
 #      installer's confirmed choice): the menu's Install entry, the
 #      installer answered on the console (erase), restart; the disk alone
 #      boots through rboot to a login prompt; the user logs in, writes a
-#      file, sudo poweroff; the next boot still has it; e2fsck -f clean;
+#      file; rpg knows the image (rpg list, verify, boot list); an upgrade
+#      to image 0.1.2 from a repository on another disk (signed with a
+#      test key); sudo poweroff; the next boot starts 0.1.2, with 0.1.1 in
+#      the menu as the previous one, and still has the file; e2fsck -f
+#      clean;
 #   B. the same disk again from the live session: replace the earlier
-#      Rustica (rustica-install --mode replace): the new user logs in, the
-#      old one is gone, one firmware entry "Rustica";
+#      Rustica (rustica-install --mode replace) with the desktop edition:
+#      rboot starts the graphical login by default; the new user logs in
+#      on the text console, the old one is gone, one firmware entry
+#      "Rustica";
 #   C. a disk with "Windows" (an EFI partition with a stand-in boot loader,
 #      rboot/src/bin/fakeos.rs, as bootmgfw.efi and as the firmware's
 #      fallback BOOTX64.EFI, and a data partition) and free space: a dry
@@ -24,7 +32,8 @@
 #   scripts/run-install-test.sh [KERNEL.efi]
 #
 # Needs qemu-system-x86_64 (with nvme), OVMF code and variables, mtools,
-# dosfstools, e2fsprogs, socat, python3, and rboot built.
+# dosfstools, e2fsprogs, socat, python3, openssl, cargo (rpg for this
+# computer), and rboot built.
 set -u
 cd "$(dirname "$0")/.."
 EFI=${1:-target/x86_64-unknown-uefi/release/rustux.efi}
@@ -39,13 +48,16 @@ for d in /usr/share/OVMF /usr/share/edk2/ovmf /usr/share/edk2-ovmf/x64 /usr/shar
 done
 [ -n "$CODE" ] || { echo "OVMF_CODE.fd and OVMF_VARS.fd not found"; exit 2; }
 export PATH=$PATH:/sbin:/usr/sbin
-for t in qemu-system-x86_64 mkfs.fat mcopy mdir e2fsck debugfs socat python3 sha256sum; do
+for t in qemu-system-x86_64 mkfs.fat mcopy mdir e2fsck debugfs socat python3 sha256sum openssl cargo; do
     command -v $t >/dev/null || { echo "$t is needed"; exit 2; }
 done
 
 W=$(mktemp -d)
 QPID=""
-cleanup() { [ -n "$QPID" ] && kill $QPID 2>/dev/null; rm -rf "$W"; }
+# LOGDIR=DIR keeps each boot's console log there (bootN.log)
+BOOTN=0
+keep_log() { [ -n "${LOGDIR:-}" ] && [ -f "$W/dbg.log" ] && BOOTN=$((BOOTN + 1)) && cp "$W/dbg.log" "$LOGDIR/boot$BOOTN.log"; return 0; }
+cleanup() { [ -n "$QPID" ] && kill $QPID 2>/dev/null; keep_log; rm -rf "$W"; }
 trap cleanup EXIT
 fail=0
 
@@ -57,7 +69,30 @@ cp "$EFI" "$W/live/EFI/Rustica/rustux.efi"
 printf 'default rustica\ntimeout 2\n' > "$W/live/loader/loader.conf"
 printf 'title Try Rustica Server\nefi /EFI/Rustica/rustux.efi\nsort-key 1\n' > "$W/live/loader/entries/rustica.conf"
 printf 'title Install Rustica Server\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 2\n' > "$W/live/loader/entries/install.conf"
-truncate -s 128M "$W/live.fat"; mkfs.fat -F 32 -n RUSTICA "$W/live.fat" >/dev/null; mcopy -i "$W/live.fat" -s "$W/live/EFI" "$W/live/loader" ::
+# The system's packages (package step E3), as build-live-image.sh puts them
+HOSTT=$(rustc -vV | sed -n 's/^host: //p')
+(cd userspace/rust/rpg && cargo build -q --release --target "$HOSTT" --target-dir "$W/cargo") || { echo "rpg did not build for this computer"; exit 2; }
+export RPG="$W/cargo/$HOSTT/release/rpg"
+KERNEL="$EFI" RBOOT_EFI=$RB/rboot.efi scripts/make-system-packages.sh "$W/live/rustica/packages" 0.1.1 || { echo "make-system-packages.sh failed"; exit 2; }
+truncate -s 128M "$W/live.fat"; mkfs.fat -F 32 -n RUSTICA "$W/live.fat" >/dev/null; mcopy -i "$W/live.fat" -s "$W/live/EFI" "$W/live/loader" "$W/live/rustica" ::
+# A repository with image 0.1.2 on a disk of its own, signed with a test key
+KERNEL="$EFI" RBOOT_EFI=$RB/rboot.efi scripts/make-system-packages.sh "$W/new" 0.1.2 > /dev/null || { echo "make-system-packages.sh failed"; exit 2; }
+for f in "$W"/new/*.rpg; do
+    p="$W/repo/repo/$("$RPG" pool-path "$f")"; mkdir -p "$(dirname "$p")"; mv "$f" "$p"
+done
+"$RPG" index "$W/repo/repo" > /dev/null || { echo "rpg index failed"; exit 2; }
+openssl genpkey -algorithm ed25519 -out "$W/test.key" 2>/dev/null
+openssl pkey -in "$W/test.key" -pubout -out "$W/repo/test.pub.pem"
+openssl pkeyutl -sign -inkey "$W/test.key" -rawin -in "$W/repo/repo/dists/redfox/Release" -out "$W/repo/repo/dists/redfox/Release.sig"
+cat > "$W/repo/upgrade.sh" <<'UP'
+rpg key add /mnt/test.pub.pem rpg-test
+rpg source remove 1
+rpg source add file:///mnt/repo redfox main
+rpg update
+rpg upgrade -y
+rpg boot list
+UP
+truncate -s 64M "$W/repo.fat"; mkfs.fat -F 32 -n RPGREPO "$W/repo.fat" >/dev/null; mcopy -i "$W/repo.fat" -s "$W/repo/repo" "$W/repo/test.pub.pem" "$W/repo/upgrade.sh" ::
 python3 scripts/gpt-wrap.py --disk 9 "$W/live.img" esp:"$W/live.fat"
 truncate -s 2G "$W/nvme.img"
 # "Windows": its EFI partition (bootmgfw.efi and the fallback), a data partition, 1.6 GiB free
@@ -76,12 +111,14 @@ cp "$W/dual.img" "$W/dual-cut.img"
 LIVE="-drive file=$W/live.img,if=none,id=l,format=raw -device virtio-blk-pci,drive=l,bootindex=0"
 NVME="-drive file=$W/nvme.img,if=none,id=n,format=raw -device nvme,serial=rustica01,drive=n"
 DUAL="-drive file=$W/dual.img,if=none,id=d,format=raw -device virtio-blk-pci,drive=d"
+REPO="-drive file=$W/repo.fat,if=none,id=r,format=raw -device virtio-blk-pci,drive=r"
 CUT="-drive file=$W/dual-cut.img,if=none,id=d,format=raw -device virtio-blk-pci,drive=d"
 
 log() { sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$W/dbg.log" 2>/dev/null; }
 start_qemu() {  # VARS-FILE DEVICES...
     local vars=$1; shift
     [ -f "$vars" ] || cp "$VARS" "$vars"
+    keep_log
     rm -f "$W/dbg.log" "$W/mon.sock"
     qemu-system-x86_64 -machine q35 -m 1G -smp 2 \
         -drive if=pflash,format=raw,readonly=on,file="$CODE" -drive if=pflash,format=raw,file="$vars" \
@@ -142,7 +179,8 @@ echo "== A1: install on the empty NVMe disk from the menu's Install entry"
 start_qemu "$W/vars-a.fd" $LIVE $NVME
 if wait_for "rboot: booting rustica in 2 s" 1 60; then
     keys down down ret
-    answer "Keyboard layout" $'\n' 120
+    answer "Edition" $'\n' 120
+    answer "Keyboard layout" $'\n' 30
     answer "Host name" $'testbox\n'
     answer "Time zone" $'Europe/Berlin\n'
     answer "Full name" $'Alice Test\n'
@@ -163,15 +201,17 @@ expect "(the installation medium: not offered)"
 expect "  - ERASE the disk: a new partition table; everything on it is lost"
 expect "  - create nvme0n1p1: EFI system partition, 512M, FAT32"
 expect "nvme0n1: writes allowed"
+expect "Edition: server; the system image 0.1.1, installed as packages (rpg)"
 expect "Rustica Server is installed on nvme0n1."
 expect "\"Rustica\" is first in the boot order."
 
-echo "== A2: the disk alone: rboot, the login prompt; a file; sudo poweroff"
-start_qemu "$W/vars-a.fd" $NVME
+echo "== A2: the disk alone: rboot, the login prompt; a file; rpg knows the image; an upgrade; sudo poweroff"
+start_qemu "$W/vars-a.fd" $NVME $REPO
 if answer "testbox $LOGIN" $'alice\n' 120; then
     answer "Password: " $'secret1\n'
-    answer "alice@" $'id; cat /etc/timezone; echo kept > notes; mount | grep nvme; bootctl list\n'
-    wait_for "alice@" 2 30 && type_text $'sudo poweroff\n'
+    answer "alice@" $'id; cat /etc/timezone; echo kept > notes; mount | grep nvme; bootctl list; rpg list --installed; rpg verify; rpg boot list\n'
+    wait_for "alice@" 2 120 && type_text $'echo secret1 | sudo -S sh -c "grep rpg.boot: /var/log/install.log; mount \\$(blkid -L RPGREPO) /mnt && sh /mnt/upgrade.sh"; echo UPGRADED-$((40+2))\n'
+    wait_for "UPGRADED-42" 1 300 && type_text $'sudo poweroff\n'
     answer "assword" $'secret1\n'
 fi
 wait_end 60
@@ -183,35 +223,54 @@ expect "Europe/Berlin"
 expect "/dev/nvme0n1p2 on / type ext4 (rw)"
 expect "/dev/nvme0n1p1 on /boot/efi type vfat (rw)"
 expect "Rustica Server  (default)  (selected)"
+expect "rpg boot: Rustica Server 0.1.1 (the server edition)"
+expect "rustica-system-0.1.1  0.1.1    x86_64  the Rustica system image 0.1.1"
+expect "rustica-server        0.1.1    all     Rustica's server edition"
+expect "rustica-system-0.1.1: 1 files as installed"
+expect "newest    0.1.1"
+expect "file:///mnt/repo redfox: 5 packages"
+expect "rustica-system: 0.1.1 -> 0.1.2 (0 files)"
+expect "rpg boot: Rustica Server 0.1.2 (the server edition); 1 previous image in the menu"
+expect "previous  0.1.1"
 expect "init: power-off"
 
-echo "== A3: again: the file is there"
+echo "== A3: again: the new image starts, the previous one in the menu; the file is there"
 start_qemu "$W/vars-a.fd" $NVME
 if answer "testbox $LOGIN" $'alice\n' 120; then
     answer "Password: " $'secret1\n'
-    answer "alice@" $'cat notes; sudo -S poweroff\n'
+    answer "alice@" $'cat notes; bootctl list; rpg list --installed | grep system; sudo -S poweroff\n'
     sleep 1; type_text $'secret1\n'
 fi
 wait_end 60
 expect "kept"
+expect "rboot: booting rustica (\\EFI\\Rustica\\rustux-0.1.2.efi root="
+expect "Rustica 0.1.1 (previous)"
+expect "rustica-0.1.1-recovery"
+expect "rustica-recovery"
+expect "rustica-system-0.1.2  0.1.2"
 fsck_part "$W/nvme.img" 2 "A: nvme0n1p2"
 
 echo "== B: replace that Rustica from the live session"
 start_qemu "$W/vars-a.fd" $LIVE $NVME
 if wait_for "rboot: booting rustica in 2 s" 1 60 && wait_for "rustux:/root > " 1 120; then
     # twice: the second time reuses the firmware entry of the first
-    type_text $'rustica-install --disk nvme0n1 --mode replace --user carol --password pw2 --hostname again --yes --no-reboot\n'
+    type_text $'rustica-install --disk nvme0n1 --mode replace --edition desktop --user carol --password pw2 --hostname again --yes --no-reboot\n'
     wait_for "installed on nvme0n1" 1 240
-    type_text $'rustica-install --disk nvme0n1 --mode replace --user carol --password pw2 --hostname again --yes --no-reboot; echo COUNT=$(efibootmgr | grep -c Rustica); poweroff\n'
+    type_text $'rustica-install --disk nvme0n1 --mode replace --edition desktop --user carol --password pw2 --hostname again --yes --no-reboot; echo COUNT=$(efibootmgr | grep -c Rustica); poweroff\n'
 fi
 wait_end 300
 log | sed -n '/====== The installation/,/installed on/p' | head -20
 expect "  - keep nvme0n1p1 (EFI"
 expect "  - FORMAT nvme0n1p2"
-expect "Rustica Server is installed on nvme0n1."
+expect "Edition: desktop; the system image 0.1.1, installed as packages (rpg)"
+expect "Rustica (desktop) is installed on nvme0n1."
 expect "COUNT=1"
 start_qemu "$W/vars-a.fd" $NVME
-if answer "again $LOGIN" $'carol\n' 120; then
+# The desktop edition: the graphical login by default; the text console
+# (Ctrl+Alt+F1) has its own
+if wait_for "rboot: booting rustica-desktop (.EFI.Rustica.rustux-0.1.1.efi" 1 120 && wait_for "again $LOGIN" 1 120; then
+    sleep 5; keys ctrl-alt-f1; sleep 1
+    type_text $'carol\n' 
     answer "Password: " $'pw2\n'
     answer "carol@" $'ls /home; grep -c alice /etc/passwd; sudo -S poweroff\n'
     sleep 1; type_text $'pw2\n'

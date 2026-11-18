@@ -11,6 +11,10 @@
 # Environment Variables:
 #   RUSTUX_VERSION   Version string (default: 0.1.0)
 #   OUTPUT_DIR       Output directory (default: /var/www/rustux.com/html/rustica)
+#   PKG_VERSION      The system packages' version (default: 0.1.N, N the
+#                    commits so far; scripts/make-system-packages.sh)
+#   PACKAGES=0       No packages on the medium (the installer then copies
+#                    the kernel as before step E3)
 #
 
 set -e
@@ -117,6 +121,13 @@ create_disk_image() {
         printf 'title Install Rustica Server\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 2\n' > "$mount_dir/loader/entries/install.conf"
         # The desktop from memory (DESKTOP.md step F6)
         printf 'title Try Rustica (desktop)\nefi /EFI/Rustica/rustux.efi\noptions desktop\nsort-key 3\n' > "$mount_dir/loader/entries/desktop.conf"
+        # The system's packages (package step E3): the installer installs
+        # them with rpg, so the installed system knows its image
+        if [ "${PACKAGES:-1}" = 1 ]; then
+            log_info "The system's packages in \\rustica\\packages..."
+            mkdir -p "$mount_dir/rustica/packages"
+            "${SCRIPT_DIR}/scripts/make-system-packages.sh" "$mount_dir/rustica/packages" ${PKG_VERSION:+"$PKG_VERSION"}
+        fi
     else
         [ "$RBOOT" = 1 ] && log_warn "rboot not built ($RBOOT_EFI): the kernel boots directly"
         # Copy kernel as BOOTX64.EFI

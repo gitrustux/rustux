@@ -247,6 +247,16 @@ install next to a stand-in Windows (its partitions byte for byte
 unchanged, its loader started from rboot's menu); and a power cut during
 the installation, after which the computer still starts "Windows".
 
+Package step E3 (`PACKAGES.md`): the medium carries the system's
+packages 0.1.1 (made with the host's rpg, so the test needs cargo and
+openssl). The first install is the server edition as packages; on the
+installed system `rpg list`, `verify` and `boot list`, then an upgrade to
+image 0.1.2 from a repository on a second disk, signed with a test key;
+the next boot starts 0.1.2 with 0.1.1 in the menu as "(previous)". The
+"replace" reinstall is the desktop edition: rboot starts
+`rustica-desktop`, and the new user logs in on the text console
+(Ctrl+Alt+F1).
+
 ## Display test (step F2)
 
 `scripts/run-display-test.sh` (`DISPLAY.md`): one QEMU boot. `fbtest

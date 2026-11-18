@@ -30,6 +30,7 @@
 //! installer's, and the tests').
 
 mod archive;
+mod boot;
 mod cmd;
 mod control;
 mod db;
@@ -72,6 +73,7 @@ const USAGE: &str = "usage: rpg [--root DIR] COMMAND ...
   build DIR [-o FILE]          make a package from DIR/RPG/control and DIR's files
   info ./FILE.rpg              a package file's control fields and files
   index REPO [--suite S] [--section S] [--arch A]   Packages.gz and Release for REPO/pool
+  boot list | boot update      the system images, and rboot's entries for them
   version                      rpg's version";
 
 fn die(msg: &str) -> ! {
@@ -170,6 +172,18 @@ fn main() {
             }
         }
         "index" => cmd::index(rest),
+        // The image packages' scripts run it while their install holds
+        // the lock: no lock here (it only writes rboot's entries)
+        "boot" => match rest.first().map(String::as_str) {
+            Some("update") => {
+                if !sys::is_root() && root == Path::new("/") {
+                    die("writing the boot entries needs root (sudo rpg boot update)");
+                }
+                boot::update(&ctx.db)
+            }
+            None | Some("list") => boot::list(&ctx.db),
+            Some(x) => Err(format!("boot {x}: update or list")),
+        },
         "pool-path" => cmd::pool_path(rest),
         "remove" | "purge" => {
             let purge = cmd == "purge" || rest.iter().any(|a| a == "--purge");
@@ -197,7 +211,7 @@ fn main() {
         "owner" | "search-file" => owner(&ctx, rest),
         "verify" => verify(&ctx, rest),
         "version" | "--version" => {
-            println!("rpg {} (step E2: signed repositories)", env!("CARGO_PKG_VERSION"));
+            println!("rpg {} (step E3: the system as packages)", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         "help" | "--help" | "-h" => {
@@ -316,12 +330,12 @@ fn show(ctx: &Ctx, args: &[String], file_only: bool) -> Result<(), String> {
         let bytes = std::fs::read(what).map_err(|e| format!("{what}: {e}"))?;
         let p = Package::read(&bytes).map_err(|e| format!("{what}: {e}"))?;
         print_control(&p.control);
-        println!("Scripts: {}", match (&p.postinst, &p.prerm) {
-            (Some(_), Some(_)) => "postinst, prerm",
-            (Some(_), None) => "postinst",
-            (None, Some(_)) => "prerm",
-            (None, None) => "none",
-        });
+        let scripts: Vec<&str> = [("postinst", &p.postinst), ("prerm", &p.prerm), ("postrm", &p.postrm)]
+            .iter()
+            .filter(|(_, s)| s.is_some())
+            .map(|(n, _)| *n)
+            .collect();
+        println!("Scripts: {}", if scripts.is_empty() { "none".to_string() } else { scripts.join(", ") });
         println!("Files:");
         for f in &p.files {
             let extra = match f.typ {

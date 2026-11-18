@@ -11,7 +11,7 @@
 //! - the entries in `\loader\entries\*.conf` on its own partition:
 //!   `title`, `efi` (the program), `options` (its command line), `bootfs`
 //!   (a boot image for the Rustux kernel), `sort-key`;
-//! - for each Rustica entry (its program is `rustux.efi`) a recovery entry
+//! - for each Rustica entry (its program is `rustux.efi` or `rustux-VERSION.efi`) a recovery entry
 //!   (the rescue target) and, for the first one with `root=` set, a live
 //!   entry (`root=live`: the system from memory, disks untouched);
 //! - Windows Boot Manager and Linux loaders (shim, GRUB, systemd-boot)
@@ -248,8 +248,12 @@ fn read_config(esp: Handle) -> Config {
     c
 }
 
+/// rustux.efi, or a system image rpg installed: rustux-VERSION.efi
+/// (package step E3)
 fn is_rustica(path: &str) -> bool {
-    path.to_ascii_lowercase().ends_with("rustux.efi")
+    let p = path.to_ascii_lowercase();
+    let name = p.rsplit(['\\', '/']).next().unwrap_or("");
+    name == "rustux.efi" || (name.starts_with("rustux-") && name.ends_with(".efi"))
 }
 
 fn conf_entries(esp: Handle) -> Vec<Entry> {

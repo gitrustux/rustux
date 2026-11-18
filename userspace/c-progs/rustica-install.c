@@ -25,8 +25,15 @@
 // not touched. The firmware's order changes last, so a power cut before
 // the end leaves the computer starting what it started before.
 //
+// The system is image-based (package step E3, docs/PACKAGES.md): with the
+// system's packages on the medium (\rustica\packages, build-live-image.sh)
+// it installs them with rpg --root, so the installed system's package
+// database knows its image (rustica-system-VERSION, rboot, the edition);
+// without them it copies the kernel as before.
+//
 // Options (for scripts and tests; without them it asks):
 //   --disk NAME|auto --mode erase|alongside|replace|manual [--esp PART|new] [--root PART|new]
+//   --edition server|desktop
 //   --keymap NAME --hostname NAME --timezone ZONE
 //   --user NAME [--fullname TEXT] --password PASS | --password-file FILE
 //   --lock-root | --root-password PASS
@@ -59,7 +66,12 @@ extern char **environ;
 #define MIN_ROOT (512 * MIB)   // the system itself is in the kernel's boot image; the root holds settings and data
 #define LOG_FILE "/var/log/install.log"
 #define TGT "/run/install/root"
+// The EFI partition at the new root's /boot/efi, where its packages put
+// their files (rpg --root)
+// Beside the root, not in it: fsd mounts nothing inside another
+// filesystem; rpg finds it as /boot/efi through RPG_ESP
 #define TGT_ESP "/run/install/esp"
+#define PKG_DIR "/boot/efi/rustica/packages"
 
 static const uint8_t ESP_TYPE[16] = { 0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B };
 
@@ -67,7 +79,7 @@ static const uint8_t ESP_TYPE[16] = { 0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 
 
 static struct {
     char disk[32], mode[16], esp_arg[32], root_arg[32];
-    char keymap[64], hostname[64], timezone[64];
+    char keymap[64], hostname[64], timezone[64], edition[16];
     char user[32], fullname[64], password[128], root_password[128];
     int lock_root, yes, dry_run, reboot; // reboot: 1 yes, 0 no, -1 ask
     int interactive;
@@ -589,7 +601,56 @@ static void choose(void) {
     }
 }
 
+// The system's packages on the medium: image, metapackage, rboot, the
+// edition (package step E3)
+static struct {
+    char image[256], meta[256], rboot[256], edition[256], version[64];
+    int found;
+} pk;
+
+static void find_packages(void) {
+    DIR *d = opendir(PKG_DIR);
+    struct dirent *e;
+    char ed[48];
+    snprintf(ed, sizeof ed, "rustica-%s_", opt.edition);
+    while (d && (e = readdir(d))) {
+        const char *n = e->d_name;
+        size_t l = strlen(n);
+        if (l < 5 || strcmp(n + l - 4, ".rpg")) continue;
+        char *slot = 0;
+        if (!strncmp(n, "rustica-system-", 15)) {
+            slot = pk.image;
+            // rustica-system-VERSION_VERSION_x86_64.rpg
+            snprintf(pk.version, sizeof pk.version, "%.*s", (int)strcspn(n + 15, "_"), n + 15);
+        } else if (!strncmp(n, "rustica-system_", 15)) slot = pk.meta;
+        else if (!strncmp(n, "rboot_", 6)) slot = pk.rboot;
+        else if (!strncmp(n, ed, strlen(ed))) slot = pk.edition;
+        if (slot) snprintf(slot, 256, PKG_DIR "/%s", n);
+    }
+    if (d) closedir(d);
+    pk.found = pk.image[0] && pk.meta[0] && pk.rboot[0] && pk.edition[0];
+    logmsg("packages on the medium: %s", pk.found ? pk.version : "none (the kernel is copied)");
+}
+
 static void choose_settings(void) {
+    if (!opt.edition[0]) {
+        // The default: what this live session runs
+        char cmd[512] = "";
+        FILE *f = fopen("/run/cmdline", "r");
+        if (f) {
+            if (!fgets(cmd, sizeof cmd, f)) cmd[0] = 0;
+            fclose(f);
+        }
+        const char *def = strstr(cmd, "desktop") ? "desktop" : "server";
+        if (opt.interactive) {
+            printf("\nEditions: server (a text login; services) or desktop (the graphical login)\n");
+            ask("Edition", def, opt.edition, sizeof opt.edition);
+        } else {
+            snprintf(opt.edition, sizeof opt.edition, "%s", def);
+        }
+    }
+    if (strcmp(opt.edition, "server") && strcmp(opt.edition, "desktop")) die("edition: server or desktop");
+    find_packages();
     if (!opt.keymap[0]) {
         if (opt.interactive) {
             printf("\nKeyboard layouts: us");
@@ -705,6 +766,8 @@ static void summary(void) {
     }
     printf("Boot: rboot and the kernel in \\EFI\\Rustica; a firmware boot entry \"Rustica\" first in the boot order%s\n",
            plan.windows ? "\n      (Windows stays in rboot's menu; the hardware clock keeps local time, as Windows wants)" : "");
+    if (pk.found) printf("Edition: %s; the system image %s, installed as packages (rpg)\n", opt.edition, pk.version);
+    else printf("Edition: %s; the kernel copied (the medium has no packages)\n", opt.edition);
     printf("System: host %s, time zone %s, keyboard %s\n", opt.hostname, opt.timezone, opt.keymap);
     printf("        user %s%s%s (administrator: group sudo), root %s\n", opt.user, opt.fullname[0] ? ", " : "", opt.fullname,
            opt.lock_root ? "locked (use sudo)" : "with a password");
@@ -997,11 +1060,58 @@ static void install_esp(void) {
     char kernel[128], rboot[128];
     sources(kernel, rboot, sizeof kernel);
     say("Installing rboot and the kernel on %s...", esp_dev);
-    mkdir(TGT_ESP, 0755);
+    if (!opt.dry_run) mkdir(TGT_ESP, 0755);
     // An EFI partition on a fixed disk is mounted read-only unless rw!
     if (RUN("/bin/mount", "-t", "vfat", "-o", "rw!", esp_dev, TGT_ESP)) die("cannot mount %s", esp_dev);
     const char *dirs[] = { TGT_ESP "/EFI", TGT_ESP "/EFI/Rustica", TGT_ESP "/EFI/BOOT", TGT_ESP "/loader", TGT_ESP "/loader/entries", 0 };
     for (int i = 0; dirs[i]; i++) if (!opt.dry_run) mkdir(dirs[i], 0755);
+    // The command line and the edition, for rpg boot update (now, and at
+    // every image installed later)
+    char buf[512];
+    if (!opt.dry_run) {
+        mkdir(TGT "/etc/rustica", 0755);
+        snprintf(buf, sizeof buf, "# The command line of rboot's entries for this system (rpg boot update)\noptions root=UUID=%s quiet%s\n", root_uuid,
+                 plan.nvme ? " nvme=rw" : "");
+        wfile(TGT "/etc/rustica/boot.conf", buf, 0644);
+    }
+    if (pk.found) {
+        // A fresh root: the images of a Rustica installed here before (and
+        // its entries) were that root's; they go
+        DIR *d = opendir(TGT_ESP "/EFI/Rustica");
+        struct dirent *e;
+        while (d && (e = readdir(d))) {
+            if (strncmp(e->d_name, "rustux", 6)) continue;
+            char f[300];
+            snprintf(f, sizeof f, TGT_ESP "/EFI/Rustica/%s", e->d_name);
+            if (!opt.dry_run) unlink(f);
+        }
+        if (d) closedir(d);
+        d = opendir(TGT_ESP "/loader/entries");
+        while (d && (e = readdir(d))) {
+            if (strncmp(e->d_name, "rustica", 7)) continue;
+            char f[300];
+            snprintf(f, sizeof f, TGT_ESP "/loader/entries/%s", e->d_name);
+            if (!opt.dry_run) unlink(f);
+        }
+        if (d) closedir(d);
+        if (!exists(TGT_ESP "/loader/loader.conf"))
+            wfile(TGT_ESP "/loader/loader.conf", plan.windows ? "timeout 5\n" : "timeout 3\n", 0644);
+        // The firmware's fallback, only where there is none (never Windows')
+        if (!exists(TGT_ESP "/EFI/BOOT/BOOTX64.EFI")) copy_file(rboot, TGT_ESP "/EFI/BOOT/BOOTX64.EFI", 0644);
+        say("Installing the system image %s and the %s edition as packages...", pk.version, opt.edition);
+        // Their postinst writes rboot's entries (rpg boot update)
+        setenv("RPG_ESP", TGT_ESP, 1);   // the new system's /boot/efi
+        if (!opt.dry_run && RUN("/bin/rpg", "--root", TGT, "install", pk.rboot, pk.image, pk.meta, pk.edition))
+            die("rpg could not install the system's packages (" LOG_FILE ")");
+        return;
+    }
+    // The edition, as its package would have it
+    if (!opt.dry_run) {
+        mkdir(TGT "/var/lib", 0755);
+        mkdir(TGT "/var/lib/rustica", 0755);
+        snprintf(buf, sizeof buf, "%s\n", opt.edition);
+        wfile(TGT "/var/lib/rustica/edition", buf, 0644);
+    }
     // New files under other names first, then in place: a power cut leaves
     // the old ones (an earlier Rustica's) or none
     copy_file(kernel, TGT_ESP "/EFI/Rustica/rustux.new", 0644);
@@ -1015,7 +1125,6 @@ static void install_esp(void) {
     }
     // The firmware's fallback, only where there is none (never Windows')
     if (!exists(TGT_ESP "/EFI/BOOT/BOOTX64.EFI")) copy_file(rboot, TGT_ESP "/EFI/BOOT/BOOTX64.EFI", 0644);
-    char buf[512];
     snprintf(buf, sizeof buf, "title   Rustica Server\nefi     /EFI/Rustica/rustux.efi\noptions root=UUID=%s quiet%s\nsort-key 1\n", root_uuid,
              plan.nvme ? " nvme=rw" : "");
     wfile(TGT_ESP "/loader/entries/rustica.conf", buf, 0644);
@@ -1023,7 +1132,9 @@ static void install_esp(void) {
     snprintf(buf, sizeof buf, "title   Rustica (desktop)\nefi     /EFI/Rustica/rustux.efi\noptions root=UUID=%s quiet desktop%s\nsort-key 2\n",
              root_uuid, plan.nvme ? " nvme=rw" : "");
     wfile(TGT_ESP "/loader/entries/rustica-desktop.conf", buf, 0644);
-    wfile(TGT_ESP "/loader/loader.conf", plan.windows ? "default rustica\ntimeout 5\n" : "default rustica\ntimeout 3\n", 0644);
+    const char *def = strcmp(opt.edition, "desktop") ? "rustica" : "rustica-desktop";
+    snprintf(buf, sizeof buf, "default %s\ntimeout %d\n", def, plan.windows ? 5 : 3);
+    wfile(TGT_ESP "/loader/loader.conf", buf, 0644);
 }
 
 // A firmware boot entry for rboot, first in BootOrder (last of all)
@@ -1105,6 +1216,7 @@ static int usage(int code) {
     fprintf(code ? stderr : stdout,
             "usage: rustica-install [--dry-run]                     (asks)\n"
             "       rustica-install --disk NAME --mode erase|alongside|replace|manual [--esp PART|new] [--root PART|new]\n"
+            "                       [--edition server|desktop]\n"
             "                       --user NAME (--password PASS | --password-file FILE) [--fullname TEXT]\n"
             "                       [--lock-root | --root-password PASS] [--hostname NAME] [--timezone ZONE] [--keymap NAME]\n"
             "                       [--yes] [--dry-run] [--reboot | --no-reboot]\n"
@@ -1120,6 +1232,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--mode")) VAL(mode);
         else if (!strcmp(a, "--esp")) VAL(esp_arg);
         else if (!strcmp(a, "--root")) VAL(root_arg);
+        else if (!strcmp(a, "--edition")) VAL(edition);
         else if (!strcmp(a, "--keymap")) VAL(keymap);
         else if (!strcmp(a, "--hostname")) VAL(hostname);
         else if (!strcmp(a, "--timezone")) VAL(timezone);
@@ -1187,7 +1300,7 @@ int main(int argc, char **argv) {
     install_esp();
     finish();     // the root and the EFI files are on the disk
     boot_entry(); // and only now does the firmware start them
-    say("Rustica Server is installed on %s.", plan.d->info.name);
+    say("Rustica %s is installed on %s.", strcmp(opt.edition, "desktop") ? "Server" : "(desktop)", plan.d->info.name);
     printf("\nRemove the installation medium and restart.\n");
     int reboot = opt.reboot;
     if (reboot < 0) reboot = opt.interactive ? ask_yes("Restart now?", 1) : 0;

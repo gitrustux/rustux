@@ -98,6 +98,7 @@ struct Op {
     files: Vec<FileEntry>,
     postinst: Option<Vec<u8>>,
     prerm: Option<Vec<u8>>,
+    postrm: Option<Vec<u8>>,
     actions: Vec<(Act, String)>,
     /// The new files' content, while staging (not kept in pending/)
     data: BTreeMap<String, Vec<u8>>,
@@ -164,7 +165,7 @@ impl Ctx {
         db::write_atomic(&p.join("files"), crate::pkg::files_text(&op.files).as_bytes(), 0o644)?;
         let acts: String = op.actions.iter().map(|(a, path)| format!("{}\t{path}\n", a.word())).collect();
         db::write_atomic(&p.join("actions"), acts.as_bytes(), 0o644)?;
-        for (w, d) in [("postinst", &op.postinst), ("prerm", &op.prerm)] {
+        for (w, d) in [("postinst", &op.postinst), ("prerm", &op.prerm), ("postrm", &op.postrm)] {
             if let Some(d) = d {
                 db::write_atomic(&p.join(w), d, 0o755)?;
             }
@@ -197,6 +198,7 @@ impl Ctx {
             files,
             postinst: std::fs::read(p.join("postinst")).ok(),
             prerm: std::fs::read(p.join("prerm")).ok(),
+            postrm: std::fs::read(p.join("postrm")).ok(),
             actions,
             data: BTreeMap::new(),
         }))
@@ -290,7 +292,7 @@ impl Ctx {
             match &op.control {
                 Some(c) => {
                     all.push(c.clone());
-                    self.db.write_info(&op.name, &op.files, op.postinst.as_deref(), op.prerm.as_deref())?;
+                    self.db.write_info(&op.name, &op.files, op.postinst.as_deref(), op.prerm.as_deref(), op.postrm.as_deref())?;
                 }
                 None => self.db.remove_info(&op.name)?,
             }
@@ -305,6 +307,12 @@ impl Ctx {
                     None => vec!["install".into()],
                 };
                 self.run_script(&op.name, "postinst", s, &args);
+            }
+        } else if op.op == "remove" {
+            // After the files are gone (the image packages update the boot
+            // entries then)
+            if let Some(s) = &op.postrm {
+                self.run_script(&op.name, "postrm", s, &["remove".to_string()]);
             }
         }
         self.finish()
@@ -510,6 +518,7 @@ impl Ctx {
             files: p.files.clone(),
             postinst: p.postinst.clone(),
             prerm: p.prerm.clone(),
+            postrm: p.postrm.clone(),
             actions,
             data: p.data.clone(),
         };
@@ -528,7 +537,7 @@ impl Ctx {
             }
             self.finish()?;
             let hint = if e.contains("os error 30") && self.db.root == Path::new("/") {
-                " (on Rustux, /bin, /usr and /boot are the boot image, read-only, until step E3: packages go in /opt, /etc and /var)"
+                " (on Rustux, /bin, /usr and /boot are the boot image, read-only: packages go in /opt, /etc and /var, the system image in /boot/efi)"
             } else {
                 ""
             };
@@ -740,6 +749,9 @@ impl Ctx {
             files: kept.clone(),
             postinst: None,
             prerm: None,
+            // Its postrm runs after the removal (kept with the
+            // configuration files' entry, for --purge)
+            postrm: if was_installed { std::fs::read(self.db.script(name, "postrm")).ok() } else { None },
             actions,
             data: BTreeMap::new(),
         };

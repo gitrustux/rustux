@@ -9,11 +9,15 @@
 //!                       Status: installed (or config-files: removed,
 //!                       its configuration files kept)
 //!   info/NAME.files     the package's files list (pkg.rs's format)
-//!   info/NAME.postinst, info/NAME.prerm   its scripts
+//!   info/NAME.postinst, .prerm, .postrm   its scripts
 //!   journal, pending/   the operation in progress (ops.rs): written
 //!                       before anything changes, removed when done
 //!   lock                the running rpg's process ID and when it started
 //! Changes go to a new file renamed into place.
+//!
+//! RPG_ESP=DIR puts the EFI partition, /boot/efi, at DIR instead of
+//! under the root (the installer mounts it beside the new root: step E3);
+//! package scripts inherit it.
 
 use crate::control::{self, Control};
 use crate::pkg::{self, FileEntry};
@@ -24,15 +28,26 @@ use std::path::{Path, PathBuf};
 
 pub struct Db {
     pub root: PathBuf,
+    /// Where /boot/efi is, when not under the root (RPG_ESP)
+    pub esp: Option<PathBuf>,
 }
 
 impl Db {
     pub fn new(root: &Path) -> Db {
-        Db { root: root.to_path_buf() }
+        let esp = std::env::var_os("RPG_ESP").filter(|v| !v.is_empty()).map(PathBuf::from);
+        Db { root: root.to_path_buf(), esp }
     }
 
     /// An absolute path of the system rpg manages, on this computer
     pub fn path(&self, abs: &str) -> PathBuf {
+        if let Some(e) = &self.esp {
+            if abs == "/boot/efi" {
+                return e.clone();
+            }
+            if let Some(rest) = abs.strip_prefix("/boot/efi/") {
+                return e.join(rest);
+            }
+        }
         self.root.join(abs.trim_start_matches('/'))
     }
 
@@ -98,9 +113,9 @@ impl Db {
     }
 
     /// A package's files list and scripts into info/
-    pub fn write_info(&self, name: &str, files: &[FileEntry], postinst: Option<&[u8]>, prerm: Option<&[u8]>) -> Result<(), String> {
+    pub fn write_info(&self, name: &str, files: &[FileEntry], postinst: Option<&[u8]>, prerm: Option<&[u8]>, postrm: Option<&[u8]>) -> Result<(), String> {
         write_atomic(&self.dir().join("info").join(format!("{name}.files")), pkg::files_text(files).as_bytes(), 0o644)?;
-        for (which, d) in [("postinst", postinst), ("prerm", prerm)] {
+        for (which, d) in [("postinst", postinst), ("prerm", prerm), ("postrm", postrm)] {
             let p = self.script(name, which);
             match d {
                 Some(d) => write_atomic(&p, d, 0o755)?,
@@ -111,7 +126,7 @@ impl Db {
     }
 
     pub fn remove_info(&self, name: &str) -> Result<(), String> {
-        for w in ["files", "postinst", "prerm"] {
+        for w in ["files", "postinst", "prerm", "postrm"] {
             remove_if_there(&self.dir().join("info").join(format!("{name}.{w}")))?;
         }
         Ok(())

@@ -19,6 +19,7 @@ USAGE
     source list | add URL SUITE SECTION... | remove N
     key list | add FILE [NAME] | remove ID
     files NAME | owner PATH... | verify [NAME...]
+    boot list | boot update      the system images; write rboot's entries
     fix                          finish an install a power cut or crash interrupted
     build DIR [-o FILE] | info ./FILE.rpg
     index REPO [--suite S] [--section S] [--arch A]   (publishing)
@@ -31,12 +32,12 @@ USAGE
 
 PACKAGES
     A .rpg file is a gzipped tar: control (the package's fields), files
-    (each file's SHA-256, mode and owner), scripts/postinst and
-    scripts/prerm (optional) and data/ (the files, rooted at /). The
-    file name is NAME_VERSION_ARCH.rpg.
+    (each file's SHA-256, mode and owner), scripts/postinst,
+    scripts/prerm and scripts/postrm (optional) and data/ (the files,
+    rooted at /). The file name is NAME_VERSION_ARCH.rpg.
 
     rpg build DIR makes one from DIR/RPG/control, the optional scripts
-    DIR/RPG/postinst and DIR/RPG/prerm, and every other file under DIR
+    DIR/RPG/postinst, prerm and postrm, and every other file under DIR
     (DIR/usr/bin/x becomes /usr/bin/x). Everything belongs to root; the
     modes are the files' own. The control file:
 
@@ -58,11 +59,13 @@ INSTALLING
     dependencies and conflicts, and that no file belongs to another
     package; then writes the new files beside their places, and renames
     each over the old one. An upgrade removes the files the new version
-    no longer has. postinst runs with "install", or "upgrade OLD-VERSION".
+    no longer has. postinst runs with "install", or "upgrade OLD-VERSION";
+    prerm before removing and postrm after, with "remove".
 
-    On Rustux /bin, /usr and /boot are the boot image, read-only, until
-    step E3: packages install into /opt, /etc, /var and the like; a
-    package with files in the boot image is refused, nothing changed.
+    On Rustux /bin, /usr and /boot are the boot image, read-only:
+    packages install into /opt, /etc, /var and the like, and the system
+    image onto the EFI partition (/boot/efi); a package with files in the
+    boot image is refused, nothing changed.
 
     Configuration files (everything in /etc) are yours: one changed since
     its package installed it is never overwritten; the package's new one
@@ -99,6 +102,31 @@ REPOSITORIES
         openssl pkeyutl -sign -inkey KEY.pem -rawin \
             -in REPO/dists/redfox/Release -out REPO/dists/redfox/Release.sig
 
+THE SYSTEM
+    The system is image-based: the kernel file carries every program
+    (/bin and /usr, read-only), so the system is a few packages:
+
+        rustica-system-VERSION   /boot/efi/EFI/Rustica/rustux-VERSION.efi
+        rustica-system           the newest: depends on the one above
+        rboot                    the boot manager
+        rustica-server           the edition: the text login by default
+        rustica-desktop          or the graphical login (they conflict)
+
+    rpg upgrade installs a new image beside the old one: the new one
+    starts next, the previous one stays in rboot's menu. Images are never
+    autoremoved; sudo rpg remove rustica-system-VERSION removes one.
+    sudo rpg install rustica-desktop switches the edition.
+
+    rpg boot update (the image and edition packages run it) writes
+    rboot's entries in /boot/efi/loader/entries: rustica.conf (the newest
+    image), rustica-desktop.conf (the desktop edition's, the default) and
+    rustica-VERSION.conf for each older image, "(previous)". Their
+    command line is /etc/rustica/boot.conf's "options ..." line; the
+    edition is /var/lib/rustica/edition. Entries it wrote say so on their
+    first line: changes to them are lost. rpg boot list shows the images.
+    RPG_ESP=DIR puts /boot/efi at DIR (with --root: the installer mounts
+    the new system's EFI partition beside it).
+
 FILES
     /etc/rpg/sources.list        where packages come from
     /etc/rpg/keys/*.pub          the keys trusted to sign them
@@ -107,6 +135,7 @@ FILES
     /var/lib/rpg/status          the installed packages
     /var/lib/rpg/info/NAME.files what each one installed
     /var/lib/rpg/journal         an operation in progress
+    /etc/rustica/boot.conf       the system's command line (rpg boot update)
 
 EXAMPLES
     sudo rpg update
@@ -117,6 +146,7 @@ EXAMPLES
     sudo rpg install ./hello_1.0-1_all.rpg
     rpg owner /etc/hello.conf
     rpg verify
+    rpg boot list
     sudo rpg remove --purge hello
 
 SEE ALSO

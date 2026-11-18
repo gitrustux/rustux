@@ -198,7 +198,10 @@ pub fn upgrade(installed: &[Control], av: &[Avail]) -> Plan {
 /// rpg autoremove: packages installed for others that nothing installed
 /// by the administrator needs any more
 pub fn unneeded(installed: &[Control]) -> Vec<String> {
-    let mut needed: std::collections::BTreeSet<String> = installed.iter().filter(|c| c.get("Auto") != Some("yes")).map(|c| c.name().to_string()).collect();
+    // System images (Section: images) are kept: the previous one is the
+    // way back (step E4 removes the oldest beyond two)
+    let mut needed: std::collections::BTreeSet<String> =
+        installed.iter().filter(|c| c.get("Auto") != Some("yes") || c.get("Section") == Some("images")).map(|c| c.name().to_string()).collect();
     let mut queue: Vec<String> = needed.iter().cloned().collect();
     while let Some(n) = queue.pop() {
         let Some(c) = installed.iter().find(|c| c.name() == n) else { continue };
