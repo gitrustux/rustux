@@ -206,6 +206,9 @@ impl Package {
 /// rpg build DIR: DIR/RPG/control (and RPG/postinst, prerm, postrm), the
 /// rest of DIR is the data, rooted at /. Everything belongs to root;
 /// the modes are the files' own. Returns the package and its file name.
+/// An app (Kind: app, FoxDen step FD1): the rest of DIR is the app's
+/// folder, /apps/ID, with its manifest (app.rs), checked as rpg install
+/// would.
 pub fn build(dir: &Path) -> Result<(Vec<u8>, String), String> {
     let rpgdir = dir.join("RPG");
     let ctext = std::fs::read_to_string(rpgdir.join("control")).map_err(|e| format!("{}: {e}", rpgdir.join("control").display()))?;
@@ -220,7 +223,16 @@ pub fn build(dir: &Path) -> Result<(Vec<u8>, String), String> {
     let mut files = Vec::new();
     let mut data = Vec::new();
     let mut size: u64 = 0;
-    walk(dir, dir, &mut files, &mut data, &mut size)?;
+    let app = control.kind() == "app";
+    let prefix = if app { format!("apps/{}/", control.name()) } else { String::new() };
+    if app {
+        let mode = std::fs::metadata(dir).map(|m| m.permissions().mode() & 0o7777).unwrap_or(0o755);
+        for (p, m) in [("apps".to_string(), 0o755), (format!("apps/{}", control.name()), mode)] {
+            files.push(FileEntry { typ: FType::Dir, mode: m, uid: 0, gid: 0, hash: String::new(), conf: false, path: format!("/{p}") });
+            data.push(Entry { path: format!("data/{p}"), mode: m, kind: Kind::Dir });
+        }
+    }
+    walk(dir, dir, &prefix, &mut files, &mut data, &mut size)?;
     if files.iter().all(|f| f.typ == FType::Dir) && control.get("Depends").is_none() {
         return Err(format!("{}: no files (and no Depends: an empty package)", dir.display()));
     }
@@ -239,10 +251,14 @@ pub fn build(dir: &Path) -> Result<(Vec<u8>, String), String> {
     let v = control.version();
     let v = v.split_once(':').map_or(v, |(_, rest)| rest);
     let name = format!("{}_{}_{}.rpg", control.name(), v, control.arch());
-    Ok((archive::write(&entries), name))
+    let bytes = archive::write(&entries);
+    if app {
+        crate::app::check(&Package::read(&bytes)?)?;
+    }
+    Ok((bytes, name))
 }
 
-fn walk(root: &Path, dir: &Path, files: &mut Vec<FileEntry>, data: &mut Vec<Entry>, size: &mut u64) -> Result<(), String> {
+fn walk(root: &Path, dir: &Path, prefix: &str, files: &mut Vec<FileEntry>, data: &mut Vec<Entry>, size: &mut u64) -> Result<(), String> {
     let mut names: Vec<_> = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten().map(|e| e.path()).collect();
     names.sort();
     for p in names {
@@ -250,6 +266,7 @@ fn walk(root: &Path, dir: &Path, files: &mut Vec<FileEntry>, data: &mut Vec<Entr
         if rel == "RPG" {
             continue;
         }
+        let rel = format!("{prefix}{rel}");
         let abs = format!("/{rel}");
         if !valid_path(&abs) {
             return Err(format!("{abs}: a name rpg cannot hold (tabs or newlines)"));
@@ -264,7 +281,7 @@ fn walk(root: &Path, dir: &Path, files: &mut Vec<FileEntry>, data: &mut Vec<Entr
         } else if md.is_dir() {
             files.push(FileEntry { typ: FType::Dir, mode, uid: 0, gid: 0, hash: String::new(), conf: false, path: abs });
             data.push(Entry { path: format!("data/{rel}"), mode, kind: Kind::Dir });
-            walk(root, &p, files, data, size)?;
+            walk(root, &p, prefix, files, data, size)?;
         } else if md.is_file() {
             let d = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
             *size += md.size();

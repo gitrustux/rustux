@@ -240,6 +240,16 @@ type_('echo console works; ps; logs | grep -E "desktop: |launcher: started|notif
 wait(r'console works', 10, n)
 time.sleep(5)
 out = log()[n:]
+# The end of her session can come later on a busy machine: ask again
+for _ in range(4):
+    if 'desktop: alice logged out' in out:
+        break
+    time.sleep(5)
+    m = len(log())
+    type_('logs | grep "logged out"\n')
+    wait(r'logged out', 10, m)
+    time.sleep(2)
+    out = log()[n:]
 check('\nconsole works' in out, 'the console works')
 check(re.search(r'desktop: root logged in \(/etc/autologin\)', out) is not None, 'root\'s session from /etc/autologin')
 check(re.search(r'launcher: started /bin/wintest Animation -a', out) is not None, 'the launcher started "Animation"')

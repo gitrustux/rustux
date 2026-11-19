@@ -11,7 +11,7 @@ USAGE
     search WORD... [--names-only]
     show NAME | ./FILE.rpg       a package's fields
     policy [NAME...]             installed and candidate versions, and where from
-    list [--installed|--upgradable|--held] [--json]
+    list [--installed|--upgradable|--held|--apps] [--json]
     depends NAME | rdepends NAME
     hold NAME... | unhold NAME...
     download NAME...             a package file into the current folder
@@ -103,6 +103,19 @@ REPOSITORIES
 
         openssl pkeyutl -sign -inkey KEY.pem -rawin \
             -in REPO/dists/redfox/Release -out REPO/dists/redfox/Release.sig
+
+APPS
+    An app (Kind: app; FoxDen, docs/FOXDEN.md) lives in /apps/ID alone,
+    ID its reverse-DNS name (org.rustica.calculator), described by
+    /apps/ID/manifest (Id, Name, Summary, Exec, Icon, Categories,
+    Permissions, Platform). rpg build DIR makes one from DIR/RPG/control
+    and DIR as the app's folder. rpg refuses an app with files elsewhere,
+    scripts, set-user bits, links out of its folder, relations to other
+    packages, or a platform level newer than this system's (1). rpg list
+    --apps lists them; Applications starts them. rpg remove --purge also
+    removes the users' data for it (~/.local/share/apps/ID, ~/.config/
+    apps/ID, ~/.cache/apps/ID). Apps come from package files for now (the
+    apps repository is FoxDen's next steps).
 
 THE SYSTEM
     The system is image-based: the kernel file carries every program

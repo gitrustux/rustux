@@ -6,8 +6,11 @@
 
 //! launcher: the applications (DESKTOP.md step F6), from the panel's
 //! Applications button. The list comes from /usr/share/applications/*.app
-//! (lines "name=...", "exec=..." and an optional "comment=..."); choosing
-//! one starts it and closes the launcher.
+//! (lines "name=...", "exec=..." and an optional "comment=...") and the
+//! apps installed in /apps (FoxDen step FD1: each one's manifest, Name,
+//! Summary and Exec relative to its folder); choosing one starts it and
+//! closes the launcher. (Apps run as other programs until the sandbox,
+//! step FD2.)
 
 use rustica_ui::{Control, Ui};
 
@@ -42,6 +45,21 @@ fn apps() -> Vec<App> {
             }
         }
     }
+    let system = v.len();
+    if let Ok(dir) = std::fs::read_dir("/apps") {
+        for e in dir.flatten() {
+            let folder = e.path();
+            let Ok(text) = std::fs::read_to_string(folder.join("manifest")) else { continue };
+            let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).and_then(|r| r.strip_prefix(':'))).map(|v| v.trim().to_string()).unwrap_or_default();
+            let (name, exec) = (field("Name"), field("Exec"));
+            // Exec is inside the folder: no absolute path, no ..
+            if name.is_empty() || exec.is_empty() || exec.starts_with('/') || exec.split_whitespace().next().unwrap_or("").split('/').any(|c| c == "..") {
+                continue;
+            }
+            v.push(App { name, exec: format!("{}/{exec}", folder.display()), comment: field("Summary") });
+        }
+    }
+    println!("launcher: {} applications, {} apps", system, v.len() - system);
     v.sort_by(|a, b| a.name.cmp(&b.name));
     v
 }

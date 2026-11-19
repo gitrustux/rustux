@@ -39,7 +39,7 @@ start with a space; ` .` is an empty line):
 Package: hello                lower-case letters, digits, + - . (2 or more)
 Version: 1.0-1                [EPOCH:]UPSTREAM[-REVISION], compared as Debian's
 Architecture: all             x86_64, aarch64 or all
-Kind: system                  (the default) or app: FoxDen's, refused until then
+Kind: system                  (the default) or app: an app, FOXDEN.md (FoxDen step FD1)
 Depends: rustica-base (>= 0.1), foo | bar
 Conflicts: ...                Provides: ...      (Provides: names only)
 Maintainer: ...               Homepage: ...      Section: ...

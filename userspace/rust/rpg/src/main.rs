@@ -29,6 +29,7 @@
 //! --root DIR before the command works on a system under DIR (the
 //! installer's, and the tests').
 
+mod app;
 mod archive;
 mod boot;
 mod cmd;
@@ -285,12 +286,38 @@ fn json_str(s: &str) -> String {
 
 fn list(ctx: &Ctx, args: &[String]) -> Result<(), String> {
     for a in args {
-        if !["--installed", "--json", "--upgradable", "--held"].contains(&a.as_str()) {
-            return Err(format!("list: {a}: --installed, --upgradable, --held, --json"));
+        if !["--installed", "--json", "--upgradable", "--held", "--apps"].contains(&a.as_str()) {
+            return Err(format!("list: {a}: --installed, --upgradable, --held, --apps, --json"));
         }
     }
     if args.iter().any(|a| a == "--upgradable") {
         return cmd::list_upgradable(ctx);
+    }
+    if args.iter().any(|a| a == "--apps") {
+        // The apps (FoxDen step FD1): their manifests' names
+        let mut apps: Vec<(String, String, String, String)> = Vec::new();
+        for c in ctx.db.installed()?.iter().filter(|c| c.kind() == "app") {
+            let m = std::fs::read_to_string(ctx.db.path(&format!("{}/manifest", app::dir(c.name())))).ok().and_then(|t| app::parse_manifest(&t).ok());
+            let (n, s) = m.map(|m| (m.name, m.summary)).unwrap_or_else(|| ("?".into(), "(its manifest is missing: rpg verify)".into()));
+            apps.push((c.name().to_string(), c.version().to_string(), n, s));
+        }
+        apps.sort();
+        if args.iter().any(|a| a == "--json") {
+            let items: Vec<String> = apps
+                .iter()
+                .map(|(i, v, n, s)| format!("{{\"id\":{},\"version\":{},\"name\":{},\"summary\":{}}}", json_str(i), json_str(v), json_str(n), json_str(s)))
+                .collect();
+            println!("[{}]", items.join(","));
+        } else if apps.is_empty() {
+            println!("No apps are installed.");
+        } else {
+            let w0 = apps.iter().map(|a| a.0.len()).max().unwrap_or(2);
+            let w1 = apps.iter().map(|a| a.1.len()).max().unwrap_or(7).max(7);
+            for (i, v, n, s) in &apps {
+                println!("{i:w0$}  {v:w1$}  {n}: {s}");
+            }
+        }
+        return Ok(());
     }
     let mut pk = ctx.db.installed()?;
     if args.iter().any(|a| a == "--held") {

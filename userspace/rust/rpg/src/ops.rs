@@ -758,10 +758,27 @@ impl Ctx {
         self.save_pending(&op)?;
         self.write_journal(&op)?;
         self.forward(&mut op)?;
+        // An app's data in the users' homes (FoxDen step FD1)
+        let is_app = entry.kind() == "app";
+        if is_app && purge {
+            let homes: Vec<String> = std::fs::read_to_string(self.db.path("/etc/passwd"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| l.split(':').nth(5).map(str::to_string))
+                .filter(|h| h.starts_with('/') && h != "/")
+                .collect();
+            for d in crate::app::data_dirs(&homes, name) {
+                let p = self.db.path(&d);
+                if p.exists() {
+                    std::fs::remove_dir_all(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+                    println!("{name}: removed {d}");
+                }
+            }
+        }
         if !was_installed {
             println!("{name}: its configuration files removed");
         } else if kept.iter().all(|k| k.typ == FType::Dir) {
-            println!("{name} {}: removed", entry.version());
+            println!("{name} {}: removed{}", entry.version(), if is_app && !purge { " (the users' data for it stays: rpg remove --purge removes it)" } else { "" });
         } else {
             println!("{name} {}: removed; its configuration files are kept (rpg remove --purge {name} removes them)", entry.version());
         }
@@ -783,7 +800,10 @@ pub fn check_installable(p: &Package) -> Result<(), String> {
         return Err(format!("a package for {a}; this computer is {}", std::env::consts::ARCH));
     }
     if p.control.kind() == "app" {
-        return Err("an app (Kind: app): apps are installed by FoxDen's steps (FOXDEN.md), not yet".into());
+        // FoxDen step FD1: everything in its own folder (app.rs)
+        crate::app::check(p)?;
+    } else if let Some(f) = p.files.iter().find(|f| f.path == "/apps" && f.typ != FType::Dir || f.path.starts_with("/apps/")) {
+        return Err(format!("{}: /apps is for apps (Kind: app); a system package has nothing there", f.path));
     }
     Ok(())
 }

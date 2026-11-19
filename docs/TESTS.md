@@ -406,6 +406,19 @@ a password login as a new user (`useradd`, `chpasswd`, `SSH_ASKPASS`),
 root's password refused, an unknown key refused, 1 MB up and down;
 sshd's log. (Skipped without `ssh` on the host.)
 
+## App packages test (FoxDen step FD1)
+
+`scripts/run-apppkg-test.sh` (QEMU, the live desktop; it needs cargo): an
+app package, `org.rustica.example` (its program is `wintest`), built on
+the host with the host's rpg, on a second disk. `rpg install` puts it in
+`/apps/org.rustica.example/` and nowhere else, `rpg list --apps` shows it
+and `rpg verify` is clean; Applications lists it beside the system's
+applications and starts it from its folder; `rpg remove --purge` removes
+its folder and the user's data for it, and Applications lists no app
+afterwards. The refusals (files outside the folder, scripts, set-user
+bits, links out, relations, a newer platform, a bad manifest) are `cargo
+test`'s, in `userspace/rust/rpg/src/app.rs` (`docs/FOXDEN.md`).
+
 ## Updates test (package step E6)
 
 `scripts/run-updates-test.sh` (QEMU, the live desktop; it needs openssl

@@ -151,6 +151,11 @@ fn carry_out(ctx: &Ctx, plan: Plan, files: Vec<Package>) -> Result<(), String> {
                     return Err(format!("{}: the package inside is {} {}, not what the index says", a.url(), p.control.name(), p.control.version()));
                 }
                 ops::check_installable(&p).map_err(|e| format!("{}: {e}", a.url()))?;
+                // Apps come from app sources, with the apps key (FoxDen
+                // step FD3); never from a system repository
+                if p.control.kind() == "app" {
+                    return Err(format!("{}: an app in a system repository: refused (apps come from app sources, FoxDen step FD3)", a.url()));
+                }
                 p
             }
             (None, None) => return Err("a step with nothing to install".into()),
