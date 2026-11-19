@@ -38,6 +38,14 @@
 // files opened there talk to that server directly. /etc/mtab lists the
 // mounts.
 //
+// Views (FoxDen step FD2): RX_FS_OP_VIEW makes a root that sees only the
+// paths listed, each read-write, read-only or open-only (services,
+// devices); an app's sandbox. Every connection opened through a view keeps
+// it (a link fsd follows is looked at again); a read-only directory is
+// served by fsd itself (a proxy, with the real one in rdir), never handed
+// out, so nothing below it can be changed; the directories above the
+// paths are proxies too, listing only the way down. See view_*().
+//
 // init starts fsd with the boot image VMO (PA_VMO_BOOTFS) and the server
 // end of the first root connection (PA_USER0). Every open file or
 // directory is a connection; connections opened from another one (OPEN) or
@@ -98,7 +106,25 @@ struct ofd {
     int can_read;           // a directory opened by someone who may list it
     uint32_t dir_pos;       // READDIR position (entries returned so far)
     rx_handle_t rdir;       // "/" with a root filesystem: its root directory, for READDIR
+                            // (a view's read-only directory: the real one)
     int rphase;             // READDIR of "/": 1 once fsd's own entries are done
+    struct view *view;      // opened through a view (FoxDen step FD2): its paths only
+    char *vpath;            // the path it was opened at, from the root ("": the root)
+    int vro;                // below a read-only path of the view
+    int vproxy;             // served by fsd for the view: a directory above its paths
+                            // (rdir 0) or a read-only one (rdir: the real one)
+};
+
+#define VIEW_MAX 48
+struct ventry {
+    char *path;             // from the root, no leading '/'
+    size_t len;
+    int mode;               // RX_FS_VIEW_RO, _RW, _OPEN
+};
+struct view {
+    int refs;
+    int n;
+    struct ventry e[VIEW_MAX];
 };
 
 struct conn {
@@ -357,12 +383,21 @@ static struct ofd *new_ofd(struct node *n, int flags) {
     return o;
 }
 
+static void view_put(struct view *v) {
+    if (v && --v->refs == 0) {
+        for (int k = 0; k < v->n; k++) free(v->e[k].path);
+        free(v);
+    }
+}
+
 static void drop_conn(int i) {
     struct ofd *o = conns[i].ofd;
     rx_handle_close(conns[i].ch);
     conns[i] = conns[--nconns];
     if (--o->refs == 0) {
         if (o->rdir) rx_handle_close(o->rdir);
+        view_put(o->view);
+        free(o->vpath);
         o->node->open--;
         maybe_free(o->node);
         free(o);
@@ -1120,9 +1155,482 @@ static int do_serve(struct ofd *dir, const char *path, size_t plen, rx_handle_t 
     return 0;
 }
 
+// ---- views (FoxDen step FD2) ----
+
+static struct ofd root_ofd;    // the root, for requests a link sent there
+
+// A path as views compare them: '/'s collapsed, none at either end
+static int vnorm(const char *in, size_t n, char *out, size_t cap, size_t *olen) {
+    size_t o = 0, i = 0;
+    while (i < n) {
+        while (i < n && in[i] == '/') i++;
+        size_t j = i;
+        while (j < n && in[j] != '/') j++;
+        if (j == i) break;
+        if ((j - i == 1 && in[i] == '.') || (j - i == 2 && in[i] == '.' && in[i + 1] == '.')) return -EINVAL;
+        if (o + (o ? 1 : 0) + (j - i) + 1 > cap) return -ENAMETOOLONG;
+        if (o) out[o++] = '/';
+        memcpy(out + o, in + i, j - i);
+        o += j - i;
+        i = j;
+    }
+    out[o] = 0;
+    *olen = o;
+    return 0;
+}
+
+// Where `p` is in view v: 2 at or below one of its paths (*e: the longest
+// that matches), 1 a directory above one, 0 not in it
+static int view_find(const struct view *v, const char *p, size_t n, const struct ventry **e) {
+    const struct ventry *best = 0;
+    int above = 0;
+    for (int k = 0; k < v->n; k++) {
+        const struct ventry *x = &v->e[k];
+        if (n >= x->len && !memcmp(p, x->path, x->len) && (n == x->len || p[x->len] == '/')) {
+            if (!best || x->len > best->len) best = x;
+        } else if (x->len > n && !memcmp(p, x->path, n) && (n == 0 || x->path[n] == '/')) {
+            above = 1;
+        }
+    }
+    if (best) {
+        *e = best;
+        return 2;
+    }
+    return above;
+}
+
+// base + "/" + rel, normalised
+static int vjoin(const char *base, const char *rel, size_t rlen, char *out, size_t cap, size_t *olen) {
+    static char tmp[FSD_PATH_MAX * 2 + 2];
+    size_t bl = strlen(base);
+    if (bl + 1 + rlen + 1 > sizeof tmp) return -ENAMETOOLONG;
+    memcpy(tmp, base, bl);
+    tmp[bl] = '/';
+    memcpy(tmp + bl + 1, rel, rlen);
+    return vnorm(tmp, bl + 1 + rlen, out, cap, olen);
+}
+
+// A connection of view v at `path`
+static struct ofd *view_ofd(struct view *v, struct node *n, const char *path, int ro, int proxy, rx_handle_t rdir) {
+    struct ofd *o = new_ofd(n, O_RDONLY | O_DIRECTORY);
+    if (!o) return 0;
+    o->view = v;
+    v->refs++;
+    o->vpath = strdup(path);
+    o->vro = ro;
+    o->vproxy = proxy;
+    o->rdir = rdir;
+    return o;
+}
+
+static void view_mark(struct ofd *o, struct view *v, const char *path, int ro) {
+    if (o->view) return;   // a clone of one marked already
+    o->view = v;
+    v->refs++;
+    o->vpath = strdup(path);
+    o->vro = ro;
+}
+
+// What a directory above the view's paths looks like
+static void view_attr(const char *path, rx_fs_attr_t *a) {
+    memset(a, 0, sizeof *a);
+    a->type = RX_FS_TYPE_DIR;
+    a->mode = 0555;
+    uint64_t h = 1469598103934665603ull;
+    for (const char *c = path; *c; c++) h = (h ^ (unsigned char)*c) * 1099511628211ull;
+    a->ino = h | (1ull << 62);
+    a->nlink = 2;
+    a->read_only = 1;
+    a->fsid = 1;
+}
+
+// The type of what is at `path` (from the root), or -1 if nothing
+static int view_type(const char *path, size_t n) {
+    struct node *x;
+    int r = walk_f(root, path, n, &x, 0, 0, 0, 1);
+    if (r == 0) return (int)x->type;
+    if (r == -EREMOTE_FS) {
+        rx_fs_attr_t a;
+        size_t got = 0;
+        if (forward(g_remote, RX_FS_OP_STAT_AT, 0, 0, g_rest, g_rest_len, 0, (char *)&a, sizeof a, &got) == 0 && got >= 4) return (int)a.type;
+        return -1;
+    }
+    return r == -EREDIRECT ? (int)RX_FS_TYPE_SYMLINK : -1;
+}
+
+// READDIR of a directory above the view's paths: the names one below it
+// on the way to them, each once
+static int view_readdir(struct ofd *o, uint32_t max, char *out, size_t *len) {
+    struct view *v = o->view;
+    const char *p = o->vpath;
+    size_t pn = strlen(p), used = 0;
+    const char *names[VIEW_MAX];
+    size_t nlens[VIEW_MAX];
+    int full[VIEW_MAX], k = 0;
+    for (int e = 0; e < v->n; e++) {
+        const struct ventry *x = &v->e[e];
+        if (!(x->len > pn && !memcmp(x->path, p, pn) && (pn == 0 || x->path[pn] == '/'))) continue;
+        const char *c = x->path + (pn ? pn + 1 : 0);
+        size_t cl = 0;
+        while (c + cl < x->path + x->len && c[cl] != '/') cl++;
+        int seen = 0;
+        for (int j = 0; j < k; j++) seen |= nlens[j] == cl && !memcmp(names[j], c, cl);
+        if (seen || cl == 0) continue;
+        names[k] = c;
+        nlens[k] = cl;
+        full[k] = (size_t)(c - x->path) + cl == x->len;
+        k++;
+    }
+    if (max > RX_FS_MAX_IO) max = RX_FS_MAX_IO;
+    for (int j = (int)o->dir_pos; j < k; j++) {
+        if (used + 10 + nlens[j] > max) break;
+        char full_path[FSD_PATH_MAX];
+        size_t at = 0;
+        if (pn) {
+            memcpy(full_path, p, pn);
+            full_path[pn] = '/';
+            at = pn + 1;
+        }
+        memcpy(full_path + at, names[j], nlens[j]);
+        int t = full[j] ? view_type(full_path, at + nlens[j]) : (int)RX_FS_TYPE_DIR;
+        o->dir_pos++;
+        if (t < 0) continue;   // a path of the view that is not there
+        uint64_t ino = 0;
+        rx_fs_attr_t a;
+        full_path[at + nlens[j]] = 0;
+        view_attr(full_path, &a);
+        ino = a.ino;
+        memcpy(out + used, &ino, 8);
+        out[used + 8] = (char)t;
+        out[used + 9] = (char)nlens[j];
+        memcpy(out + used + 10, names[j], nlens[j]);
+        used += 10 + nlens[j];
+    }
+    *len = used;
+    return 0;
+}
+
+// RX_FS_OP_VIEW on connection o: a new view (narrower than o's, if o is
+// one's), its root connection served at h
+static int view_make(struct ofd *o, const char *body, size_t blen, rx_handle_t h) {
+    if (!o->view && o->node != root) return -EPERM;
+    if (o->view && !o->vproxy) return -EPERM;
+    uint32_t count;
+    if (blen < 4) return -EINVAL;
+    memcpy(&count, body, 4);
+    if (count == 0 || count > VIEW_MAX) return -EINVAL;
+    struct view *v = calloc(1, sizeof *v);
+    if (!v) return -ENOMEM;
+    size_t at = 4;
+    int r = 0;
+    for (uint32_t k = 0; k < count && r == 0; k++) {
+        rx_fs_view_entry_t ve;
+        char pn[FSD_PATH_MAX];
+        size_t pl = 0;
+        if (at + sizeof ve > blen) { r = -EINVAL; break; }
+        memcpy(&ve, body + at, sizeof ve);
+        at += sizeof ve;
+        if (at + ve.len > blen || (ve.mode != RX_FS_VIEW_RO && ve.mode != RX_FS_VIEW_RW && ve.mode != RX_FS_VIEW_OPEN)) { r = -EINVAL; break; }
+        if ((r = vnorm(body + at, ve.len, pn, sizeof pn, &pl)) < 0) break;
+        at += ve.len;
+        if (pl == 0) { r = -EINVAL; break; }   // the whole tree is not a view
+        if (o->view) {
+            // Narrower only: within a path of ours, as open as it or less
+            const struct ventry *pe;
+            if (view_find(o->view, pn, pl, &pe) != 2 || !(pe->mode == ve.mode || pe->mode == RX_FS_VIEW_RW)) { r = -EPERM; break; }
+        }
+        v->e[v->n].path = strdup(pn);
+        v->e[v->n].len = pl;
+        v->e[v->n].mode = ve.mode;
+        v->n++;
+    }
+    if (r < 0) {
+        v->refs = 1;
+        view_put(v);
+        return r;
+    }
+    struct ofd *x = view_ofd(v, root, "", 0, 1, 0);
+    if (!x) {
+        v->refs = 1;
+        view_put(v);
+        return -ENOMEM;
+    }
+    r = add_conn(h, x);
+    if (r < 0) {
+        x->refs = 1;   // freed as a connection would be
+        view_put(x->view);
+        free(x->vpath);
+        root->open--;
+        free(x);
+    }
+    return r;
+}
+
+static int is_path_op(uint32_t op) {
+    switch (op) {
+    case RX_FS_OP_OPEN: case RX_FS_OP_STAT_AT: case RX_FS_OP_LSTAT_AT: case RX_FS_OP_MKDIR: case RX_FS_OP_UNLINK:
+    case RX_FS_OP_RENAME: case RX_FS_OP_LINK: case RX_FS_OP_SYMLINK: case RX_FS_OP_READLINK: case RX_FS_OP_SERVE:
+    case RX_FS_OP_MOUNT: case RX_FS_OP_UNMOUNT:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+// Where a path op's path starts in its body (RENAME and LINK: -1)
+static long path_at(uint32_t op, const char *body, size_t blen) {
+    uint32_t u = 0;
+    if (blen >= 4) memcpy(&u, body, 4);
+    switch (op) {
+    case RX_FS_OP_OPEN: return blen >= 8 ? 8 : -2;
+    case RX_FS_OP_MKDIR: case RX_FS_OP_UNLINK: case RX_FS_OP_UNMOUNT: return blen >= 4 ? 4 : -2;
+    case RX_FS_OP_SYMLINK: return blen >= 4 && u <= blen - 4 ? (long)(4 + u) : -2;
+    case RX_FS_OP_RENAME: case RX_FS_OP_LINK: return -1;
+    case RX_FS_OP_MOUNT: return -2;   // refused in views anyway
+    default: return 0;
+    }
+}
+
+// A path op on a view's connection, its path(s) made from the root
+static int view_reroot(uint32_t op, const char *body, size_t blen, const char *base, char *nb, size_t cap, size_t *nlen) {
+    long at = path_at(op, body, blen);
+    if (at == -2) return -EINVAL;
+    if (at == -1) {
+        uint32_t u;
+        if (blen < 4) return -EINVAL;
+        memcpy(&u, body, 4);
+        if (u > blen - 4) return -EINVAL;
+        size_t al = 0, bl = 0;
+        char a[FSD_PATH_MAX], b[FSD_PATH_MAX];
+        int r;
+        if ((r = vjoin(base, body + 4, u, a, sizeof a, &al)) < 0) return r;
+        if ((r = vjoin(base, body + 4 + u, blen - 4 - u, b, sizeof b, &bl)) < 0) return r;
+        if (4 + al + bl > cap) return -ENAMETOOLONG;
+        uint32_t l = (uint32_t)al;
+        memcpy(nb, &l, 4);
+        memcpy(nb + 4, a, al);
+        memcpy(nb + 4 + al, b, bl);
+        *nlen = 4 + al + bl;
+        return 0;
+    }
+    size_t pl = 0;
+    if ((size_t)at > cap) return -ENAMETOOLONG;
+    memcpy(nb, body, (size_t)at);
+    int r = vjoin(base, body + at, blen - (size_t)at, nb + at, cap - (size_t)at, &pl);
+    if (r < 0) return r;
+    *nlen = (size_t)at + pl;
+    return 0;
+}
+
+// OPEN below a read-only path: fsd opens it itself; a file the client
+// gets as a clone, a directory as a proxy fsd serves (rdir: the real one)
+static int view_open_ro(struct view *v, const char *p, size_t pl, uint32_t flags, uint32_t mode, rx_handle_t h, uint32_t *type) {
+    rx_handle_t c, s;
+    if (rx_channel_create(0, &c, &s) != RX_OK) return -ENOMEM;
+    int before = nconns, consumed = 0;
+    int r = do_open(&root_ofd, p, pl, flags, mode, s, type, &consumed);
+    if (r == -EREDIRECT) {
+        if (consumed && g_open_handle) rx_handle_close(g_open_handle);
+        g_open_handle = 0;
+        if (!consumed) rx_handle_close(s);
+        rx_handle_close(c);
+        return r;
+    }
+    if (r < 0) {
+        if (!consumed && nconns == before) rx_handle_close(s);
+        rx_handle_close(c);
+        return r;
+    }
+    if (nconns > before) {
+        // One of ours: the connection becomes the client's, marked
+        struct ofd *x = conns[nconns - 1].ofd;
+        view_mark(x, v, p, 1);
+        conns[nconns - 1].ch = h;
+        rx_handle_close(s);
+        rx_handle_close(c);
+        return 0;
+    }
+    if (*type == RX_FS_TYPE_SERVICE) {   // services are open-only paths, not read-only ones
+        rx_handle_close(c);
+        rx_handle_close(h);
+        return -EACCES;
+    }
+    if (*type == RX_FS_TYPE_DIR) {
+        struct ofd *x = view_ofd(v, root, p, 1, 1, c);
+        if (!x) {
+            rx_handle_close(c);
+            rx_handle_close(h);
+            return -ENOMEM;
+        }
+        return add_conn(h, x);
+    }
+    r = forward_ch(c, RX_FS_OP_CLONE, 0, 0, 0, 0, h, 0, 0, 0);
+    rx_handle_close(c);
+    return r;
+}
+
+// A path op checked against view v (its paths from the root). Returns 1
+// if done here (*st, the reply in out), 0 to carry on as usual
+static int view_path_op(struct view *v, uint32_t op, const char *body, size_t blen, rx_handle_t *h, char *out, size_t *olen, int *st) {
+    char p[FSD_PATH_MAX];
+    size_t pl = 0;
+    const struct ventry *e = 0;
+    if (op == RX_FS_OP_SERVE || op == RX_FS_OP_MOUNT || op == RX_FS_OP_UNMOUNT) {
+        *st = -EPERM;
+        return 1;
+    }
+    if (op == RX_FS_OP_RENAME || op == RX_FS_OP_LINK) {
+        uint32_t u;
+        char q[FSD_PATH_MAX];
+        size_t ql = 0;
+        const struct ventry *e2 = 0;
+        if (blen < 4 || (memcpy(&u, body, 4), u > blen - 4)) { *st = -EINVAL; return 1; }
+        if ((*st = vnorm(body + 4, u, p, sizeof p, &pl)) < 0 || (*st = vnorm(body + 4 + u, blen - 4 - u, q, sizeof q, &ql)) < 0) return 1;
+        int a = view_find(v, p, pl, &e), b = view_find(v, q, ql, &e2);
+        if (a == 2 && b == 2 && e->mode == RX_FS_VIEW_RW && e2->mode == RX_FS_VIEW_RW) return 0;
+        *st = a == 0 ? -ENOENT : (a == 2 && e->mode == RX_FS_VIEW_RO) || (b == 2 && e2->mode == RX_FS_VIEW_RO) ? -EROFS : -EACCES;
+        return 1;
+    }
+    long at = path_at(op, body, blen);
+    if (at < 0) { *st = -EINVAL; return 1; }
+    if ((*st = vnorm(body + at, blen - (size_t)at, p, sizeof p, &pl)) < 0) return 1;
+    int where = view_find(v, p, pl, &e);
+    uint32_t flags = 0, mode = 0;
+    if (op == RX_FS_OP_OPEN) {
+        memcpy(&flags, body, 4);
+        memcpy(&mode, body + 4, 4);
+    }
+    int writing = (flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC));
+    if (where == 0) {
+        *st = -ENOENT;
+        return 1;
+    }
+    if (where == 1) {
+        // A directory above the view's paths: fsd's own, empty but for them
+        switch (op) {
+        case RX_FS_OP_OPEN: {
+            if (writing) { *st = (flags & O_ACCMODE) != O_RDONLY ? -EISDIR : -EACCES; return 1; }
+            struct ofd *x = view_ofd(v, root, p, 1, 1, 0);
+            if (!x) { *st = -ENOMEM; return 1; }
+            *st = add_conn(*h, x);
+            *h = 0;
+            if (*st == 0) {
+                uint32_t t = RX_FS_TYPE_DIR;
+                memcpy(out, &t, 4);
+                *olen = 4;
+            }
+            return 1;
+        }
+        case RX_FS_OP_STAT_AT: case RX_FS_OP_LSTAT_AT:
+            view_attr(p, (rx_fs_attr_t *)out);
+            *olen = sizeof(rx_fs_attr_t);
+            *st = 0;
+            return 1;
+        case RX_FS_OP_READLINK: *st = -EINVAL; return 1;
+        case RX_FS_OP_MKDIR: *st = -EEXIST; return 1;
+        default: *st = -EACCES; return 1;
+        }
+    }
+    switch (e->mode) {
+    case RX_FS_VIEW_OPEN:
+        // A service or a device: itself only, opened or looked at
+        if (pl != e->len) { *st = -ENOENT; return 1; }
+        if (op == RX_FS_OP_OPEN || op == RX_FS_OP_STAT_AT || op == RX_FS_OP_LSTAT_AT) return 0;
+        *st = -EACCES;
+        return 1;
+    case RX_FS_VIEW_RW:
+        return 0;
+    default: // RX_FS_VIEW_RO
+        switch (op) {
+        case RX_FS_OP_STAT_AT: case RX_FS_OP_LSTAT_AT: case RX_FS_OP_READLINK:
+            return 0;
+        case RX_FS_OP_OPEN: {
+            if (writing) { *st = -EROFS; return 1; }
+            uint32_t t = 0;
+            *st = view_open_ro(v, p, pl, flags, mode, *h, &t);
+            if (*st != -EREDIRECT) *h = 0;   // given away (else the redirect needs it)
+            if (*st == 0) {
+                memcpy(out, &t, 4);
+                *olen = 4;
+            }
+            return 1;
+        }
+        default:
+            *st = -EROFS;
+            return 1;
+        }
+    }
+}
+
+// A request on a view's connection that is not a path op: 1 if done here
+static int view_conn_op(struct ofd *o, uint32_t op, const char *body, size_t blen, rx_handle_t *h, uint32_t nh, char *out, size_t *olen, int *st) {
+    switch (op) {
+    case RX_FS_OP_VIEW:
+        *st = nh ? view_make(o, body, blen, *h) : -EINVAL;
+        if (nh) *h = 0;
+        return 1;
+    case RX_FS_OP_GET_VMO:
+        *st = -ENOTSUP;   // the boot image whole: never through a view
+        return 1;
+    case RX_FS_OP_SHUTDOWN_ALL:
+        *st = -EPERM;
+        return 1;
+    case RX_FS_OP_SETATTR:
+        if (o->vro || o->vproxy) {
+            *st = -EROFS;
+            return 1;
+        }
+        return 0;
+    default:
+        break;
+    }
+    if (!o->vproxy) return 0;
+    uint32_t u32;
+    switch (op) {
+    case RX_FS_OP_STAT:
+        if (o->rdir) *st = forward_ch(o->rdir, RX_FS_OP_STAT, 0, 0, 0, 0, 0, out, sizeof(rx_fs_attr_t), olen);
+        else {
+            view_attr(o->vpath, (rx_fs_attr_t *)out);
+            *olen = sizeof(rx_fs_attr_t);
+            *st = 0;
+        }
+        return 1;
+    case RX_FS_OP_READDIR:
+        if (blen < 4) { *st = -EINVAL; return 1; }
+        memcpy(&u32, body, 4);
+        if (u32 > RX_FS_MAX_IO) u32 = RX_FS_MAX_IO;
+        if (o->rdir) *st = forward_ch(o->rdir, RX_FS_OP_READDIR, &u32, 4, 0, 0, 0, out, RX_FS_MAX_IO, olen);
+        else *st = view_readdir(o, u32, out, olen);
+        return 1;
+    case RX_FS_OP_REWIND:
+        o->dir_pos = 0;
+        *st = o->rdir ? forward_ch(o->rdir, RX_FS_OP_REWIND, 0, 0, 0, 0, 0, 0, 0, 0) : 0;
+        return 1;
+    case RX_FS_OP_CLONE:
+        if (!nh) { *st = -EINVAL; return 1; }
+        *st = add_conn(*h, o);
+        *h = 0;
+        return 1;
+    case RX_FS_OP_STATFS:
+        statfs_of(root, (rx_fs_statfs_t *)out);
+        *olen = sizeof(rx_fs_statfs_t);
+        *st = 0;
+        return 1;
+    case RX_FS_OP_SYNC:
+        *st = 0;
+        return 1;
+    case RX_FS_OP_READ: case RX_FS_OP_WRITE: case RX_FS_OP_TRUNCATE: case RX_FS_OP_SEEK:
+        *st = -EISDIR;
+        return 1;
+    default:
+        if (is_path_op(op)) return 0;
+        *st = -ENOSYS;
+        return 1;
+    }
+}
+
 // Handle one request on connection `i`; returns 0, or -1 if the connection
 // was dropped
-static struct ofd root_ofd;    // the root, for requests a link sent there
 
 static int serve(int i) {
     rx_handle_t h = 0;
@@ -1150,13 +1658,40 @@ static int serve(int i) {
     rx_handle_t reply_handle = 0; // sent with the reply (GET_VMO)
     static char rbuf[2][FSD_PATH_MAX * 3 + 64];
     int hops = 0;
+    // A view's connection (FD2): its requests stay inside the view, also
+    // after a link sends one to the root
+    struct view *cur_view = o->view;
+    int conns_before = nconns;
     if (perm < 0) {
         st = perm;
         goto reply;
     }
 
 again:
+    if (cur_view) {
+        if (o != &root_ofd) {
+            if (view_conn_op(o, hdr.op, body, blen, &h, nh, out, &olen, &st)) goto handled;
+            if (is_path_op(hdr.op)) {
+                size_t nlen = 0;
+                char *nbuf = rbuf[hops & 1];
+                if ((st = view_reroot(hdr.op, body, blen, o->vpath, nbuf, sizeof rbuf[0], &nlen)) < 0) goto handled;
+                body = nbuf;
+                blen = nlen;
+                o = &root_ofd;
+                hops++;
+            }
+        }
+        if (o == &root_ofd && is_path_op(hdr.op)) {
+            if (hdr.op == RX_FS_OP_OPEN && !nh) { st = -EINVAL; goto handled; }
+            if (view_path_op(cur_view, hdr.op, body, blen, &h, out, &olen, &st)) goto handled;
+        }
+    }
     switch (hdr.op) {
+    case RX_FS_OP_VIEW:
+        if (!nh) { st = -EINVAL; break; }
+        st = view_make(o, body, blen, h);
+        h = 0;
+        break;
     case RX_FS_OP_OPEN: {
         if (blen < 8 || !nh) { st = -EINVAL; break; }
         uint32_t f[2];
@@ -1373,6 +1908,7 @@ again:
         st = -ENOSYS;
         break;
     }
+handled:
     if (st == -EREDIRECT) {
         // A symbolic link: the same request again with the path it gives,
         // from the root
@@ -1385,6 +1921,18 @@ again:
             o = &root_ofd;
             if (hdr.op == RX_FS_OP_OPEN && h) nh = 1;
             goto again;
+        }
+    }
+    // What a view opened the usual way (a read-write or open-only path) is
+    // the view's too
+    if (cur_view && st == 0 && hdr.op == RX_FS_OP_OPEN) {
+        for (int k = conns_before; k < nconns; k++) {
+            struct ofd *x = conns[k].ofd;
+            if (x->view) continue;
+            char p[FSD_PATH_MAX];
+            size_t pl = 0;
+            long at = path_at(hdr.op, body, blen);
+            if (at >= 0 && vnorm(body + at, blen - (size_t)at, p, sizeof p, &pl) == 0) view_mark(x, cur_view, p, 0);
         }
     }
 reply:

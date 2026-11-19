@@ -147,6 +147,7 @@ the current directory; `fsd` rejects them with `EINVAL`).
 | `LINK` 24 | directory | `u32 old_len`, old path, new path | — (a hard link: `EXDEV` across filesystems, `EPERM` for directories, on tmpfs and FAT) |
 | `LSTAT_AT` 25 | directory | path | `rx_fs_attr_t` of the path itself (a link is not followed) |
 | `SHUTDOWN_ALL` 26 | `fsd`'s root | — | — : every mounted filesystem is written out and marked clean, the root filesystem last (`poweroff`, `reboot`) |
+| `VIEW` 27 | `fsd`'s root, or a view's | `u32 count`, then per path `rx_fs_view_entry_t { u8 mode; u8 pad; u16 len; }` and the path; the new root's server end | — : a root that sees only those paths (Views) |
 
 A path request may be answered with status 1, `RX_FS_REDIRECT`: `u8
 which` (0 the request's path, 1 the second path of `RENAME`/`LINK`), then
@@ -367,6 +368,38 @@ both replay it (scripts/run-ext4-test.sh tests both).
 `mkfs.ext4` makes ext4 as Linux's `mkfs.ext4` does (without the resize
 inode), `fsck.ext4` (`fsck.ext2`, `fsck.ext3`) replays the journal and
 checks, `tune2fs -l` shows the superblock (docs/COMMANDS.md).
+
+### Views (FoxDen step FD2)
+
+A **view** is a root of its own that sees only some paths: what an app is
+given as its namespace root (`appctl`, `docs/FOXDEN.md`). `VIEW` on a
+connection to `fsd`'s root makes one (`rx_fs_view()` in `<sys/mount.h>`),
+from a list of paths from the root, each with a mode:
+
+- `RX_FS_VIEW_RW` 2: the path and everything below it as usual (the
+  user's permissions still apply);
+- `RX_FS_VIEW_RO` 1: read only. `fsd` opens what is below it itself and
+  hands the app a clone of the file (no write access to give) or a
+  directory it serves (reading and listing only, `EROFS` for anything
+  that would change it, `SETATTR` too);
+- `RX_FS_VIEW_OPEN` 3: the path itself, `OPEN` and `STAT_AT` only: a
+  service (`/svc/window`) or a device (`/dev/null`).
+
+The directories above the paths are `fsd`'s own: read only, and listing
+one shows only the names on the way to the paths. Any other path is not
+there (`ENOENT`), whether it exists or not. The longest path that matches
+decides (`/usr` read-only with `/usr/share/x` read-write is allowed).
+
+Every path request on a view's connections is checked, also after a link
+sends it elsewhere: a link out of the view leads nowhere. Requests on a
+connection below a path are made from the root first (its path, then the
+request's), so they are checked the same way; `.` and `..` are refused as
+everywhere. A directory opened below a read-write path on a mounted
+filesystem is that filesystem's connection; those servers take no `..`
+either, and their links come back through the view. A view's connections
+may make a narrower view (within a path of theirs, no more open; `EPERM`
+otherwise) and are refused `SERVE`, `MOUNT`, `UNMOUNT`, `SHUTDOWN_ALL`
+(`EPERM`) and `GET_VMO` (`ENOTSUP`).
 
 ## Limits
 

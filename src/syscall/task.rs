@@ -579,6 +579,20 @@ pub fn sys_job_create(args: SyscallArgs) -> SyscallRet {
     })())
 }
 
+/// job_set_policy(job, bits) — add policy bits to a job (FoxDen step
+/// FD2: POLICY_SANDBOX); bits are never removed
+pub fn sys_job_set_policy(args: SyscallArgs) -> SyscallRet {
+    let (h, bits) = (args.arg_u32(0), args.arg_u32(1));
+    ret((|| {
+        let job = job_of(h, Rights::MANAGE_JOB)?;
+        if bits & !crate::kobj::task::POLICY_SANDBOX != 0 {
+            return Err(RxStatus::ERR_INVALID_ARGS);
+        }
+        job.add_policy(bits);
+        Ok(0)
+    })())
+}
+
 /// handle_replace(handle, rights, *out) — a new handle (same object, the
 /// given rights or SAME_RIGHTS) replaces the old one, which is closed even
 /// on failure

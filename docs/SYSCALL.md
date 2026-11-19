@@ -774,11 +774,39 @@ the kernel writes). Servers decide what a request may do by it
 | `JOB_CREATE` | 0x30 | Create a child job | ✅ |
 | `HANDLE_DUPLICATE` | 0x31 | Duplicate a handle | ✅ |
 | `HANDLE_REPLACE` | 0x32 | Replace a handle with one with fewer rights | ✅ |
+| `JOB_SET_POLICY` | 0x33 | Add policy bits to a job (the app sandbox) | ✅ |
 
 #### JOB_CREATE (0x30)
 
 `job_create(rx_handle_t parent, uint32_t options, rx_handle_t *out)` —
 needs `MANAGE_JOB` on the parent. `ERR_BAD_STATE` if the parent was killed.
+
+#### JOB_SET_POLICY (0x33)
+
+`job_set_policy(rx_handle_t job, uint32_t bits)` (FoxDen step FD2) — needs
+`MANAGE_JOB`. Adds `bits` to the job's policy; bits are never taken away,
+and a job made later under it starts with its parent's. `ERR_INVALID_ARGS`
+for an unknown bit. One bit so far, `JOB_POLICY_SANDBOX` 1 (`RX_JOB_SANDBOX`
+in `<rustux/syscalls.h>`): a process in such a job gets `ERR_ACCESS_DENIED`
+from the calls that reach the system without a handle, before anything
+else is looked at:
+
+| Refused | Why |
+|---------|-----|
+| `process_set_creds` 0x0B | changing one's own user (root's programs only; an app never acts as another user) |
+| `vmo_create_physical` 0x19, `vmo_create_contiguous` 0x1B | memory for drivers |
+| `clock_set_utc` 0x44 | the system's clock |
+| `debug_write` 0x50, `debuglog_create` 0x53 | the kernel's console and log |
+| 0x80-0x89 | the driver calls (interrupts, I/O ports, PCI, DMA) |
+| 0x92-0x9C | power, ACPI, USB, firmware variables, the display |
+
+The audit (step FD2) went through every call: all the others act on a
+handle the process holds (and are as safe as what it was given), or on
+itself (its own threads, memory, time, randomness, waiting). Its root,
+a view of the filesystem (`FS.md` "Views"), decides which files and
+services it reaches; the job decides that a root resource, had it one,
+would get it nothing. `appctl` (`docs/FOXDEN.md`) sets the bit before it
+starts an app.
 
 #### HANDLE_REPLACE (0x32)
 

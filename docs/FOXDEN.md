@@ -2,7 +2,7 @@
 
 Apps are kept apart from the system: self-contained `.rpg` packages of
 their own kind, each in a folder of its own, from a repository of their
-own (step FD3) and run in a sandbox (step FD2). The same `rpg` installs
+own (step FD3), run in a sandbox (step FD2). The same `rpg` installs
 them. This is the technical side, step by step.
 
 ## App packages (step FD1)
@@ -63,16 +63,63 @@ in `/etc/passwd`.
 
 **Applications** (the launcher, `SESSION.md`) lists installed apps from
 their manifests beside the system's `/usr/share/applications/*.app`, and
-starts `/apps/ID/EXEC`. Until step FD2 an app runs as any program the
-user starts, without a sandbox.
+starts it with `appctl run ID`, in its sandbox (step FD2, below).
 
 `cargo test` in `userspace/rust/rpg` checks each refusal (`app.rs`);
 `scripts/run-apppkg-test.sh` (`TESTS.md`) installs an app built on the
 host, starts it from Applications, and removes it without a trace.
 
+## The sandbox (step FD2)
+
+An app runs as the user who starts it, but sees and does much less than
+the user's own programs. `appctl run ID` (`man appctl`; what Applications
+uses) starts the manifest's `Exec` with two limits:
+
+**A root of its own.** Its namespace root is a view (`FS.md` "Views"): an
+`fsd` root that sees only these paths, anything else is not there.
+
+| What | Paths |
+|------|-------|
+| read-only | `/apps/ID`, `/usr`, `/etc/passwd`, `group`, `timezone`, `localtime`, `os-release`, `hostname` |
+| read-write | `~/.local/share/apps/ID`, `~/.config/apps/ID`, `~/.cache/apps/ID` (made if new; it starts in the first, `TMPDIR` is in the last) |
+| open only | `/dev/null`, `/dev/zero`, `/svc/window` (its windows), `/svc/log` |
+| `network` | `/svc/netsock` (sockets; not `/svc/net`, the network's settings), `/etc/resolv.conf`, `/etc/hosts` |
+| `files:documents` ... | `~/Documents` read-write (`files:pictures` `~/Pictures`, `files:music`, `files:videos`, `files:downloads` likewise) |
+| `files:home` | the whole home read-write |
+| `removable` | `/media` |
+
+So an app finds no `/bin` (no shell to start), no other app, nothing of
+the home but its own folders, no service but the window, log and (with
+`network`) socket services: not `/svc/auth`, `/svc/packages`,
+`/svc/display` or `/svc/devmgr`. Links are followed inside the view, so a
+link it makes in its data folder leads nowhere else. `audio`, `camera` and
+`location` give nothing yet (no services for them). `system` is never
+given until apps from the system's own sources can be told apart (step
+FD3).
+
+**A job with the sandbox policy** (`SYSCALL.md` `JOB_SET_POLICY`): the
+calls that reach the system without a handle (changing its own user, the
+kernel console, the clock, physical memory, drivers, power, firmware
+variables) are refused, for it and anything it starts. The audit of the
+other calls: each acts on a handle the app holds, or on itself.
+
+**The user decides** in `~/.config/apps/permissions`: a line `ID:
+PERMISSION...` (or `ID: -`) narrows what an app gets; it never gets more
+than its manifest asks for. `appctl permissions ID` shows both, `appctl
+view ID` the paths. (Asking when an app first wants a permission is step
+FD5's, with the FoxDen app.)
+
+What the sandbox does not do yet: the user's own file permissions still
+apply inside it (an app acts as its user), so it is a narrowing, not a
+separate account; windows are not marked as an app's; and the window and
+log services serve apps as they serve everyone.
+
+`scripts/run-sandbox-test.sh` (`TESTS.md`) runs two apps that try to get
+out: everything they should not reach is refused, what their permissions
+give works.
+
 ## Not yet
 
-The sandbox (FD2: a root of its own, a job policy, the permissions), the
-apps repository and its key (FD3), installing as a user through
+The apps repository and its key (FD3), installing as a user through
 `/svc/packages` (FD4), the FoxDen app (FD5), app updates and the file
 chooser (FD6), outside developers (FD7).

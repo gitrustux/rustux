@@ -114,6 +114,26 @@ typedef struct {
 // filesystem last; from then on writes to them fail (EROFS). Request:
 // nothing. Reply: nothing.
 #define RX_FS_OP_SHUTDOWN_ALL 26
+// A view of the tree (FoxDen step FD2: an app's sandbox): on a directory
+// connection, u32 count then count entries { u8 mode; u8 pad; u16 len;
+// path } (from the root, no leading '/'); one handle: the server end of
+// the new connection, a root that sees only those paths. Below a
+// RX_FS_VIEW_RW path everything works as usual; below RX_FS_VIEW_RO
+// nothing changes (EROFS) and fsd keeps the real directories; at a
+// RX_FS_VIEW_OPEN path only OPEN and STAT_AT (a service, /dev/null). The
+// directories above the paths are there, empty but for the way down;
+// anything else is not found. Links are followed within the view. A
+// view's own connections can make narrower views only (EPERM otherwise),
+// and are refused SERVE, MOUNT, UNMOUNT, SHUTDOWN_ALL and GET_VMO.
+#define RX_FS_OP_VIEW     27
+#define RX_FS_VIEW_RO   1
+#define RX_FS_VIEW_RW   2
+#define RX_FS_VIEW_OPEN 3
+typedef struct {
+    uint8_t mode;
+    uint8_t pad;
+    uint16_t len;
+} rx_fs_view_entry_t;
 
 // Symbolic links are followed by the one that serves the path. A server
 // that meets a link it must follow (anywhere but at the end of the path,

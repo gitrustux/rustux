@@ -8,9 +8,9 @@
 //! Applications button. The list comes from /usr/share/applications/*.app
 //! (lines "name=...", "exec=..." and an optional "comment=...") and the
 //! apps installed in /apps (FoxDen step FD1: each one's manifest, Name,
-//! Summary and Exec relative to its folder); choosing one starts it and
-//! closes the launcher. (Apps run as other programs until the sandbox,
-//! step FD2.)
+//! Summary and Exec relative to its folder). Choosing one starts it and
+//! closes the launcher; an app is started in its sandbox by `appctl run
+//! ID` (step FD2).
 
 use rustica_ui::{Control, Ui};
 
@@ -56,7 +56,10 @@ fn apps() -> Vec<App> {
             if name.is_empty() || exec.is_empty() || exec.starts_with('/') || exec.split_whitespace().next().unwrap_or("").split('/').any(|c| c == "..") {
                 continue;
             }
-            v.push(App { name, exec: format!("{}/{exec}", folder.display()), comment: field("Summary") });
+            // Started in its sandbox (FoxDen step FD2): appctl reads the
+            // manifest again and runs Exec with the app's view and job
+            let id = e.file_name().to_string_lossy().to_string();
+            v.push(App { name, exec: format!("/bin/appctl run {id}"), comment: field("Summary") });
         }
     }
     println!("launcher: {} applications, {} apps", system, v.len() - system);

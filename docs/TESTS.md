@@ -413,11 +413,30 @@ app package, `org.rustica.example` (its program is `wintest`), built on
 the host with the host's rpg, on a second disk. `rpg install` puts it in
 `/apps/org.rustica.example/` and nowhere else, `rpg list --apps` shows it
 and `rpg verify` is clean; Applications lists it beside the system's
-applications and starts it from its folder; `rpg remove --purge` removes
+applications and starts it (`appctl run`, in its sandbox); `rpg remove --purge` removes
 its folder and the user's data for it, and Applications lists no app
 afterwards. The refusals (files outside the folder, scripts, set-user
 bits, links out, relations, a newer platform, a bad manifest) are `cargo
 test`'s, in `userspace/rust/rpg/src/app.rs` (`docs/FOXDEN.md`).
+
+## Sandbox test (FoxDen step FD2)
+
+`scripts/run-sandbox-test.sh` (QEMU, the live desktop with QEMU's user
+network; it needs cargo): two apps built on the host around `sandtest`,
+which tries to leave its sandbox: Aardvark asks for no permissions, Abacus
+for `network` and `files:documents`. At the console, `appctl view` and
+`appctl permissions` show what each gets, and a line in
+`~/.config/apps/permissions` narrows Abacus (its view loses the network).
+Applications starts both (`appctl run ID`); each checks that it reads its
+own manifest and data, `/usr` and `/dev/null`, and nothing else: not
+`/etc/shadow`, `/bin`, another app, `~/secret` (also not through a link
+it makes in its data folder, or `..`), not `/svc/auth` or
+`/svc/packages`, not writing its own folder, not starting `/bin/shell`;
+`process_set_creds` and `debug_write` are refused by the job policy (the
+apps run as root here, so nothing else would stop them). Only Abacus
+reaches the test's server at 10.0.2.2 and reads and writes `~/Documents`.
+Both windows come. As a control, the same `sandtest` started at the
+console without `appctl` must fail most of its checks.
 
 ## Updates test (package step E6)
 

@@ -324,6 +324,12 @@ static inline rx_status_t rx_object_set_property(rx_handle_t h, uint32_t prop, c
 }
 static inline rx_status_t rx_job_create(rx_handle_t parent, uint32_t options, rx_handle_t *out) { return RX_SYS(0x30, parent, options, out, 0); }
 static inline rx_status_t rx_handle_replace(rx_handle_t h, uint32_t rights, rx_handle_t *out) { return RX_SYS(0x32, h, rights, out, 0); }
+// Add policy bits to a job (FoxDen step FD2); never removed. RX_JOB_SANDBOX:
+// its processes are refused the calls that reach the system without a
+// handle (firmware variables, their own credentials, the kernel console)
+// and the device, power and clock calls (RX_ERR_ACCESS_DENIED)
+#define RX_JOB_SANDBOX 1u
+static inline rx_status_t rx_job_set_policy(rx_handle_t job, uint32_t bits) { return RX_SYS(0x33, job, bits, 0, 0); }
 
 // Drivers (need the root resource)
 static inline rx_status_t rx_interrupt_create(rx_handle_t resource, uint32_t irq, uint32_t options, rx_handle_t *out) {

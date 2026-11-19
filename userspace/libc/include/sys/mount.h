@@ -28,5 +28,9 @@ int umount(const char *target);
 int umount2(const char *target, int flags);
 // The statfs data of an open file's filesystem (0 or a negative errno)
 int rx_statfs_fd(int fd, rx_fs_statfs_t *out);
+// A root that sees only these n paths (absolute; modes RX_FS_VIEW_*,
+// docs/FS.md "Views"), as a new namespace root connection in *out: what
+// appctl hands an app as its RX_PA_NS_DIR. 0 or a negative errno
+int rx_fs_view(int n, const int *modes, const char *const *paths, rx_handle_t *out);
 
 #endif

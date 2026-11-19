@@ -631,6 +631,34 @@ int link(const char *old, const char *new) {
 }
 
 // The last step of poweroff and reboot (RX_FS_OP_SHUTDOWN_ALL)
+int rx_fs_view(int n, const int *modes, const char *const *paths, rx_handle_t *out) {
+    static char req[RX_FS_MAX_IO];
+    if (n <= 0) return -EINVAL;
+    uint32_t count = (uint32_t)n;
+    size_t at = 4;
+    memcpy(req, &count, 4);
+    for (int k = 0; k < n; k++) {
+        char rel[PATH_MAX];
+        int r = resolve(paths[k], rel);
+        if (r < 0) return r;
+        size_t l = strlen(rel);
+        if (at + sizeof(rx_fs_view_entry_t) + l > sizeof req) return -E2BIG;
+        rx_fs_view_entry_t e = { (uint8_t)modes[k], 0, (uint16_t)l };
+        memcpy(req + at, &e, sizeof e);
+        memcpy(req + at + sizeof e, rel, l);
+        at += sizeof e + l;
+    }
+    rx_handle_t c, s;
+    if (rx_channel_create(0, &c, &s) != RX_OK) return -ENOMEM;
+    int r = __fs_call(ns_root, RX_FS_OP_VIEW, req, at, 0, 0, s, 0, 0, 0);
+    if (r < 0) {
+        rx_handle_close(c);
+        return r;
+    }
+    *out = c;
+    return 0;
+}
+
 int rx_fs_shutdown_all(void) {
     return __fs_call(ns_root, RX_FS_OP_SHUTDOWN_ALL, 0, 0, 0, 0, 0, 0, 0, 0);
 }

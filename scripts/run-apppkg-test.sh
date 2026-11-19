@@ -6,7 +6,7 @@
 #   1. at the console: rpg install puts it into /apps/org.rustica.example/
 #      and nowhere else; rpg list --apps shows it; rpg verify is clean;
 #   2. Applications (the launcher) lists it beside the system's and starts
-#      it from its folder: its window comes;
+#      it (appctl run: in its sandbox, step FD2): its window comes;
 #   3. rpg remove --purge: its folder and the user's data for it are gone,
 #      rpg list --apps has none, the launcher lists no app;
 #   4. the console works throughout.
@@ -199,7 +199,7 @@ key('down'); time.sleep(0.6)
 key('ret'); time.sleep(5)
 out = console('logs | grep -E "launcher: |wintest Example"; ps | grep example', 4)
 check('launcher: 9 applications, 1 apps' in out, 'the launcher lists the app beside the system\'s')
-check('launcher: started /apps/org.rustica.example/bin/example Example -a' in out, 'the launcher starts it from its folder')
+check('launcher: started /bin/appctl run org.rustica.example' in out, 'the launcher starts it (appctl run, in its sandbox)')
 check(re.search(r'wintest Example: (configure|focus|frame|size)', out) is not None or re.search(r'\bexample\b', out.split('ps | grep example')[-1]) is not None, 'its window comes (the program runs)')
 
 # 3. Removing it, with the user's data

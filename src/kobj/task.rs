@@ -23,7 +23,7 @@ use crate::arch::amd64::mm::RxStatus;
 use crate::sync::SpinMutex;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Who a process acts as (step 17): real, effective and saved user and
 /// group ids, supplementary groups, and the file mode creation mask.
@@ -89,7 +89,16 @@ pub struct Job {
     pub koid: u64,
     pub parent: Option<Arc<Job>>,
     children: SpinMutex<JobChildren>,
+    /// What its processes may not do (POLICY_*: FoxDen step FD2), taken
+    /// from the parent when made; bits can be added, never removed
+    policy: AtomicU32,
 }
+
+/// A sandboxed job (an app's: FOXDEN.md step FD2): no calls that reach
+/// the system without a handle (firmware variables, changing one's own
+/// credentials, the kernel's console) and none of the device, power and
+/// clock calls (those need resources it never gets anyway; refused first)
+pub const POLICY_SANDBOX: u32 = 1;
 
 struct JobChildren {
     killed: bool,
@@ -101,12 +110,24 @@ static ROOT_JOB: SpinMutex<Option<Arc<Job>>> = SpinMutex::new(None);
 
 impl Job {
     fn make(parent: Option<Arc<Job>>) -> Arc<Self> {
+        let policy = parent.as_ref().map_or(0, |p| p.policy());
         Arc::new(Self {
             signals: SignalState::new(0),
             koid: new_koid(),
             parent,
             children: SpinMutex::new(JobChildren { killed: false, jobs: Vec::new(), processes: Vec::new() }),
+            policy: AtomicU32::new(policy),
         })
+    }
+
+    pub fn policy(&self) -> u32 {
+        self.policy.load(Ordering::Acquire)
+    }
+
+    /// Add policy bits (never removes any). Jobs made under it later take
+    /// them; set it before starting anything in it
+    pub fn add_policy(&self, bits: u32) {
+        self.policy.fetch_or(bits, Ordering::AcqRel);
     }
 
     /// The job every process started by the kernel belongs to

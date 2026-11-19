@@ -68,6 +68,7 @@ uses).
 | `rpg` | Rustux's own, in place of `dpkg` and `apt` (`PACKAGES.md`): `update`, `upgrade`, `install NAME` or `./FILE.rpg`, `remove [--purge]`, `autoremove`, `search`, `show`, `policy`, `list`, `depends`, `rdepends`, `hold`, `unhold`, `download`, `clean`, `source`, `key`, `files`, `owner`, `verify`, `boot list`, `boot status` and `boot update` (the system images, how each one started, and rboot's entries), `fix`, `build`, `info`, `index`; repositories signed with Ed25519 |
 | `updates` | the system's updates through the installer service (package step E6, `man updates`): `status`, `check`, `install` (`-S`: the password on stdin); no sudo needed for an administrator |
 | `packagesd` | the installer service `/svc/packages` (root): what `updates`, the panel and Settings > Updates use; the daily check (`/etc/rpg/updates.conf`) |
+| `appctl` | start an installed app in its sandbox (FoxDen step FD2, `man appctl`): `run ID`, `view ID` (the paths it sees), `permissions ID`; what Applications uses |
 | `netcfg` | Rustux's own (`/etc/network.conf`, applied at once): `IFACE dhcp`, `static` or `off`, `dns`, `search`, `apply` |
 | `fwctl` | Rustux's own (no iptables or nftables syntax): `allow`, `deny`, `append`, `delete`, `default`, `enable`, `disable`, `reload`, `save` |
 | `ss` | `-t -u -l -a -n -H`; no `-p` (processes), `-e`, filters; Recv-Q/Send-Q are smoltcp's buffers |
@@ -104,6 +105,7 @@ uses).
 | `evtest` | prints input events (step F3, `INPUT.md`): takes the focus from the input service and prints keys (usage, modifiers, the layout's text) and pointer motion, buttons and wheel until Esc (or `-t SECONDS`); root |
 | `compositor` | windows on the screen (step F4, `WINDOWS.md`): click to focus, drag to move and resize, title bar buttons, Alt+Tab, Alt+F4, F11; `-v` prints what happens; root |
 | `wintest` | a test window: `NAME [-c RRGGBB] [-s WxH] [-p X,Y] [-a] [-n] [-k] [-t TEXT]`; prints the events it gets |
+| `sandtest` | an app that tries to leave its sandbox (`run-sandbox-test.sh`): `[net] [docs] [port=N] [color=RRGGBB] [at=X,Y] [hold=SECONDS]`; started by `appctl` |
 | `rustica-window` | a window from Rust (the `rustica-window` crate's demo) |
 | `desktop` | start the desktop (root; the `desktop` unit: compositor, graphical login, session); `--stop`; `--run` is the unit's program (step F6, `SESSION.md`) |
 | `notify` | `notify TEXT...`: a notification on the desktop (top right, 5 s) |

@@ -289,6 +289,15 @@ pub const fn ok_to_ret_isize(val: isize) -> SyscallRet {
 /// # Calling Convention
 ///
 /// This function uses the C ABI and is callable from assembly.
+/// The calls POLICY_SANDBOX refuses: setting one's own credentials (0x0B),
+/// physical and contiguous memory (0x19, 0x1B), setting the clock (0x44),
+/// the kernel's console and log objects (0x50, 0x53), every driver call
+/// (0x80-0x89), power, ACPI, USB, firmware variables and the display
+/// (0x92-0x9C). Everything else needs a handle the app was given.
+fn sandbox_refuses(num: u32) -> bool {
+    matches!(num, 0x0B | 0x19 | 0x1B | 0x44 | 0x50 | 0x53 | 0x80..=0x89 | 0x92..=0x9C)
+}
+
 #[no_mangle]
 pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
     let num = args.number;
@@ -296,6 +305,15 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
     // Dispatch to handler based on syscall number
     // For now, most syscalls return NOT_IMPLEMENTED
     // We'll implement them incrementally as needed
+
+    // A sandboxed job's processes (FoxDen step FD2): the calls that reach
+    // the system without a handle, and the device, power and clock calls,
+    // are refused before anything else
+    if sandbox_refuses(num)
+        && object::current_process().map_or(false, |p| p.job.policy() & crate::kobj::task::POLICY_SANDBOX != 0)
+    {
+        return err_to_ret(RxStatus::ERR_ACCESS_DENIED);
+    }
 
     match num {
         // Process & Thread (0x01-0x0F)
@@ -347,6 +365,7 @@ pub extern "C" fn syscall_dispatch(args: SyscallArgs) -> SyscallRet {
         0x30 => task::sys_job_create(args),
         0x31 => object::sys_handle_duplicate(args),
         0x32 => task::sys_handle_replace(args),
+        0x33 => task::sys_job_set_policy(args),
 
         // Time (0x40-0x4F)
         0x40 => system::sys_clock_get(args),
