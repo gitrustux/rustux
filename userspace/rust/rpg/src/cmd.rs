@@ -196,9 +196,10 @@ fn carry_out(ctx: &Ctx, plan: Plan, files: Vec<Package>) -> Result<(), String> {
     Ok(())
 }
 
-/// rpg install NAME... and ./FILE.rpg... together: names from the
-/// sources, files as they are; their dependencies from the sources
-pub fn install(ctx: &Ctx, args: &[String], yes: bool) -> Result<(), String> {
+/// What rpg install NAME... ./FILE.rpg... would do: the plan, the package
+/// files read, and the installed packages new ones replace. None: nothing
+/// to do (each is installed at the newest there is)
+fn install_plan(ctx: &Ctx, args: &[String], mark: bool) -> Result<Option<(Plan, Vec<Package>, Vec<String>)>, String> {
     let installed = ctx.db.installed()?;
     let mut files = Vec::new();
     let mut targets = Vec::new();
@@ -222,7 +223,9 @@ pub fn install(ctx: &Ctx, args: &[String], yes: bool) -> Result<(), String> {
         if let Some(c) = installed.iter().find(|c| c.name() == a) {
             if version::compare(cand.version(), c.version()) != std::cmp::Ordering::Greater {
                 if c.get("Auto") == Some("yes") {
-                    ctx.set_field(a, "Auto", None)?;
+                    if mark {
+                        ctx.set_field(a, "Auto", None)?;
+                    }
                     println!("{a} {}: the newest there is; now marked as installed by you", c.version());
                 } else {
                     println!("{a} {}: the newest there is, installed", c.version());
@@ -234,7 +237,7 @@ pub fn install(ctx: &Ctx, args: &[String], yes: bool) -> Result<(), String> {
         targets.push(Step { c: cand.c.clone(), avail: Some(cand.clone()), file: None, old, auto: Some(false), why: None });
     }
     if targets.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     // Replaces (with Conflicts, as Debian's): an installed package that a
     // new one takes the place of is removed first (the editions: rpg
@@ -251,6 +254,13 @@ pub fn install(ctx: &Ctx, args: &[String], yes: bool) -> Result<(), String> {
     }
     let staying: Vec<Control> = installed.iter().filter(|i| !replaced.contains(&i.name().to_string())).cloned().collect();
     let plan = solve::resolve(&staying, &av, targets)?;
+    Ok(Some((plan, files, replaced)))
+}
+
+/// rpg install NAME... and ./FILE.rpg... together: names from the
+/// sources, files as they are; their dependencies from the sources
+pub fn install(ctx: &Ctx, args: &[String], yes: bool) -> Result<(), String> {
+    let Some((plan, files, replaced)) = install_plan(ctx, args, true)? else { return Ok(()) };
     for n in &replaced {
         println!("{n} is replaced: removed first");
     }
@@ -263,6 +273,89 @@ pub fn install(ctx: &Ctx, args: &[String], yes: bool) -> Result<(), String> {
         ctx.remove(&replaced, false)?;
     }
     carry_out(ctx, plan, files)
+}
+
+/// rpg plan install|upgrade|remove ...: what the command would change, a
+/// line a package, for the installer service (FoxDen step FD4), which
+/// decides from it who may do it. Changes nothing; needs no root:
+///   step OP NAME FROM TO KIND ORIGIN PERMISSIONS
+/// OP install, upgrade or remove; FROM and TO "-" when none; KIND app or
+/// system; ORIGIN apps (an app source), system (a system source), file
+/// (a package file) or installed (a removal); PERMISSIONS what an app asks
+/// for, joined by ",", or "-"
+pub fn plan(ctx: &Ctx, args: &[String]) -> Result<(), String> {
+    let perms_of = |c: &Control, file: Option<&Package>| -> String {
+        if c.kind() != "app" {
+            return "-".into();
+        }
+        let p: Vec<String> = match file {
+            Some(p) => crate::app::check(p).map(|m| m.permissions).unwrap_or_default(),
+            None => c.get("Permissions").map(|v| v.split_whitespace().map(str::to_string).collect()).unwrap_or_else(|| {
+                // An installed app: its manifest
+                std::fs::read_to_string(ctx.db.path(&format!("{}/manifest", crate::app::dir(c.name()))))
+                    .ok()
+                    .and_then(|t| crate::app::parse_manifest(&t).ok())
+                    .map(|m| m.permissions)
+                    .unwrap_or_default()
+            }),
+        };
+        if p.is_empty() {
+            "-".into()
+        } else {
+            p.join(",")
+        }
+    };
+    let installed = ctx.db.installed()?;
+    let removal = |n: &str| -> Result<String, String> {
+        let c = installed.iter().find(|c| c.name() == n).ok_or(format!("{n} is not installed"))?;
+        Ok(format!("step remove {n} {} - {} installed {}", c.version(), c.kind(), perms_of(c, None)))
+    };
+    let show = |plan: &Plan, files: &[Package]| {
+        for s in &plan.steps {
+            let origin = match (&s.avail, s.file) {
+                (Some(a), _) if a.source.kind == Kind::App => "apps",
+                (Some(_), _) => "system",
+                _ => "file",
+            };
+            let file = s.file.and_then(|i| files.get(i));
+            println!(
+                "step {} {} {} {} {} {origin} {}",
+                if s.old.is_some() { "upgrade" } else { "install" },
+                s.c.name(),
+                s.old.as_deref().unwrap_or("-"),
+                s.c.version(),
+                s.c.kind(),
+                perms_of(&s.c, file)
+            );
+        }
+    };
+    match args.first().map(String::as_str) {
+        Some("install") => {
+            let items: Vec<String> = args[1..].iter().filter(|a| !matches!(a.as_str(), "-y" | "--yes")).cloned().collect();
+            if items.is_empty() {
+                return Err("plan install what?".into());
+            }
+            if let Some((plan, files, replaced)) = install_plan(ctx, &items, false)? {
+                for n in &replaced {
+                    println!("{}", removal(n)?);
+                }
+                show(&plan, &files);
+            }
+            Ok(())
+        }
+        Some("upgrade") => {
+            let av = need_lists(ctx)?;
+            show(&solve::upgrade(&installed, &av), &[]);
+            Ok(())
+        }
+        Some("remove") => {
+            for n in args[1..].iter().filter(|a| !a.starts_with('-')) {
+                println!("{}", removal(n)?);
+            }
+            Ok(())
+        }
+        _ => Err("plan install NAME... | upgrade | remove NAME...".into()),
+    }
 }
 
 pub fn upgrade(ctx: &Ctx, yes: bool) -> Result<(), String> {

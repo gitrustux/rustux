@@ -61,7 +61,9 @@ rm /etc/rpg/ca-certificates.pem
 sw repo2
 rpg update
 echo "== as a user"
+# (through the installer service: the same refusal, the CA being gone)
 sudo -u nobody rpg update
+echo "user update status $?"
 sudo -u nobody rpg search tool
 echo PKGTEST done4
 poweroff

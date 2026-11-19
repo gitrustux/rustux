@@ -42,6 +42,8 @@ mod ops;
 mod pkg;
 mod repo;
 mod solve;
+#[cfg(target_env = "musl")]
+mod svc;
 mod sys;
 mod version;
 
@@ -109,10 +111,40 @@ fn main() {
     };
     let rest = &args[1..];
     let ctx = Ctx { db: Db::new(&root) };
-    if !matches!(cmd.as_str(), "fix" | "build" | "info" | "index" | "pool-path" | "version" | "--version" | "help" | "--help" | "-h") {
+    if !matches!(cmd.as_str(), "fix" | "build" | "info" | "index" | "pool-path" | "plan" | "version" | "--version" | "help" | "--help" | "-h") {
         if let Some(what) = ctx.interrupted() {
             if matches!(cmd.as_str(), "list" | "show" | "files" | "owner" | "verify" | "search" | "policy") {
                 eprintln!("rpg: the {what} was interrupted; rpg fix finishes it (so does the next install or remove)");
+            }
+        }
+    }
+    // Not root, on this system: changes go through the installer service
+    // (FoxDen step FD4), which decides who may make them
+    #[cfg(target_env = "musl")]
+    if !sys::is_root() && root == Path::new("/") {
+        let request = match cmd.as_str() {
+            "install" | "add" => {
+                let items: Vec<String> = rest.iter().filter(|a| !matches!(a.as_str(), "-y" | "--yes" | "--assume-yes")).map(|a| if is_file_arg(a) { absolute(a) } else { a.clone() }).collect();
+                (!items.is_empty()).then(|| format!("install {}", items.join(" ")))
+            }
+            "remove" | "purge" => {
+                let mut items: Vec<String> = rest.iter().filter(|a| !a.starts_with('-')).cloned().collect();
+                if cmd == "purge" || rest.iter().any(|a| a == "--purge") {
+                    items.insert(0, "--purge".into());
+                }
+                (!items.is_empty()).then(|| format!("remove {}", items.join(" ")))
+            }
+            "update" => Some("update".to_string()),
+            "upgrade" | "full-upgrade" | "dist-upgrade" if !rest.iter().any(|a| a == "--plan") => Some("upgrade".to_string()),
+            _ => None,
+        };
+        if let Some(req) = request {
+            if rest.iter().any(|a| a.contains(char::is_whitespace)) {
+                die("a name or file with a space in it: the installer service takes neither (sudo rpg ...)");
+            }
+            match svc::run(&req) {
+                Ok(code) => exit(code),
+                Err(e) => die(&e),
             }
         }
     }
@@ -159,6 +191,7 @@ fn main() {
             })
         }
         "search" => cmd::search(&ctx, rest),
+        "plan" => cmd::plan(&ctx, rest),
         "policy" => cmd::policy(&ctx, rest),
         "depends" => cmd::depends(&ctx, rest, false),
         "rdepends" => cmd::depends(&ctx, rest, true),

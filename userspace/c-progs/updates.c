@@ -152,8 +152,9 @@ int main(int argc, char **argv) {
         if (!strncmp(buf, "out ", 4)) {
             printf("%s\n", buf + 4);
             fflush(stdout);
-        } else if (!strncmp(buf, "denied ", 7)) {
-            fprintf(stderr, "updates: refused: %s\n", buf + 7);
+        } else if (!strncmp(buf, "denied ", 7) || !strncmp(buf, "auth ", 5)) {
+            // auth: the password was wrong (or none given); updates asks once
+            fprintf(stderr, "updates: refused: %s\n", buf + (buf[0] == 'd' ? 7 : 5));
             return 1;
         } else if (!strncmp(buf, "done ", 5)) {
             int code = atoi(buf + 5);

@@ -5,14 +5,31 @@
 // https://opensource.org/licenses/MIT
 
 // packagesd: the installer service, /svc/packages (package step E6;
-// FOXDEN.md step FD4 adds apps to it). It runs rpg for the desktop and for
-// users who are not root, so that nothing in the session needs sudo:
+// FoxDen step FD4 adds apps to it). It runs rpg for the desktop and for
+// users who are not root, so that nothing in the session needs sudo
+// (rpg itself asks it when not run as root):
 //
 //   status                the last check (below); anyone
 //   check                 rpg update, then rpg upgrade --plan; anyone
-//   upgrade\nPASSWORD     rpg upgrade -y: root, or an administrator (group
-//                         sudo) with their own password. Messages
-//                         "out LINE" while it runs, then "done CODE"
+//   update                the same, rpg update's lines sent as it runs
+//   install NAME|/FILE.rpg...     rpg install -y
+//   remove [--purge] NAME...      rpg remove
+//   upgrade               rpg upgrade -y
+//
+// For install, remove and upgrade it asks rpg first what would change
+// (rpg plan) and decides: apps from app sources that ask for neither
+// files:home nor system may be installed, upgraded and removed by anyone;
+// anything else (a system package, a package file, such an app, --purge,
+// which removes every user's data for an app) needs an administrator: the
+// sender is root, or a second line of the request authenticates one:
+//
+//   PASSWORD              the sender's own, if they are in group sudo
+//   as NAME PASSWORD      an administrator's (someone not one asks one)
+//
+// Without it the reply is "auth WHY" (send the request again with the
+// second line), or "denied WHY". While rpg runs, "out LINE" messages, then
+// "done CODE". The plan and the change happen under one lock, so nothing
+// changes in between.
 //
 // A request is one channel message of text; so is each reply. One
 // operation runs at a time. Every day (/etc/rpg/updates.conf: `check
@@ -166,12 +183,37 @@ static long long status_number(const char *key) {
     return v;
 }
 
-// rpg update, then the plan: the new status. 0 if the check worked
-static int check(void) {
+struct stream {
+    rx_handle_t ch;
+    const char *what;   // for the log ("upgrade", "install")
+};
+
+static void send_text(rx_handle_t ch, const char *s);
+
+// A line of rpg update for check() to keep, and to send if asked
+struct check_out {
+    struct text *t;
+    rx_handle_t ch;
+};
+
+static void check_line(const char *line, void *arg) {
+    struct check_out *c = arg;
+    text_add(c->t, line);
+    if (c->ch) {
+        char msg[4200];
+        snprintf(msg, sizeof msg, "out %s", line);
+        send_text(c->ch, msg);
+    }
+}
+
+// rpg update, then the plan: the new status. 0 if the check worked.
+// ch: also send rpg update's lines there ("update")
+static int check_to(rx_handle_t ch) {
     pthread_mutex_lock(&busy);
     struct text out = { 0, 0, 0 }, plan = { 0, 0, 0 };
     char *up[] = { RPG, "update", 0 };
-    int r = run(up, collect, &out);
+    struct check_out co = { &out, ch };
+    int r = run(up, check_line, &co);
     char err[300] = "";
     if (r != 0) {
         // the last line that says why
@@ -206,72 +248,255 @@ static int check(void) {
     return err[0] ? -1 : 0;
 }
 
+static int check(void) { return check_to(0); }
+
 static void send_text(rx_handle_t ch, const char *s) {
     size_t l = strlen(s);
     if (l > 60000) l = 60000;
     rx_channel_write(ch, 0, s, (uint32_t)l, 0, 0);
 }
 
-struct stream {
-    rx_handle_t ch;
-};
-
 static void stream_line(const char *line, void *arg) {
     struct stream *st = arg;
     char msg[4200];
     snprintf(msg, sizeof msg, "out %s", line);
     send_text(st->ch, msg);
-    syslog(LOG_INFO, "upgrade: %s", line);
+    syslog(LOG_INFO, "%s: %s", st->what, line);
 }
 
-// May the sender upgrade the system?
-static int allowed(const rx_sender_t *who, const char *pw, char *why, size_t cap) {
-    if (who->euid == 0) return 1;
-    struct passwd *p = getpwuid(who->uid);
-    if (!p) {
-        snprintf(why, cap, "unknown user %u", who->uid);
-        return 0;
-    }
+static int in_sudo(const char *name, gid_t base) {
     struct group *g = getgrnam("sudo");
-    if (!g || !rx_sender_in_group(who, g->gr_gid)) {
-        snprintf(why, cap, "%s is not an administrator (group sudo)", p->pw_name);
+    if (!g) return 0;
+    gid_t list[64];
+    int n = 64;
+    if (getgrouplist(name, base, list, &n) < 0) n = 64;
+    for (int i = 0; i < n; i++)
+        if (list[i] == g->gr_gid) return 1;
+    return 0;
+}
+
+// Is an administrator's say given? The sender is root, or `auth` (the
+// request's second line, or 0) authenticates one: the sender's own
+// password when they are in group sudo, "as NAME PASSWORD" anyone's who
+// is. 1 yes; 0 no (why: "" when nothing was given, so ask for it)
+static int admin_ok(const rx_sender_t *who, char *auth, char *why, size_t cap) {
+    why[0] = 0;
+    if (who->euid == 0) return 1;
+    if (!auth || !*auth) return 0;
+    // getpwuid and getpwnam share one buffer: the sender's name copied
+    struct passwd *p = getpwuid(who->uid);
+    char me[64] = "";
+    if (p) snprintf(me, sizeof me, "%s", p->pw_name);
+    char name[64];
+    const char *pw;
+    if (!strncmp(auth, "as ", 3)) {
+        char *n = auth + 3, *sp = strchr(n, ' ');
+        if (!sp) {
+            snprintf(why, cap, "as NAME PASSWORD");
+            return 0;
+        }
+        snprintf(name, sizeof name, "%.*s", (int)(sp - n), n);
+        pw = sp + 1;
+    } else {
+        if (!me[0]) {
+            snprintf(why, cap, "unknown user %u", who->uid);
+            return 0;
+        }
+        snprintf(name, sizeof name, "%s", me);
+        pw = auth;
+    }
+    struct passwd *a = getpwnam(name);
+    int sender_admin = me[0] && !strcmp(name, me);
+    struct group *g = getgrnam("sudo");
+    int admin = a && (sender_admin ? (g && rx_sender_in_group(who, g->gr_gid)) : in_sudo(name, a->pw_gid));
+    if (!admin) {
+        snprintf(why, cap, "%s is not an administrator (group sudo)", name);
         return 0;
     }
     pthread_mutex_lock(&udb_lock);
-    int ok = pw && udb_check(p->pw_name, pw);
+    int ok = udb_check(name, pw);
     pthread_mutex_unlock(&udb_lock);
     if (!ok) {
         sleep(2);
-        snprintf(why, cap, "wrong password for %s", p->pw_name);
+        snprintf(why, cap, "wrong password for %s", name);
         return 0;
     }
+    snprintf(why, cap, "%s", name);   // who said yes, for the log
     return 1;
 }
 
-static void upgrade(rx_handle_t ch, const rx_sender_t *who, char *pw) {
-    char why[160];
-    int ok = allowed(who, pw, why, sizeof why);
-    if (pw) memset(pw, 0, strlen(pw));
-    if (!ok) {
-        char msg[200];
-        snprintf(msg, sizeof msg, "denied %s", why);
-        send_text(ch, msg);
-        syslog(LOG_WARNING, "upgrade refused: %s", why);
-        return;
+// The request's arguments as rpg's: names (lower-case letters, digits,
+// + - .), absolute paths of package files (install), --purge (remove).
+// Count, or -1 (why says what is wrong)
+static int parse_args(const char *verb, char *line, char **argv, int max, int *files, char *why, size_t cap) {
+    int n = 0;
+    *files = 0;
+    for (char *w = strtok(line, " "); w; w = strtok(0, " ")) {
+        if (n == max) {
+            snprintf(why, cap, "too many at once");
+            return -1;
+        }
+        if (!strcmp(verb, "remove") && !strcmp(w, "--purge")) {
+            argv[n++] = w;
+            continue;
+        }
+        if (!strcmp(verb, "install") && w[0] == '/') {
+            size_t l = strlen(w);
+            if (l < 5 || strcmp(w + l - 4, ".rpg") || strstr(w, "/../")) {
+                snprintf(why, cap, "%s: a package file is an absolute path ending in .rpg", w);
+                return -1;
+            }
+            (*files)++;
+            argv[n++] = w;
+            continue;
+        }
+        for (char *c = w; *c; c++) {
+            if (!((*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '+' || *c == '-' || *c == '.') || w[0] == '-') {
+                snprintf(why, cap, "%s: not a package name", w);
+                return -1;
+            }
+        }
+        argv[n++] = w;
     }
-    struct passwd *p = getpwuid(who->uid);
-    syslog(LOG_INFO, "upgrade asked by %s", p ? p->pw_name : "?");
-    pthread_mutex_lock(&busy);
-    struct stream st = { ch };
-    char *argv[] = { RPG, "upgrade", "-y", 0 };
-    int code = run(argv, stream_line, &st);
-    last_upgrade = (long long)time(0);
-    last_upgrade_code = code;
-    pthread_mutex_unlock(&busy);
-    check();   // what is left
+    if (n == 0 || (n == 1 && !strcmp(argv[0], "--purge"))) {
+        snprintf(why, cap, "%s what?", verb);
+        return -1;
+    }
+    return n;
+}
+
+// From rpg plan's lines: why an administrator is needed ("" if not)
+static void needs_admin(const char *plan, int purge, char *why, size_t cap) {
+    why[0] = 0;
+    int sys = 0;
+    char first_sys[80] = "";
+    for (const char *l = plan; l && *l;) {
+        const char *nl = strchr(l, '\n');
+        char line[512];
+        snprintf(line, sizeof line, "%.*s", (int)(nl ? (size_t)(nl - l) : strlen(l)), l);
+        l = nl ? nl + 1 : 0;
+        // step OP NAME FROM TO KIND ORIGIN PERMISSIONS
+        char *f[8], *save = 0;
+        int nf = 0;
+        for (char *t = strtok_r(line, " ", &save); t && nf < 8; t = strtok_r(0, " ", &save)) f[nf++] = t;
+        if (nf != 8 || strcmp(f[0], "step")) continue;
+        const char *name = f[2], *kind = f[5], *origin = f[6], *perms = f[7];
+        if (strcmp(kind, "app")) {
+            if (!sys++) snprintf(first_sys, sizeof first_sys, "%s", name);
+            continue;
+        }
+        if (!strcmp(origin, "file") && !why[0]) snprintf(why, cap, "%s is a package file (not from a signed app source)", name);
+        if (!strcmp(origin, "system") && !why[0]) snprintf(why, cap, "%s comes from a system source", name);
+        char p[260];
+        snprintf(p, sizeof p, ",%s,", perms);
+        if (strstr(p, ",files:home,") && !why[0]) snprintf(why, cap, "%s asks for files:home (the whole home folder)", name);
+        if (strstr(p, ",system,") && !why[0]) snprintf(why, cap, "%s asks for system (no sandbox)", name);
+    }
+    if (sys && !why[0]) {
+        if (sys == 1) snprintf(why, cap, "%s is a system package", first_sys);
+        else snprintf(why, cap, "%d system packages (%s, ...)", sys, first_sys);
+    }
+    if (purge && !why[0]) snprintf(why, cap, "--purge removes every user's data for it");
+}
+
+static void send_done(rx_handle_t ch, int code) {
     char msg[32];
     snprintf(msg, sizeof msg, "done %d", code);
     send_text(ch, msg);
+}
+
+static void deny(rx_handle_t ch, const char *verb, const char *why) {
+    char msg[400];
+    snprintf(msg, sizeof msg, "denied %s", why);
+    send_text(ch, msg);
+    syslog(LOG_WARNING, "%s refused: %s", verb, why);
+}
+
+// install, remove, upgrade: rpg plan, the decision, then rpg
+static void change(rx_handle_t ch, const rx_sender_t *who, const char *verb, char *args, char *auth) {
+    char why[300], who_ok[300];
+    char *argv[48];
+    int files = 0, n = 0;
+    struct passwd *p = getpwuid(who->uid);
+    char me[64];
+    snprintf(me, sizeof me, "%s", p ? p->pw_name : "?");   // (getpwnam reuses the buffer)
+    if (strcmp(verb, "upgrade")) {
+        n = parse_args(verb, args ? args : (char *)"", argv, 40, &files, why, sizeof why);
+        if (n < 0) {
+            deny(ch, verb, why);
+            return;
+        }
+    }
+    int purge = 0;
+    for (int i = 0; i < n; i++) purge |= !strcmp(argv[i], "--purge");
+    int admin = admin_ok(who, auth, who_ok, sizeof who_ok);
+    if (auth) memset(auth, 0, strlen(auth));
+    if (!admin && who_ok[0]) {
+        // A password that was wrong, or someone who is not an administrator
+        char msg[400];
+        snprintf(msg, sizeof msg, "%s %s", strstr(who_ok, "wrong password") ? "auth" : "denied", who_ok);
+        send_text(ch, msg);
+        syslog(LOG_WARNING, "%s asked by %s: %s", verb, me, who_ok);
+        return;
+    }
+    // Package files only with an administrator's say, before rpg reads them
+    if (files && !admin) {
+        send_text(ch, "auth installing a package file");
+        return;
+    }
+    pthread_mutex_lock(&busy);
+    // What would change
+    char *pv[52];
+    int k = 0;
+    pv[k++] = RPG;
+    pv[k++] = "plan";
+    pv[k++] = (char *)verb;
+    for (int i = 0; i < n; i++) pv[k++] = argv[i];
+    pv[k] = 0;
+    struct text plan = { 0, 0, 0 };
+    int r = run(pv, collect, &plan);
+    if (r != 0) {
+        // Why it cannot be done (no source has it, not installed...)
+        for (char *l = plan.s; l && *l;) {
+            char *nl = strchr(l, '\n');
+            if (nl) *nl = 0;
+            char msg[4200];
+            snprintf(msg, sizeof msg, "out %s", l);
+            send_text(ch, msg);
+            l = nl ? nl + 1 : 0;
+        }
+        free(plan.s);
+        pthread_mutex_unlock(&busy);
+        send_done(ch, r);
+        return;
+    }
+    needs_admin(plan.s, purge, why, sizeof why);
+    free(plan.s);
+    if (why[0] && !admin) {
+        pthread_mutex_unlock(&busy);
+        char msg[400];
+        snprintf(msg, sizeof msg, "auth %s", why);
+        send_text(ch, msg);
+        syslog(LOG_INFO, "%s asked by %s: needs an administrator: %s", verb, me, why);
+        return;
+    }
+    syslog(LOG_INFO, "%s asked by %s%s%s", verb, me, admin && who->euid ? ", allowed by " : "", admin && who->euid ? who_ok : "");
+    // Now the change itself
+    k = 0;
+    pv[k++] = RPG;
+    pv[k++] = (char *)verb;
+    if (strcmp(verb, "remove")) pv[k++] = "-y";
+    for (int i = 0; i < n; i++) pv[k++] = argv[i];
+    pv[k] = 0;
+    struct stream st = { ch, verb };
+    int code = run(pv, stream_line, &st);
+    if (!strcmp(verb, "upgrade")) {
+        last_upgrade = (long long)time(0);
+        last_upgrade_code = code;
+    }
+    pthread_mutex_unlock(&busy);
+    check();   // what is left to upgrade
+    send_done(ch, code);
 }
 
 struct client {
@@ -312,10 +537,17 @@ static void *serve(void *arg) {
             char *t = read_status();
             send_text(ch, t);
             free(t);
+        } else if (!strcmp(msg, "update")) {
+            int r = check_to(ch);
+            send_done(ch, r == 0 ? 0 : 1);
         } else if (!strcmp(msg, "upgrade")) {
-            upgrade(ch, &who, rest);
+            change(ch, &who, "upgrade", 0, rest);
+        } else if (!strncmp(msg, "install ", 8) || !strncmp(msg, "remove ", 7)) {
+            char *sp = strchr(msg, ' ');
+            *sp = 0;
+            change(ch, &who, msg, sp + 1, rest);
         } else {
-            send_text(ch, "error status, check or upgrade");
+            send_text(ch, "error status, check, update, install, remove or upgrade");
         }
         memset(msg, 0, sizeof msg);
     }

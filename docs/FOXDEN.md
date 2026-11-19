@@ -54,8 +54,8 @@ result as an install would.
   apps key (step FD3), or from package files.
 
 **Installing and removing:** `rpg install ./org.rustica.example_1.0_x86_64.rpg`
-(root, for now: step FD4's installer service lets users install
-sandboxed apps), `rpg list --apps` (ID, version, name and summary from the
+(an administrator: a package file is not from a signed source; step
+FD4), `rpg list --apps` (ID, version, name and summary from the
 manifest; `--json`), `rpg remove ID`. The users' data for an app is in
 `~/.local/share/apps/ID`, `~/.config/apps/ID` and `~/.cache/apps/ID`;
 `rpg remove` leaves it, `rpg remove --purge` removes it from every home
@@ -147,8 +147,8 @@ Then apps work as packages do, by their ID: `rpg search calculator`
 (names and summaries; `(app)`), `rpg show org.rustica.calculator`,
 `rpg install org.rustica.calculator` (it shows what the app asks for
 before installing: "asks for: network, files:documents", or "nothing"),
-`rpg upgrade` (apps with the system), `rpg remove`. Installing is still
-root's (step FD4 lets users install sandboxed apps).
+`rpg upgrade` (apps with the system), `rpg remove`. Any user may run
+them (step FD4, below).
 
 **The first apps**, in `userspace/apps/` (control file, manifest, icon)
 with their programs in `userspace/rust/foxden-apps`:
@@ -174,10 +174,55 @@ after signing, listing a system package, or for another platform);
 removes the apps from a test apps source in QEMU, and
 `scripts/run-publish-test.sh` publishes them.
 
+## Installing as a user (step FD4)
+
+An app cannot leave its sandbox, so installing one is not a change to
+the system: any user may install, upgrade and remove the apps of the app
+sources, without sudo. rpg run by someone other than root sends `install`,
+`remove`, `update` and `upgrade` to the installer service, `packagesd`
+(`/svc/packages`, root; `PACKAGES.md` "Updates on the desktop"), which
+runs rpg as root and sends its output back. Before it changes anything,
+it asks rpg what would change (`rpg plan install|upgrade|remove ...`, a
+line a package: `step OP NAME FROM TO KIND ORIGIN PERMISSIONS`) and
+decides, under the same lock as the change itself:
+
+| What would change | Who |
+|-------------------|-----|
+| apps from an app source, asking for neither `files:home` nor `system`: install, upgrade, remove | anyone |
+| a system package (installed, upgraded or removed) | an administrator |
+| an app asking for `files:home` (the whole home) or `system` (no sandbox) | an administrator |
+| a package file (`rpg install ./FILE.rpg`: not from a signed source) | an administrator |
+| `rpg remove --purge` (every user's data for the app) | an administrator |
+
+"An administrator" is root, or someone in group `sudo` with their own
+password; anyone else may name an administrator, who types theirs (as
+polkit asks):
+
+```
+carol$ rpg install hello
+hello is a system package: an administrator's password is needed
+An administrator's name: erin
+[rpg] password for erin:
+```
+
+Three wrong passwords end it; each is logged, as is who asked for what
+and who allowed it (`logs -t packagesd`). `rpg update` as a user is the
+service's check, its output shown. Package names are checked (letters,
+digits, `+ - .`) and package files must be absolute paths ending in
+`.rpg`, read only once an administrator said yes.
+
+The `system` permission is still never given to an app: an app that asks
+for it is installed only with an administrator's say, but runs sandboxed
+(what it would get, the system's job and no view, comes with a reason to
+give it; the System Monitor's process list waits for it).
+
+`scripts/run-installsvc-test.sh` (`TESTS.md`): carol, not an
+administrator, installs, upgrades and removes an app without a password
+and is refused a system package, a `files:home` app, a package file and
+`--purge`, until erin, an administrator, gives her password.
+
 ## Not yet
 
-Installing as a user through `/svc/packages`, and the `system`
-permission for the system's own apps with the administrator's say (FD4),
-the FoxDen app (FD5), app updates in the background, the file chooser and
+The `system` permission's sandbox-free run, the FoxDen app (FD5), app updates in the background, the file chooser and
 moving the Text Editor and Image Viewer out (FD6), outside developers
 (FD7).

@@ -26,12 +26,20 @@ USAGE
     build DIR [-o FILE] | info ./FILE.rpg
     index REPO [--suite S] [--section S] [--arch A]   (publishing)
     index --apps REPO [--platform N]                   (an apps repository)
+    plan install NAME... | upgrade | remove NAME...     what would change,
+                                 a line a package (the installer service's)
     version
 
     rpg is Rustica's one package tool: what Debian splits between dpkg
-    and apt. Changes are root's (sudo rpg ...); anyone may look and
-    search. -y answers yes to the question; without it, no answer (a
-    script) is no.
+    and apt. Anyone may look and search. install, remove, update and
+    upgrade run by someone other than root go to the installer service
+    (packagesd, /svc/packages), which lets anyone install, upgrade and
+    remove apps from app sources and asks an administrator's password
+    for the rest: system packages, package files, apps asking for
+    files:home or system, and remove --purge (the user's own if they are
+    in group sudo, else an administrator's name and password). -y
+    answers yes to the question; without it, no answer (a script) is
+    no.
 
 PACKAGES
     A .rpg file is a gzipped tar: control (the package's fields), files
@@ -195,7 +203,7 @@ EXAMPLES
     rpg boot list
     sudo rpg remove --purge hello
     rpg search calculator
-    sudo rpg install org.rustica.calculator   (an app, from the apps source)
+    rpg install org.rustica.calculator   (an app: no sudo needed)
     rpg list --apps
 
 SEE ALSO

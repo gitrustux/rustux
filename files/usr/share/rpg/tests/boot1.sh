@@ -76,7 +76,9 @@ rpg list
 ls /var/lib/rpg
 echo "== not as root"
 sudo -u nobody rpg list
-sudo -u nobody rpg install /tmp/p/hello_1.0-1_all.rpg
+# (through the installer service, FoxDen step FD4: a package file needs
+# an administrator, and no name is given)
+echo | sudo -u nobody rpg install /tmp/p/hello_1.0-1_all.rpg
 echo "== big: 300 files"
 for v in 1 2 3; do
     mkdir -p big$v/RPG big$v/opt/big

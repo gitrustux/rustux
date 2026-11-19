@@ -452,6 +452,21 @@ a system package, one changed after signing, and an app in a system
 repository. A newer Calculator in the apps source comes with `rpg
 upgrade`; `rpg remove` removes it.
 
+## Installer service test (FoxDen step FD4)
+
+`scripts/run-installsvc-test.sh` (QEMU, the console; it needs openssl and
+cargo): an apps source (the Calculator, the System Monitor, a test app
+asking for `files:home`, then a Calculator 1.1.0) and a system source
+with a package `hello`, made on the host, on a second disk. carol (not an
+administrator) installs the Calculator with rpg, through the installer
+service, without a password; she is refused `hello`, the `files:home` app
+and a package file without an administrator's password, with erin's wrong
+one, and with the name of someone who is not an administrator; with
+erin's name and password she gets the `files:home` app; erin installs
+`hello` with her own. carol's `rpg update` and `rpg upgrade` bring the
+Calculator 1.1.0; `rpg remove --purge` needs an administrator, `rpg
+remove` does not. The log names who asked and who allowed it.
+
 ## Updates test (package step E6)
 
 `scripts/run-updates-test.sh` (QEMU, the live desktop; it needs openssl

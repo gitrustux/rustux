@@ -225,7 +225,8 @@ expect "needs-hello 1: removed"
 expect "hello: its configuration files removed"
 expect "(on Rustux, /bin, /usr and /boot are the boot image, read-only: packages go in /opt, /etc and /var, the system image in /boot/efi); nothing was changed"
 refuse "rpg: the install of in-usr"
-expect "rpg: changing the system's packages needs root (sudo rpg ...)"
+expect "installing a package file: an administrator's password is needed"
+expect "rpg: no administrator named"
 expect "big 1: installed (300 files)"
 
 echo "== boot 2: rpg fix finishes it; a power cut while staging"
@@ -326,7 +327,7 @@ expect "REFUSED: the signature of Release is not by a trusted key (or Release wa
 expect "rpg: hello 2.0-1: the download's SHA-256 differs from the signed index: refused, nothing was installed"
 expect "install status 1"
 expect "the server's certificate is not trusted"
-expect "rpg: changing the system's packages needs root (sudo rpg ...)"
+expect "user update status 1"
 grep -q "^/live/pool/main/h/hello/hello_1.0-1_all.rpg" "$W/https.log" || { echo "FAIL: the package was not fetched over HTTPS"; fail=1; }
 
 if e2fsck -fn "$W/root.img" > "$W/fsck.txt" 2>&1; then

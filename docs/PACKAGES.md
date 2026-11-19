@@ -365,7 +365,8 @@ message each:
 |---------|-----|------|
 | `status` | anyone | the last check |
 | `check` | anyone | `rpg update`, then `rpg upgrade --plan` |
-| `upgrade` + password | root, or an administrator (group `sudo`) with their own password | `rpg upgrade -y`, its lines streamed back ("out ..."), then "done CODE" |
+| `update` | anyone | the same as `check`, `rpg update`'s lines streamed back |
+| `upgrade`, `install NAME\|/FILE.rpg...`, `remove [--purge] NAME...` | by what they change (FoxDen step FD4, `FOXDEN.md`): apps from app sources anyone; anything else an administrator | `rpg upgrade -y`, `rpg install -y`, `rpg remove`, their lines streamed back ("out ..."), then "done CODE" |
 
 It checks by itself once a day (`/etc/rpg/updates.conf`: `check daily` or
 `never`; `delay SECONDS` before the first check, 120) and writes what it
@@ -387,8 +388,9 @@ a line a package, changing nothing (no root needed).
   "Restart now" (it starts at the next restart; the previous one stays in
   the menu). The sources are listed.
 
-FoxDen's Updates page (`FOXDEN.md`, step FD5) will use the same service,
-which step FD4 extends to apps.
+Step FD4 (`FOXDEN.md`, "Installing as a user") extended the service to
+installing and removing, and rpg itself asks it when not run as root;
+FoxDen's Updates page (step FD5) will use it too.
 
 ## Tests
 
