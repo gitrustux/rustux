@@ -105,6 +105,7 @@ uses).
 | `evtest` | prints input events (step F3, `INPUT.md`): takes the focus from the input service and prints keys (usage, modifiers, the layout's text) and pointer motion, buttons and wheel until Esc (or `-t SECONDS`); root |
 | `compositor` | windows on the screen (step F4, `WINDOWS.md`): click to focus, drag to move and resize, title bar buttons, Alt+Tab, Alt+F4, F11; `-v` prints what happens; root |
 | `wintest` | a test window: `NAME [-c RRGGBB] [-s WxH] [-p X,Y] [-a] [-n] [-k] [-t TEXT]`; prints the events it gets |
+| `foxden` | FoxDen, the app store (FoxDen step FD5, `FOXDEN.md`): `[ID \| --updates]`; Home, Categories, Search, an app's page (Install, Open, Remove), Installed (permissions), Updates; through rpg |
 | `sandtest` | an app that tries to leave its sandbox (`run-sandbox-test.sh`): `[net] [docs] [port=N] [color=RRGGBB] [at=X,Y] [hold=SECONDS]`; started by `appctl` |
 | `rustica-window` | a window from Rust (the `rustica-window` crate's demo) |
 | `desktop` | start the desktop (root; the `desktop` unit: compositor, graphical login, session); `--stop`; `--run` is the unit's program (step F6, `SESSION.md`) |

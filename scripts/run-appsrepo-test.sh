@@ -234,13 +234,14 @@ def wait_pixel(x, y, want, t, tol=8):
 check(wait_pixel(64, 782, 0xBD93F9, 90), 'the desktop starts at boot')
 time.sleep(3)
 C = 'org.rustica.calculator'
+V = re.search(r'^Version: *(\S+)', open('userspace/apps/org.rustica.calculator/RPG/control').read(), re.M).group(1)   # the Calculator's version in userspace/apps
 
 # 1. The apps source
 out = console('mount LABEL=APPSREPO /mnt && rpg key add --apps /mnt/apps.pem apps-test && rpg key add /mnt/archive.pem archive-test; rpg source remove 1; rpg source remove 1; rpg source add apps file:///mnt/good platform 1; rpg update; rpg search calculator; rpg install -y %s; rpg list --apps; echo S1-DONE' % C, 40, r'S1-DONE\r?\n')
 check('file:///mnt/good platform 1: 2 apps' in out, 'rpg update reads the apps source (2 apps)')
-check('org.rustica.calculator 1.0.0 - Calculator: add, subtract, multiply and divide (app)' in out, 'rpg search finds the Calculator')
+check('org.rustica.calculator %s - Calculator: add, subtract, multiply and divide (app)' % V in out, 'rpg search finds the Calculator')
 check('asks for: nothing (its own folder and data, a window)' in out, 'rpg install shows what it asks for')
-check('org.rustica.calculator 1.0.0: installed' in out and re.search(r'org\.rustica\.calculator +1\.0\.0 +Calculator', out) is not None, 'rpg install installs it; rpg list --apps lists it')
+check('org.rustica.calculator %s: installed' % V in out and re.search(r'org\.rustica\.calculator +%s +Calculator' % re.escape(V), out) is not None, 'rpg install installs it; rpg list --apps lists it')
 
 # 2. Running them (from the console: what they print shows there); keys
 # typed into the Calculator (it has the focus)
@@ -264,7 +265,7 @@ check('an app in a system repository: refused' in out and 'org.test.sneaky' not 
 
 # 4. A newer version from the apps source
 out = console('rpg source remove 1; rpg source add apps file:///mnt/good2 platform 1; rpg update; rpg upgrade -y; rpg list --apps; echo S4-DONE', 40, r'S4-DONE\r?\n')
-check('org.rustica.calculator 1.0.0 -> 1.1.0' in out and re.search(r'org\.rustica\.calculator +1\.1\.0', out) is not None, 'rpg upgrade brings the Calculator 1.1.0')
+check('org.rustica.calculator %s -> 1.1.0' % V in out and re.search(r'org\.rustica\.calculator +1\.1\.0', out) is not None, 'rpg upgrade brings the Calculator 1.1.0')
 
 # 5. Removing it
 out = console('rpg remove %s; ls /apps; echo S5-DONE' % C, 15, r'S5-DONE\r?\n')

@@ -33,7 +33,8 @@
 //!   platform/LEVEL/ARCH/Apps.gz   a stanza per app: its control fields,
 //!                              Filename, Size, SHA256, and from its
 //!                              manifest App-Name, App-Summary, Categories,
-//!                              Permissions, Platform, Icon (media/ID/FILE)
+//!                              Permissions, Platform, Icon (media/ID/FILE),
+//!                              Screenshots (media/ID/FILE...)
 //!   platform/LEVEL/ARCH/Apps.json.gz   the same, for web pages
 //!   pool/L/ID/ID_VERSION_ARCH.rpg, media/ID/...
 //!
@@ -507,14 +508,31 @@ pub fn index_apps(repo: &Path, level: u32, origin: &str) -> Result<(), String> {
             c.set("Permissions", &m.permissions.join(" "));
         }
         c.set("Platform", &m.platform.to_string());
-        if let Some(icon) = &m.icon {
-            if let Some(d) = p.data.get(&format!("{}/{icon}", crate::app::dir(c.name()))) {
-                let name = icon.rsplit('/').next().unwrap_or(icon);
-                let to = repo.join("media").join(c.name()).join(name);
-                std::fs::create_dir_all(to.parent().unwrap()).map_err(|e| format!("{}: {e}", to.display()))?;
-                std::fs::write(&to, d).map_err(|e| format!("{}: {e}", to.display()))?;
-                c.set("Icon", &format!("media/{}/{name}", c.name()));
+        // The icon and screenshots, beside the pool (media/ID/), named by
+        // their path in the app's folder ("shots/1.png" as shots-1.png)
+        let media = |rel: &str| -> Result<Option<String>, String> {
+            let Some(d) = p.data.get(&format!("{}/{rel}", crate::app::dir(c.name()))) else { return Ok(None) };
+            let name = rel.replace('/', "-");
+            let to = repo.join("media").join(c.name()).join(&name);
+            std::fs::create_dir_all(to.parent().unwrap()).map_err(|e| format!("{}: {e}", to.display()))?;
+            std::fs::write(&to, d).map_err(|e| format!("{}: {e}", to.display()))?;
+            Ok(Some(format!("media/{}/{name}", c.name())))
+        };
+        let icon = match &m.icon {
+            Some(i) => media(i)?,
+            None => None,
+        };
+        let mut shots = Vec::new();
+        for s in &m.screenshots {
+            if let Some(u) = media(s)? {
+                shots.push(u);
             }
+        }
+        if let Some(i) = icon {
+            c.set("Icon", &i);
+        }
+        if !shots.is_empty() {
+            c.set("Screenshots", &shots.join(" "));
         }
         entries.push(c);
     }

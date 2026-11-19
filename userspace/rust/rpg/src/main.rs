@@ -63,7 +63,7 @@ const USAGE: &str = "usage: rpg [--root DIR] COMMAND ...
   search WORD... [--names-only]  packages the sources have
   show NAME | ./FILE.rpg       a package's control fields
   policy [NAME...]             installed and candidate versions, and where from
-  list [--installed|--upgradable|--held] [--json]
+  list [--installed|--upgradable|--held|--apps [--available]] [--json]
   depends NAME | rdepends NAME what a package needs, what needs it
   hold NAME... | unhold NAME...  keep a package at its version
   download NAME...             a package file into the current folder
@@ -321,9 +321,12 @@ fn json_str(s: &str) -> String {
 
 fn list(ctx: &Ctx, args: &[String]) -> Result<(), String> {
     for a in args {
-        if !["--installed", "--json", "--upgradable", "--held", "--apps"].contains(&a.as_str()) {
-            return Err(format!("list: {a}: --installed, --upgradable, --held, --apps, --json"));
+        if !["--installed", "--json", "--upgradable", "--held", "--apps", "--available"].contains(&a.as_str()) {
+            return Err(format!("list: {a}: --installed, --upgradable, --held, --apps [--available], --json"));
         }
+    }
+    if args.iter().any(|a| a == "--available") {
+        return cmd::list_apps_available(ctx);
     }
     if args.iter().any(|a| a == "--upgradable") {
         return cmd::list_upgradable(ctx);

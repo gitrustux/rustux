@@ -22,6 +22,7 @@ Exec: bin/example ARG...         its program, relative to /apps/ID
 Icon: icon.png                   optional, relative to /apps/ID
 Categories: Utility Graphics     optional
 Permissions: network files:documents   optional; step FD2 applies them
+Screenshots: shots/1.png ...     optional, relative to /apps/ID; FoxDen shows them
 Platform: 1                      the platform level it is made for
 ```
 
@@ -221,8 +222,53 @@ administrator, installs, upgrades and removes an app without a password
 and is refused a system package, a `files:home` app, a package file and
 `--purge`, until erin, an administrator, gives her password.
 
+## The FoxDen app (step FD5)
+
+**FoxDen** (`foxden`, Rust and rustica-ui; in Applications and on the
+panel, beside Applications) is the store's window. `foxden ID` opens an
+app's page, `foxden --updates` the Updates page.
+
+- **Home**: every app the app sources have, as cards (icon, name,
+  summary; "Installed" or "Update"). **Categories**: the apps by their
+  manifests' categories. **Search**: by name, ID, summary, description
+  and category.
+- **An app's page**: its icon, Install (or Open, Update, Remove; Remove
+  asks first: the folder goes, the user's data stays), its screenshots,
+  its description, what it may do in plain words ("Use the network and
+  the internet", "Read and change your Documents folder"; "Nothing beyond
+  its own folder and a window" when it asks for nothing), and its version,
+  developer, licence, download and installed sizes, categories, ID and
+  source.
+- **Installed**: each installed app with Open, Details, and a checkbox
+  per permission it asks for: turning one off writes
+  `~/.config/apps/permissions`, which `appctl` reads when the app next
+  starts (step FD2).
+- **Updates**: apps with a newer version, and the system's updates from
+  the installer service's last check; "Check for updates" (`rpg update`)
+  and "Install all updates" (`rpg upgrade`).
+
+FoxDen reads what it shows from `rpg list --apps --available` (new: a
+stanza per app, the source's newest with `Source:` its address, and
+`Installed:` and `Upgradable:` when they apply) and does what it does with
+rpg: `rpg install -y ID`, `rpg remove ID`, `rpg upgrade -y`, `rpg update`,
+its output shown as it runs. For a user other than root rpg goes through
+the installer service (step FD4); when that needs an administrator,
+FoxDen asks in a sheet of its own (the user's password if they are in
+group sudo, else an administrator's name and password) and hands it to
+rpg. Icons and screenshots come from the source's `media/ID/` (`rpg index
+--apps` copies the manifest's `Icon` and `Screenshots` there) and are kept
+in `~/.cache/foxden/ID/`, fetched once (curl, or a copy for `file://`).
+FoxDen is a system program, not an app: it is not sandboxed, but it does
+nothing a user could not do with rpg.
+
+`scripts/run-foxden-test.sh` (`TESTS.md`): FoxDen lists a test source's
+apps, installs the Calculator from its page (it appears in Applications
+and starts sandboxed), removes it; carol gets a `files:home` app with
+erin's name and password in FoxDen's sheet, and turns a permission off on
+Installed.
+
 ## Not yet
 
-The `system` permission's sandbox-free run, the FoxDen app (FD5), app updates in the background, the file chooser and
-moving the Text Editor and Image Viewer out (FD6), outside developers
-(FD7).
+The `system` permission's sandbox-free run, app updates in the
+background, the file chooser and moving the Text Editor and Image Viewer
+out (FD6), outside developers (FD7).

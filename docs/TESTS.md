@@ -467,6 +467,19 @@ erin's name and password she gets the `files:home` app; erin installs
 Calculator 1.1.0; `rpg remove --purge` needs an administrator, `rpg
 remove` does not. The log names who asked and who allowed it.
 
+## FoxDen test (FoxDen step FD5)
+
+`scripts/run-foxden-test.sh` (QEMU, the live desktop; it needs openssl
+and cargo): an apps source made on the host (the Calculator and the System
+Monitor with their icons and screenshots, and a test app asking for
+`files:home`) on a second disk. FoxDen lists its three apps and opens the
+Calculator's page; Install installs it (its icon and screenshot cached in
+`~/.cache/foxden`), Applications lists it, Open starts it sandboxed;
+Remove (after the question) removes it. carol's FoxDen asks for an
+administrator for the `files:home` app; with erin's name and password in
+its sheet the app installs; on Installed carol turns its network
+permission off, and `appctl` then gives it `files:home` only.
+
 ## Updates test (package step E6)
 
 `scripts/run-updates-test.sh` (QEMU, the live desktop; it needs openssl

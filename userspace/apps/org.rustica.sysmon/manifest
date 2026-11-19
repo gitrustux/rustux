@@ -4,4 +4,5 @@ Summary: processors and memory over the last minute
 Exec: bin/sysmon
 Icon: icon.png
 Categories: System Utility
+Screenshots: screenshot.png
 Platform: 1

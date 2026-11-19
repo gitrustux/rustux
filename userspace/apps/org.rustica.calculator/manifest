@@ -4,4 +4,5 @@ Summary: add, subtract, multiply and divide
 Exec: bin/calculator
 Icon: icon.png
 Categories: Utility Office
+Screenshots: screenshot.png
 Platform: 1

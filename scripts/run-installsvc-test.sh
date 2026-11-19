@@ -207,12 +207,13 @@ def apps_line(out):
 NAMES['\\'] = 'backslash'
 NAMES['^'] = 'shift-6'
 C, H = 'org.rustica.calculator', 'org.test.homeapp'
+V = re.search(r'^Version: *(\S+)', open('userspace/apps/org.rustica.calculator/RPG/control').read(), re.M).group(1)   # the Calculator's version in userspace/apps
 out = sh('mount LABEL=SVCREPO /mnt && rpg key add --apps /mnt/apps.pem apps-test && rpg key add /mnt/archive.pem archive-test; rpg source remove 1; rpg source remove 1; rpg source add apps file:///mnt/good platform 1; rpg source add file:///mnt/sys redfox main; useradd -m carol; echo carol:pwc | chpasswd; useradd -m -G sudo erin; echo erin:pwe | chpasswd; svc restart packagesd; sleep 2; rpg update', 'SETUP-DONE', 150)
 check('file:///mnt/good platform 1: 3 apps' in out and 'file:///mnt/sys redfox: 1 packages' in out, 'the sources are read (3 apps, 1 system package)')
 
 # 1. carol, an app from the apps source: no password
 out = sh("su carol -c 'rpg install %s'; echo APPS: $(ls /apps)" % C, 'S1-DONE')
-check('%s 1.0.0: installed' % C in out and 'password' not in out, 'carol installs the Calculator, no password asked')
+check('%s %s: installed' % (C, V) in out and 'password' not in out, 'carol installs the Calculator, no password asked')
 
 # 2. what needs an administrator
 out = sh("echo | su carol -c 'rpg install hello'; rpg list --installed | grep -c '^hello '", 'S2A-DONE')
@@ -226,14 +227,14 @@ check('wrong password for erin' in out and re.search(r'\n0\r?\nS2D-DONE', out) i
 out = sh("printf 'dave\\nx\\n' | su carol -c 'rpg install hello'", 'S2E-DONE')
 check('dave is not an administrator' in out, 'someone who is not an administrator cannot say yes')
 out = sh("printf 'erin\\npwe\\n' | su carol -c 'rpg install %s'; echo APPS: $(ls /apps)" % H, 'S2F-DONE')
-check('%s 1.0.0: installed' % H in out and 'asks for: files:home' in out, "with erin's name and password carol gets the files:home app")
+check('%s %s: installed' % (H, V) in out and 'asks for: files:home' in out, "with erin's name and password carol gets the files:home app")
 out = sh("echo pwe | su erin -c 'rpg install hello'; cat /opt/hello/README", 'S2G-DONE')
 check('hello 1.0: installed' in out and 'hello from a system package' in out, 'erin installs hello with her own password')
 
 # 3. update and upgrade, an app only: no password
 out = sh("rpg source remove 1; rpg source add apps file:///mnt/good2 platform 1; su carol -c 'rpg update'; su carol -c 'rpg upgrade'; rpg list --apps", 'S3-DONE')
 check('file:///mnt/good2 platform 1: 3 apps' in out, 'carol: rpg update (through the service)')
-check('%s 1.0.0 -> 1.1.0' % C in out and re.search(r'org\.rustica\.calculator +1\.1\.0', out) is not None and 'password' not in out, 'carol: rpg upgrade brings the Calculator 1.1.0, no password')
+check('%s %s -> 1.1.0' % (C, V) in out and re.search(r'org\.rustica\.calculator +1\.1\.0', out) is not None and 'password' not in out, 'carol: rpg upgrade brings the Calculator 1.1.0, no password')
 
 # 4. removing
 out = sh("echo | su carol -c 'rpg remove --purge %s'; su carol -c 'rpg remove %s'; echo APPS: $(ls /apps)" % (C, C), 'S4-DONE')

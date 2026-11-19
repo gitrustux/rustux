@@ -1,0 +1,41 @@
+foxden - FoxDen, Rustica's app store
+
+USAGE
+    foxden [ID | --updates]
+
+    FoxDen (in Applications, and on the panel beside Applications) shows
+    the apps the app sources have (man rpg, APPS) and installs, opens,
+    updates and removes them. foxden ID opens an app's page; --updates
+    the Updates page.
+
+PAGES
+    Home         every app, as cards; "Installed" or "Update" on them
+    Categories   the apps by category
+    Search       by name, ID, summary, description and category
+    Installed    each installed app with Open, Details, and a checkbox
+                 per permission it asks for: turning one off writes
+                 ~/.config/apps/permissions, read by appctl when the app
+                 next starts
+    Updates      apps with a newer version and the system's updates (the
+                 installer service's last check); Check for updates,
+                 Install all updates
+    An app       its icon, Install (or Open, Update, Remove), screenshots,
+                 description, what it may do in plain words, version,
+                 developer, licence, sizes, categories, source
+
+    What FoxDen does it does with rpg (rpg install -y ID, rpg remove ID,
+    rpg upgrade -y, rpg update), its output shown. For a user other than
+    root rpg goes through the installer service; when that needs an
+    administrator, FoxDen asks in its own sheet: the user's password if
+    they are in group sudo, else an administrator's name and password.
+    Apps from the app sources that ask for neither files:home nor system
+    need no password.
+
+    Ctrl+Q quits. FoxDen prints what it does ("foxden: install ID").
+
+FILES
+    ~/.cache/foxden/ID/          icons and screenshots, fetched once
+    ~/.config/apps/permissions   the permissions turned off (man appctl)
+
+SEE ALSO
+    rpg, appctl, docs/FOXDEN.md

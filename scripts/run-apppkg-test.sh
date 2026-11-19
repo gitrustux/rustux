@@ -198,7 +198,7 @@ time.sleep(4)
 key('down'); time.sleep(0.6)
 key('ret'); time.sleep(5)
 out = console('logs | grep -E "launcher: |wintest Example"; ps | grep example', 4)
-check('launcher: 9 applications, 1 apps' in out, 'the launcher lists the app beside the system\'s')
+check('launcher: 10 applications, 1 apps' in out, 'the launcher lists the app beside the system\'s')
 check('launcher: started /bin/appctl run org.rustica.example' in out, 'the launcher starts it (appctl run, in its sandbox)')
 check(re.search(r'wintest Example: (configure|focus|frame|size)', out) is not None or re.search(r'\bexample\b', out.split('ps | grep example')[-1]) is not None, 'its window comes (the program runs)')
 
@@ -212,7 +212,7 @@ qmp_click(64, 782)
 time.sleep(4)
 key('esc'); time.sleep(1)
 out = console('logs | grep "launcher: "', 4)
-check('launcher: 9 applications, 0 apps' in out, 'the launcher lists no app')
+check('launcher: 10 applications, 0 apps' in out, 'the launcher lists no app')
 
 # 4. The console
 out = console('echo console works', 2)

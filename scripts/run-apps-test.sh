@@ -345,9 +345,9 @@ type_('secret')
 key('ret')
 check(wait_pixel(64, 782, ACCENT, 30), 'carol logs in')
 time.sleep(3)
-click(64, 782)                          # Applications: Settings is the 5th
+click(64, 782)                          # Applications: Settings is the 6th (FoxDen came, FD5)
 time.sleep(4)
-keys('down', 'down', 'down', 'down', 'ret')
+keys('down', 'down', 'down', 'down', 'down', 'ret')
 time.sleep(8)
 keys('down', 'down')                    # Mouse
 keys(*(['tab'] * 6), 'ret')             # 200%: the password bar

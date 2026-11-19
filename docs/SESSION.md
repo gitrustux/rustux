@@ -39,7 +39,8 @@ Ctrl+Alt+F1 throughout.
   Password (dots), Log in; "Wrong name or password" on failure.
 - **panel** (Rust, rustica-ui), the session's first program and its life:
   docked at the bottom (the compositor's panel role: no frame, always on
-  top, never focused; maximised windows stop above it). Applications (the
+  top, never focused; maximised windows stop above it). FoxDen (the app
+  store, `FOXDEN.md` step FD5) beside Applications. Applications (the
   launcher), a button per window (click: focus it, or minimise it when it
   has the focus; a minimised one in brackets), the keyboard layout
   (`/etc/keymap`), volume and network placeholders, the clock (redrawn

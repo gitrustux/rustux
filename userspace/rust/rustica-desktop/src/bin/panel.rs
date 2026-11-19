@@ -5,8 +5,9 @@
 // https://opensource.org/licenses/MIT
 
 //! panel: the desktop's panel (DESKTOP.md step F6), docked at the bottom
-//! of the screen: Applications (the launcher), a button per window (click:
-//! focus it, or minimise it if it has the focus), the keyboard layout,
+//! of the screen: Applications (the launcher), FoxDen (the app store,
+//! FoxDen step FD5), a button per window (click: focus it, or minimise it
+//! if it has the focus), the keyboard layout,
 //! volume (not there yet), the network (Net: the interface and its
 //! address, network step D6; a click opens Settings > Network), the
 //! clock, Lock and Log out. The session lasts as long as the panel: Log
@@ -144,6 +145,11 @@ fn main() {
             if ui.primary_button("Applications") {
                 println!("panel: launcher");
                 let _ = std::process::Command::new("/bin/launcher").spawn();
+            }
+            // The app store (FoxDen step FD5)
+            if ui.button("FoxDen") {
+                println!("panel: foxden");
+                let _ = std::process::Command::new("/bin/foxden").spawn();
             }
             for win in &wins {
                 let mut t = win.title.clone();

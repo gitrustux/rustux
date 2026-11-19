@@ -728,6 +728,63 @@ pub fn index(args: &[String]) -> Result<(), String> {
     repo::index(std::path::Path::new(&dir), &o)
 }
 
+/// rpg list --apps --available (FoxDen step FD5: what the FoxDen app
+/// shows): a stanza per app, the newest an app source has (its index's
+/// fields, with Source: its base URL) or, for an app installed from a
+/// package file, its installed fields and manifest (Source: -); with
+/// Installed: VERSION when installed, Upgradable: yes when a source has
+/// newer. Needs no root.
+pub fn list_apps_available(ctx: &Ctx) -> Result<(), String> {
+    let av: Vec<Avail> = repo::available(&ctx.db)?.into_iter().filter(|a| a.source.kind == Kind::App).collect();
+    let installed = ctx.db.installed()?;
+    let mut names: Vec<&str> = av.iter().map(|a| a.name()).chain(installed.iter().filter(|c| c.kind() == "app").map(|c| c.name())).collect();
+    names.sort();
+    names.dedup();
+    let mut out = Vec::new();
+    for n in names {
+        let inst = installed.iter().find(|c| c.name() == n);
+        let mut c = match repo::candidate(&av, n) {
+            Some(a) => {
+                let mut c = a.c.clone();
+                c.set("Source", a.source.base());
+                c
+            }
+            None => {
+                let i = inst.unwrap();
+                let mut c = i.clone();
+                for f in ["Status", "Auto", "Hold"] {
+                    c.remove(f);
+                }
+                if let Some(m) = std::fs::read_to_string(ctx.db.path(&format!("{}/manifest", crate::app::dir(n)))).ok().and_then(|t| crate::app::parse_manifest(&t).ok()) {
+                    c.set("App-Name", &m.name);
+                    c.set("App-Summary", &m.summary);
+                    if !m.categories.is_empty() {
+                        c.set("Categories", &m.categories.join(" "));
+                    }
+                    if !m.permissions.is_empty() {
+                        c.set("Permissions", &m.permissions.join(" "));
+                    }
+                    // Its icon from its folder
+                    if let Some(i) = m.icon {
+                        c.set("Icon-File", &ctx.db.path(&format!("{}/{i}", crate::app::dir(n))).display().to_string());
+                    }
+                }
+                c.set("Source", "-");
+                c
+            }
+        };
+        if let Some(i) = inst {
+            c.set("Installed", i.version());
+            if version::compare(c.version(), i.version()) == std::cmp::Ordering::Greater {
+                c.set("Upgradable", "yes");
+            }
+        }
+        out.push(c.text());
+    }
+    print!("{}", out.join("\n"));
+    Ok(())
+}
+
 /// rpg list --upgradable
 pub fn list_upgradable(ctx: &Ctx) -> Result<(), String> {
     let av = need_lists(ctx)?;

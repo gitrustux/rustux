@@ -16,6 +16,8 @@
 //!   Icon: icon.png                 optional, relative to /apps/ID
 //!   Categories: Utility Graphics   optional
 //!   Permissions: network files:documents   optional (FD2 applies them)
+//!   Screenshots: shots/1.png ...   optional, relative to /apps/ID (FoxDen
+//!                                  shows them: step FD5)
 //!   Platform: 1                    the platform level it is made for
 //!
 //! `rpg build DIR` makes one from DIR/RPG/control (Kind: app) and the
@@ -59,6 +61,7 @@ pub struct Manifest {
     pub icon: Option<String>,
     pub categories: Vec<String>,
     pub permissions: Vec<String>,
+    pub screenshots: Vec<String>,
     pub platform: u32,
 }
 
@@ -95,6 +98,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         icon: c.get("Icon").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         categories: words("Categories"),
         permissions: words("Permissions"),
+        screenshots: words("Screenshots"),
         platform: platform.parse().map_err(|_| format!("Platform {platform}: a number (this system has {PLATFORM})"))?,
     })
 }
@@ -170,6 +174,11 @@ pub fn check(p: &Package) -> Result<Manifest, String> {
     if let Some(i) = &m.icon {
         if !inside(i) || !p.files.iter().any(|f| f.path == format!("{root}/{i}") && f.typ == FType::File) {
             return Err(format!("Icon {i}: not a file in the app's folder"));
+        }
+    }
+    for s in &m.screenshots {
+        if !inside(s) || !p.files.iter().any(|f| f.path == format!("{root}/{s}") && f.typ == FType::File) {
+            return Err(format!("Screenshots {s}: not a file in the app's folder"));
         }
     }
     if let Some(bad) = m.permissions.iter().find(|x| !PERMISSIONS.contains(&x.as_str())) {

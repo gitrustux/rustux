@@ -2,7 +2,7 @@
 name = "rustica-apps"
 version = "0.1.0"
 edition = "2021"
-description = "Rustica's first applications (DESKTOP.md step F7): Terminal, Files and Settings"
+description = "Rustica's first applications (DESKTOP.md step F7): Terminal, Files and Settings; FoxDen, the app store (FOXDEN.md step FD5)"
 license = "MIT"
 
 [lib]
@@ -23,6 +23,10 @@ path = "src/bin/editor.rs"
 [[bin]]
 name = "viewer"
 path = "src/bin/viewer.rs"
+
+[[bin]]
+name = "foxden"
+path = "src/bin/foxden.rs"
 
 [[bin]]
 name = "settings"
