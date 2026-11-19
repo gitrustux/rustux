@@ -27,6 +27,9 @@ for src in libc/src/*.c; do
 done
 rm -f "$OUT/libc.a"
 $AR rcs "$OUT/libc.a" "${objs[@]}"
+# LIBC_ONLY=1: the library alone (scripts/build-outside-app.sh, for an
+# outside developer's app: FoxDen step FD7a)
+[ "${LIBC_ONLY:-}" = 1 ] && exit 0
 
 # The programs: one per .c file in c-progs/
 for src in c-progs/*.c; do

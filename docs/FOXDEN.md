@@ -371,6 +371,101 @@ text saved through the chooser and saved again shorter, Open through the
 chooser; an app removed is not installed again. `run-apps-test.sh` opens
 a text file from Files in the editor, now an app.
 
+## Outside developers (step FD7a)
+
+Apps from outside the project come through the **foxden-apps** repository
+on GitHub (`https://github.com/gitrustux/foxden-apps`, its README the
+developers' guide), Flathub's way: a pull request with the app's source;
+checks and a build on GitHub; a maintainer's review and merge; a release
+built from `main`; then rustux.com checks it again and signs it into the
+apps repository with the store's key, which never comes near GitHub.
+
+**Developers.** `developers/ID/` in foxden-apps: `developer` (`Id`,
+`Name`, `GitHub`) and `key.pub`, the developer's own Ed25519 key (made
+with openssl; the private half never leaves them). The ID comes from the
+GitHub login, `io.github.LOGIN`; their apps' IDs are under it. Only that
+GitHub account changes that folder and those apps (the checks see the
+pull request's author); `MAINTAINERS` anything.
+
+**An app's folder**, `apps/ID/`: `manifest`, `RPG/control`, pictures,
+`src/` (Rust) and `SIGNATURE`. The manifest's new fields (rpg, `app.rs`):
+
+```
+Developer: io.github.alice          the app's ID must be under it
+Developer-Name: Alice Example
+Source: https://github.com/gitrustux/foxden-apps/tree/main/apps/ID
+```
+
+`rpg build` and `rpg install` refuse an app outside its `Developer`'s
+namespace; `rpg index --apps` copies the three into the index
+(`App-Developer`, `App-Developer-Name`, `App-Source`), which FoxDen's app
+page shows (Developer, Source code). **An installed app's update must come
+from the same developer**: rpg refuses one whose `Developer` differs ("an
+app does not pass to another developer"), so an app's ID cannot be taken
+over by a new key or a mistake in the store.
+
+**The signature.** The developer signs the folder: `rpg dev digest DIR`
+(`rpg-source 1`, then `file PATH SHA256` for each file but `SIGNATURE`,
+sorted; `ci/digest.py` in foxden-apps makes the same without rpg), signed
+with `openssl pkeyutl -sign -rawin` into `SIGNATURE` (`sign.sh`); `rpg dev
+verify DIR KEY.pub` checks it. It shows that the developer meant exactly
+this source, and travels with the app's folder to the server.
+
+**Built from source.** `scripts/build-outside-app.sh APPDIR OUTDIR`: the
+crate is made by the script (`Cargo.toml` with `rustica-ui` as the only
+dependency, the toolkit's dependencies at the system apps' versions), the
+developer's `src/` in it, built for Rustux as the system's programs are;
+the program goes to `bin/app` and `rpg build` makes the package; `rpg dev
+check-package FILE DIR` then checks that the package is the folder built:
+the same control fields, the folder's files (but `src/`, `RPG/`,
+`SIGNATURE`) byte for byte, and only the program added. The source may not
+read files or the environment while it is built (`include!` and the like,
+`env!`, `#[path]`), nor use unstable features or `extern crate`; with no
+build scripts and no other crates nothing of the developer's runs while it
+builds.
+
+**foxden-apps' checks** (`ci/check.py`, on every pull request, with a
+read-only token and no secrets): the folder's layout and sizes, the
+manifest and control file (ID under the developer, `Exec: bin/app`,
+`Source`, platform 1, known permissions but `system`, an SPDX licence from
+a list), the source rules, the signature by the developer's registered
+key, who may change what, versions going up, the developer unchanged;
+then the changed apps are built (`ci/build.sh`, with rustux at the commit
+`ci/rustux-commit` names) and the packages kept with the run for the
+reviewer.
+
+**Releases.** On `main`, `publish.yml` builds each app whose version has
+no release yet and releases it as `ID-VERSION` with a build provenance
+attestation (GitHub's `attest-build-provenance`); the job that builds (and
+so runs the apps' compilation) has a read-only token, the job that
+releases runs nothing of the apps'.
+
+**Publishing.** `scripts/fetch-outside-apps.sh FOXDEN_APPS OUTDIR` on the
+server, from a checkout of foxden-apps' `main`: for each app its current
+version's release, checked: the developer registered and the ID under
+theirs and not the project's (`org.rustica`, ...), the folder signed by
+their key, the package the folder built, and, when `gh` is signed in, the
+provenance (`gh attestation verify`). An app without a release yet is
+skipped. `scripts/publish-apps.sh --add DIR` then publishes them with the
+project's apps (never one in the project's namespaces). The handoff does
+both.
+
+What the server trusts: the build of reviewed source on GitHub's runners
+(the attestation says which workflow and commit). A wrong binary would
+still be sandboxed like any app.
+
+`scripts/run-outside-test.sh` (`TESTS.md`): a developer's folder signed,
+built from source and checked (a changed folder, a package with an extra
+file and an app outside its developer's namespace refused), fetched and
+published with the project's apps (the project's namespace refused); in
+QEMU it installs, shows its developer and source, runs sandboxed, and a
+newer version of the same ID from another developer is refused.
+
 ## Not yet
 
-The `system` permission's sandbox-free run; outside developers (FD7).
+The `system` permission's sandbox-free run; FD7b (a service on rustux.com:
+ratings and reviews, the web storefront, logins); taking an outside app
+down from the index (today: a maintainer removes it from foxden-apps and
+the pool by hand); developer IDs other than `io.github.LOGIN` (a domain
+the developer proves); reproducible builds, so the server could rebuild
+and compare.

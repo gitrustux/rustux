@@ -19,6 +19,13 @@
 //!   Screenshots: shots/1.png ...   optional, relative to /apps/ID (FoxDen
 //!                                  shows them: step FD5)
 //!   Platform: 1                    the platform level it is made for
+//!   Developer: io.github.alice      optional (FoxDen step FD7a): who
+//!                                  makes it; the app's ID is under it
+//!   Developer-Name: Alice           optional, with Developer
+//!   Source: https://...            optional: where its source is
+//!
+//! An installed app's update must come from the same Developer (none
+//! stays none): an app's ID cannot pass to someone else.
 //!
 //! `rpg build DIR` makes one from DIR/RPG/control (Kind: app) and the
 //! rest of DIR as the app's folder. rpg refuses an app with anything
@@ -63,6 +70,9 @@ pub struct Manifest {
     pub permissions: Vec<String>,
     pub screenshots: Vec<String>,
     pub platform: u32,
+    pub developer: Option<String>,
+    pub developer_name: Option<String>,
+    pub source: Option<String>,
 }
 
 /// The app's folder
@@ -90,6 +100,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let need = |k: &str| c.get(k).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).ok_or(format!("the manifest has no {k}"));
     let words = |k: &str| c.get(k).map(|v| v.split_whitespace().map(str::to_string).collect()).unwrap_or_default();
     let platform = need("Platform")?;
+    let opt = |k: &str| c.get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     Ok(Manifest {
         id: need("Id")?,
         name: need("Name")?,
@@ -100,6 +111,9 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
         permissions: words("Permissions"),
         screenshots: words("Screenshots"),
         platform: platform.parse().map_err(|_| format!("Platform {platform}: a number (this system has {PLATFORM})"))?,
+        developer: opt("Developer"),
+        developer_name: opt("Developer-Name"),
+        source: opt("Source"),
     })
 }
 
@@ -184,7 +198,34 @@ pub fn check(p: &Package) -> Result<Manifest, String> {
     if let Some(bad) = m.permissions.iter().find(|x| !PERMISSIONS.contains(&x.as_str())) {
         return Err(format!("Permissions: {bad}? (known: {})", PERMISSIONS.join(" ")));
     }
+    // FoxDen step FD7a: the app's ID is under its developer's
+    match &m.developer {
+        Some(d) if !valid_id(d) => return Err(format!("Developer {d}: reverse DNS (io.github.alice)")),
+        Some(d) if !id.starts_with(&format!("{d}.")) => return Err(format!("Developer {d}: the app's ID {id} is not under it ({d}.NAME)")),
+        None if m.developer_name.is_some() => return Err("Developer-Name without Developer".into()),
+        _ => {}
+    }
+    if let Some(s) = &m.source {
+        if !s.starts_with("https://") || s.contains(char::is_whitespace) {
+            return Err(format!("Source {s}: an https:// address"));
+        }
+    }
     Ok(m)
+}
+
+/// An update of an installed app must be from the same developer (FoxDen
+/// step FD7a): the installed manifest's Developer against the new one's
+pub fn same_developer(installed: &Manifest, new: &Manifest) -> Result<(), String> {
+    if installed.developer != new.developer {
+        let who = |d: &Option<String>| d.clone().unwrap_or_else(|| "no developer".into());
+        return Err(format!(
+            "{}: the installed app is {}'s, this one {}'s: an app does not pass to another developer (remove it first to install the other)",
+            new.id,
+            who(&installed.developer),
+            who(&new.developer)
+        ));
+    }
+    Ok(())
 }
 
 /// The users' data folders for an app (for --purge), as absolute paths

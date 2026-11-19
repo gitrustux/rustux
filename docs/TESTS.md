@@ -482,6 +482,21 @@ it the file, which it reads and nothing beside it (read only, no folder,
 the path still refused); it saves `copy.txt` through the chooser; a
 cancelled question gives it nothing.
 
+## Outside developers test (FoxDen step FD7a)
+
+`scripts/run-outside-test.sh` (QEMU, the live desktop, a FAT disk with a
+test apps repository). On the host: a developer's folder (the Calculator's
+source as `io.github.alice.dice`) is signed with her key and `rpg dev
+verify` passes; `scripts/build-outside-app.sh` builds it from source and
+`rpg dev check-package` passes; a folder changed after signing, a package
+with a file the folder lacks and an app outside its developer's namespace
+are refused; `scripts/fetch-outside-apps.sh --from` takes it and
+`publish-apps.sh --add` publishes it beside the project's apps (the
+project's namespace refused). In QEMU: `rpg show` lists its developer and
+source, it installs and runs sandboxed (12+30*2 = 72), and a 1.0.1 of the
+same ID from another developer is refused by `rpg upgrade`. Needs cargo
+with rust-src and gcc (the build), like `userspace/build-rust.sh`.
+
 ## Open with test (FoxDen step FD6b)
 
 `scripts/run-openwith-test.sh` (QEMU, the live desktop): the installer

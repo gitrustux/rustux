@@ -429,6 +429,13 @@ impl Ctx {
         let name = c.name().to_string();
         let old_entry = self.db.entry(&name)?;
         let old = old_entry.as_ref().filter(|e| e.get("Status") == Some("installed")).map(|e| e.version().to_string());
+        if old.is_some() && c.kind() == "app" {
+            // FoxDen step FD7a: the same developer as the installed one
+            let installed = std::fs::read_to_string(self.db.path(&format!("{}/manifest", crate::app::dir(&name)))).ok().and_then(|t| crate::app::parse_manifest(&t).ok());
+            if let Some(i) = installed {
+                crate::app::same_developer(&i, &crate::app::check(p)?).map_err(|e| format!("{e}; nothing was changed"))?;
+            }
+        }
         let old_files = self.db.files_of(&name)?;
         let old_map: BTreeMap<&str, &FileEntry> = old_files.iter().map(|f| (f.path.as_str(), f)).collect();
         let owners = self.db.owners()?;

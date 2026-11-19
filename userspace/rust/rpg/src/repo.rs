@@ -34,7 +34,9 @@
 //!                              Filename, Size, SHA256, and from its
 //!                              manifest App-Name, App-Summary, Categories,
 //!                              Permissions, Platform, Icon (media/ID/FILE),
-//!                              Screenshots (media/ID/FILE...)
+//!                              Screenshots (media/ID/FILE...), and
+//!                              App-Developer, App-Developer-Name,
+//!                              App-Source (FoxDen step FD7a)
 //!   platform/LEVEL/ARCH/Apps.json.gz   the same, for web pages
 //!   pool/L/ID/ID_VERSION_ARCH.rpg, media/ID/...
 //!
@@ -508,6 +510,12 @@ pub fn index_apps(repo: &Path, level: u32, origin: &str) -> Result<(), String> {
             c.set("Permissions", &m.permissions.join(" "));
         }
         c.set("Platform", &m.platform.to_string());
+        // Its developer and its source (FoxDen step FD7a)
+        for (k, v) in [("App-Developer", &m.developer), ("App-Developer-Name", &m.developer_name), ("App-Source", &m.source)] {
+            if let Some(v) = v {
+                c.set(k, v);
+            }
+        }
         // The icon and screenshots, beside the pool (media/ID/), named by
         // their path in the app's folder ("shots/1.png" as shots-1.png)
         let media = |rel: &str| -> Result<Option<String>, String> {

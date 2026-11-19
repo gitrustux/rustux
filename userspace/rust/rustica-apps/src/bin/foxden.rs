@@ -47,6 +47,7 @@ struct App {
     icon: Option<String>,  // a URL, or a local file
     shots: Vec<String>,
     developer: String,
+    source_code: String,
     license: String,
     homepage: String,
     size: u64,
@@ -115,7 +116,14 @@ fn load_apps() -> Result<Vec<App>, String> {
             permissions: words("Permissions"),
             icon: icon.filter(|s| !s.is_empty()),
             shots: words("Screenshots").iter().map(|s| url(s)).filter(|s| !s.is_empty()).collect(),
-            developer: get("Maintainer"),
+            // An outside developer's app (FoxDen step FD7a): its
+            // developer's name and ID; the project's: the Maintainer
+            developer: match (get("App-Developer-Name"), get("App-Developer")) {
+                (n, d) if !n.is_empty() && !d.is_empty() => format!("{n} ({d})"),
+                (_, d) if !d.is_empty() => d,
+                _ => get("Maintainer"),
+            },
+            source_code: get("App-Source"),
             license: get("License"),
             homepage: get("Homepage"),
             size: get("Size").parse().unwrap_or(0),
@@ -834,6 +842,9 @@ impl FoxDen {
             ];
             if !a.homepage.is_empty() {
                 rows.push(("Homepage".into(), a.homepage.clone()));
+            }
+            if !a.source_code.is_empty() {
+                rows.push(("Source code".into(), a.source_code.clone()));
             }
             for (k, v) in rows.into_iter().filter(|(_, v)| !v.is_empty()) {
                 ui.dim_label(&format!("    {k}:  {v}"));

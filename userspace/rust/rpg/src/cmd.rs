@@ -821,6 +821,12 @@ pub fn list_apps_available(ctx: &Ctx) -> Result<(), String> {
                     if !m.permissions.is_empty() {
                         c.set("Permissions", &m.permissions.join(" "));
                     }
+                    // Its developer and source (FoxDen step FD7a)
+                    for (k, v) in [("App-Developer", &m.developer), ("App-Developer-Name", &m.developer_name), ("App-Source", &m.source)] {
+                        if let Some(v) = v {
+                            c.set(k, v);
+                        }
+                    }
                     // Its icon from its folder
                     if let Some(i) = m.icon {
                         c.set("Icon-File", &ctx.db.path(&format!("{}/{i}", crate::app::dir(n))).display().to_string());

@@ -26,6 +26,8 @@ USAGE
     build DIR [-o FILE] | info ./FILE.rpg
     index REPO [--suite S] [--section S] [--arch A]   (publishing)
     index --apps REPO [--platform N]                   (an apps repository)
+    dev digest DIR | dev verify DIR KEY.pub | dev check-package FILE DIR
+                                 (outside developers' apps)
     permissions ID [grant|revoke PERMISSION...]   an app's permissions, for
                                  you (~/.config/apps/permissions)
     plan install NAME... | upgrade | remove NAME...     what would change,
@@ -146,6 +148,15 @@ APPS
     pool-path FILE says where), rpg index --apps REPO, then sign
     REPO/platform/1/Release with the apps key; scripts/publish-apps.sh
     does all of it.
+
+    Outside developers' apps (FoxDen step FD7a) come through the
+    foxden-apps repository on GitHub. Their manifests name a Developer
+    (io.github.LOGIN) that the app's ID is under, which FoxDen shows; an
+    installed app's update must be from the same Developer. A developer
+    signs their app's folder: rpg dev digest DIR is what is signed (openssl
+    pkeyutl -sign -rawin, into DIR/SIGNATURE), rpg dev verify DIR KEY.pub
+    checks it, and rpg dev check-package FILE DIR checks that a package is
+    that folder built (the same files, only its program added).
 
 THE SYSTEM
     The system is image-based: the kernel file carries every program

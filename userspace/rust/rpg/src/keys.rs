@@ -53,7 +53,7 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
-fn unbase64(s: &str) -> Option<Vec<u8>> {
+pub fn unbase64(s: &str) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let (mut acc, mut bits) = (0u32, 0);
     for c in s.bytes() {

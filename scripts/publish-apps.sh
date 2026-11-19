@@ -2,7 +2,8 @@
 # Publish the apps as the signed apps repository (FoxDen step FD3,
 # docs/FOXDEN.md): what https://rustux.com/download/apps serves.
 #
-#   scripts/publish-apps.sh --key KEYFILE [--pub PUBFILE] [--keep N] APPSDIR
+#   scripts/publish-apps.sh --key KEYFILE [--pub PUBFILE] [--keep N] [--add DIR]
+#                           [--outside FOXDEN_APPS] APPSDIR
 #
 # 1. The key: an Ed25519 private key (OpenSSL's PEM) whose public half
 #    must be the apps key the image trusts (files/etc/rpg/keys/apps/
@@ -12,7 +13,13 @@
 # 2. The apps (scripts/build-apps.sh: every folder of userspace/apps/) are
 #    made in a staging folder. An app whose version the signed index lists
 #    already must be the same file (published packages never change);
-#    when every app is published already there is nothing to do.
+#    when every app is published already there is nothing to do. --add
+#    DIR: the .rpg files in DIR too (FoxDen step FD7a: the outside
+#    developers' apps, scripts/fetch-outside-apps.sh checked them), never
+#    one in the project's own namespaces (org.rustica, ...). --outside
+#    FOXDEN_APPS: a checkout of the foxden-apps repository's main, its
+#    apps' releases fetched and checked (scripts/fetch-outside-apps.sh)
+#    and added so; run it again after its publish workflow released more.
 # 3. A new index of each app's newest N versions (default 2) is made in
 #    the staging folder (rpg index --apps: platform/1/, media/), Release
 #    signed with the key, then checked as a client would: rpg update, with
@@ -25,17 +32,19 @@
 # programs in userspace/apps/bin (userspace/build-rust.sh).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-KEY="" PUB=files/etc/rpg/keys/apps/rustux-apps-2026.pub KEEP=2 REPO="" LEVEL=1
+KEY="" PUB=files/etc/rpg/keys/apps/rustux-apps-2026.pub KEEP=2 REPO="" LEVEL=1 ADD="" OUTSIDE="" 
 while [ $# -gt 0 ]; do
     case $1 in
         --key) KEY=$2; shift 2 ;;
         --pub) PUB=$2; shift 2 ;;
         --keep) KEEP=$2; shift 2 ;;
+        --add) ADD=$2; shift 2 ;;
+        --outside) OUTSIDE=$2; shift 2 ;;
         -*) echo "publish-apps: $1?"; exit 2 ;;
         *) REPO=$1; shift ;;
     esac
 done
-[ -n "$KEY" ] && [ -n "$REPO" ] || { echo "usage: scripts/publish-apps.sh --key KEYFILE [--pub PUBFILE] [--keep N] APPSDIR"; exit 2; }
+[ -n "$KEY" ] && [ -n "$REPO" ] || { echo "usage: scripts/publish-apps.sh --key KEYFILE [--pub PUBFILE] [--keep N] [--add DIR] [--outside FOXDEN_APPS] APPSDIR"; exit 2; }
 [ "$KEEP" -ge 1 ] 2>/dev/null || { echo "publish-apps: --keep needs 1 or more"; exit 2; }
 die() { echo "publish-apps: $*"; exit 1; }
 command -v openssl >/dev/null || die "openssl is needed"
@@ -73,6 +82,19 @@ indexed() { find "$REPO/platform/$LEVEL" -name Apps.gz -exec zcat {} + 2>/dev/nu
 rm -rf "$STAGE"
 mkdir -p "$STAGE/pool"
 scripts/build-apps.sh "$T/new" > /dev/null
+if [ -n "$OUTSIDE" ]; then
+    [ -z "$ADD" ] || die "--add or --outside, not both"
+    ADD=$T/outside
+    scripts/fetch-outside-apps.sh "$OUTSIDE" "$ADD" || die "the outside apps did not check (above): nothing published"
+fi
+if [ -n "$ADD" ]; then
+    for f in "$ADD"/*.rpg; do
+        [ -f "$f" ] || continue
+        case $(basename "$f") in org.rustica.*|org.rustux.*|com.rustux.*) die "$f: the project's own namespace, from --add" ;; esac
+        [ -e "$T/new/$(basename "$f")" ] && die "$f: an app of the project's own has that name"
+        cp "$f" "$T/new/"
+    done
+fi
 NEW=()
 for f in "$T"/new/*.rpg; do
     rel=$("$RPG" pool-path "$f")

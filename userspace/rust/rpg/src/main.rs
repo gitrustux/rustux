@@ -18,6 +18,8 @@
 //!   rpg source list|add|remove | key list|add|remove
 //!   rpg index REPO                 the publishing side: Packages.gz and Release
 //!   rpg build DIR [-o FILE]        a package from DIR/RPG/control and DIR's files
+//!   rpg dev digest|verify|check-package   outside developers' apps (dev.rs,
+//!                                  FoxDen step FD7a)
 //!   rpg remove [--purge] NAME...   remove (--purge: its configuration files too)
 //!   rpg list [--installed] [--json]
 //!   rpg show NAME | ./FILE.rpg     the control fields (a file: and its files)
@@ -36,6 +38,7 @@ mod boot;
 mod cmd;
 mod control;
 mod db;
+mod dev;
 mod fetch;
 mod keys;
 mod ops;
@@ -79,6 +82,7 @@ const USAGE: &str = "usage: rpg [--root DIR] COMMAND ...
   info ./FILE.rpg              a package file's control fields and files
   index REPO [--suite S] [--section S] [--arch A]   Packages.gz and Release for REPO/pool
   index --apps REPO [--platform N]   an apps repository: Apps.gz, Apps.json.gz, Release, media/
+  dev digest DIR | dev verify DIR KEY.pub | dev check-package FILE.rpg DIR   an outside developer's app (FoxDen)
   boot list | boot status | boot update   the system images, how each one started, and rboot's entries
   version                      rpg's version";
 
@@ -112,7 +116,7 @@ fn main() {
     };
     let rest = &args[1..];
     let ctx = Ctx { db: Db::new(&root) };
-    if !matches!(cmd.as_str(), "fix" | "build" | "info" | "index" | "pool-path" | "plan" | "permissions" | "version" | "--version" | "help" | "--help" | "-h") {
+    if !matches!(cmd.as_str(), "fix" | "build" | "info" | "index" | "dev" | "pool-path" | "plan" | "permissions" | "version" | "--version" | "help" | "--help" | "-h") {
         if let Some(what) = ctx.interrupted() {
             if matches!(cmd.as_str(), "list" | "show" | "files" | "owner" | "verify" | "search" | "policy") {
                 eprintln!("rpg: the {what} was interrupted; rpg fix finishes it (so does the next install or remove)");
@@ -214,6 +218,7 @@ fn main() {
             }
         }
         "index" => cmd::index(rest),
+        "dev" => dev::run(rest),
         // The image packages' scripts run it while their install holds
         // the lock: no lock here (it only writes rboot's entries)
         "boot" => match rest.first().map(String::as_str) {
