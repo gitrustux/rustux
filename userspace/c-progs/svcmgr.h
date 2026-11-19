@@ -43,6 +43,11 @@
 // A unit belongs to target t (graphical takes everything multi-user has)
 static int in_target(int targets, int t) { return (targets & t) || (t == TGT_GRAPHICAL && (targets & TGT_MULTI)); }
 #define SVC_DIR "/etc/svc"
+// Units that come with the system image (package step E6): read-only,
+// new ones reach installed systems with each image. A file of the same
+// name in /etc/svc replaces one; `enabled=yes` in it enables it unless
+// /etc/svc/disabled/NAME exists (svc disable makes that)
+#define VENDOR_DIR "/usr/lib/svc"
 #define START_WINDOW_NS 30000000000ll
 #define READY_TIMEOUT_NS 10000000000ll
 
@@ -54,11 +59,12 @@ enum { R_NO, R_ON_FAILURE, R_ALWAYS };
 typedef struct {
     char name[32], desc[96], exec[256], user[32], needs[160], after[160], env[512], dir[128], ready[64];
     int type, restart, restart_ms, start_limit, targets, console, system_job, log_console, keep_processes;
+    int enabled_default; // enabled=yes (units of /usr/lib/svc)
 } ucfg_t;
 
 typedef struct {
     ucfg_t c;
-    int present, builtin, enabled;
+    int present, builtin, enabled, vendor;
     int state, restart_pending;
     rx_handle_t proc, job;
     rx_handle_t kept_job;  // keep_processes: the job of an ended run, left alone
@@ -228,6 +234,7 @@ static void unit_parse(ucfg_t *c, const char *name, const char *text, const char
         else if (!strcmp(k, "system_job")) c->system_job = yes;
         else if (!strcmp(k, "keep_processes")) c->keep_processes = yes;
         else if (!strcmp(k, "log")) c->log_console = !strcmp(v, "console");
+        else if (!strcmp(k, "enabled")) c->enabled_default = yes;
         else ulog(LOG_WARNING, "%s:%d: unknown key %s", where, lineno, k);
     }
     if (c->console) c->log_console = 1;
@@ -260,36 +267,48 @@ static int unit_active(const unit_t *u) {
 // settings the next time they start, removed ones go once they are stopped
 static void svc_load(void) {
     for (int i = 0; i < nunits; i++) units[i].present = 0;
-    DIR *d = opendir(SVC_DIR);
-    svc_from_files = d != 0;
-    if (d) {
-        struct dirent *e;
-        while ((e = readdir(d))) {
-            size_t l = strlen(e->d_name);
-            if (l < 5 || strcmp(e->d_name + l - 4, ".svc")) continue;
-            char name[32];
-            snprintf(name, sizeof name, "%.*s", (int)(l - 4), e->d_name);
-            if (!valid_unit_name(name) || !strcmp(name, "emergency") || !strcmp(name, "boot-complete")) {
-                ulog(LOG_WARNING, "%s/%s: not a usable unit name", SVC_DIR, e->d_name);
-                continue;
+    DIR *etc = opendir(SVC_DIR);
+    if (etc) closedir(etc);
+    svc_from_files = etc != 0;
+    if (svc_from_files) {
+        // The image's units, then /etc/svc's (the same name replaces)
+        for (int vendor = 1; vendor >= 0; vendor--) {
+            const char *dir = vendor ? VENDOR_DIR : SVC_DIR;
+            DIR *d = opendir(dir);
+            if (!d) continue;
+            struct dirent *e;
+            while ((e = readdir(d))) {
+                size_t l = strlen(e->d_name);
+                if (l < 5 || strcmp(e->d_name + l - 4, ".svc")) continue;
+                char name[32];
+                snprintf(name, sizeof name, "%.*s", (int)(l - 4), e->d_name);
+                if (!valid_unit_name(name) || !strcmp(name, "emergency") || !strcmp(name, "boot-complete")) {
+                    ulog(LOG_WARNING, "%s/%s: not a usable unit name", dir, e->d_name);
+                    continue;
+                }
+                char path[300], text[8192];
+                snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+                int fd = open(path, O_RDONLY);
+                if (fd < 0) continue;
+                ssize_t n = read(fd, text, sizeof text - 1);
+                close(fd);
+                text[n > 0 ? n : 0] = 0;
+                unit_t *u = add_unit(name);
+                if (!u) break;
+                unit_parse(&u->c, name, text, path);
+                u->present = 1;
+                u->builtin = 0;
+                u->vendor = vendor;
+                struct stat st;
+                snprintf(path, sizeof path, "%s/enabled/%s", SVC_DIR, name);
+                u->enabled = stat(path, &st) == 0;
+                if (!u->enabled && u->c.enabled_default) {
+                    snprintf(path, sizeof path, "%s/disabled/%s", SVC_DIR, name);
+                    u->enabled = stat(path, &st) != 0;
+                }
             }
-            char path[300], text[8192];
-            snprintf(path, sizeof path, "%s/%s", SVC_DIR, e->d_name);
-            int fd = open(path, O_RDONLY);
-            if (fd < 0) continue;
-            ssize_t n = read(fd, text, sizeof text - 1);
-            close(fd);
-            text[n > 0 ? n : 0] = 0;
-            unit_t *u = add_unit(name);
-            if (!u) break;
-            unit_parse(&u->c, name, text, path);
-            u->present = 1;
-            u->builtin = 0;
-            struct stat st;
-            snprintf(path, sizeof path, "%s/enabled/%s", SVC_DIR, name);
-            u->enabled = stat(path, &st) == 0;
+            closedir(d);
         }
-        closedir(d);
     } else {
         for (size_t i = 0; i < sizeof builtin_units / sizeof builtin_units[0]; i++) {
             unit_t *u = add_unit(builtin_units[i][0]);
@@ -797,6 +816,23 @@ static int set_enabled(unit_t *u, int on) {
         return -EINVAL;
     }
     char path[128];
+    if (u->c.enabled_default) {
+        // The image enables it: disabling leaves a mark in /etc/svc/disabled
+        mkdir(SVC_DIR "/disabled", 0755);
+        snprintf(path, sizeof path, "%s/disabled/%s", SVC_DIR, u->c.name);
+        if (on) {
+            if (unlink(path) < 0 && errno != ENOENT) return -errno;
+            if (!u->enabled) reply_add("Enabled %s (removed %s)\n", u->c.name, path);
+        } else {
+            int fd = open(path, O_WRONLY | O_CREAT, 0644);
+            if (fd < 0) return -errno;
+            close(fd);
+            if (u->enabled) reply_add("Disabled %s (%s)\n", u->c.name, path);
+        }
+        u->enabled = on;
+        ulog(LOG_INFO, "%s %s", u->c.name, on ? "enabled" : "disabled");
+        return 0;
+    }
     mkdir(SVC_DIR "/enabled", 0755);
     snprintf(path, sizeof path, "%s/enabled/%s", SVC_DIR, u->c.name);
     if (on) {

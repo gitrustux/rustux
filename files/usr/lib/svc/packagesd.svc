@@ -1,0 +1,10 @@
+# The installer service (/svc/packages, man updates): system updates for
+# the desktop and for administrators without sudo, and the daily check
+# (/etc/rpg/updates.conf). Comes with the system image (package step E6).
+description=Installer service: updates (/svc/packages)
+exec=/bin/packagesd
+ready=/svc/packages
+after=logd netd
+restart=on-failure
+enabled=yes
+target=multi-user

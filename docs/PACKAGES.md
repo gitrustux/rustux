@@ -353,6 +353,42 @@ Not done: a kernel that hangs instead of panicking is not restarted (that
 needs a watchdog: the firmware's stops at ExitBootServices); a boot that
 reaches its target but is broken otherwise counts as good.
 
+## Updates on the desktop (step E6)
+
+**The installer service**, `packagesd` (`/svc/packages`, root; its unit
+comes with the image in `/usr/lib/svc`, `SERVICES.md`), runs rpg for the
+desktop and for administrators without sudo. Requests are one text
+message each:
+
+| Request | Who | What |
+|---------|-----|------|
+| `status` | anyone | the last check |
+| `check` | anyone | `rpg update`, then `rpg upgrade --plan` |
+| `upgrade` + password | root, or an administrator (group `sudo`) with their own password | `rpg upgrade -y`, its lines streamed back ("out ..."), then "done CODE" |
+
+It checks by itself once a day (`/etc/rpg/updates.conf`: `check daily` or
+`never`; `delay SECONDS` before the first check, 120) and writes what it
+found to `/var/lib/rpg/updates`, which anyone may read: `checked`,
+`error`, and `rpg upgrade --plan`'s lines (`step NAME FROM TO SIZE WHY`,
+`kept NAME REASON`). `rpg upgrade --plan` is new: what an upgrade would do,
+a line a package, changing nothing (no root needed).
+
+- **`updates`** (`man updates`): `updates` shows the last check, `updates
+  check` checks now, `updates install` installs (the password asked, or
+  `-S`: from stdin).
+- **The panel** reads the status file every 30 seconds: "Updates (N)"
+  when there are some, which opens Settings > Updates, and a notification
+  when N grows.
+- **Settings > Updates**: the last check and its packages (installed and
+  new versions, sizes), Check now, Install updates (in the background, its
+  output shown; another user than root gives their password in the bar,
+  as for the other system settings), and after a new system image
+  "Restart now" (it starts at the next restart; the previous one stays in
+  the menu). The sources are listed.
+
+FoxDen's Updates page (`FOXDEN.md`, step FD5) will use the same service,
+which step FD4 extends to apps.
+
 ## Tests
 
 `cargo test` in `userspace/rust/rpg` (versions, control files, the tar,
@@ -382,3 +418,9 @@ image 0.1.2 counted then blessed; an upgrade to 0.1.3 removes 0.1.1 (two
 images kept); 0.1.3, made to fail with the test word `crash=boot` on its
 entry (the kernel panics just before init), panics three times and
 rboot falls back to 0.1.2, as `rpg boot status` then says.
+
+Step E6: `scripts/run-updates-test.sh` (`TESTS.md`): the live desktop with
+a test repository on a second disk; the service's own check finds an
+update and a new dependency, the panel shows them and notifies, a user who
+is not an administrator and an administrator with a wrong password are
+refused, Settings > Updates installs them.

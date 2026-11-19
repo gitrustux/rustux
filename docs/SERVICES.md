@@ -19,6 +19,16 @@ A unit is `/etc/svc/NAME.svc` (Linux keeps the port list in `/etc/services`,
 so the directory is `/etc/svc`): `key=value` lines, `#` comments,
 `[Section]` lines ignored, so a simple systemd unit needs few changes.
 
+Units can also come with the system image (package step E6), in
+`/usr/lib/svc/NAME.svc` (read only, as systemd's `/usr/lib/systemd/system`):
+the image is the system on an installed Rustica (`PACKAGES.md`), and
+`/etc/svc` is on its disk, so a service new in an image would otherwise
+never reach installations made before it. A file of the same name in
+`/etc/svc` replaces the image's. Such a unit with `enabled=yes` is enabled
+unless `/etc/svc/disabled/NAME` exists (`svc disable` makes it, `svc
+enable` removes it); the others are enabled by `/etc/svc/enabled/NAME`.
+The first is `packagesd`, the installer service.
+
 | Key | Meaning (default) |
 |-----|-------------------|
 | `description` | what `svc list` shows |
@@ -60,6 +70,7 @@ The image's units:
 | `netd` | the network service, `ready=/svc/net` (`NETWORK.md`) | multi-user |
 | `sshd` | the SSH server, after netd (`NETWORK.md`) | multi-user |
 | `emergency` | built in, never in a file: a root shell when nothing else can hold the console | none |
+| `packagesd` | the installer service, `/svc/packages`: updates for the desktop and the daily check (package step E6, `man updates`); from `/usr/lib/svc`, `enabled=yes` | multi-user |
 | `boot-complete` | built in, never in a file (package step E4): `bootctl bless` once a multi-user or graphical boot has started everything (nothing waiting or starting): rboot's boot counter goes, the image is good | started by init |
 
 Without `/etc/svc` init uses the same units built in (`svc list` says

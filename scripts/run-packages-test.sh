@@ -198,7 +198,7 @@ sleep 1
 power_cut
 OUT=$(section start)
 printf '%s\n' "$OUT" | sed -n '/PKGTEST start/,/PKGTEST cut/p'
-expect "rpg 0.1.0 (step E4"
+expect "rpg 0.1.0 (step E6"
 expect "No packages are installed."
 expect "hello 1.0-1: installed (6 files)"
 expect "postinst install"
@@ -288,7 +288,7 @@ wait_end 120
 kill $HTTPS 2>/dev/null
 OUT=$(section boot4)
 printf '%s\n' "$OUT" | sed -n '/PKGTEST boot4/,/PKGTEST done4/p'
-expect "rpg 0.1.0 (step E4: boot counting, two images kept)"
+expect "rpg 0.1.0 (step E6: updates on the desktop)"
 expect "https://rustux.com/download/rustica  redfox  main"
 expect "65527118d2c1e504  rustux-archive-2026"
 expect "removed: https://rustux.com/download/rustica  redfox  main"

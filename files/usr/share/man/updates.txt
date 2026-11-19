@@ -1,0 +1,39 @@
+updates - the system's updates
+
+USAGE
+    updates [status [--raw]]
+    updates check
+    updates install [-S]
+
+    The installer service (packagesd, /svc/packages) checks for updates
+    once a day: rpg update, then what rpg upgrade would do. updates shows
+    what it found, the packages with their versions and sizes. The
+    desktop's panel shows "Updates (N)" and Settings > Updates installs
+    them; this is the same from a terminal.
+
+    status    what the last check found (--raw: the status file's lines)
+    check     check now (anyone may)
+    install   install them (rpg upgrade): root, or an administrator (group
+              sudo) with their own password, asked for; -S reads it from
+              one line of standard input, as sudo -S. No sudo needed.
+
+    status and check exit with 100 when there are updates. A new system
+    image starts at the next restart; the previous one stays in rboot's
+    menu (man rpg, THE SYSTEM).
+
+FILES
+    /etc/rpg/updates.conf    check daily | never; delay SECONDS (before the
+                             first check after starting, 120)
+    /var/lib/rpg/updates     what the last check found (anyone may read):
+                             checked SECONDS, error TEXT, step NAME FROM TO
+                             SIZE WHY (rpg upgrade --plan), kept NAME WHY,
+                             upgraded SECONDS CODE
+
+EXAMPLES
+    updates
+    updates check
+    updates install
+    sudo svc stop packagesd       no checks (or check never in updates.conf)
+
+SEE ALSO
+    rpg, svc, docs/PACKAGES.md

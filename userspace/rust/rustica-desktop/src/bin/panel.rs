@@ -10,7 +10,9 @@
 //! volume (not there yet), the network (Net: the interface and its
 //! address, network step D6; a click opens Settings > Network), the
 //! clock, Lock and Log out. The session lasts as long as the panel: Log
-//! out ends it.
+//! out ends it. Updates (package step E6): when the installer service's
+//! last check found some (/var/lib/rpg/updates), an "Updates (N)" button
+//! opens Settings > Updates, and a notification says so when N grows.
 //!
 //! It also starts the programs in /etc/autostart (one command a line).
 
@@ -55,6 +57,11 @@ struct Win {
     minimized: bool,
 }
 
+/// How many packages the installer service's last check found to upgrade
+fn updates() -> usize {
+    std::fs::read_to_string("/var/lib/rpg/updates").map(|t| t.lines().filter(|l| l.starts_with("step ")).count()).unwrap_or(0)
+}
+
 /// The keyboard layout (/etc/keymap; Settings or localectl change it)
 fn layout() -> String {
     let l = std::fs::read_to_string("/etc/keymap").map(|s| s.trim().to_string()).unwrap_or_default();
@@ -76,6 +83,9 @@ fn main() {
     // The network's state, asked again every 3 seconds
     let mut net = String::new();
     let mut net_at: Option<Instant> = None;
+    // The updates found, looked at again every 30 seconds
+    let mut ups = 0usize;
+    let mut ups_at: Option<Instant> = None;
     println!("panel: session of {user}");
     let r = rustica_ui::run("Panel", 800, 36, Some((0, 0)), |ui: &mut Ui, ctl: &mut Control| {
         if first {
@@ -106,6 +116,21 @@ fn main() {
             }
             net_at = Some(Instant::now());
         }
+        if ups_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(30)) {
+            let n = updates();
+            if n != ups {
+                println!("panel: updates {n}");
+                if n > ups {
+                    ctl.requests.push(Request::Notify(format!(
+                        "{n} update{} for the system: Settings > Updates",
+                        if n == 1 { "" } else { "s" }
+                    )));
+                }
+                ups = n;
+            }
+            ups_at = Some(Instant::now());
+        }
+        let ups_text = if ups > 0 { format!("Updates ({ups})") } else { String::new() };
         let left_text = format!("{}    Vol \u{2014}", layout());
         let right_text = clock();
         let right_w = ui.text_width(&left_text)
@@ -113,6 +138,7 @@ fn main() {
             + ui.text_width(&right_text)
             + ui.text_width("Lock")
             + ui.text_width("Log out")
+            + if ups > 0 { ui.text_width(&ups_text) + ui.u(40.0) } else { 0.0 }
             + ui.u(32.0 * 3.0 + 8.0 * 6.0 + 16.0);
         ui.row(|ui| {
             if ui.primary_button("Applications") {
@@ -145,6 +171,10 @@ fn main() {
                 let ty = r.y + (bh - ui.line_h()) / 2.0;
                 ui.canvas.text(&mut ui.face, r.x, ty, text, px, th.dim);
             };
+            if ups > 0 && ui.primary_button(&ups_text) {
+                println!("panel: updates settings");
+                let _ = std::process::Command::new("/bin/settings").arg("updates").spawn();
+            }
             status(ui, &left_text);
             if ui.button(&net) {
                 println!("panel: network settings");

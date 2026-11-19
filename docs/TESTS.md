@@ -406,6 +406,23 @@ a password login as a new user (`useradd`, `chpasswd`, `SSH_ASKPASS`),
 root's password refused, an unknown key refused, 1 MB up and down;
 sshd's log. (Skipped without `ssh` on the host.)
 
+## Updates test (package step E6)
+
+`scripts/run-updates-test.sh` (QEMU, the live desktop; it needs openssl
+and cargo): a second disk holds a package `hello-up 1.0` and a repository,
+made with the host's rpg and signed with a test key, with `hello-up 1.1`,
+which needs a new package `hello-dep`. At the console the test installs
+1.0, makes the repository the only source and the installer service's
+daily check come at once; the check finds both packages (`updates`), the
+panel shows "Updates (2)" and a notification says so (the log), a user
+who is not an administrator and an administrator with a wrong password
+are refused (`updates install -S`), and Settings > Updates, as root,
+installs them: 1.1 and hello-dep are installed, `updates` says everything
+is up to date and the panel's button goes. Not covered: a new system
+image there (the live system has none installed: the install test covers
+images), Settings as a user with a password (the apps test covers that
+bar).
+
 ## Publishing test (package step E5)
 
 `scripts/run-publish-test.sh` runs on the host alone (no QEMU; it needs

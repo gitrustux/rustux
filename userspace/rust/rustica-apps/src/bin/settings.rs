@@ -9,9 +9,12 @@
 //! (inputctl), network (the interfaces, DHCP or a fixed address, DNS
 //! servers: netcfg; network step D6), date, time and time zone
 //! (timedatectl), users (useradd, userdel, chpasswd, usermod), disks
-//! (lsblk, read only), about.
+//! (lsblk, read only), updates (the installer service /svc/packages,
+//! through the updates command: what the last check found, Check now,
+//! Install updates, a restart for a new system image; package step E6),
+//! about.
 //!
-//!   settings [SECTION]     display, keyboard, mouse, network, time, users, disks, about
+//!   settings [SECTION]     display, keyboard, mouse, network, time, users, disks, updates, about
 //!
 //! What is the system's (in /etc) is root's: another user is asked for
 //! their password and the change goes through sudo -S. Prints what it
@@ -22,6 +25,7 @@ use rustica_ui::net::Iface;
 use rustica_ui::{Column, Control, Icon, Row, Ui};
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 fn say(s: &str) {
@@ -29,13 +33,93 @@ fn say(s: &str) {
     let _ = std::io::stdout().flush();
 }
 
-const SECTIONS: [&str; 8] = ["Display", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "About"];
+const SECTIONS: [&str; 9] = ["Display", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "Updates", "About"];
+const S_DISKS: usize = 6;
+const S_UPDATES: usize = 7;
+const S_ABOUT: usize = 8;
+
+/// The installer service's last check (/var/lib/rpg/updates)
+#[derive(Default, Clone)]
+struct UpStatus {
+    checked: i64,
+    error: String,
+    steps: Vec<(String, String, String, u64, String)>, // name, from ("" new), to, size, why
+    kept: Vec<String>,
+}
+
+fn up_status() -> UpStatus {
+    let mut u = UpStatus::default();
+    for l in std::fs::read_to_string("/var/lib/rpg/updates").unwrap_or_default().lines() {
+        if let Some(v) = l.strip_prefix("checked ") {
+            u.checked = v.trim().parse().unwrap_or(0);
+        } else if let Some(v) = l.strip_prefix("error ") {
+            u.error = v.trim().to_string();
+        } else if let Some(v) = l.strip_prefix("step ") {
+            let f: Vec<&str> = v.split(' ').collect();
+            if f.len() >= 5 {
+                let dash = |t: &str| if t == "-" { String::new() } else { t.to_string() };
+                u.steps.push((f[0].into(), dash(f[1]), f[2].into(), f[3].parse().unwrap_or(0), dash(f[4])));
+            }
+        } else if let Some(v) = l.strip_prefix("kept ") {
+            u.kept.push(v.to_string());
+        }
+    }
+    u
+}
+
+/// A check or an install running in the background
+#[derive(Default)]
+struct Job {
+    lines: Vec<String>,
+    done: Option<i32>,
+}
+
+fn start_job(argv: Vec<String>, input: String) -> Arc<Mutex<Job>> {
+    let job = Arc::new(Mutex::new(Job::default()));
+    let j = job.clone();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let child = Command::new(&argv[0]).args(&argv[1..]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => {
+                let mut g = j.lock().unwrap();
+                g.lines.push(format!("{}: {e}", argv[0]));
+                g.done = Some(-1);
+                return;
+            }
+        };
+        if let Some(mut si) = child.stdin.take() {
+            let _ = si.write_all(input.as_bytes());
+        }
+        let err = child.stderr.take();
+        let j2 = j.clone();
+        let et = std::thread::spawn(move || {
+            if let Some(e) = err {
+                for l in std::io::BufReader::new(e).lines().map_while(Result::ok) {
+                    j2.lock().unwrap().lines.push(l);
+                }
+            }
+        });
+        if let Some(o) = child.stdout.take() {
+            for l in std::io::BufReader::new(o).lines().map_while(Result::ok) {
+                j.lock().unwrap().lines.push(l);
+            }
+        }
+        let _ = et.join();
+        let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
+        j.lock().unwrap().done = Some(code);
+    });
+    job
+}
 const METHODS: [&str; 3] = ["Automatic (DHCP)", "Fixed address", "Off"];
 
 /// A change that needs root, waiting for the password
 struct Pending {
     what: String,
     cmds: Vec<(Vec<String>, String)>, // argv, stdin
+    /// Installing updates: through the installer service, not sudo
+    updates: bool,
 }
 
 struct Settings {
@@ -76,6 +160,13 @@ struct Settings {
     message: Option<(String, String)>,
     confirm_delete: Option<String>,
     status: String,
+    // Updates: the last check, what runs now (and what: "check" or
+    // "install"), its output, whether a new system image went in
+    ups: UpStatus,
+    job: Option<(String, Arc<Mutex<Job>>)>,
+    job_lines: Vec<String>,
+    new_image: Option<String>,
+    up_sel: Option<usize>,
 }
 
 /// /etc/network.conf's lines, as words (comments left out)
@@ -144,6 +235,11 @@ impl Settings {
             message: None,
             confirm_delete: None,
             status: String::new(),
+            ups: UpStatus::default(),
+            job: None,
+            job_lines: Vec::new(),
+            new_image: None,
+            up_sel: None,
         };
         s.reload();
         s
@@ -170,6 +266,7 @@ impl Settings {
         self.load_users();
         self.load_disks();
         self.load_about();
+        self.ups = up_status();
         self.net_at = None;
         self.net_for.clear();
         self.dns_text = conf_lines().iter().filter(|w| w[0] == "dns").flat_map(|w| w[1..].to_vec()).collect::<Vec<_>>().join(" ");
@@ -260,7 +357,7 @@ impl Settings {
 
     /// Run commands as root: now if we are, else after the password
     fn admin(&mut self, what: &str, cmds: Vec<(Vec<String>, String)>) {
-        let p = Pending { what: what.to_string(), cmds };
+        let p = Pending { what: what.to_string(), cmds, updates: false };
         if sys::euid() == 0 || self.password.is_some() {
             self.run_admin(p);
         } else {
@@ -634,6 +731,134 @@ impl Settings {
         ui.table("disks", &cols, &rows, &mut self.disk_sel, 0.0);
     }
 
+    fn install_updates(&mut self) {
+        let input = if sys::euid() == 0 { String::new() } else { format!("{}\n", self.password.clone().unwrap_or_default()) };
+        say("updates install");
+        self.job_lines.clear();
+        self.new_image = None;
+        self.job = Some(("install".into(), start_job(vec!["/bin/updates".into(), "install".into(), "-S".into()], input)));
+    }
+
+    fn updates_section(&mut self, ui: &mut Ui, ctl: &mut Control) {
+        ui.heading("Updates");
+        // What runs, and what it said
+        if let Some((what, job)) = self.job.clone() {
+            ctl.wake_after = Some(Duration::from_millis(300));
+            let (lines, done) = {
+                let g = job.lock().unwrap();
+                (g.lines.clone(), g.done)
+            };
+            self.job_lines = lines;
+            if let Some(code) = done {
+                self.job = None;
+                self.ups = up_status();
+                if what == "install" {
+                    if code == 0 {
+                        // A new system image (rustica-system-VERSION: N files installed)
+                        self.new_image = self.job_lines.iter().find_map(|l| {
+                            l.strip_prefix("rustica-system-").and_then(|r| r.split_once(' ')).filter(|(_, rest)| rest.contains("installed")).map(|(v, _)| v.trim_end_matches(':').to_string())
+                        });
+                        say(&format!("updates installed{}", self.new_image.as_ref().map(|v| format!(" (new system image {v})")).unwrap_or_default()));
+                        self.status = "The updates are installed.".into();
+                    } else {
+                        let why = self.job_lines.iter().rev().find(|l| l.starts_with("updates:")).cloned().unwrap_or_else(|| format!("updates install ended with {code}"));
+                        if why.contains("wrong password") || why.contains("not an administrator") {
+                            self.password = None;
+                        }
+                        say(&format!("updates failed: {why}"));
+                        self.message = Some(("The updates were not installed".into(), why));
+                    }
+                } else {
+                    say(&format!("updates checked: {}", self.ups.steps.len()));
+                }
+            }
+        }
+        let running = self.job.is_some();
+        if self.ups.checked == 0 {
+            ui.label("Not checked yet.");
+        } else {
+            let tm = sys::local(self.ups.checked);
+            ui.dim_label(&format!(
+                "Last checked {:04}-{:02}-{:02} {:02}:{:02}{}",
+                tm.year + 1900,
+                tm.mon + 1,
+                tm.mday,
+                tm.hour,
+                tm.min,
+                if self.ups.error.is_empty() { String::new() } else { format!(": {}", self.ups.error) }
+            ));
+        }
+        if self.ups.steps.is_empty() {
+            if self.ups.checked != 0 && self.ups.error.is_empty() {
+                ui.label("Everything is up to date.");
+            }
+        } else {
+            let total: u64 = self.ups.steps.iter().map(|s| s.3).sum();
+            ui.label(&format!("{} package{} to upgrade, {} to download", self.ups.steps.len(), if self.ups.steps.len() == 1 { "" } else { "s" }, sys::human_size(total)));
+            let rows: Vec<Row> = self
+                .ups
+                .steps
+                .iter()
+                .map(|(n, from, to, size, why)| Row {
+                    icon: Icon::None,
+                    cells: vec![n.clone(), if from.is_empty() { format!("new{}", if why.is_empty() { String::new() } else { format!(", for {why}") }) } else { from.clone() }, to.clone(), sys::human_size(*size)],
+                })
+                .collect();
+            let cols = [
+                Column { title: "Package", width: 0.0, right: false },
+                Column { title: "Installed", width: 170.0, right: false },
+                Column { title: "New", width: 90.0, right: false },
+                Column { title: "Size", width: 80.0, right: true },
+            ];
+            let h = (ui.line_h() * 1.6 * (rows.len().min(8) as f32 + 1.5)) / ui.scale;
+            ui.table("updates", &cols, &rows, &mut self.up_sel, h);
+            for k in &self.ups.kept {
+                ui.dim_label(&format!("Kept back: {k}"));
+            }
+        }
+        ui.space(4.0);
+        let (check, install) = ui.row(|ui| {
+            let c = !running && ui.button("Check now");
+            let i = !running && !self.ups.steps.is_empty() && ui.primary_button("Install updates");
+            (c, i)
+        });
+        if check {
+            say("updates check");
+            self.job_lines.clear();
+            self.job = Some(("check".into(), start_job(vec!["/bin/updates".into(), "check".into()], String::new())));
+        }
+        if install {
+            if sys::euid() == 0 || self.password.is_some() {
+                self.install_updates();
+            } else {
+                self.pw_text.clear();
+                self.pending = Some(Pending { what: "install the updates".into(), cmds: Vec::new(), updates: true });
+            }
+        }
+        if running {
+            ui.label(if self.job.as_ref().map(|j| j.0.as_str()) == Some("install") { "Installing the updates..." } else { "Checking..." });
+        }
+        if !self.job_lines.is_empty() {
+            for l in self.job_lines.iter().rev().take(6).collect::<Vec<_>>().into_iter().rev() {
+                ui.dim_label(l);
+            }
+        }
+        if let Some(v) = self.new_image.clone() {
+            ui.space(4.0);
+            ui.label(&format!("The new system image {v} starts at the next restart (the previous one stays in the boot menu)."));
+            if ui.primary_button("Restart now") {
+                self.admin("restart", vec![(vec!["/bin/reboot".into()], String::new())]);
+            }
+        }
+        ui.space(8.0);
+        ui.label("Sources");
+        let src = std::fs::read_to_string("/etc/rpg/sources.list").unwrap_or_default();
+        for l in src.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            ui.dim_label(l);
+        }
+        ui.dim_label("The system checks once a day (/etc/rpg/updates.conf); updates in a terminal: man updates.");
+    }
+
     fn about_section(&mut self, ui: &mut Ui) {
         ui.heading("About");
         for (k, v) in self.about.clone() {
@@ -660,7 +885,8 @@ impl Settings {
                 3 => self.network(ui, ctl),
                 4 => self.time(ui, ctl),
                 5 => self.users_section(ui),
-                6 => self.disks_section(ui),
+                S_DISKS => self.disks_section(ui),
+                S_UPDATES => self.updates_section(ui, ctl),
                 _ => self.about_section(ui),
             });
         });
@@ -669,9 +895,12 @@ impl Settings {
             if let Some(s) = self.section {
                 say(&format!("section {}", SECTIONS[s]));
             }
-            if self.section == Some(6) || self.section == Some(7) {
+            if self.section == Some(S_DISKS) || self.section == Some(S_ABOUT) {
                 self.load_disks();
                 self.load_about();
+            }
+            if self.section == Some(S_UPDATES) {
+                self.ups = up_status();
             }
         }
         ui.focus_if_none("sections");
@@ -698,7 +927,11 @@ impl Settings {
             if ok || enter {
                 self.password = Some(std::mem::take(&mut self.pw_text));
                 let p = self.pending.take().unwrap();
-                self.run_admin(p);
+                if p.updates {
+                    self.install_updates();
+                } else {
+                    self.run_admin(p);
+                }
             } else if cancel {
                 self.pending = None;
             }

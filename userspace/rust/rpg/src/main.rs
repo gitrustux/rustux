@@ -52,7 +52,7 @@ use std::process::exit;
 
 const USAGE: &str = "usage: rpg [--root DIR] COMMAND ...
   update                       get the sources' package lists (signatures checked)
-  upgrade [-y]                 upgrade every package a source has a newer version of
+  upgrade [-y] | upgrade --plan  upgrade every package a source has a newer version of (--plan: say what, change nothing)
   install [-y] NAME|./FILE.rpg...  install packages, with what they need
   remove [--purge] NAME...     remove packages (--purge: their configuration files too)
   autoremove [-y]              remove packages installed for others, no longer needed
@@ -133,7 +133,11 @@ fn main() {
         }),
         "upgrade" | "full-upgrade" | "dist-upgrade" => {
             let (yes, _) = yes_and(rest);
-            ctx.begin().and_then(|_lock| cmd::upgrade(&ctx, yes))
+            if rest.iter().any(|a| a == "--plan") {
+                cmd::upgrade_plan(&ctx)
+            } else {
+                ctx.begin().and_then(|_lock| cmd::upgrade(&ctx, yes))
+            }
         }
         "autoremove" => {
             let (yes, _) = yes_and(rest);
@@ -212,7 +216,7 @@ fn main() {
         "owner" | "search-file" => owner(&ctx, rest),
         "verify" => verify(&ctx, rest),
         "version" | "--version" => {
-            println!("rpg {} (step E4: boot counting, two images kept)", env!("CARGO_PKG_VERSION"));
+            println!("rpg {} (step E6: updates on the desktop)", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         "help" | "--help" | "-h" => {

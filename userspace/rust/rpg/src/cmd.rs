@@ -253,6 +253,32 @@ pub fn upgrade(ctx: &Ctx, yes: bool) -> Result<(), String> {
     carry_out(ctx, plan, Vec::new())
 }
 
+/// rpg upgrade --plan: what rpg upgrade would do, a line a package, for
+/// programs (the installer service, Settings > Updates: step E6); changes
+/// nothing and needs no root:
+///   step NAME FROM TO SIZE WHY     (FROM "-": new; WHY "-": asked for)
+///   kept NAME REASON
+pub fn upgrade_plan(ctx: &Ctx) -> Result<(), String> {
+    let av = need_lists(ctx)?;
+    let installed = ctx.db.installed()?;
+    let plan = solve::upgrade(&installed, &av);
+    for s in &plan.steps {
+        let one = |t: &str| if t.is_empty() { "-".to_string() } else { t.split_whitespace().collect::<Vec<_>>().join("_") };
+        println!(
+            "step {} {} {} {} {}",
+            s.c.name(),
+            one(s.old.as_deref().unwrap_or("")),
+            s.c.version(),
+            s.avail.as_ref().map(|a| a.size).unwrap_or(0),
+            one(s.why.as_deref().unwrap_or(""))
+        );
+    }
+    for (n, why) in &plan.kept {
+        println!("kept {n} {}", why.replace('\n', " "));
+    }
+    Ok(())
+}
+
 pub fn autoremove(ctx: &Ctx, yes: bool) -> Result<(), String> {
     let installed = ctx.db.installed()?;
     let names = solve::unneeded(&installed);
