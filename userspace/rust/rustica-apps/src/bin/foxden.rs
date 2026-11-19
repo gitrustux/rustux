@@ -143,6 +143,25 @@ fn system_updates(apps: &[App]) -> Vec<(String, String, String)> {
         .collect()
 }
 
+/// The installer service's app lines (FoxDen step FD6): updates that wait
+/// because they ask for more (ID, version, permissions), and apps updated
+/// in the background (ID, version), newest first
+fn app_news() -> (Vec<(String, String, Vec<String>)>, Vec<(String, String)>) {
+    let t = std::fs::read_to_string("/var/lib/rpg/updates").unwrap_or_default();
+    let mut waits = Vec::new();
+    let mut done = Vec::new();
+    for l in t.lines() {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        match w.first() {
+            Some(&"appwaits") if w.len() >= 5 => waits.push((w[1].to_string(), w[3].to_string(), w[4].split(',').map(str::to_string).collect())),
+            Some(&"appupdated") if w.len() >= 5 => done.push((w[2].to_string(), w[4].to_string())),
+            _ => {}
+        }
+    }
+    done.reverse();
+    (waits, done)
+}
+
 fn size_text(b: u64) -> String {
     if b >= 1 << 20 {
         format!("{:.1} MB", b as f64 / 1048576.0)
@@ -686,10 +705,35 @@ impl FoxDen {
         if apps.is_empty() && sys.is_empty() {
             ui.dim_label("Everything is up to date (as of the last check).");
         }
-        if !apps.is_empty() {
+        let (waits, done) = app_news();
+        let waiting: Vec<&str> = waits.iter().map(|w| w.0.as_str()).collect();
+        let plain: Vec<&App> = apps.iter().filter(|a| !waiting.contains(&a.id.as_str())).collect();
+        if !waits.is_empty() {
+            ui.label("Waiting for you: these new versions ask for more");
+            for (id, to, perms) in &waits {
+                let name = self.app(id).map(|a| a.name.clone()).unwrap_or(id.clone());
+                let words: Vec<&str> = perms.iter().map(|p| permission_words(p)).collect();
+                ui.push_id(id);
+                ui.row(|ui| {
+                    ui.dim_label(&format!("    {name} {to}: {}", words.join("; ")));
+                    if ui.button("Allow and update") {
+                        self.run("install", Some(id), &["install", "-y", id]);
+                    }
+                });
+                ui.pop_id();
+            }
+        }
+        if !plain.is_empty() {
             ui.label("Apps");
-            for a in &apps {
+            for a in &plain {
                 ui.dim_label(&format!("    {}  {} → {}", a.name, a.installed.clone().unwrap_or_default(), a.version));
+            }
+        }
+        if !done.is_empty() {
+            ui.label("Updated in the background");
+            for (id, to) in done.iter().take(8) {
+                let name = self.app(id).map(|a| a.name.clone()).unwrap_or(id.clone());
+                ui.dim_label(&format!("    {name} {to}"));
             }
         }
         if !sys.is_empty() {

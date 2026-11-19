@@ -467,6 +467,21 @@ erin's name and password she gets the `files:home` app; erin installs
 Calculator 1.1.0; `rpg remove --purge` needs an administrator, `rpg
 remove` does not. The log names who asked and who allowed it.
 
+## App updates and file chooser test (FoxDen step FD6)
+
+`scripts/run-appupdates-test.sh` (QEMU, the live desktop; it needs
+openssl and cargo): two apps sources made on the host on a second disk.
+From the first, the Calculator, the System Monitor and `org.test.portal`
+(`portaltest`, no permissions) are installed; the source switched to the
+second, the installer service's check (`updates check`) upgrades the
+Calculator 1.1.0 at once and leaves the System Monitor 1.1.0 waiting (it
+asks for `network`): the status and the log say so and the panel notifies
+both; `rpg install` (the user's yes) upgrades it. `portaltest` cannot
+open `~/Documents/note.txt` by its path; keys typed into the chooser give
+it the file, which it reads and nothing beside it (read only, no folder,
+the path still refused); it saves `copy.txt` through the chooser; a
+cancelled question gives it nothing.
+
 ## FoxDen test (FoxDen step FD5)
 
 `scripts/run-foxden-test.sh` (QEMU, the live desktop; it needs openssl

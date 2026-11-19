@@ -728,6 +728,63 @@ pub fn index(args: &[String]) -> Result<(), String> {
     repo::index(std::path::Path::new(&dir), &o)
 }
 
+/// rpg permissions ID [grant|revoke PERMISSION...] (FoxDen step FD6):
+/// what an installed app asks for and what the user who runs this lets it
+/// have (~/.config/apps/permissions, what appctl, FoxDen and Settings >
+/// Apps read and write). grant and revoke change the user's own line;
+/// nothing beyond what the app asks for can be granted. No root needed.
+pub fn permissions(ctx: &Ctx, args: &[String]) -> Result<(), String> {
+    let id = args.first().ok_or("permissions ID [grant|revoke PERMISSION...]")?;
+    let m = std::fs::read_to_string(ctx.db.path(&format!("{}/manifest", crate::app::dir(id))))
+        .map_err(|_| format!("{id}: not an installed app (rpg list --apps)"))
+        .and_then(|t| crate::app::parse_manifest(&t))?;
+    let home = std::env::var("HOME").map_err(|_| "no HOME".to_string())?;
+    let file = std::path::Path::new(&home).join(".config/apps/permissions");
+    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    let line = text.lines().filter(|l| !l.trim_start().starts_with('#')).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        (k.trim() == id).then(|| v.split_whitespace().filter(|w| *w != "-").map(str::to_string).collect::<Vec<_>>())
+    });
+    let asked = m.permissions.clone();
+    let mut given: Vec<String> = line.clone().unwrap_or_else(|| asked.clone()).into_iter().filter(|p| asked.contains(p) && p != "system").collect();
+    match args.get(1).map(String::as_str) {
+        None => {
+            println!("{id}: asks for: {}", if asked.is_empty() { "nothing".to_string() } else { asked.join(" ") });
+            println!("{id}: gets: {}{}", if given.is_empty() { "nothing".to_string() } else { given.join(" ") }, if line.is_some() { " (narrowed in ~/.config/apps/permissions)" } else { "" });
+            return Ok(());
+        }
+        Some(op @ ("grant" | "revoke")) => {
+            let ps = &args[2..];
+            if ps.is_empty() {
+                return Err(format!("permissions {id} {op} PERMISSION..."));
+            }
+            for p in ps {
+                if !asked.contains(p) {
+                    return Err(format!("{id} does not ask for {p}: only what it asks for can be granted or revoked ({})", if asked.is_empty() { "it asks for nothing".to_string() } else { asked.join(" ") }));
+                }
+                if op == "grant" && p == "system" {
+                    return Err("system is never given to an app".into());
+                }
+                if op == "grant" && !given.contains(p) {
+                    given.push(p.clone());
+                }
+                if op == "revoke" {
+                    given.retain(|g| g != p);
+                }
+            }
+        }
+        Some(x) => return Err(format!("permissions {id} {x}? (grant or revoke)")),
+    }
+    // Written back: the user's line for it, in asked order
+    given.sort_by_key(|p| asked.iter().position(|a| a == p));
+    let mut lines: Vec<String> = text.lines().filter(|l| l.split_once(':').map(|(k, _)| k.trim() != id.as_str()).unwrap_or(true)).map(str::to_string).collect();
+    lines.push(format!("{id}: {}", if given.is_empty() { "-".to_string() } else { given.join(" ") }));
+    std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| format!("{}: {e}", file.display()))?;
+    std::fs::write(&file, lines.join("\n") + "\n").map_err(|e| format!("{}: {e}", file.display()))?;
+    println!("{id}: gets: {} (from its next start)", if given.is_empty() { "nothing".to_string() } else { given.join(" ") });
+    Ok(())
+}
+
 /// rpg list --apps --available (FoxDen step FD5: what the FoxDen app
 /// shows): a stanza per app, the newest an app source has (its index's
 /// fields, with Source: its base URL) or, for an app installed from a

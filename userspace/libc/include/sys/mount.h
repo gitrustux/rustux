@@ -33,4 +33,11 @@ int rx_statfs_fd(int fd, rx_fs_statfs_t *out);
 // appctl hands an app as its RX_PA_NS_DIR. 0 or a negative errno
 int rx_fs_view(int n, const int *modes, const char *const *paths, rx_handle_t *out);
 
+// An open file's connection, cloned (its offset shared), for handing to
+// another process (appctl's file chooser: FoxDen step FD6). 0 or -errno
+int rx_fd_clone_handle(int fd, rx_handle_t *out);
+// A file connection received from elsewhere as a file descriptor (flags:
+// O_RDONLY, O_WRONLY or O_RDWR, as it was opened); the fd, or -errno
+int rx_fd_from_handle(rx_handle_t h, int flags);
+
 #endif

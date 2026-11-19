@@ -113,6 +113,7 @@ typedef int64_t rx_status_t;
 #define RX_PA_KERNEL_INPUT  0xE0  // Rustux: kernel input channel (init)
 #define RX_PA_POWER_RESOURCE 0xE1 // Rustux: the power resource (reboot, poweroff)
 #define RX_PA_JOB_SYSTEM    0xE2  // Rustux: the job holding the whole system (ps, kill)
+#define RX_PA_PORTAL        0xE3  // Rustux: an app's file chooser channel (appctl; <rustux/portal.h>)
 #define RX_PA_USER0       0xF0    // handles a parent passes to a child
 #define RX_PA_USER1       0xF1
 #define RX_PA_USER2       0xF2

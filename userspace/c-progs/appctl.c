@@ -21,8 +21,15 @@
 // handle). The user narrows an app's permissions in
 // ~/.config/apps/permissions ("ID: network files:documents"; "ID: -" for
 // none); the manifest's are the most it gets.
+//
+// While the app runs, appctl is its file chooser (FoxDen step FD6,
+// <rustux/portal.h>): the app gets a channel (RX_PA_PORTAL) on which it
+// asks to open or save a file; appctl shows the chooser (/bin/chooser, a
+// window of the session's, as the user), opens the file the user picks
+// and hands the app that file's connection alone.
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pwd.h>
 #include <rustux/process.h>
 #include <rustux/syscalls.h>
@@ -228,6 +235,110 @@ static float user_scale(const char *home) {
     return s;
 }
 
+// ---- the file chooser (FoxDen step FD6) ----
+
+extern char **environ;
+
+// A request of the app's on its chooser channel: "open\nTITLE\nPATTERNS"
+// or "save\nTITLE\nNAME". Answered "ok NAME" with the file's
+// connection, "cancel", or "error ERRNO MESSAGE".
+static void portal_request(rx_handle_t ch, const char *home, const char *app_name) {
+    char req[1100];
+    rx_handle_t hs[4];
+    uint32_t got = 0, nh = 0;
+    if (rx_channel_read(ch, 0, req, hs, sizeof req - 1, 4, &got, &nh) != RX_OK) return;
+    for (uint32_t i = 0; i < nh; i++) rx_handle_close(hs[i]);
+    req[got] = 0;
+    char *verb = req, *title = strchr(req, '\n'), *extra = 0;
+    if (title) {
+        *title++ = 0;
+        extra = strchr(title, '\n');
+        if (extra) *extra++ = 0;
+    }
+    int save = !strcmp(verb, "save");
+    if (!title || (!save && strcmp(verb, "open"))) {
+        const char *e = "error 22 open or save";
+        rx_channel_write(ch, 0, e, (uint32_t)strlen(e), 0, 0);
+        return;
+    }
+    // Where the chooser writes its answer: a folder the app cannot see
+    char dir[600], out[700];
+    snprintf(dir, sizeof dir, "%s/.cache/appctl", home);
+    mkdirs(dir);
+    snprintf(out, sizeof out, "%s/choice-%s", dir, ID);
+    unlink(out);
+    char *argv[16];
+    int n = 0;
+    argv[n++] = "/bin/chooser";
+    argv[n++] = save ? "save" : "open";
+    argv[n++] = "--app";
+    argv[n++] = (char *)app_name;
+    argv[n++] = "--title";
+    argv[n++] = title;
+    argv[n++] = "--out";
+    argv[n++] = out;
+    if (extra && *extra) {
+        argv[n++] = save ? "--name" : "--patterns";
+        argv[n++] = extra;
+    }
+    argv[n] = 0;
+    // Our environment, but the window where the compositor puts it
+    char *envp[64];
+    int ne = 0;
+    for (char **e = environ; *e && ne < 63; e++)
+        if (strncmp(*e, "RUSTICA_WINDOW_AT=", 18)) envp[ne++] = *e;
+    envp[ne] = 0;
+    rx_handle_t proc = 0;
+    char msg[700];
+    // (in our namespace, the user's, not the app's view)
+    if (rx_spawn("/bin/chooser", argv, envp, RX_SPAWN_CLONE_ALL, 0, 0, &proc) != RX_OK) {
+        snprintf(msg, sizeof msg, "error %d the file chooser did not start", ENOENT);
+        rx_channel_write(ch, 0, msg, (uint32_t)strlen(msg), 0, 0);
+        return;
+    }
+    int64_t code = rx_wait_process(proc);
+    char path[600] = "";
+    FILE *f = code == 0 ? fopen(out, "r") : 0;
+    if (f) {
+        if (!fgets(path, sizeof path, f)) path[0] = 0;
+        fclose(f);
+        path[strcspn(path, "\n")] = 0;
+    }
+    unlink(out);
+    if (!path[0]) {
+        printf("appctl: %s: the user said no (%s)\n", ID, verb);
+        fflush(stdout);
+        rx_channel_write(ch, 0, "cancel", 6, 0, 0);
+        return;
+    }
+    // The file, opened as the user, handed over alone
+    int fd = save ? open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644) : open(path, O_RDONLY);
+    struct stat st;
+    if (fd >= 0 && (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode))) {
+        close(fd);
+        fd = -1;
+        errno = EISDIR;
+    }
+    if (fd < 0) {
+        snprintf(msg, sizeof msg, "error %d %s: %s", errno, path, strerror(errno));
+        rx_channel_write(ch, 0, msg, (uint32_t)strlen(msg), 0, 0);
+        return;
+    }
+    rx_handle_t h = 0;
+    int r = rx_fd_clone_handle(fd, &h);
+    close(fd);
+    if (r < 0) {
+        snprintf(msg, sizeof msg, "error %d %s", -r, strerror(-r));
+        rx_channel_write(ch, 0, msg, (uint32_t)strlen(msg), 0, 0);
+        return;
+    }
+    const char *base = strrchr(path, '/') ? strrchr(path, '/') + 1 : path;
+    snprintf(msg, sizeof msg, "ok %s", base);
+    if (rx_channel_write(ch, 0, msg, (uint32_t)strlen(msg), &h, 1) != RX_OK) rx_handle_close(h);
+    printf("appctl: %s: the user chose %s (%s)\n", ID, path, verb);
+    fflush(stdout);
+}
+
 static int run(int argc, char **argv, const struct passwd *pw) {
     const char *home = pw->pw_dir;
     char exec[512];
@@ -296,14 +407,34 @@ static int run(int argc, char **argv, const struct passwd *pw) {
         fprintf(stderr, "appctl: %s: its job: %s\n", ID, strerror(rx_status_to_errno(s)));
         return 1;
     }
-    rx_spawn_handle_t hs[1] = { { RX_PA_HND(RX_PA_NS_DIR, 0), ns } };
-    s = rx_spawn_etc(job, prog, args, envp, RX_SPAWN_CLONE_STDIO, hs, 1, &proc);
+    // Its file chooser's channel: the other end stays here
+    rx_handle_t portal = 0, portal_app = 0;
+    if (rx_channel_create(0, &portal, &portal_app) != RX_OK) {
+        fprintf(stderr, "appctl: %s: no channel for its file chooser\n", ID);
+        return 1;
+    }
+    rx_spawn_handle_t hs[2] = { { RX_PA_HND(RX_PA_NS_DIR, 0), ns }, { RX_PA_HND(RX_PA_PORTAL, 0), portal_app } };
+    s = rx_spawn_etc(job, prog, args, envp, RX_SPAWN_CLONE_STDIO, hs, 2, &proc);
     if (s != RX_OK) {
         fprintf(stderr, "appctl: %s: %s: %s\n", ID, prog, strerror(rx_status_to_errno(s)));
         return 1;
     }
     printf("appctl: started %s (sandboxed%s%s)\n", ID, asked[0] ? "; asked for: " : "", asked);
     fflush(stdout);
+    // Its requests until it ends
+    char app_name[256];
+    if (!field("Name", app_name, sizeof app_name)) snprintf(app_name, sizeof app_name, "%s", ID);
+    for (;;) {
+        rx_wait_item_t w[2] = { { proc, RX_PROCESS_TERMINATED, 0 }, { portal, RX_CHANNEL_READABLE | RX_PEER_CLOSED, 0 } };
+        rx_object_wait_many(w, portal ? 2 : 1, RX_TIME_INFINITE);
+        if (w[0].pending & RX_PROCESS_TERMINATED) break;
+        if (portal && (w[1].pending & RX_CHANNEL_READABLE)) portal_request(portal, home, app_name);
+        else if (portal && (w[1].pending & RX_PEER_CLOSED)) {
+            rx_handle_close(portal);
+            portal = 0;
+        }
+    }
+    if (portal) rx_handle_close(portal);
     int64_t code = rx_wait_process(proc);
     rx_handle_close(job);
     printf("appctl: %s ended (%lld)\n", ID, (long long)code);

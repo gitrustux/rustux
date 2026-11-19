@@ -267,8 +267,63 @@ and starts sandboxed), removes it; carol gets a `files:home` app with
 erin's name and password in FoxDen's sheet, and turns a permission off on
 Installed.
 
+## Updates and the file chooser (step FD6)
+
+**App updates in the background.** After its daily check (and `updates
+check`), the installer service upgrades each app whose new version asks
+for no more than the installed one (`rpg plan upgrade` against the
+installed manifest's `Permissions`): `rpg install -y ID`, no question,
+as an app cannot leave its sandbox. A new version that asks for more
+**waits for the user**: the status file has `appwaits ID FROM TO
+PERMISSIONS`, FoxDen's Updates page shows it ("Waiting for you: these new
+versions ask for more", in plain words) with **Allow and update**, and the
+user's yes is that install. The apps updated are kept in the status
+(`appupdated SECONDS ID FROM TO`, the newest 20; FoxDen's "Updated in the
+background"), and the panel notifies both ("Calculator was updated to
+1.1.0"; "System Monitor 1.1.0 asks for more (network): FoxDen > Updates").
+`/etc/rpg/updates.conf`: `apps auto` (the default) or `apps ask` (no app
+upgraded without the user; they are ordinary updates then). The system's
+own updates never install by themselves (`PACKAGES.md`).
+
+**Settings > Apps**: each installed app with its version, what it takes
+up (its folder, the user's data for it), a checkbox per permission it asks
+for (the same file as FoxDen's Installed, `appctl` and `rpg permissions
+ID [grant|revoke PERMISSION...]`), Open, In FoxDen,
+and Remove (no administrator: removing an app takes nothing from the
+user). Settings > Updates and FoxDen's Updates show the same list, the
+installer service's last check.
+
+**The file chooser.** An app without a `files:` permission still opens
+and saves the files the user picks (`<rustux/portal.h>`):
+
+```c
+int fd = rx_portal_open("Open a note", "*.txt *.md", name, sizeof name);
+int fd = rx_portal_save("Save the picture", "picture.png", name, sizeof name);
+```
+
+`appctl`, which started the app and waits for it as the user outside the
+sandbox, is its chooser: the app gets a channel at start (`RX_PA_PORTAL`),
+and a request on it makes appctl show **`chooser`** (a window of the
+session's, as the user: "Portal Test wants to open a file"; the places,
+the folder, a name, Open or Save, Cancel), open the file the user picks
+(read only, or written from empty) and hand the app that file's
+connection alone (`rx_fd_clone_handle`, `rx_fd_from_handle` in the C
+library). The app gets a descriptor, not a path: no folder beside it, no
+other file, nothing it may keep but the descriptor; Cancel gives
+`-ECANCELED`. Each app has its own channel, so the chooser always names
+the app that asks. (The plan named a session service, `/svc/portal`; a
+user's session may not publish services, and appctl already knows the app
+and is the user, so the chooser lives there.)
+
+`scripts/run-appupdates-test.sh` (`TESTS.md`): a Calculator update
+installs by itself, a System Monitor update asking for `network` waits
+until the user says yes, the panel notifies both; an app without `files:`
+permissions opens the file the user picks in the chooser and nothing else,
+saves a copy through it, and gets nothing when the user cancels.
+
 ## Not yet
 
-The `system` permission's sandbox-free run, app updates in the
-background, the file chooser and moving the Text Editor and Image Viewer
-out (FD6), outside developers (FD7).
+The `system` permission's sandbox-free run; moving the Text Editor and
+the Image Viewer out of the system (they need "open this file with" from
+Files: appctl handing an app the file given on its command line); outside
+developers (FD7).

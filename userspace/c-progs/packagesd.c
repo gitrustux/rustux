@@ -156,13 +156,13 @@ static char *read_status(void) {
     return t.s;
 }
 
-static void write_status(long long checked, const char *error, const char *plan) {
+static void write_status(long long checked, const char *error, const char *plan, const char *apps) {
     mkdir("/var/lib/rpg", 0755);
     char tmp[64];
     snprintf(tmp, sizeof tmp, "%s.new", STATUS);
     FILE *f = fopen(tmp, "w");
     if (!f) return;
-    fprintf(f, "checked %lld\nerror %s\n%s", checked, error ? error : "", plan ? plan : "");
+    fprintf(f, "checked %lld\nerror %s\n%s%s", checked, error ? error : "", plan ? plan : "", apps ? apps : "");
     if (last_upgrade) fprintf(f, "upgraded %lld %d\n", last_upgrade, last_upgrade_code);
     fclose(f);
     chmod(tmp, 0644);
@@ -206,6 +206,153 @@ static void check_line(const char *line, void *arg) {
     }
 }
 
+// /etc/rpg/updates.conf's value for `key` (into v), or def
+static void conf_get(const char *key, char *v, size_t cap, const char *def) {
+    snprintf(v, cap, "%s", def);
+    FILE *f = fopen("/etc/rpg/updates.conf", "r");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] == '#') continue;
+        char *k = strtok(line, " \t\r\n"), *val = strtok(0, " \t\r\n");
+        if (k && val && !strcmp(k, key)) snprintf(v, cap, "%s", val);
+    }
+    fclose(f);
+}
+
+// The permissions an installed app asks for (its manifest), ","-joined
+// with "," at both ends (",network,files:documents,"; ",," for none)
+static void installed_perms(const char *id, char *out, size_t cap) {
+    char p[300], line[512];
+    snprintf(out, cap, ",");
+    snprintf(p, sizeof p, "/apps/%s/manifest", id);
+    FILE *f = fopen(p, "r");
+    if (!f) return;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, "Permissions:", 12)) continue;
+        for (char *w = strtok(line + 12, " \t\r\n"); w; w = strtok(0, " \t\r\n")) {
+            size_t l = strlen(out);
+            snprintf(out + l, cap - l, "%s,", w);
+        }
+    }
+    fclose(f);
+    if (!strcmp(out, ",")) snprintf(out, cap, ",,");
+}
+
+// The status's lines starting with `key`, the newest `keep` (history)
+static void keep_lines(const char *key, int keep, struct text *t) {
+    char *s = read_status();
+    char *lines[64];
+    int n = 0;
+    size_t kl = strlen(key);
+    for (char *l = s; l && *l;) {
+        char *nl = strchr(l, '\n');
+        if (nl) *nl = 0;
+        if (!strncmp(l, key, kl) && l[kl] == ' ') {
+            if (n == 64) {
+                memmove(lines, lines + 1, sizeof lines[0] * 63);
+                n--;
+            }
+            lines[n++] = l;
+        }
+        l = nl ? nl + 1 : 0;
+    }
+    for (int i = n > keep ? n - keep : 0; i < n; i++) text_add(t, lines[i]);
+    free(s);
+}
+
+// A line of rpg's for the log only
+static void log_line(const char *line, void *arg) {
+    syslog(LOG_INFO, "%s: %s", (const char *)arg, line);
+}
+
+// Text a struct text holds, its lines added to another (no blank line)
+static void text_append(struct text *to, struct text *from) {
+    for (char *l = from->s; l && *l;) {
+        char *nl = strchr(l, '\n');
+        if (nl) *nl = 0;
+        if (*l) text_add(to, l);
+        l = nl ? nl + 1 : 0;
+    }
+}
+
+// App updates (FoxDen step FD6): after the check, an app whose new version
+// asks for no more than the installed one is upgraded at once (rpg install
+// -y ID); one that asks for more waits for the user ("appwaits ID FROM TO
+// PERMISSIONS"). /etc/rpg/updates.conf: apps auto (the default) | ask
+// (none at once). Lines for the status (appwaits, and appupdated SECONDS
+// ID FROM TO: the newest 20) added to `out`. Under `busy`.
+static void app_updates(struct text *out) {
+    char mode[16];
+    conf_get("apps", mode, sizeof mode, "auto");
+    struct text plan = { 0, 0, 0 }, done = { 0, 0, 0 };
+    char *pv[] = { RPG, "plan", "upgrade", 0 };
+    keep_lines("appupdated", 20, &done);
+    if (run(pv, collect, &plan) != 0) {
+        free(plan.s);
+        text_append(out, &done);
+        free(done.s);
+        return;
+    }
+    char *argv[44] = { RPG, "install", "-y" };
+    char froms[40][64], tos[40][64];
+    int n = 3, k = 0;
+    for (char *l = plan.s; l && *l;) {
+        char *nl = strchr(l, '\n');
+        if (nl) *nl = 0;
+        // step upgrade NAME FROM TO app apps PERMISSIONS
+        char line[600], *f[8], *save = 0;
+        int nf = 0;
+        snprintf(line, sizeof line, "%s", l);
+        for (char *t = strtok_r(line, " ", &save); t && nf < 8; t = strtok_r(0, " ", &save)) f[nf++] = t;
+        l = nl ? nl + 1 : 0;
+        if (nf != 8 || strcmp(f[0], "step") || strcmp(f[1], "upgrade") || strcmp(f[5], "app") || strcmp(f[6], "apps")) continue;
+        char old[300], np[300];
+        installed_perms(f[2], old, sizeof old);
+        int more = 0;
+        if (strcmp(f[7], "-")) {
+            snprintf(np, sizeof np, "%s", f[7]);
+            for (char *w = strtok_r(np, ",", &save); w; w = strtok_r(0, ",", &save)) {
+                char key[80];
+                snprintf(key, sizeof key, ",%s,", w);
+                if (!strstr(old, key)) more = 1;
+            }
+        }
+        if (more || strcmp(mode, "auto")) {
+            if (more) {
+                char w[700];
+                snprintf(w, sizeof w, "appwaits %s %s %s %s", f[2], f[3], f[4], f[7]);
+                text_add(out, w);
+                syslog(LOG_INFO, "app update waits for the user: %s %s asks for more (%s)", f[2], f[4], f[7]);
+            }
+            continue;
+        }
+        if (n < 43 && k < 40) {
+            argv[n++] = strdup(f[2]);
+            snprintf(froms[k], sizeof froms[k], "%s", f[3]);
+            snprintf(tos[k], sizeof tos[k], "%s", f[4]);
+            k++;
+        }
+    }
+    free(plan.s);
+    if (k) {
+        argv[n] = 0;
+        int code = run(argv, log_line, "app update");
+        for (int i = 0; i < k; i++) {
+            if (code == 0) {
+                char d[300];
+                snprintf(d, sizeof d, "appupdated %lld %s %s %s", (long long)time(0), argv[3 + i], froms[i], tos[i]);
+                text_add(&done, d);
+                syslog(LOG_INFO, "app updated: %s %s -> %s", argv[3 + i], froms[i], tos[i]);
+            }
+            free(argv[3 + i]);
+        }
+        if (code) syslog(LOG_WARNING, "app updates failed (%d)", code);
+    }
+    text_append(out, &done);
+    free(done.s);
+}
+
 // rpg update, then the plan: the new status. 0 if the check worked.
 // ch: also send rpg update's lines there ("update")
 static int check_to(rx_handle_t ch) {
@@ -231,12 +378,16 @@ static int check_to(rx_handle_t ch) {
         }
         snprintf(err, sizeof err, "%s", why);
     }
+    // Apps first (some are upgraded now), then the plan of what is left;
     // the plan even after a failed source: the lists of the others are there
+    struct text apps = { 0, 0, 0 };
+    app_updates(&apps);
     char *pl[] = { RPG, "upgrade", "--plan", 0 };
     int rp = run(pl, collect, &plan);
     if (rp != 0 && !err[0]) snprintf(err, sizeof err, "%s", plan.s ? plan.s : "rpg upgrade --plan failed");
     err[strcspn(err, "\n")] = 0;
-    write_status((long long)time(0), err, rp == 0 ? plan.s : "");
+    write_status((long long)time(0), err, rp == 0 ? plan.s : "", apps.s);
+    free(apps.s);
     int n = 0;
     for (char *l = plan.s; rp == 0 && l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : 0)
         if (!strncmp(l, "step ", 5)) n++;
@@ -389,8 +540,10 @@ static void needs_admin(const char *plan, int purge, char *why, size_t cap) {
         if (!strcmp(origin, "system") && !why[0]) snprintf(why, cap, "%s comes from a system source", name);
         char p[260];
         snprintf(p, sizeof p, ",%s,", perms);
-        if (strstr(p, ",files:home,") && !why[0]) snprintf(why, cap, "%s asks for files:home (the whole home folder)", name);
-        if (strstr(p, ",system,") && !why[0]) snprintf(why, cap, "%s asks for system (no sandbox)", name);
+        // What an app may do matters when it comes, not when it goes
+        int removal = !strcmp(f[1], "remove");
+        if (!removal && strstr(p, ",files:home,") && !why[0]) snprintf(why, cap, "%s asks for files:home (the whole home folder)", name);
+        if (!removal && strstr(p, ",system,") && !why[0]) snprintf(why, cap, "%s asks for system (no sandbox)", name);
     }
     if (sys && !why[0]) {
         if (sys == 1) snprintf(why, cap, "%s is a system package", first_sys);

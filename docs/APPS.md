@@ -120,6 +120,8 @@ server): in a user's session Files shows mount's error.
 | Date & Time | the clock (local time) and the time zone (a list to filter) | the RTC (`timedatectl set-time`), `/etc/timezone` |
 | Users | the users (root and uid 1000 and up), add one (name, password, administrator), remove one with their home, make one an administrator or not | `/etc/passwd`, `group`, `shadow` (`useradd -m`, `chpasswd`, `usermod -G`, `userdel -r`) |
 | Disks | disks and partitions: size, filesystem, where mounted (read only) | `lsblk` |
+| Updates | the system's and the apps' updates found by the installer service, Install (package step E6) | `/var/lib/rpg/updates` (`updates`) |
+| Apps | each installed app: version, what it takes up, a checkbox per permission it asks for, Open, In FoxDen, Remove (FoxDen step FD6, `FOXDEN.md`) | `~/.config/apps/permissions`, the user's (`appctl`); `rpg remove` |
 | About | Rustica's version and codename (`/etc/os-release`: Rustica 0.1, RedFox), the kernel, the computer's name, processors, memory, graphics, how long it has run | |
 
 The user's own settings are written directly. The system's are root's: in

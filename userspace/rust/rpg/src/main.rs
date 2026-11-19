@@ -64,6 +64,7 @@ const USAGE: &str = "usage: rpg [--root DIR] COMMAND ...
   show NAME | ./FILE.rpg       a package's control fields
   policy [NAME...]             installed and candidate versions, and where from
   list [--installed|--upgradable|--held|--apps [--available]] [--json]
+  permissions ID [grant|revoke PERMISSION...]   an app's permissions, for you
   depends NAME | rdepends NAME what a package needs, what needs it
   hold NAME... | unhold NAME...  keep a package at its version
   download NAME...             a package file into the current folder
@@ -111,7 +112,7 @@ fn main() {
     };
     let rest = &args[1..];
     let ctx = Ctx { db: Db::new(&root) };
-    if !matches!(cmd.as_str(), "fix" | "build" | "info" | "index" | "pool-path" | "plan" | "version" | "--version" | "help" | "--help" | "-h") {
+    if !matches!(cmd.as_str(), "fix" | "build" | "info" | "index" | "pool-path" | "plan" | "permissions" | "version" | "--version" | "help" | "--help" | "-h") {
         if let Some(what) = ctx.interrupted() {
             if matches!(cmd.as_str(), "list" | "show" | "files" | "owner" | "verify" | "search" | "policy") {
                 eprintln!("rpg: the {what} was interrupted; rpg fix finishes it (so does the next install or remove)");
@@ -192,6 +193,7 @@ fn main() {
         }
         "search" => cmd::search(&ctx, rest),
         "plan" => cmd::plan(&ctx, rest),
+        "permissions" => cmd::permissions(&ctx, rest),
         "policy" => cmd::policy(&ctx, rest),
         "depends" => cmd::depends(&ctx, rest, false),
         "rdepends" => cmd::depends(&ctx, rest, true),

@@ -26,6 +26,8 @@ USAGE
     build DIR [-o FILE] | info ./FILE.rpg
     index REPO [--suite S] [--section S] [--arch A]   (publishing)
     index --apps REPO [--platform N]                   (an apps repository)
+    permissions ID [grant|revoke PERMISSION...]   an app's permissions, for
+                                 you (~/.config/apps/permissions)
     plan install NAME... | upgrade | remove NAME...     what would change,
                                  a line a package (the installer service's)
     version

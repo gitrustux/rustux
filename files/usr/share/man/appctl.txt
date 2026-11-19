@@ -40,6 +40,15 @@ WHAT AN APP SEES
     system            not given: only apps from the system's own sources
                       (FoxDen step FD3) will have it
 
+THE FILE CHOOSER
+    While the app runs, appctl is its file chooser (<rustux/portal.h>:
+    rx_portal_open, rx_portal_save): on the app's request it shows
+    chooser, a window of the session's ("NAME wants to open a file"),
+    opens the file the user picks as the user (read only, or written
+    from empty for save) and hands the app that file alone. Cancel: the
+    app gets nothing. An app without files: permissions reaches the
+    user's files this way only.
+
 FILES
     /apps/ID/manifest            Exec and Permissions (docs/FOXDEN.md)
     ~/.config/apps/permissions   narrows them: lines "ID: PERMISSION...",

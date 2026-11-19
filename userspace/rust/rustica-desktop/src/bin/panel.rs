@@ -11,7 +11,9 @@
 //! volume (not there yet), the network (Net: the interface and its
 //! address, network step D6; a click opens Settings > Network), the
 //! clock, Lock and Log out. The session lasts as long as the panel: Log
-//! out ends it. Updates (package step E6): when the installer service's
+//! out ends it. Apps updated in the background, and app updates that wait
+//! because they ask for more, are notified (FoxDen step FD6). Updates
+//! (package step E6): when the installer service's
 //! last check found some (/var/lib/rpg/updates), an "Updates (N)" button
 //! opens Settings > Updates, and a notification says so when N grows.
 //!
@@ -63,6 +65,32 @@ fn updates() -> usize {
     std::fs::read_to_string("/var/lib/rpg/updates").map(|t| t.lines().filter(|l| l.starts_with("step ")).count()).unwrap_or(0)
 }
 
+/// An installed app's name (its manifest's), or its ID
+fn app_name(id: &str) -> String {
+    std::fs::read_to_string(format!("/apps/{id}/manifest"))
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("Name:").map(|v| v.trim().to_string())))
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// The installer service's app lines (FoxDen step FD6): apps updated in
+/// the background (appupdated SECONDS ID FROM TO) and updates waiting
+/// because they ask for more (appwaits ID FROM TO PERMISSIONS)
+fn app_news() -> (Vec<(u64, String, String)>, Vec<(String, String, String)>) {
+    let t = std::fs::read_to_string("/var/lib/rpg/updates").unwrap_or_default();
+    let mut done = Vec::new();
+    let mut waits = Vec::new();
+    for l in t.lines() {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        match w.first() {
+            Some(&"appupdated") if w.len() >= 5 => done.push((w[1].parse().unwrap_or(0), w[2].to_string(), w[4].to_string())),
+            Some(&"appwaits") if w.len() >= 5 => waits.push((w[1].to_string(), w[3].to_string(), w[4].replace(',', ", "))),
+            _ => {}
+        }
+    }
+    (done, waits)
+}
+
 /// The keyboard layout (/etc/keymap; Settings or localectl change it)
 fn layout() -> String {
     let l = std::fs::read_to_string("/etc/keymap").map(|s| s.trim().to_string()).unwrap_or_default();
@@ -87,6 +115,11 @@ fn main() {
     // The updates found, looked at again every 30 seconds
     let mut ups = 0usize;
     let mut ups_at: Option<Instant> = None;
+    // What was said already of the apps (FoxDen step FD6): updates older
+    // than the session are not news
+    let (done0, waits0) = app_news();
+    let mut seen_updated = done0.iter().map(|d| d.0).max().unwrap_or(0);
+    let mut seen_waits: Vec<String> = waits0.iter().map(|w| format!("{} {}", w.0, w.1)).collect();
     println!("panel: session of {user}");
     let r = rustica_ui::run("Panel", 800, 36, Some((0, 0)), |ui: &mut Ui, ctl: &mut Control| {
         if first {
@@ -128,6 +161,21 @@ fn main() {
                     )));
                 }
                 ups = n;
+            }
+            let (done, waits) = app_news();
+            let since = seen_updated;
+            for (t, id, to) in done.iter().filter(|d| d.0 > since) {
+                println!("panel: app updated {id} {to}");
+                ctl.requests.push(Request::Notify(format!("{} was updated to {to}", app_name(id))));
+                seen_updated = seen_updated.max(*t);
+            }
+            for (id, to, perms) in &waits {
+                let k = format!("{id} {to}");
+                if !seen_waits.contains(&k) {
+                    println!("panel: app update waits {id} {to}");
+                    ctl.requests.push(Request::Notify(format!("{} {to} asks for more ({perms}): FoxDen > Updates", app_name(id))));
+                    seen_waits.push(k);
+                }
             }
             ups_at = Some(Instant::now());
         }

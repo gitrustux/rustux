@@ -33,10 +33,105 @@ fn say(s: &str) {
     let _ = std::io::stdout().flush();
 }
 
-const SECTIONS: [&str; 9] = ["Display", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "Updates", "About"];
+const SECTIONS: [&str; 10] = ["Display", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "Updates", "Apps", "About"];
 const S_DISKS: usize = 6;
 const S_UPDATES: usize = 7;
-const S_ABOUT: usize = 8;
+const S_APPS: usize = 8;
+const S_ABOUT: usize = 9;
+
+/// An installed app, for Settings > Apps (FoxDen step FD6)
+#[derive(Clone)]
+struct SetApp {
+    id: String,
+    name: String,
+    version: String,
+    perms: Vec<String>,
+    folder: u64, // bytes: /apps/ID
+    data: u64,   // bytes: the user's three folders for it
+}
+
+fn tree_size(p: &std::path::Path) -> u64 {
+    let Ok(md) = std::fs::symlink_metadata(p) else { return 0 };
+    if !md.is_dir() {
+        return md.len();
+    }
+    std::fs::read_dir(p).map(|rd| rd.flatten().map(|e| tree_size(&e.path())).sum()).unwrap_or(0)
+}
+
+fn load_apps() -> Vec<SetApp> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    // Versions from rpg (ID VERSION NAME...)
+    let list = Command::new("/bin/rpg").args(["list", "--apps"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let mut v = Vec::new();
+    for l in list.lines() {
+        let w: Vec<&str> = l.split_whitespace().collect();
+        if w.len() < 2 || !w[0].contains('.') {
+            continue;
+        }
+        let id = w[0].to_string();
+        let m = std::fs::read_to_string(format!("/apps/{id}/manifest")).unwrap_or_default();
+        let field = |k: &str| m.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string())).unwrap_or_default();
+        let data: u64 = [".local/share/apps", ".config/apps", ".cache/apps"].iter().map(|d| tree_size(&std::path::Path::new(&home).join(d).join(&id))).sum();
+        v.push(SetApp {
+            name: Some(field("Name:")).filter(|n| !n.is_empty()).unwrap_or(id.clone()),
+            version: w[1].to_string(),
+            perms: field("Permissions:").split_whitespace().map(str::to_string).collect(),
+            folder: tree_size(&std::path::Path::new("/apps").join(&id)),
+            data,
+            id,
+        });
+    }
+    v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    v
+}
+
+fn bytes_text(b: u64) -> String {
+    if b >= 1 << 20 {
+        format!("{:.1} MB", b as f64 / 1048576.0)
+    } else {
+        format!("{} KB", b.div_ceil(1024))
+    }
+}
+
+fn perm_words(p: &str) -> &'static str {
+    match p {
+        "network" => "Use the network",
+        "files:documents" => "Your Documents folder",
+        "files:pictures" => "Your Pictures folder",
+        "files:music" => "Your Music folder",
+        "files:videos" => "Your Videos folder",
+        "files:downloads" => "Your Downloads folder",
+        "files:home" => "Your whole home folder",
+        "removable" => "Removable drives",
+        "audio" => "Sound",
+        "camera" => "The camera",
+        "location" => "Your location",
+        "system" => "Outside the sandbox (never given)",
+        _ => "Unknown",
+    }
+}
+
+/// The permissions the user lets an app have (~/.config/apps/permissions,
+/// appctl's), or None: all it asks for
+fn app_granted(id: &str) -> Option<Vec<String>> {
+    let home = std::env::var("HOME").ok()?;
+    let t = std::fs::read_to_string(format!("{home}/.config/apps/permissions")).ok()?;
+    t.lines().filter(|l| !l.trim_start().starts_with('#')).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        (k.trim() == id).then(|| v.split_whitespace().filter(|w| *w != "-").map(str::to_string).collect())
+    })
+}
+
+fn app_set_granted(id: &str, perms: &[String]) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|_| "no HOME".to_string())?;
+    let dir = format!("{home}/.config/apps");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{dir}: {e}"))?;
+    let path = format!("{dir}/permissions");
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = old.lines().filter(|l| l.split_once(':').map(|(k, _)| k.trim() != id).unwrap_or(true)).map(str::to_string).collect();
+    lines.push(format!("{id}: {}", if perms.is_empty() { "-".to_string() } else { perms.join(" ") }));
+    std::fs::write(&path, lines.join("\n") + "\n").map_err(|e| format!("{path}: {e}"))
+}
 
 /// The installer service's last check (/var/lib/rpg/updates)
 #[derive(Default, Clone)]
@@ -124,6 +219,7 @@ struct Pending {
 
 struct Settings {
     section: Option<usize>,
+    apps: Vec<SetApp>,
     scale: u32,
     keymaps: Vec<String>,
     keymap: Option<usize>,
@@ -203,6 +299,7 @@ impl Settings {
     fn new() -> Settings {
         let mut s = Settings {
             section: Some(0),
+            apps: Vec::new(),
             scale: rustica_ui::app::scale_from_env() as u32,
             keymaps: Vec::new(),
             keymap: None,
@@ -859,6 +956,78 @@ impl Settings {
         ui.dim_label("The system checks once a day (/etc/rpg/updates.conf); updates in a terminal: man updates.");
     }
 
+    /// Settings > Apps (FoxDen step FD6): each installed app, what it
+    /// takes up, what it may do (as FoxDen's Installed), Remove
+    fn apps_section(&mut self, ui: &mut Ui) {
+        ui.heading("Apps");
+        if self.apps.is_empty() {
+            ui.dim_label("No apps are installed. FoxDen has them.");
+            if ui.button("Open FoxDen") {
+                let _ = Command::new("/bin/foxden").spawn();
+            }
+            return;
+        }
+        ui.dim_label("Turning a permission off takes effect the next time the app starts.");
+        let h = (ui.remaining_height() - ui.line_h() * 2.0) / ui.scale;
+        let mut reload = false;
+        let apps = self.apps.clone();
+        ui.scroll_area("apps", h, |ui| {
+            for a in &apps {
+                ui.push_id(&a.id);
+                ui.label(&format!("{}  {}", a.name, a.version));
+                ui.dim_label(&format!("    {} — the app {}, your data for it {}", a.id, bytes_text(a.folder), bytes_text(a.data)));
+                let mut g = app_granted(&a.id).unwrap_or_else(|| a.perms.clone());
+                let mut changed = false;
+                if a.perms.is_empty() {
+                    ui.dim_label("    Asks for no permissions");
+                }
+                for p in &a.perms {
+                    let mut on = g.contains(p) && p != "system";
+                    if ui.checkbox(&mut on, &format!("{} ({p})", perm_words(p))) {
+                        changed = true;
+                        if on {
+                            g.push(p.clone());
+                        } else {
+                            g.retain(|x| x != p);
+                        }
+                    }
+                }
+                if changed {
+                    g.retain(|p| a.perms.contains(p));
+                    match app_set_granted(&a.id, &g) {
+                        Ok(()) => say(&format!("app permissions {}: {}", a.id, if g.is_empty() { "-".to_string() } else { g.join(" ") })),
+                        Err(e) => self.status = e,
+                    }
+                }
+                ui.row(|ui| {
+                    if ui.button("Open") {
+                        say(&format!("open app {}", a.id));
+                        let _ = Command::new("/bin/appctl").args(["run", &a.id]).spawn();
+                    }
+                    if ui.button("In FoxDen") {
+                        let _ = Command::new("/bin/foxden").arg(&a.id).spawn();
+                    }
+                    if ui.button("Remove") {
+                        say(&format!("remove app {}", a.id));
+                        // Removing an app needs no administrator (the
+                        // installer service's rule for rpg run by a user)
+                        match Command::new("/bin/rpg").args(["remove", &a.id]).stdin(Stdio::null()).output() {
+                            Ok(o) if o.status.success() => self.status = format!("{} is removed; your data for it stays.", a.name),
+                            Ok(o) => self.status = String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("rpg remove failed").to_string(),
+                            Err(e) => self.status = format!("rpg: {e}"),
+                        }
+                        reload = true;
+                    }
+                });
+                ui.separator();
+                ui.pop_id();
+            }
+        });
+        if reload {
+            self.apps = load_apps();
+        }
+    }
+
     fn about_section(&mut self, ui: &mut Ui) {
         ui.heading("About");
         for (k, v) in self.about.clone() {
@@ -887,6 +1056,7 @@ impl Settings {
                 5 => self.users_section(ui),
                 S_DISKS => self.disks_section(ui),
                 S_UPDATES => self.updates_section(ui, ctl),
+                S_APPS => self.apps_section(ui),
                 _ => self.about_section(ui),
             });
         });
@@ -901,6 +1071,9 @@ impl Settings {
             }
             if self.section == Some(S_UPDATES) {
                 self.ups = up_status();
+            }
+            if self.section == Some(S_APPS) {
+                self.apps = load_apps();
             }
         }
         ui.focus_if_none("sections");
@@ -962,6 +1135,9 @@ fn main() {
     if let Some(a) = std::env::args().nth(1) {
         let a = a.to_lowercase();
         s.section = SECTIONS.iter().position(|n| n.to_lowercase().contains(&a)).or(Some(0));
+        if s.section == Some(S_APPS) {
+            s.apps = load_apps();
+        }
     }
     say("started");
     if let Err(e) = rustica_ui::run("Settings", 820, 560, None, |ui, ctl| s.frame(ui, ctl)) {

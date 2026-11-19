@@ -23,11 +23,16 @@ USAGE
 
 FILES
     /etc/rpg/updates.conf    check daily | never; delay SECONDS (before the
-                             first check after starting, 120)
+                             first check after starting, 120); apps auto |
+                             ask (auto: after a check, apps whose new version
+                             asks for no more are upgraded at once)
     /var/lib/rpg/updates     what the last check found (anyone may read):
                              checked SECONDS, error TEXT, step NAME FROM TO
                              SIZE WHY (rpg upgrade --plan), kept NAME WHY,
-                             upgraded SECONDS CODE
+                             upgraded SECONDS CODE, appwaits ID FROM TO
+                             PERMISSIONS (an app update asking for more,
+                             waiting for the user), appupdated SECONDS ID
+                             FROM TO (upgraded in the background)
 
 EXAMPLES
     updates

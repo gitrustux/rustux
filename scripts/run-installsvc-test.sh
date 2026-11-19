@@ -232,7 +232,9 @@ out = sh("echo pwe | su erin -c 'rpg install hello'; cat /opt/hello/README", 'S2
 check('hello 1.0: installed' in out and 'hello from a system package' in out, 'erin installs hello with her own password')
 
 # 3. update and upgrade, an app only: no password
-out = sh("rpg source remove 1; rpg source add apps file:///mnt/good2 platform 1; su carol -c 'rpg update'; su carol -c 'rpg upgrade'; rpg list --apps", 'S3-DONE')
+# (apps ask: the check upgrades no app by itself, FoxDen step FD6, so
+# carol's own rpg upgrade does)
+out = sh("echo 'apps ask' >> /etc/rpg/updates.conf; rpg source remove 1; rpg source add apps file:///mnt/good2 platform 1; su carol -c 'rpg update'; su carol -c 'rpg upgrade'; rpg list --apps", 'S3-DONE')
 check('file:///mnt/good2 platform 1: 3 apps' in out, 'carol: rpg update (through the service)')
 check('%s %s -> 1.1.0' % (C, V) in out and re.search(r'org\.rustica\.calculator +1\.1\.0', out) is not None and 'password' not in out, 'carol: rpg upgrade brings the Calculator 1.1.0, no password')
 

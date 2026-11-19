@@ -25,6 +25,10 @@ name = "viewer"
 path = "src/bin/viewer.rs"
 
 [[bin]]
+name = "chooser"
+path = "src/bin/chooser.rs"
+
+[[bin]]
 name = "foxden"
 path = "src/bin/foxden.rs"
 

@@ -210,6 +210,32 @@ int open(const char *path, int flags, ...) {
     return fd;
 }
 
+int rx_fd_clone_handle(int fd, rx_handle_t *out) {
+    struct fd *f = __fd_get(fd);
+    if (!f) return -EBADF;
+    if (f->kind != RX_FD_FILE) return -EINVAL;
+    rx_handle_t c, s;
+    if (rx_channel_create(0, &c, &s) != RX_OK) return -ENOMEM;
+    int r = __fs_call(f->handle, RX_FS_OP_CLONE, 0, 0, 0, 0, s, 0, 0, 0);
+    if (r < 0) {
+        rx_handle_close(c);
+        return r;
+    }
+    *out = c;
+    return 0;
+}
+
+int rx_fd_from_handle(rx_handle_t h, int flags) {
+    int fd = __fd_alloc(0);
+    if (fd < 0) return -EMFILE;
+    __fds[fd].kind = RX_FD_FILE;
+    __fds[fd].handle = h;
+    __fds[fd].flags = flags & (O_ACCMODE | O_APPEND | O_NONBLOCK);
+    __fds[fd].cloexec = 0;
+    __fds[fd].path = 0;   // no path: the file alone
+    return fd;
+}
+
 int creat(const char *path, mode_t mode) {
     return open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
 }
