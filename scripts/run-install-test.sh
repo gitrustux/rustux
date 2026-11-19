@@ -175,6 +175,7 @@ answer() { wait_for "$1" 1 "${3:-30}" && type_text "$2"; }  # PROMPT TEXT [SECON
 wait_end() { for _ in $(seq $(($1 * 2))); do kill -0 $QPID 2>/dev/null || { QPID=""; return 0; }; sleep 0.5; done; echo "FAIL: QEMU still running"; kill $QPID; QPID=""; fail=1; }
 stop_qemu() { [ -n "$QPID" ] && kill $QPID 2>/dev/null; wait $QPID 2>/dev/null; QPID=""; }
 expect() { log | grep -aqF -- "$1" || { echo "FAIL: expected \"$1\""; fail=1; }; }
+expect_re() { log | grep -aqE -- "$1" || { echo "FAIL: expected /$1/"; fail=1; }; }
 # A partition of a disk image: its first and last block
 part_range() { python3 - "$1" "$2" <<'PY'
 import struct, sys
@@ -245,8 +246,8 @@ expect "/dev/nvme0n1p2 on / type ext4 (rw)"
 expect "/dev/nvme0n1p1 on /boot/efi type vfat (rw)"
 expect "Rustica Server  (default)  (selected)"
 expect "rpg boot: Rustica Server 0.1.1 (the server edition)"
-expect "rustica-system-0.1.1  0.1.1    x86_64  the Rustica system image 0.1.1"
-expect "rustica-server        0.1.1    all     Rustica's server edition"
+expect_re "rustica-system-0\.1\.1 +0\.1\.1 +x86_64 +the Rustica system image 0\.1\.1"
+expect_re "rustica-server +0\.1\.1 +all +Rustica's server edition"
 expect "rustica-system-0.1.1: 1 files as installed"
 expect "newest    0.1.1"
 expect "file:///mnt/repo redfox: 5 packages"
@@ -271,7 +272,7 @@ expect "rboot: rustica: try 1 of 3 (rustica+2-1.conf)"
 expect "Rustica 0.1.1 (previous)"
 expect "rustica-0.1.1-recovery"
 expect "rustica-recovery"
-expect "rustica-system-0.1.2  0.1.2"
+expect_re "rustica-system-0\.1\.2 +0\.1\.2"
 expect "Running: 0.1.2 (/EFI/Rustica/rustux-0.1.2.efi)"
 expect "newest    0.1.2                    good: it started"
 expect "rpg: two system images are kept (the newest and the running one): removing rustica-system-0.1.1"

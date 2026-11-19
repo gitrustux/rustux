@@ -44,6 +44,7 @@
 //   kept NAME REASON
 //   upgraded SECONDS CODE the last upgrade, and how it ended
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
@@ -731,9 +732,127 @@ static int last_failed(void) {
     return failed;
 }
 
-// The daily check
+// ---- the apps that come with the system (step FD6b) ----
+
+#define PRE_SRC "/usr/share/rpg/apps"
+#define PRE_LIST "/var/lib/rpg/preinstalled"
+#define PRE_WORK "/var/cache/rpg/preinstall"
+
+static int pre_listed(const char *id) {
+    FILE *f = fopen(PRE_LIST, "r");
+    char line[256];
+    int found = 0;
+    if (!f) return 0;
+    while (!found && fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        found = !strcmp(line, id);
+    }
+    fclose(f);
+    return found;
+}
+
+static void pre_note(const char *id) {
+    FILE *f = fopen(PRE_LIST, "a");
+    if (!f) return;
+    fprintf(f, "%s\n", id);
+    fclose(f);
+}
+
+static void mkdir_p(const char *path) {
+    char p[512];
+    snprintf(p, sizeof p, "%s", path);
+    for (char *c = p + 1; *c; c++) {
+        if (*c != '/') continue;
+        *c = 0;
+        mkdir(p, 0755);
+        *c = '/';
+    }
+    mkdir(p, 0755);
+}
+
+// The manifest's Exec program (relative to the folder), or 0
+static const char *pre_exec(const char *dir, char *out, size_t cap) {
+    char p[600], line[600];
+    snprintf(p, sizeof p, "%s/manifest", dir);
+    FILE *f = fopen(p, "r");
+    const char *r = 0;
+    if (!f) return 0;
+    while (!r && fgets(line, sizeof line, f)) {
+        if (strncmp(line, "Exec:", 5)) continue;
+        char *v = line + 5;
+        while (*v == ' ' || *v == '\t') v++;
+        v[strcspn(v, " \t\r\n")] = 0;
+        if (*v && *v != '/' && !strstr(v, "..")) {
+            snprintf(out, cap, "%s", v);
+            r = out;
+        }
+    }
+    fclose(f);
+    return r;
+}
+
+static void preinstall_one(const char *id) {
+    char src[400], work[400], pkg[450], exec[300], prog[700];
+    snprintf(src, sizeof src, PRE_SRC "/%s", id);
+    snprintf(work, sizeof work, PRE_WORK "/%s", id);
+    snprintf(pkg, sizeof pkg, PRE_WORK "/%s.rpg", id);
+    char *rm[] = { "/bin/rm", "-rf", work, pkg, 0 };
+    run(rm, 0, 0);
+    mkdir_p(PRE_WORK);
+    // A copy: the boot image's files are read only, its programs too (0444)
+    char *cp[] = { "/bin/cp", "-r", src, work, 0 };
+    char *build[] = { RPG, "build", work, "-o", pkg, 0 };
+    char *inst[] = { RPG, "install", "-y", pkg, 0 };
+    struct text out = { 0 };
+    int code = -1;
+    const char *why = "copying it";
+    if (run(cp, 0, 0) == 0) {
+        why = "no Exec in its manifest";
+        if (pre_exec(work, exec, sizeof exec)) {
+            snprintf(prog, sizeof prog, "%s/%s", work, exec);
+            chmod(prog, 0755);
+            why = "rpg build";
+            if (run(build, collect, &out) == 0) {
+                why = "rpg install";
+                code = run(inst, collect, &out);
+            }
+        }
+    }
+    if (code == 0) {
+        pre_note(id);
+        syslog(LOG_INFO, "installed %s, which comes with the system", id);
+    } else {
+        syslog(LOG_WARNING, "could not install %s, which comes with the system (%s): %s", id, why, out.s ? out.s : "");
+    }
+    free(out.s);
+    run(rm, 0, 0);
+}
+
+static void preinstall(void) {
+    DIR *d = opendir(PRE_SRC);
+    if (!d) return;
+    struct dirent *e;
+    pthread_mutex_lock(&busy);
+    while ((e = readdir(d))) {
+        const char *id = e->d_name;
+        if (id[0] == '.' || pre_listed(id)) continue;
+        char m[400];
+        struct stat st;
+        snprintf(m, sizeof m, "/apps/%s/manifest", id);
+        if (stat(m, &st) == 0) {   // installed already (a package file, a source)
+            pre_note(id);
+            continue;
+        }
+        preinstall_one(id);
+    }
+    pthread_mutex_unlock(&busy);
+    closedir(d);
+}
+
+// The daily check (after the apps that come with the system)
 static void *daily(void *arg) {
     (void)arg;
+    preinstall();
     char mode[32] = "daily";
     int delay = 120;
     FILE *f = fopen("/etc/rpg/updates.conf", "r");

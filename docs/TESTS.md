@@ -482,6 +482,20 @@ it the file, which it reads and nothing beside it (read only, no folder,
 the path still refused); it saves `copy.txt` through the chooser; a
 cancelled question gives it nothing.
 
+## Open with test (FoxDen step FD6b)
+
+`scripts/run-openwith-test.sh` (QEMU, the live desktop): the installer
+service installed the Text Editor and the Image Viewer at its start (from
+`/usr/share/rpg/apps`, noted in `/var/lib/rpg/preinstalled`; `/bin/editor`
+and `/bin/viewer` are gone). `appctl view ID FILE` puts the file in the
+view read-write; a folder, a path with `..` and a missing file are
+refused. `appctl open` gives the editor `~/Documents/a.txt`, which it
+changes and saves in place, and the viewer one of two pictures, of which
+it sees one. A new text is saved through the chooser (`Untitled.txt`, in
+Documents), saved again shorter (no old bytes left), and Ctrl+O opens
+`a.txt` through the chooser. An app removed is not installed again when
+the installer service restarts. `$SHOTS=DIR` keeps screendumps of both.
+
 ## FoxDen test (FoxDen step FD5)
 
 `scripts/run-foxden-test.sh` (QEMU, the live desktop; it needs openssl

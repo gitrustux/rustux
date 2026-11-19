@@ -157,7 +157,9 @@ pub fn write_atomic(p: &Path, data: &[u8], mode: u32) -> Result<(), String> {
 
 /// Only one rpg changes the system at a time. The lock holds the
 /// process's ID and the computer's uptime then: a lock whose process is
-/// gone, or from before a restart, is stale and taken over.
+/// gone, or from before a restart, is stale and taken over. One that is
+/// held is waited for, a minute at most (the installer service installs
+/// the apps that come with the system when the computer starts).
 pub struct Lock {
     path: PathBuf,
 }
@@ -167,7 +169,9 @@ impl Lock {
         db.ensure()?;
         let path = db.dir().join("lock");
         let me = format!("{} {}\n", sys::pid(), sys::uptime());
-        for _ in 0..2 {
+        let mut waited = 0u32;
+        let mut said = false;
+        loop {
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut f) => {
                     let _ = f.write_all(me.as_bytes());
@@ -179,14 +183,26 @@ impl Lock {
                     let pid: i32 = w.next().and_then(|s| s.parse().ok()).unwrap_or(0);
                     let up: i64 = w.next().and_then(|s| s.parse().ok()).unwrap_or(i64::MAX);
                     if pid != sys::pid() && sys::alive(pid) && up <= sys::uptime() {
-                        return Err(format!("another rpg is changing the system (process {pid}); wait for it to finish"));
+                        if waited >= 240 {
+                            return Err(format!("another rpg is changing the system (process {pid}); wait for it to finish"));
+                        }
+                        if !said {
+                            eprintln!("rpg: waiting for another rpg (process {pid}) to finish");
+                            said = true;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        waited += 1;
+                        continue;
                     }
                     let _ = std::fs::remove_file(&path); // stale
+                    waited += 1;
+                    if waited > 480 {
+                        return Err(format!("{}: cannot take the lock", path.display()));
+                    }
                 }
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             }
         }
-        Err(format!("{}: cannot take the lock", path.display()))
     }
 }
 

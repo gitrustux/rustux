@@ -3,9 +3,15 @@ editor - the Text Editor
 USAGE
     editor [FILE]
 
-    One UTF-8 text file. Ctrl+S saves (a new file asks for a name),
-    Ctrl+Q quits (asking first about changes). Selection with Shift or the
-    mouse, Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+A. Files opens text files with it.
+    One UTF-8 text file. Ctrl+O opens another, Ctrl+S saves (a new file
+    asks where), File > Save as saves elsewhere, Ctrl+Q quits (asking
+    first about changes). Selection with Shift or the mouse, Ctrl+C,
+    Ctrl+X, Ctrl+V, Ctrl+A.
+
+    An app (org.rustica.texteditor, which comes with the system): it runs
+    in its sandbox. Files opens text files with it (appctl open), giving
+    it that file; Open and Save as ask with the file chooser. Started
+    outside a sandbox, Save as asks for a path.
 
 SEE ALSO
-    files, viewer
+    files, viewer, appctl

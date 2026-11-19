@@ -1,10 +1,14 @@
 # The applications (DESKTOP.md step F7)
 
 Terminal, Files and Settings, and the first two of the applications "next
-in line", the Text Editor and the Image Viewer. They are one Rust package,
-`userspace/rust/rustica-apps` (programs `terminal`, `files`, `settings`,
-`editor`, `viewer`), built on the toolkit (`GUI.md`) and started from the
-launcher (`/usr/share/applications/*.app`) or a shell.
+in line", the Text Editor and the Image Viewer. Terminal, Files and
+Settings are one Rust package, `userspace/rust/rustica-apps` (programs
+`terminal`, `files`, `settings`), built on the toolkit (`GUI.md`) and
+started from the launcher (`/usr/share/applications/*.app`) or a shell.
+The Text Editor and the Image Viewer are apps since FoxDen step FD6b
+(`FOXDEN.md`, "Opening files"): `org.rustica.texteditor` and
+`org.rustica.imageviewer`, programs `editor` and `viewer` in
+`userspace/rust/foxden-apps`, which come with the system.
 
 ## Pseudo-terminals
 
@@ -82,8 +86,10 @@ and the path (type one and Enter), the side bar and the folder as a table
 (name with an icon, size, modified; folders first).
 
 - **Opening**: Enter or a double-click opens a folder, or a file with the
-  application whose `types=` lists its extension (`.app` files): text with
-  the Text Editor, PNG and JPEG with the Image Viewer. File > Open in
+  application whose `types=` lists its extension (`.app` files), or an
+  installed app whose manifest's `Types:` does (`appctl open ID FILE`, in
+  its sandbox with that file: `FOXDEN.md`): text with the Text Editor, PNG
+  and JPEG with the Image Viewer. File > Open in
   Terminal starts a terminal in the folder.
 - **Changing**: Ctrl+C / Ctrl+X / Ctrl+V (a folder is copied with all it
   holds; a name that exists gets " (copy)"; a move to another disk is a
@@ -135,12 +141,17 @@ layout is reloaded (`INPUT.md`); the panel shows the layout as it changes.
 
 ## Text Editor and Image Viewer
 
+Apps since FoxDen step FD6b (`FOXDEN.md`), started by Files or from
+Applications in their sandbox:
+
 - `editor [FILE]`: the toolkit's text editor field over the whole window,
-  a status line (lines, characters), File > Save (Ctrl+S; a new file asks
-  for a name) and Quit (Ctrl+Q; with changes it asks to save). The title
-  marks unsaved changes.
+  a status line (lines, characters), File > Open (Ctrl+O), Save (Ctrl+S;
+  a new file asks where), Save as and Quit (Ctrl+Q; with changes it asks
+  to save). Open and Save as ask with the file chooser; outside a sandbox
+  Save as asks for a path. The title marks unsaved changes.
 - `viewer FILE`: the picture made smaller (never larger) to fit the
-  window, centred; Left and Right step through the pictures in its folder.
+  window, centred; Left and Right step through the pictures it can see in
+  its folder.
 
 ## Tests
 

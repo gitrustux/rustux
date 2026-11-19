@@ -4,7 +4,8 @@
 # userspace/apps, with their icons and screenshots, and org.test.homeapp
 # asking for files:home; signed with a test apps key) on a second disk.
 # Boots Rustux in QEMU with "desktop", then:
-#   1. FoxDen lists the source's apps (3, none installed); its page for
+#   1. FoxDen lists the source's apps (3, none installed; and the two that
+#      come with the system); its page for
 #      the Calculator; Install (Enter) installs it, Applications lists it,
 #      Open (Enter) starts it sandboxed;
 #   2. Remove (Tab, Enter, Enter in the question) removes it;
@@ -44,7 +45,7 @@ mkdir -p "$D"
 openssl genpkey -algorithm ed25519 -out "$W/apps.key" 2>/dev/null
 openssl pkey -in "$W/apps.key" -pubout -out "$D/apps.pem"
 put() { rel=$("$RPG" pool-path "$2"); mkdir -p "$1/$(dirname "$rel")"; cp "$2" "$1/$rel"; }
-scripts/build-apps.sh "$W/apps" > /dev/null || { echo "the apps did not build"; exit 2; }
+scripts/build-apps.sh "$W/apps" org.rustica.calculator org.rustica.sysmon > /dev/null || { echo "the apps did not build"; exit 2; }
 cp -r userspace/apps "$W/src"
 cp -r "$W/src/org.rustica.calculator" "$W/src/org.test.homeapp"
 sed -i 's/org\.rustica\.calculator/org.test.homeapp/; s/^Name: .*/Name: Home App/; s/^Summary: .*/Summary: needs the whole home/' "$W/src/org.test.homeapp/RPG/control" "$W/src/org.test.homeapp/manifest"
@@ -208,7 +209,7 @@ def since(n, pat, t):
 # 1. FoxDen, as root: the list, the Calculator's page, Install, Open
 n = len(log())
 console('RUSTICA_WINDOW_AT=60,40 foxden %s & sleep 1; echo S1-STARTED' % C, 8, r'(?<!echo )S1-STARTED\r?\n')
-check(since(n, r'foxden: 3 apps \(0 installed, 0 to update\)', 20), 'FoxDen lists the source\'s apps (3, none installed)')
+check(since(n, r'foxden: 5 apps \(2 installed, 0 to update\)', 20), 'FoxDen lists the source\'s apps (3, none installed) beside the two that come with the system')
 check(since(n, r'foxden: page %s' % re.escape(C), 10), 'it opens the Calculator\'s page')
 time.sleep(4)
 key('ret')
@@ -222,7 +223,7 @@ qmp_click(64, 782)
 time.sleep(4)
 key('esc'); time.sleep(1)
 out = console('logs | grep "launcher: " | tail -1', 4)
-check('launcher: 10 applications, 1 apps' in out, 'Applications lists it (and FoxDen)')
+check('launcher: 8 applications, 3 apps' in out, 'Applications lists it (and FoxDen)')
 n3 = len(log())
 key('ret')
 check(since(n3, r'foxden: open %s' % re.escape(C), 10) and since(n3, r'appctl: started %s \(sandboxed\)' % re.escape(C), 15), 'Open starts it, sandboxed')

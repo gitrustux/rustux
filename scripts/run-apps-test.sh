@@ -6,7 +6,8 @@
 #      tabs close when their shell ends and the window with the last;
 #   2. Files: copy and paste (to the USB stick, mounted from the side
 #      bar), a folder opened, rename, move to the trash, a new folder,
-#      properties, a text file opened in the Text Editor and saved, the
+#      properties, a text file opened in the Text Editor (an app: appctl
+#      open) and saved, the
 #      stick ejected;
 #   3. Settings (root): mouse speed, time zone, scale, a new user (an
 #      administrator), the keyboard layout; the network (step D6): the
@@ -286,7 +287,7 @@ check('Path=/root/ft/b.txt' in out, 'Files: the trash knows where b.txt came fro
 check('/media/STICK' not in out.split('cat /etc/mtab', 1)[-1], 'Files: the stick is ejected (not in /etc/mtab)')
 lg = log()
 for what in ['files: mount sda /media/STICK', 'files: copied /root/ft/a.txt -> /media/STICK/a.txt', 'files: rename /root/ft/a.txt -> /root/ft/b.txt',
-             'files: trash /root/ft/b.txt', 'files: new folder /root/ft/newdir', 'files: open /root/ft/docs/a.txt with /bin/editor',
+             'files: trash /root/ft/b.txt', 'files: new folder /root/ft/newdir', 'files: open /root/ft/docs/a.txt with /bin/appctl open org.rustica.texteditor',
              'editor: saved /root/ft/docs/a.txt', 'files: eject sda']:
     check(what in lg, what)
 

@@ -9,6 +9,9 @@
 //
 //   appctl run ID [ARG...]     start /apps/ID's Exec, sandboxed; waits, and
 //                              exits with its code
+//   appctl open ID FILE...     the same, with those files (and nothing beside
+//                              them) in its view, given as its arguments:
+//                              Files opening a file with an app (step FD6b)
 //   appctl view ID             the paths it would see, one per line (MODE PATH)
 //   appctl permissions ID      what it asks for and what it gets
 //
@@ -27,6 +30,12 @@
 // asks to open or save a file; appctl shows the chooser (/bin/chooser, a
 // window of the session's, as the user), opens the file the user picks
 // and hands the app that file's connection alone.
+//
+// appctl open (FoxDen step FD6b) is how Files opens a file with an app:
+// each FILE the user may read is added to the view at its own path, read
+// only, or read-write when the user may write it; the app gets the paths
+// as its arguments, so it opens them as it would anywhere. The file
+// alone: its folder lists only it.
 
 #include <errno.h>
 #include <fcntl.h>
@@ -215,6 +224,47 @@ static void build_view(const char *home) {
     }
     if (perm("removable")) add(RX_FS_VIEW_RW, "/media", "");
     // audio, camera, location: no services for them yet
+}
+
+// FILE (from the current folder if relative) into the view, at its own
+// path: read-write if the user may write it, else read only. 0, or -1
+// (said why)
+static int add_file(const char *arg, char *abs, size_t cap) {
+    if (arg[0] == '/') {
+        snprintf(abs, cap, "%s", arg);
+    } else {
+        char cwd[512];
+        if (!getcwd(cwd, sizeof cwd)) {
+            fprintf(stderr, "appctl: %s: where is it? (no current folder)\n", arg);
+            return -1;
+        }
+        snprintf(abs, cap, "%s/%s", strcmp(cwd, "/") ? cwd : "", arg);
+    }
+    size_t n = strlen(abs);
+    if (strstr(abs, "/./") || strstr(abs, "/../") || strstr(abs, "//") || (n >= 2 && !strcmp(abs + n - 2, "/.")) ||
+        (n >= 3 && !strcmp(abs + n - 3, "/..")) || abs[n - 1] == '/') {
+        fprintf(stderr, "appctl: %s: a file's path, without . or ..\n", abs);
+        return -1;
+    }
+    struct stat st;
+    if (stat(abs, &st) < 0) {
+        fprintf(stderr, "appctl: %s: %s\n", abs, strerror(errno));
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        fprintf(stderr, "appctl: %s: not a file\n", abs);
+        return -1;
+    }
+    if (access(abs, R_OK) < 0) {
+        fprintf(stderr, "appctl: %s: %s\n", abs, strerror(errno));
+        return -1;
+    }
+    if (vn == MAXV) {
+        fprintf(stderr, "appctl: %s: too many files\n", abs);
+        return -1;
+    }
+    add(access(abs, W_OK) == 0 ? RX_FS_VIEW_RW : RX_FS_VIEW_RO, "%s", abs);
+    return 0;
 }
 
 static const char *mode_name(int m) { return m == RX_FS_VIEW_RO ? "ro" : m == RX_FS_VIEW_RW ? "rw" : "open"; }
@@ -442,7 +492,7 @@ static int run(int argc, char **argv, const struct passwd *pw) {
 }
 
 static int usage(void) {
-    fprintf(stderr, "usage: appctl run ID [ARG...] | view ID | permissions ID\n");
+    fprintf(stderr, "usage: appctl run ID [ARG...] | open ID FILE... | view ID [FILE...] | permissions ID\n");
     return 2;
 }
 
@@ -462,6 +512,27 @@ int main(int argc, char **argv) {
     permissions(pw->pw_dir);
     build_view(pw->pw_dir);
     if (!strcmp(argv[1], "run")) return run(argc - 3, argv + 3, pw);
+    // open ID FILE... (and view ID FILE...): those files in its view too
+    static char files[24][600];
+    static char *fargs[24];
+    int nf = 0;
+    if (!strcmp(argv[1], "open") || !strcmp(argv[1], "view")) {
+        if (argc - 3 > 24) {
+            fprintf(stderr, "appctl: at most 24 files\n");
+            return 2;
+        }
+        for (int k = 3; k < argc; k++) {
+            if (add_file(argv[k], files[nf], sizeof files[nf]) < 0) return 1;
+            fargs[nf] = files[nf];
+            nf++;
+        }
+    }
+    if (!strcmp(argv[1], "open")) {
+        if (!nf) return usage();
+        for (int k = 0; k < nf; k++) printf("appctl: %s gets %s (%s)\n", ID, fargs[k], mode_name(vmode[vn - nf + k]));
+        fflush(stdout);
+        return run(nf, fargs, pw);
+    }
     if (!strcmp(argv[1], "view")) {
         for (int k = 0; k < vn; k++) printf("%s %s\n", mode_name(vmode[k]), vpath[k]);
         return 0;

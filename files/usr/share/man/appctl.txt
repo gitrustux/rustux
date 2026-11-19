@@ -2,7 +2,8 @@ appctl - start an app in its sandbox
 
 USAGE
     appctl run ID [ARG...]
-    appctl view ID
+    appctl open ID FILE...
+    appctl view ID [FILE...]
     appctl permissions ID
 
     An app (an rpg package of Kind: app, in /apps/ID) runs sandboxed:
@@ -17,8 +18,14 @@ USAGE
                  XDG_DATA_HOME, XDG_CONFIG_HOME, XDG_CACHE_HOME, TMPDIR,
                  PATH=/apps/ID/bin and the scale (RUSTICA_SCALE, from
                  ~/.config/rustica.conf)
+    open         as run, with each FILE in its view at its own path (rw
+                 if you may write it, else ro), the paths its arguments:
+                 what Files does to open a file with an app whose manifest
+                 lists its type (Types: txt md). Its folder shows that file
+                 alone. Folders, missing files and paths with . or .. are
+                 refused; 24 files at most
     view         the paths it sees, one per line: ro, rw or open, then the
-                 path
+                 path (with FILEs: as open would give them)
     permissions  what it asks for and what it gets
 
 WHAT AN APP SEES
@@ -58,6 +65,7 @@ FILES
 EXAMPLES
     appctl run org.rustica.example
     appctl view org.rustica.example
+    appctl open org.rustica.texteditor ~/Documents/notes.txt
     echo "org.rustica.example: -" >> ~/.config/apps/permissions
 
 SEE ALSO

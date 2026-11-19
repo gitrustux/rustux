@@ -4,8 +4,11 @@ USAGE
     viewer FILE
 
     A PNG or JPEG picture, made smaller to fit the window. Left and Right
-    show the other pictures in its folder; Esc closes. Files opens
-    pictures with it.
+    show the other pictures of its folder it can see; Esc closes.
+
+    An app (org.rustica.imageviewer, which comes with the system): it runs
+    in its sandbox. Files opens pictures with it (appctl open), giving it
+    that picture alone.
 
 SEE ALSO
-    files, editor
+    files, editor, appctl

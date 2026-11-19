@@ -1,0 +1,9 @@
+Id: org.rustica.texteditor
+Name: Text Editor
+Summary: write and change text files
+Exec: bin/editor
+Icon: icon.png
+Categories: Utility Office
+Types: txt md conf cfg ini sh c h rs toml json csv log svc app out man
+Screenshots: screenshot.png
+Platform: 1

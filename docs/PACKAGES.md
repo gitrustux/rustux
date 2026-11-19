@@ -125,7 +125,10 @@ scripts must be safe to run twice). Queries (`rpg list`, `show`,
 `verify`...) say an operation was interrupted.
 
 The **lock** holds the process ID and the uptime: a lock whose process
-is gone, or from before a restart, is stale and taken over.
+is gone, or from before a restart, is stale and taken over. One that is
+held is waited for, a minute at most ("rpg: waiting for another rpg"),
+then refused (since FoxDen step FD6b, when the installer service installs
+the apps that come with the system as the computer starts).
 
 ## Removing
 

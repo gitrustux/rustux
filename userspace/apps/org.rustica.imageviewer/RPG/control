@@ -1,0 +1,11 @@
+Package: org.rustica.imageviewer
+Version: 1.0.0
+Architecture: x86_64
+Kind: app
+Maintainer: The Rustux Authors <gitrustux@rustux>
+Homepage: https://rustux.com
+License: MIT
+Description: Image Viewer
+ Rustica's Image Viewer: a PNG or JPEG picture, made smaller to fit the
+ window. Files opens a picture with it; it needs no permission to your
+ folders.

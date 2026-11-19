@@ -2,7 +2,7 @@
 name = "foxden-apps"
 version = "0.1.0"
 edition = "2021"
-description = "Rustica's first apps from the apps repository (FoxDen step FD3, docs/FOXDEN.md): Calculator and System Monitor"
+description = "Rustica's first apps from the apps repository (FoxDen step FD3, docs/FOXDEN.md): Calculator, System Monitor, Text Editor and Image Viewer"
 license = "MIT"
 
 [[bin]]
@@ -12,6 +12,14 @@ path = "src/bin/calculator.rs"
 [[bin]]
 name = "sysmon"
 path = "src/bin/sysmon.rs"
+
+[[bin]]
+name = "editor"
+path = "src/bin/editor.rs"
+
+[[bin]]
+name = "viewer"
+path = "src/bin/viewer.rs"
 
 [dependencies]
 rustica-ui = { path = "../rustica-ui" }

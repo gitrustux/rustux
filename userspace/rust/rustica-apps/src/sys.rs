@@ -14,11 +14,15 @@ use std::process::Command;
 /// An application, from /usr/share/applications/NAME.app:
 ///
 /// ```text
-/// name=Text Editor
-/// exec=/bin/editor
-/// comment=Edit text files
+/// name=Files
+/// exec=/bin/files
+/// comment=Browse, copy and move files
 /// types=txt,md,conf
 /// ```
+///
+/// or an installed app (FoxDen) whose /apps/ID/manifest says which files
+/// it opens (`Types: txt md`, FoxDen step FD6b): its exec is `appctl open
+/// ID`, which gives it the file in its sandbox.
 #[derive(Clone, Debug)]
 pub struct App {
     pub name: String,
@@ -26,6 +30,8 @@ pub struct App {
     pub comment: String,
     /// File name extensions it opens (lower case)
     pub types: Vec<String>,
+    /// An installed app's ID
+    pub app_id: Option<String>,
 }
 
 pub fn applications() -> Vec<App> {
@@ -44,9 +50,37 @@ pub fn applications() -> Vec<App> {
             exec: exec.clone(),
             comment: kv.get("comment").cloned().unwrap_or_default(),
             types: kv.get("types").map(|t| t.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect()).unwrap_or_default(),
+            app_id: None,
         });
     }
+    out.extend(installed_apps());
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+/// The installed apps that open files (a Types: line in /apps/ID/manifest)
+fn installed_apps() -> Vec<App> {
+    let mut out = Vec::new();
+    let Ok(dir) = std::fs::read_dir("/apps") else { return out };
+    for e in dir.flatten() {
+        let id = e.file_name().to_string_lossy().into_owned();
+        let Ok(text) = std::fs::read_to_string(e.path().join("manifest")) else { continue };
+        let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).and_then(|r| r.strip_prefix(':')).map(|v| v.trim().to_string()));
+        if field("Id").as_deref() != Some(id.as_str()) {
+            continue;
+        }
+        let types: Vec<String> = field("Types").unwrap_or_default().split([' ', ',']).map(|s| s.trim().trim_start_matches('.').to_lowercase()).filter(|s| !s.is_empty()).collect();
+        if types.is_empty() {
+            continue;
+        }
+        out.push(App {
+            name: field("Name").unwrap_or_else(|| id.clone()),
+            exec: format!("/bin/appctl open {id}"),
+            comment: field("Summary").unwrap_or_default(),
+            types,
+            app_id: Some(id),
+        });
+    }
     out
 }
 

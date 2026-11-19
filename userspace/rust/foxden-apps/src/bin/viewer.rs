@@ -4,9 +4,12 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-//! viewer: Rustica's Image Viewer (DESKTOP.md step F7, "next in line"): a
+//! viewer: Rustica's Image Viewer (DESKTOP.md step F7, "next in line";
+//! an app since FoxDen step FD6b, org.rustica.imageviewer): a
 //! PNG or JPEG picture, made smaller to fit the window; Left and Right
-//! show the other pictures of its folder.
+//! show the other pictures of its folder that it can see (opened from
+//! Files in its sandbox: the one picture, appctl open, unless it has the
+//! files: permission for that folder).
 //!
 //!   viewer FILE
 
@@ -45,7 +48,13 @@ impl Viewer {
             return;
         };
         if self.image.as_ref().map(|(i, _)| *i) != Some(self.cur) {
-            self.image = Some((self.cur, gfx::load_image(&path.display().to_string())));
+            let img = gfx::load_image(&path.display().to_string());
+            match &img {
+                Ok(i) => println!("viewer: showing {} ({}x{}), {} of {} it can see", path.display(), i.width(), i.height(), self.cur + 1, self.files.len()),
+                Err(e) => println!("viewer: {}: {e}", path.display()),
+            }
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            self.image = Some((self.cur, img));
             self.scaled = None;
         }
         let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();

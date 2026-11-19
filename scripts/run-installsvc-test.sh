@@ -49,7 +49,7 @@ openssl pkey -in "$W/apps.key" -pubout -out "$D/apps.pem"
 openssl pkey -in "$W/archive.key" -pubout -out "$D/archive.pem"
 put() { rel=$("$RPG" pool-path "$2"); mkdir -p "$1/$(dirname "$rel")"; cp "$2" "$1/$rel"; }
 sign() { openssl pkeyutl -sign -inkey "$3" -rawin -in "$1/$2/Release" -out "$1/$2/Release.sig"; }
-scripts/build-apps.sh "$W/apps1" > /dev/null || { echo "the apps did not build"; exit 2; }
+scripts/build-apps.sh "$W/apps1" org.rustica.calculator org.rustica.sysmon > /dev/null || { echo "the apps did not build"; exit 2; }
 # org.test.homeapp: the Calculator's program, asking for files:home
 cp -r userspace/apps "$W/src"
 cp -r "$W/src/org.rustica.calculator" "$W/src/org.test.homeapp"

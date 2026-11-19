@@ -158,10 +158,11 @@ with their programs in `userspace/rust/foxden-apps`:
 |-----|-----------|-------------|
 | `org.rustica.calculator` | Calculator: + - × ÷, brackets, the usual precedence, from buttons or the keyboard | none |
 | `org.rustica.sysmon` | System Monitor: the processors and memory over the last minute, uptime, threads, the kernel's version | none (no process list: that needs the system's job, the `system` permission's) |
+| `org.rustica.texteditor` | Text Editor (step FD6b): one text file; Open and Save as through the file chooser | none |
+| `org.rustica.imageviewer` | Image Viewer (step FD6b): a PNG or JPEG picture made smaller to fit | none |
 
-The Text Editor and the Image Viewer stay in the system for now: in a
-sandbox they could open only the folders a permission gives, so they move
-out with the file chooser (step FD6).
+The Text Editor and the Image Viewer were system programs until step
+FD6b ("Opening files" below); they come with the system.
 
 **Publishing:** `scripts/build-apps.sh` makes the packages;
 `scripts/publish-apps.sh --key APPSKEY DIR` indexes (`rpg index --apps`),
@@ -321,9 +322,55 @@ until the user says yes, the panel notifies both; an app without `files:`
 permissions opens the file the user picks in the chooser and nothing else,
 saves a copy through it, and gets nothing when the user cancels.
 
+## Opening files; the apps that come with the system (step FD6b)
+
+**Opening a file with an app.** An app's manifest may say which files it
+opens, by their name's extension:
+
+```
+Types: txt md conf
+```
+
+Files opens such a file (Enter, a double-click) with the app as it opens
+others with an application's `types=` (`APPS.md`): **`appctl open ID
+FILE...`**, which starts the app as `appctl run` does, with each file in
+its view at its own path, read-write if the user may write it, else read
+only, and the paths as its arguments. The app opens the path it is given
+as it would anywhere; its folder lists that file alone, nothing beside
+it. A folder, a missing file, a file the user may not read and a path with
+`.` or `..` are refused; `appctl view ID FILE...` shows the view it would
+get.
+
+**The Text Editor and the Image Viewer are apps**: `org.rustica.texteditor`
+and `org.rustica.imageviewer` (`userspace/apps/`, programs in
+`userspace/rust/foxden-apps`), with no permissions. The editor saves a
+file opened from Files in place; a new file's Save, Save as and Open
+(Ctrl+O) ask with the file chooser and write through the descriptor it
+gives (rewritten from the start, cut to the new length, on each save). Run
+outside a sandbox (no chooser to ask: `-ENOSYS`), Save as asks for a path
+instead. The viewer shows the picture it was given; Left and Right step
+through the pictures it can see in its folder (opened from Files: only
+that one).
+
+**The apps that come with the system.** `userspace/apps/preinstalled`
+lists them; the build puts each one's folder, with its program, in the
+boot image as `/usr/share/rpg/apps/ID/`. The installer service, when it
+starts, makes a package of each one not yet installed (`rpg build` of a
+copy, its program made executable) and installs it (`rpg install -y`),
+then notes the ID in `/var/lib/rpg/preinstalled`: once only, so an app an
+administrator removed stays removed (and an app installed another way is
+noted and left). From then on it is an app like any other: it updates
+from the app sources (the apps repository publishes both), Settings >
+Apps and FoxDen remove it. While it installs them, another rpg waits for
+its lock (a minute at most) rather than failing.
+
+`scripts/run-openwith-test.sh` (`TESTS.md`): both installed at start and
+noted; `appctl view` with files; the editor given `~/Documents/a.txt`
+saves it in place; the viewer given one of two pictures sees one; a new
+text saved through the chooser and saved again shorter, Open through the
+chooser; an app removed is not installed again. `run-apps-test.sh` opens
+a text file from Files in the editor, now an app.
+
 ## Not yet
 
-The `system` permission's sandbox-free run; moving the Text Editor and
-the Image Viewer out of the system (they need "open this file with" from
-Files: appctl handing an app the file given on its command line); outside
-developers (FD7).
+The `system` permission's sandbox-free run; outside developers (FD7).

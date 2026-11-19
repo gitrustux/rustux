@@ -3,10 +3,12 @@
 # /tmp/p with a package built on the host (hello 1.0-1). Installs it,
 # builds more packages here and installs, upgrades and removes them; then
 # starts an upgrade of 300 files and pauses it half-way through the
-# renames, where the host cuts the power.
+# renames, where the host cuts the power. (rpg list leaves out the apps
+# that come with the system, FoxDen step FD6b, which the installer service
+# may be installing meanwhile.)
 echo PKGTEST start
 rpg version
-rpg list
+rpg list | grep -v '^org\.rustica\.' | grep . || echo "Only the apps that come with the system are installed."
 echo "== the host's package"
 rpg install /tmp/p/hello_1.0-1_all.rpg
 cat /var/tmp-hello
@@ -43,7 +45,7 @@ ls /opt/hello/share
 ls /opt/hello/share/OLD
 /bin/shell /opt/hello/bin/hi
 rpg verify hello
-rpg list
+rpg list | grep -v '^org\.rustica\.' | grep . || echo "Only the apps that come with the system are installed."
 echo "== a file of another package"
 mkdir -p o/RPG o/opt/hello/share
 printf 'Package: other\nVersion: 1\nArchitecture: all\nDescription: takes a file of hello\n' > o/RPG/control
@@ -62,7 +64,7 @@ rpg build n
 rpg install ./needs-hello_1_all.rpg
 rpg remove hello
 rpg remove hello needs-hello
-rpg list
+rpg list | grep -v '^org\.rustica\.' | grep . || echo "Only the apps that come with the system are installed."
 ls /etc/hello.conf /etc/hello.d/defaults /opt/hello
 rpg remove --purge hello
 ls /etc/hello.conf /etc/hello.d
@@ -72,7 +74,7 @@ printf 'Package: in-usr\nVersion: 1\nArchitecture: all\nDescription: a file in /
 echo u > u/usr/share/u/f
 rpg build u
 rpg install ./in-usr_1_all.rpg
-rpg list
+rpg list | grep -v '^org\.rustica\.' | grep . || echo "Only the apps that come with the system are installed."
 ls /var/lib/rpg
 echo "== not as root"
 sudo -u nobody rpg list

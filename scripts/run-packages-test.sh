@@ -199,7 +199,7 @@ power_cut
 OUT=$(section start)
 printf '%s\n' "$OUT" | sed -n '/PKGTEST start/,/PKGTEST cut/p'
 expect "rpg 0.1.0 (FoxDen step FD3"
-expect "No packages are installed."
+expect "Only the apps that come with the system are installed."
 expect "hello 1.0-1: installed (6 files)"
 expect "postinst install"
 expect "hello: /etc/hello.conf"
@@ -253,7 +253,7 @@ expect "big: 300 files as installed"
 expect "version 2 files: 300"
 expect "rpg-tmp files: 0"
 expect "big 2: removed"
-expect "No packages are installed."
+expect "Only the apps that come with the system are installed."
 expect "rpg: nothing to finish"
 
 echo "== boot 4: repositories (step E2)"

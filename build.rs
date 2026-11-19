@@ -193,6 +193,35 @@ fn main() {
         files.push((rboot.to_string(), "usr/lib/rboot/rboot.efi".to_string()));
     }
 
+    // The apps that come with the system (FoxDen step FD6b): each ID in
+    // userspace/apps/preinstalled, its folder (userspace/apps/ID) with its
+    // program (userspace/apps/bin/, the manifest's Exec) as
+    // /usr/share/rpg/apps/ID/; packagesd makes a package of each one and
+    // installs it once
+    println!("cargo:rerun-if-changed=userspace/apps");
+    for id in fs::read_to_string("userspace/apps/preinstalled").unwrap_or_default().lines().map(str::trim) {
+        if id.is_empty() || id.starts_with('#') {
+            continue;
+        }
+        let dir = std::path::Path::new("userspace/apps").join(id);
+        let manifest = fs::read_to_string(dir.join("manifest")).unwrap_or_else(|e| panic!("userspace/apps/preinstalled: {}: {}", id, e));
+        let exec = manifest
+            .lines()
+            .find_map(|l| l.strip_prefix("Exec:"))
+            .and_then(|v| v.split_whitespace().next())
+            .unwrap_or_else(|| panic!("{}: no Exec in its manifest", id))
+            .to_string();
+        let mut own = Vec::new();
+        walk(&dir, &dir, &mut own);
+        for (src, rel) in own {
+            files.push((src, format!("usr/share/rpg/apps/{}/{}", id, rel)));
+        }
+        let prog = format!("userspace/apps/bin/{}", exec.rsplit('/').next().unwrap());
+        println!("cargo:rerun-if-changed={}", prog);
+        assert!(std::path::Path::new(&prog).is_file(), "{}: no program {} (userspace/build-rust.sh makes it)", id, prog);
+        files.push((prog, format!("usr/share/rpg/apps/{}/{}", id, exec)));
+    }
+
     // userspace/links: more names for multi-call programs ("NAME PROGRAM"),
     // stored as entries that share the program's data
     println!("cargo:rerun-if-changed=userspace/links");

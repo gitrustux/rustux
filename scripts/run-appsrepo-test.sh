@@ -53,7 +53,7 @@ put() { # repo file.rpg
 sign() { # repo dists-dir key
     openssl pkeyutl -sign -inkey "$3" -rawin -in "$1/$2/Release" -out "$1/$2/Release.sig"
 }
-scripts/build-apps.sh "$W/apps1" > /dev/null || { echo "the apps did not build"; exit 2; }
+scripts/build-apps.sh "$W/apps1" org.rustica.calculator org.rustica.sysmon > /dev/null || { echo "the apps did not build"; exit 2; }
 # good: both apps, signed with the apps key
 for f in "$W"/apps1/*.rpg; do put "$D/good" "$f"; done
 "$RPG" index --apps "$D/good" > /dev/null && sign "$D/good" platform/1 "$W/apps.key"

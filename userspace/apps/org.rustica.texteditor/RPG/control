@@ -1,0 +1,11 @@
+Package: org.rustica.texteditor
+Version: 1.0.0
+Architecture: x86_64
+Kind: app
+Maintainer: The Rustux Authors <gitrustux@rustux>
+Homepage: https://rustux.com
+License: MIT
+Description: Text Editor
+ Rustica's Text Editor: one text file at a time. Files opens a file with
+ it; Open and Save as ask with the file chooser, so it needs no
+ permission to your folders.

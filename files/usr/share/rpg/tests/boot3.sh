@@ -5,12 +5,12 @@ echo PKGTEST boot3
 cd /root/pk
 echo "rpg-tmp files: $(ls /opt/big | grep -c rpg-tmp)"
 rpg fix
-rpg list
+rpg list | grep -v '^org\.rustica\.' | grep . || echo "Only the apps that come with the system are installed."
 rpg verify big
 echo "version 2 files: $(cat /opt/big/* | grep -c v2)"
 echo "rpg-tmp files: $(ls /opt/big | grep -c rpg-tmp)"
 rpg remove big
-rpg list
+rpg list | grep -v '^org\.rustica\.' | grep . || echo "Only the apps that come with the system are installed."
 ls /opt/big
 rpg fix
 echo PKGTEST done

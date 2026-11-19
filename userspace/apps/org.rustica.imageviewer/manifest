@@ -1,0 +1,9 @@
+Id: org.rustica.imageviewer
+Name: Image Viewer
+Summary: look at PNG and JPEG pictures
+Exec: bin/viewer
+Icon: icon.png
+Categories: Graphics
+Types: png jpg jpeg
+Screenshots: screenshot.png
+Platform: 1

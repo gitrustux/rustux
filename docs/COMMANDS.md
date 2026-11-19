@@ -68,7 +68,7 @@ uses).
 | `rpg` | Rustux's own, in place of `dpkg` and `apt` (`PACKAGES.md`): `update`, `upgrade`, `install NAME` or `./FILE.rpg`, `remove [--purge]`, `autoremove`, `search`, `show`, `policy`, `list`, `depends`, `rdepends`, `hold`, `unhold`, `download`, `clean`, `source`, `key`, `files`, `owner`, `verify`, `boot list`, `boot status` and `boot update` (the system images, how each one started, and rboot's entries), `fix`, `build`, `info`, `index` (`--apps`: an apps repository); repositories signed with Ed25519; apps from app sources, signed with an apps key (FoxDen step FD3); run by a user, `install`, `remove`, `update` and `upgrade` go through the installer service (FD4): apps anyone, the rest an administrator's password; `plan` says what would change |
 | `updates` | the system's updates through the installer service (package step E6, `man updates`): `status`, `check`, `install` (`-S`: the password on stdin); no sudo needed for an administrator |
 | `packagesd` | the installer service `/svc/packages` (root): what `updates`, the panel, Settings > Updates and rpg for users use (FoxDen step FD4: installing, removing, upgrading; apps anyone, the rest an administrator); the daily check (`/etc/rpg/updates.conf`) |
-| `appctl` | start an installed app in its sandbox (FoxDen step FD2, `man appctl`): `run ID`, `view ID` (the paths it sees), `permissions ID`; what Applications uses |
+| `appctl` | start an installed app in its sandbox (FoxDen step FD2, `man appctl`): `run ID`, `open ID FILE...` (with those files in its view: Files opening a file with an app, step FD6b), `view ID [FILE...]` (the paths it sees), `permissions ID`; what Applications uses |
 | `netcfg` | Rustux's own (`/etc/network.conf`, applied at once): `IFACE dhcp`, `static` or `off`, `dns`, `search`, `apply` |
 | `fwctl` | Rustux's own (no iptables or nftables syntax): `allow`, `deny`, `append`, `delete`, `default`, `enable`, `disable`, `reload`, `save` |
 | `ss` | `-t -u -l -a -n -H`; no `-p` (processes), `-e`, filters; Recv-Q/Send-Q are smoltcp's buffers |
@@ -116,7 +116,6 @@ uses).
 | `terminal` | the Terminal (step F7, `APPS.md`): the shell (or `-e PROG ARGS`) on a pseudo-terminal in a window; tabs, copy and paste, font size, scrollback |
 | `files` | the file manager (step F7): `files [FOLDER]`; copy, cut, paste, rename, trash, new folders, properties, open with an application; USB sticks mounted under `/media` and ejected |
 | `settings` | Settings (step F7): `settings [display|keyboard|mouse|time|users|disks|about]`; system changes as root, or with the user's password through `sudo -S` |
-| `editor`, `viewer` | the Text Editor (`editor [FILE]`, Ctrl+S, Ctrl+Q) and the Image Viewer (`viewer FILE`, Left/Right) |
 | `inputctl` | the input service's settings in `/etc/input.conf`: `status`, `set-pointer-speed PERCENT` (25-400; root) |
 | `uidemo` | the toolkit's demo (step F5, `GUI.md`): menus, tabs, a form, a long list, a tree, a text editor field, images, dialogs; `--scale 2` |
 | `screenshot` | `screenshot FILE.png`: the screen (text console or graphics) as a PNG, with the CRC-32 of its pixels; root |

@@ -48,7 +48,7 @@ openssl genpkey -algorithm ed25519 -out "$W/apps.key" 2>/dev/null
 openssl pkey -in "$W/apps.key" -pubout -out "$D/apps.pem"
 put() { rel=$("$RPG" pool-path "$2"); mkdir -p "$1/$(dirname "$rel")"; cp "$2" "$1/$rel"; }
 sign() { "$RPG" index --apps "$1" > /dev/null && openssl pkeyutl -sign -inkey "$W/apps.key" -rawin -in "$1/platform/1/Release" -out "$1/platform/1/Release.sig"; }
-scripts/build-apps.sh "$W/apps1" > /dev/null || { echo "the apps did not build"; exit 2; }
+scripts/build-apps.sh "$W/apps1" org.rustica.calculator org.rustica.sysmon > /dev/null || { echo "the apps did not build"; exit 2; }
 # org.test.portal: portaltest as an app, no permissions
 mkdir -p "$W/src/org.test.portal/RPG"
 cp userspace/bin/portaltest "$W/src/org.test.portal/portaltest-bin"
