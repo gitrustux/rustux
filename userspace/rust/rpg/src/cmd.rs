@@ -68,6 +68,15 @@ fn kib(n: u64) -> String {
     }
 }
 
+/// An app's permissions in words, for the plan
+fn permissions_text(p: Option<&str>) -> String {
+    let words: Vec<&str> = p.unwrap_or("").split_whitespace().collect();
+    if words.is_empty() {
+        return "nothing (its own folder and data, a window)".into();
+    }
+    words.join(", ")
+}
+
 /// Show the plan; Ok(false) if the administrator says no
 fn confirm(plan: &Plan, yes: bool) -> Result<bool, String> {
     let new: Vec<&Step> = plan.steps.iter().filter(|s| s.old.is_none()).collect();
@@ -77,12 +86,20 @@ fn confirm(plan: &Plan, yes: bool) -> Result<bool, String> {
         for s in &new {
             let why = s.why.as_ref().map(|w| format!(", for {w}")).unwrap_or_default();
             println!("  {} {}{why}", s.c.name(), s.c.version());
+            // An app: what it is, and what it asks for (FoxDen step FD3)
+            if s.c.kind() == "app" {
+                println!("    {}: {}", s.c.get("App-Name").unwrap_or(s.c.name()), s.c.get("App-Summary").unwrap_or(s.c.summary()));
+                println!("    asks for: {}", permissions_text(s.c.get("Permissions")));
+            }
         }
     }
     if !up.is_empty() {
         println!("To upgrade:");
         for s in &up {
             println!("  {} {} -> {}", s.c.name(), s.old.as_deref().unwrap_or("?"), s.c.version());
+            if s.c.kind() == "app" {
+                println!("    asks for: {}", permissions_text(s.c.get("Permissions")));
+            }
         }
     }
     for (n, why) in &plan.kept {
@@ -151,10 +168,17 @@ fn carry_out(ctx: &Ctx, plan: Plan, files: Vec<Package>) -> Result<(), String> {
                     return Err(format!("{}: the package inside is {} {}, not what the index says", a.url(), p.control.name(), p.control.version()));
                 }
                 ops::check_installable(&p).map_err(|e| format!("{}: {e}", a.url()))?;
-                // Apps come from app sources, with the apps key (FoxDen
-                // step FD3); never from a system repository
-                if p.control.kind() == "app" {
-                    return Err(format!("{}: an app in a system repository: refused (apps come from app sources, FoxDen step FD3)", a.url()));
+                // Apps come from app sources, with an apps key (FoxDen
+                // step FD3), and only apps do: never an app from a system
+                // repository, never a system package from an app source
+                match (a.source.kind, p.control.kind() == "app") {
+                    (Kind::System, true) => {
+                        return Err(format!("{}: an app in a system repository: refused (apps come from app sources)", a.url()));
+                    }
+                    (Kind::App, false) => {
+                        return Err(format!("{}: a system package from an app source: refused (system packages come from the system's sources)", a.url()));
+                    }
+                    _ => {}
                 }
                 p
             }
@@ -323,7 +347,11 @@ pub fn search(ctx: &Ctx, args: &[String]) -> Result<(), String> {
     names.dedup();
     for n in names {
         let a = repo::candidate(&av, n).unwrap();
-        let hay = if names_only { n.to_string() } else { format!("{n} {}", a.c.get("Description").unwrap_or("")).to_lowercase() };
+        let hay = if names_only {
+            format!("{n} {}", a.c.get("App-Name").unwrap_or("")).to_lowercase()
+        } else {
+            format!("{n} {} {} {} {}", a.c.get("Description").unwrap_or(""), a.c.get("App-Name").unwrap_or(""), a.c.get("App-Summary").unwrap_or(""), a.c.get("Categories").unwrap_or("")).to_lowercase()
+        };
         if words.iter().all(|w| hay.contains(w.as_str())) && seen.insert(n) {
             hits.push(a);
         }
@@ -338,7 +366,12 @@ pub fn search(ctx: &Ctx, args: &[String]) -> Result<(), String> {
             Some(c) => format!("  [installed: {}]", c.version()),
             None => String::new(),
         };
-        println!("{} {} - {}{mark}", a.name(), a.version(), a.c.summary());
+        if a.c.kind() == "app" {
+            let name = a.c.get("App-Name").unwrap_or(a.c.summary());
+            println!("{} {} - {name}: {} (app){mark}", a.name(), a.version(), a.c.get("App-Summary").unwrap_or(""));
+        } else {
+            println!("{} {} - {}{mark}", a.name(), a.version(), a.c.summary());
+        }
     }
     Ok(())
 }
@@ -569,10 +602,18 @@ pub fn key(ctx: &Ctx, args: &[String]) -> Result<(), String> {
 pub fn index(args: &[String]) -> Result<(), String> {
     let mut o = repo::IndexOpts { suite: "redfox".into(), section: "main".into(), archs: Vec::new(), origin: "Rustux".into() };
     let mut dir = None;
+    let mut apps = false;
+    let mut level = crate::app::PLATFORM;
     let mut i = 0;
     while i < args.len() {
         let val = |i: usize| args.get(i + 1).cloned().ok_or(format!("{} needs a value", args[i]));
         match args[i].as_str() {
+            "--apps" => {
+                apps = true;
+                i += 1;
+                continue;
+            }
+            "--platform" => level = val(i)?.parse().ok().filter(|l| *l >= 1).ok_or("--platform: a level, 1 or more")?,
             "--suite" => o.suite = val(i)?,
             "--section" => o.section = val(i)?,
             "--arch" => o.archs.push(val(i)?),
@@ -587,6 +628,10 @@ pub fn index(args: &[String]) -> Result<(), String> {
         i += 2;
     }
     let dir = dir.ok_or("index which repository? (rpg index DIR: DIR/pool/... holds the .rpg files)")?;
+    if apps {
+        let origin = if o.origin == "Rustux" { "Rustux apps".to_string() } else { o.origin.clone() };
+        return repo::index_apps(std::path::Path::new(&dir), level, &origin);
+    }
     repo::index(std::path::Path::new(&dir), &o)
 }
 
@@ -611,6 +656,11 @@ pub fn pool_path(args: &[String]) -> Result<(), String> {
     let bytes = std::fs::read(f).map_err(|e| format!("{f}: {e}"))?;
     let p = Package::read(&bytes).map_err(|e| format!("{f}: {e}"))?;
     let base = std::path::Path::new(f).file_name().unwrap().to_string_lossy().to_string();
+    // An app's: pool/L/ID/FILE (an apps repository has no sections)
+    if p.control.kind() == "app" {
+        println!("{}", repo::app_pool_path(p.control.name(), &base));
+        return Ok(());
+    }
     println!("{}", repo::pool_path(args.get(1).map(|s| s.as_str()).unwrap_or("main"), p.control.name(), &base));
     Ok(())
 }

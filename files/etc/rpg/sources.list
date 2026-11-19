@@ -2,3 +2,6 @@
 # repository, URL SUITE SECTION...; more in sources.list.d/*.list.
 # Each repository's Release must be signed by a key in /etc/rpg/keys.
 https://rustux.com/download/rustica  redfox  main
+# Apps (FoxDen, docs/FOXDEN.md): apps URL platform LEVEL, signed by a
+# key in /etc/rpg/keys/apps; only apps come from here
+apps https://rustux.com/download/apps  platform 1

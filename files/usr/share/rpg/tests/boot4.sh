@@ -12,6 +12,7 @@ rpg source list
 rpg key list
 echo "== the test repository"
 rpg source remove 1
+rpg source remove 1
 cp /tmp/p/ca.pem /etc/rpg/ca-certificates.pem
 rpg key add /tmp/p/test.pub.pem rpg-test
 sw repo1

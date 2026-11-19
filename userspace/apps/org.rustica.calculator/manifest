@@ -1,0 +1,7 @@
+Id: org.rustica.calculator
+Name: Calculator
+Summary: add, subtract, multiply and divide
+Exec: bin/calculator
+Icon: icon.png
+Categories: Utility Office
+Platform: 1

@@ -1,0 +1,21 @@
+[package]
+name = "foxden-apps"
+version = "0.1.0"
+edition = "2021"
+description = "Rustica's first apps from the apps repository (FoxDen step FD3, docs/FOXDEN.md): Calculator and System Monitor"
+license = "MIT"
+
+[[bin]]
+name = "calculator"
+path = "src/bin/calculator.rs"
+
+[[bin]]
+name = "sysmon"
+path = "src/bin/sysmon.rs"
+
+[dependencies]
+rustica-ui = { path = "../rustica-ui" }
+
+[profile.release]
+panic = "abort"
+opt-level = 3

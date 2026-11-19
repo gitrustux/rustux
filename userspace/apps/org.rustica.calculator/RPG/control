@@ -1,0 +1,10 @@
+Package: org.rustica.calculator
+Version: 1.0.0
+Architecture: x86_64
+Kind: app
+Maintainer: The Rustux Authors <gitrustux@rustux>
+Homepage: https://rustux.com
+License: MIT
+Description: Calculator
+ Rustica's Calculator: the four operations with brackets and the usual
+ precedence, from buttons or the keyboard.

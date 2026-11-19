@@ -438,6 +438,20 @@ reaches the test's server at 10.0.2.2 and reads and writes `~/Documents`.
 Both windows come. As a control, the same `sandtest` started at the
 console without `appctl` must fail most of its checks.
 
+## Apps repository test (FoxDen step FD3)
+
+`scripts/run-appsrepo-test.sh` (QEMU, the live desktop; it needs openssl
+and cargo): test repositories made on the host from `userspace/apps`
+(`scripts/build-apps.sh`, `rpg index --apps`, signed with a test apps key
+and a test archive key) on a second disk, read as `file://` sources. `rpg
+update` reads the apps source, `rpg search` finds the Calculator, `rpg
+install` says what it asks for and installs it; `appctl` runs it and the
+System Monitor sandboxed, and keys typed into the Calculator give 12+30*2
+= 72. Refused: an apps index signed with the archive key, one that lists
+a system package, one changed after signing, and an app in a system
+repository. A newer Calculator in the apps source comes with `rpg
+upgrade`; `rpg remove` removes it.
+
 ## Updates test (package step E6)
 
 `scripts/run-updates-test.sh` (QEMU, the live desktop; it needs openssl

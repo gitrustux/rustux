@@ -1,0 +1,10 @@
+Package: org.rustica.sysmon
+Version: 1.0.0
+Architecture: x86_64
+Kind: app
+Maintainer: The Rustux Authors <gitrustux@rustux>
+Homepage: https://rustux.com
+License: MIT
+Description: System Monitor
+ Rustica's System Monitor: how busy the processors are and how much
+ memory is in use, over the last minute, with the uptime and threads.

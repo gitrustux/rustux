@@ -30,15 +30,21 @@ for dir in rust/*/; do
     [ -f "$dir/rustux-build" ] && . "$dir/rustux-build"
     # cargo doesn't see changes to the C library: always link again
     rm -f "build/rust/$TARGET/release/$name" "build/rust/$TARGET/release/deps/${name//-/_}"-*
-    [ -f "$dir/rustux-bins" ] && for b in $(cat "$dir/rustux-bins"); do rm -f "build/rust/$TARGET/release/$b" "build/rust/$TARGET/release/deps/${b//-/_}"-*; done
+    for f in "$dir/rustux-bins" "$dir/rustux-apps"; do
+        [ -f "$f" ] || continue
+        for b in $(cat "$f"); do rm -f "build/rust/$TARGET/release/$b" "build/rust/$TARGET/release/deps/${b//-/_}"-*; done
+    done
     (cd "$dir" && cargo build --release --target $TARGET -Zbuild-std=std,panic_abort \
         --target-dir "$U/build/rust" "${CARGO_ARGS[@]}")
     # The package's programs: its own name, or those listed in rustux-bins
-    # (a library package with its demos, e.g. rustica-ui)
-    bins=$name
+    # (a library package with its demos, e.g. rustica-ui). Apps
+    # (rustux-apps: FoxDen step FD3) go to apps/bin, outside the system
+    # image: scripts/build-apps.sh makes app packages of them
+    bins=$name out=bin
     [ -f "$dir/rustux-bins" ] && bins=$(cat "$dir/rustux-bins")
+    [ -f "$dir/rustux-apps" ] && bins=$(cat "$dir/rustux-apps") out=apps/bin && mkdir -p apps/bin
     for b in $bins; do
-        [ -f "build/rust/$TARGET/release/$b" ] && strip -o "bin/$b" "build/rust/$TARGET/release/$b"
+        [ -f "build/rust/$TARGET/release/$b" ] && strip -o "$out/$b" "build/rust/$TARGET/release/$b"
     done
 done
 echo "built: $(cd rust && ls -d */Cargo.toml | cut -d/ -f1 | tr '\n' ' ')"

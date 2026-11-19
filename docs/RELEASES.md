@@ -86,6 +86,52 @@ keeping an offline copy is worth it.
 Replacing it (later): the next key goes out in a `rustica-keyring` package
 signed with the current one, well before the current one is retired.
 
+## The apps repository (FoxDen step FD3)
+
+`https://rustux.com/download/apps` (on the server
+`/var/www/rustux.com/html/download/apps`), the source line
+`apps https://rustux.com/download/apps platform 1` in the image: static
+files too, laid out by **platform level** instead of release (an app
+keeps working across releases with the same level, so nothing of it moves
+to archive.rustux.com):
+
+```
+download/apps/
+  platform/1/Release, Release.sig       signed with the apps key
+  platform/1/x86_64/Apps.gz             every app: its control fields, Filename, Size,
+                                        SHA256, App-Name, App-Summary, Categories,
+                                        Permissions, Platform, Icon
+  platform/1/x86_64/Apps.json.gz        the same as JSON (web pages, later)
+  pool/o/org.rustica.calculator/org.rustica.calculator_1.0.0_x86_64.rpg
+  media/org.rustica.calculator/icon.png
+```
+
+The apps are the folders of `userspace/apps/` (control file, manifest,
+icon; programs from `userspace/rust/foxden-apps`, built into
+`userspace/apps/bin/`): `scripts/build-apps.sh OUTDIR` makes their
+packages. Each handoff's `apply.sh` publishes them after the system's;
+by hand:
+
+```
+cd /var/www/rustux.com/prod
+scripts/publish-apps.sh --key /root/keys/rustux-apps-2026.key /var/www/rustux.com/html/download/apps
+```
+
+It works as `publish-repo.sh` does (the key checked, a staging folder, the
+index signed and read back by `rpg update` with only the public key, then
+put in place), with two differences: an app is published when its
+`Version` changes (a published version never changes: the same version
+with other contents is refused), and each app's newest **two** versions
+are kept.
+
+**The apps key**, `rustux-apps-2026` (Ed25519; key ID
+`2f06e52fed979364`), signs the apps repository only: the image trusts it
+in `/etc/rpg/keys/apps/`, where rpg looks for app sources' keys and
+nowhere else, so it can never sign a system package, and the archive key
+can never sign an app. Its private key is kept as the archive key's is:
+`/root/keys/rustux-apps-2026.key` (mode 600) by default, never in git or
+`/var/www`.
+
 ## Retiring a release: archive.rustux.com
 
 When a release is followed by the next (redfox, then another codename),

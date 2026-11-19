@@ -198,7 +198,7 @@ sleep 1
 power_cut
 OUT=$(section start)
 printf '%s\n' "$OUT" | sed -n '/PKGTEST start/,/PKGTEST cut/p'
-expect "rpg 0.1.0 (step E6"
+expect "rpg 0.1.0 (FoxDen step FD3"
 expect "No packages are installed."
 expect "hello 1.0-1: installed (6 files)"
 expect "postinst install"
@@ -288,9 +288,12 @@ wait_end 120
 kill $HTTPS 2>/dev/null
 OUT=$(section boot4)
 printf '%s\n' "$OUT" | sed -n '/PKGTEST boot4/,/PKGTEST done4/p'
-expect "rpg 0.1.0 (step E6: updates on the desktop)"
+expect "rpg 0.1.0 (FoxDen step FD3: the apps repository)"
 expect "https://rustux.com/download/rustica  redfox  main"
+expect "apps https://rustux.com/download/apps  platform  1"
 expect "65527118d2c1e504  rustux-archive-2026"
+expect "rustux-apps-2026  /etc/rpg/keys/apps/rustux-apps-2026.pub  (apps)"
+expect "removed: apps https://rustux.com/download/apps  platform  1"
 expect "removed: https://rustux.com/download/rustica  redfox  main"
 expect " rpg-test (/etc/rpg/keys/rpg-test.pub)"
 expect "https://10.0.2.2:8443/live redfox: 3 packages"

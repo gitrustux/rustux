@@ -16,8 +16,8 @@ USAGE
     hold NAME... | unhold NAME...
     download NAME...             a package file into the current folder
     clean                        empty the download cache
-    source list | add URL SUITE SECTION... | remove N
-    key list | add FILE [NAME] | remove ID
+    source list | add [apps] URL SUITE SECTION... | remove N
+    key list | add [--apps] FILE [NAME] | remove ID
     files NAME | owner PATH... | verify [NAME...]
     boot list | boot status | boot update
                                  the system images, how each one started;
@@ -25,6 +25,7 @@ USAGE
     fix                          finish an install a power cut or crash interrupted
     build DIR [-o FILE] | info ./FILE.rpg
     index REPO [--suite S] [--section S] [--arch A]   (publishing)
+    index --apps REPO [--platform N]                   (an apps repository)
     version
 
     rpg is Rustica's one package tool: what Debian splits between dpkg
@@ -112,10 +113,29 @@ APPS
     and DIR as the app's folder. rpg refuses an app with files elsewhere,
     scripts, set-user bits, links out of its folder, relations to other
     packages, or a platform level newer than this system's (1). rpg list
-    --apps lists them; Applications starts them. rpg remove --purge also
-    removes the users' data for it (~/.local/share/apps/ID, ~/.config/
-    apps/ID, ~/.cache/apps/ID). Apps come from package files for now (the
-    apps repository is FoxDen's next steps).
+    --apps lists them; Applications starts them in their sandbox (man
+    appctl). rpg remove --purge also removes the users' data for it
+    (~/.local/share/apps/ID, ~/.config/apps/ID, ~/.cache/apps/ID).
+
+    Apps come from app sources, lines starting with "apps":
+
+        apps https://rustux.com/download/apps  platform 1
+
+    laid out by platform level, not release: platform/1/Release (signed),
+    platform/1/x86_64/Apps.gz (each app's fields with its name, summary,
+    categories, permissions and icon), pool/L/ID/, media/ID/. An app
+    source must be signed by a key in /etc/rpg/keys/apps (rpg key add
+    --apps), never an archive key, and an archive key is never trusted
+    for apps: a system repository's apps and an app source's system
+    packages are refused, the second refusing the whole source. Then
+    rpg search, install, upgrade and remove work for apps as for any
+    package, by ID; rpg install shows what an app asks for before it
+    installs it. Package files (rpg install ./FILE.rpg) still work.
+
+    Publishing an apps repository: the app packages under REPO/pool (rpg
+    pool-path FILE says where), rpg index --apps REPO, then sign
+    REPO/platform/1/Release with the apps key; scripts/publish-apps.sh
+    does all of it.
 
 THE SYSTEM
     The system is image-based: the kernel file carries every program
@@ -155,6 +175,7 @@ THE SYSTEM
 FILES
     /etc/rpg/sources.list        where packages come from
     /etc/rpg/keys/*.pub          the keys trusted to sign them
+    /etc/rpg/keys/apps/*.pub     the keys trusted to sign app sources
     /var/lib/rpg/lists/          the sources' package lists (rpg update)
     /var/cache/rpg/archives/     downloaded packages (rpg clean)
     /var/lib/rpg/status          the installed packages
@@ -173,6 +194,9 @@ EXAMPLES
     rpg verify
     rpg boot list
     sudo rpg remove --purge hello
+    rpg search calculator
+    sudo rpg install org.rustica.calculator   (an app, from the apps source)
+    rpg list --apps
 
 SEE ALSO
     tar, gzip, curl (docs/PACKAGES.md)

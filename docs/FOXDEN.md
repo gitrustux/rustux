@@ -50,8 +50,8 @@ result as an install would.
 - a manifest that is missing, names another ID, has an `Exec` that is not
   an executable file in the folder (or an `Icon` that is not a file
   there), an unknown permission, or a platform level this system lacks;
-- an app from a system repository: apps come from app sources, with the
-  apps key (step FD3); until then, from package files only.
+- an app from a system repository: apps come from app sources, with an
+  apps key (step FD3), or from package files.
 
 **Installing and removing:** `rpg install ./org.rustica.example_1.0_x86_64.rpg`
 (root, for now: step FD4's installer service lets users install
@@ -118,8 +118,66 @@ log services serve apps as they serve everyone.
 out: everything they should not reach is refused, what their permissions
 give works.
 
+## The apps repository (step FD3)
+
+Apps come from **app sources**, lines of `/etc/rpg/sources.list` that
+start with `apps`; the image has one:
+
+```
+apps https://rustux.com/download/apps  platform 1
+```
+
+An app source is laid out by **platform level**, not release:
+`platform/1/Release` (signed), `platform/1/x86_64/Apps.gz` and
+`Apps.json.gz` (every app, with its name, summary, categories,
+permissions and icon from its manifest), `pool/L/ID/`, `media/ID/`
+(`RELEASES.md` "The apps repository"). `rpg update` reads it as it reads
+a system repository, with two rules of its own:
+
+- **its own keys.** An app source's `Release` must be signed by a key in
+  `/etc/rpg/keys/apps/` (`rpg key add --apps FILE`; the image has
+  `rustux-apps-2026`), and a system source's by one in `/etc/rpg/keys/`:
+  a key is trusted for its kind only, so the apps key can never sign a
+  system package and the archive key never an app;
+- **apps only.** An index that lists a system package refuses the whole
+  source; a package downloaded from an app source must be an app, one
+  from a system source must not be.
+
+Then apps work as packages do, by their ID: `rpg search calculator`
+(names and summaries; `(app)`), `rpg show org.rustica.calculator`,
+`rpg install org.rustica.calculator` (it shows what the app asks for
+before installing: "asks for: network, files:documents", or "nothing"),
+`rpg upgrade` (apps with the system), `rpg remove`. Installing is still
+root's (step FD4 lets users install sandboxed apps).
+
+**The first apps**, in `userspace/apps/` (control file, manifest, icon)
+with their programs in `userspace/rust/foxden-apps`:
+
+| App | What it is | Permissions |
+|-----|-----------|-------------|
+| `org.rustica.calculator` | Calculator: + - × ÷, brackets, the usual precedence, from buttons or the keyboard | none |
+| `org.rustica.sysmon` | System Monitor: the processors and memory over the last minute, uptime, threads, the kernel's version | none (no process list: that needs the system's job, the `system` permission's) |
+
+The Text Editor and the Image Viewer stay in the system for now: in a
+sandbox they could open only the folders a permission gives, so they move
+out with the file chooser (step FD6).
+
+**Publishing:** `scripts/build-apps.sh` makes the packages;
+`scripts/publish-apps.sh --key APPSKEY DIR` indexes (`rpg index --apps`),
+signs, checks and publishes them, keeping each app's two newest versions
+(`RELEASES.md`). The handoffs run it after the system's publish.
+
+`cargo test` in `userspace/rust/rpg` checks the rules (`repo.rs`: an
+apps repository read, refused when signed with the archive key, changed
+after signing, listing a system package, or for another platform);
+`scripts/run-appsrepo-test.sh` (`TESTS.md`) installs, runs, upgrades and
+removes the apps from a test apps source in QEMU, and
+`scripts/run-publish-test.sh` publishes them.
+
 ## Not yet
 
-The apps repository and its key (FD3), installing as a user through
-`/svc/packages` (FD4), the FoxDen app (FD5), app updates and the file
-chooser (FD6), outside developers (FD7).
+Installing as a user through `/svc/packages`, and the `system`
+permission for the system's own apps with the administrator's say (FD4),
+the FoxDen app (FD5), app updates in the background, the file chooser and
+moving the Text Editor and Image Viewer out (FD6), outside developers
+(FD7).

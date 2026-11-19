@@ -62,6 +62,7 @@ cat > "$W/disk/setup.sh" <<'EOF'
 rpg install /mnt/hello-up_1.0_all.rpg
 rpg key add /mnt/test.pub.pem rpg-test
 rpg source remove 1
+rpg source remove 1
 rpg source add file:///mnt/repo redfox main
 printf 'check daily\ndelay 1\n' > /etc/rpg/updates.conf
 useradd -m dave; echo dave:pwd | chpasswd

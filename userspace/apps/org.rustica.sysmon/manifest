@@ -1,0 +1,7 @@
+Id: org.rustica.sysmon
+Name: System Monitor
+Summary: processors and memory over the last minute
+Exec: bin/sysmon
+Icon: icon.png
+Categories: System Utility
+Platform: 1

@@ -7,7 +7,8 @@
 //! rpg: Rustica's one package tool (phase E, PACKAGES.md in the Rustux
 //! project; docs/PACKAGES.md; man rpg). Step E1: the `.rpg` format and
 //! the package database; step E2: signed repositories (repo.rs), the
-//! dependency solver (solve.rs) and their commands (cmd.rs).
+//! dependency solver (solve.rs) and their commands (cmd.rs); FoxDen steps
+//! FD1 and FD3: app packages (app.rs) and app sources.
 //!
 //!   rpg update                     the sources' package lists (signatures checked)
 //!   rpg upgrade [-y]               every installed package a source has newer
@@ -74,6 +75,7 @@ const USAGE: &str = "usage: rpg [--root DIR] COMMAND ...
   build DIR [-o FILE]          make a package from DIR/RPG/control and DIR's files
   info ./FILE.rpg              a package file's control fields and files
   index REPO [--suite S] [--section S] [--arch A]   Packages.gz and Release for REPO/pool
+  index --apps REPO [--platform N]   an apps repository: Apps.gz, Apps.json.gz, Release, media/
   boot list | boot status | boot update   the system images, how each one started, and rboot's entries
   version                      rpg's version";
 
@@ -217,7 +219,7 @@ fn main() {
         "owner" | "search-file" => owner(&ctx, rest),
         "verify" => verify(&ctx, rest),
         "version" | "--version" => {
-            println!("rpg {} (step E6: updates on the desktop)", env!("CARGO_PKG_VERSION"));
+            println!("rpg {} (FoxDen step FD3: the apps repository)", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         "help" | "--help" | "-h" => {

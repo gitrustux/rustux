@@ -169,12 +169,13 @@ image has in `/etc/rpg/keys/rustux-archive-2026.pub`.
 
 **Sources**: `/etc/rpg/sources.list` and `/etc/rpg/sources.list.d/*.list`,
 a line per repository, `URL SUITE SECTION...` (https://, http:// or
-file://; `apps URL ...` lines are FoxDen's, step FD3). `rpg source
+file://; `apps URL platform LEVEL` lines are app sources: FoxDen's, step
+FD3, `FOXDEN.md` "The apps repository"). `rpg source
 list`, `rpg source add URL SUITE SECTION...`, `rpg source remove N`.
 
 **Keys**: `/etc/rpg/keys/*.pub` for system sources, `/etc/rpg/keys/apps/`
 for app sources (a key is trusted only for its kind): a line
-`rpg-ed25519 HEX NAME`. `rpg key add FILE [NAME]` also takes OpenSSL's
+`rpg-ed25519 HEX NAME`. `rpg key add [--apps] FILE [NAME]` also takes OpenSSL's
 PEM public key; `rpg key list` shows each key's ID (the first 8 bytes of
 the SHA-256 of the public key); `rpg key remove ID|NAME`.
 
