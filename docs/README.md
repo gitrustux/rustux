@@ -90,6 +90,7 @@ docs/
 ├── OBJECTS.md                    # Kernel object reference
 ├── SYSCALL.md                    # System call reference
 ├── PORTING.md                    # Porting to aarch64 and riscv64: what is ready, the rules
+├── FEATURES.md                   # What Rustux and Rustica do differently from Windows and Linux
 ├── TESTS.md                      # Build, QEMU testing and debugging
 ├── USERS.md                      # Users, permissions, login, su, sudo (step 17)
 ├── SERVICES.md                   # Services (init, svc) and the system log (step 18)
@@ -398,6 +399,7 @@ Should show:
 | `docs/OBJECTS.md` | Kernel objects |
 | `docs/SYSCALL.md` | System calls |
 | `docs/PORTING.md` | Porting to other architectures |
+| `docs/FEATURES.md` | What Rustux and Rustica do differently |
 | `docs/TESTS.md` | Build, QEMU testing and debugging |
 | `docs/ROADMAP.md` | Architecture checklist |
 | `docs/HISTORY.md` | Project history and decisions |
