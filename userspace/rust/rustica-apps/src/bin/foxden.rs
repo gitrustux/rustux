@@ -6,7 +6,12 @@
 
 //! foxden: FoxDen, Rustica's app store (FoxDen step FD5, docs/FOXDEN.md).
 //!
-//!   foxden [ID | --updates]    an app's page, or the Updates page
+//!   foxden [ID | --updates | FILE.rpg]   an app's page, the Updates
+//!                              page, or a package file's app (FD7c)
+//!
+//! An app not from FoxDen (FoxDen step FD7c: from a package file, or an
+//! app source no store key signs) says so on its card and page; its
+//! developer is shown as claimed, not verified; installing it asks first.
 //!
 //! Pages: Home (every app the app sources have), Categories, Search,
 //! Installed (each app's permissions, which the user may narrow:
@@ -55,6 +60,29 @@ struct App {
     installed: Option<String>,
     upgradable: bool,
     source: String,
+    /// rpg's From: foxden, "source URL" or file; Installed-From: where
+    /// the installed one came from (FoxDen step FD7c)
+    from: String,
+    installed_from: String,
+    /// A package file's app (foxden FILE.rpg): the file
+    file: Option<String>,
+}
+
+/// How an origin reads
+fn origin_words(o: &str) -> String {
+    match o {
+        "file" => "a package file".into(),
+        o => o.strip_prefix("source ").map(|u| format!("the app source {u}")).unwrap_or_else(|| o.to_string()),
+    }
+}
+
+impl App {
+    /// Not from FoxDen: where it is from (None: FoxDen, the system's, or
+    /// installed before rpg kept where from)
+    fn outside(&self) -> Option<String> {
+        let o = if self.installed.is_some() { &self.installed_from } else { &self.from };
+        (!o.is_empty() && o != "foxden" && o != "system").then(|| origin_words(o))
+    }
 }
 
 fn stanzas(text: &str) -> Vec<Vec<(String, String)>> {
@@ -86,7 +114,11 @@ fn stanzas(text: &str) -> Vec<Vec<(String, String)>> {
 }
 
 fn load_apps() -> Result<Vec<App>, String> {
-    let o = Command::new("/bin/rpg").args(["list", "--apps", "--available"]).output().map_err(|e| format!("rpg: {e}"))?;
+    load_from(&["list", "--apps", "--available"])
+}
+
+fn load_from(args: &[&str]) -> Result<Vec<App>, String> {
+    let o = Command::new("/bin/rpg").args(args).output().map_err(|e| format!("rpg: {e}"))?;
     if !o.status.success() {
         return Err(String::from_utf8_lossy(&o.stderr).trim().to_string());
     }
@@ -123,6 +155,9 @@ fn load_apps() -> Result<Vec<App>, String> {
                 (_, d) if !d.is_empty() => d,
                 _ => get("Maintainer"),
             },
+            from: get("From"),
+            installed_from: get("Installed-From"),
+            file: None,
             source_code: get("App-Source"),
             license: get("License"),
             homepage: get("Homepage"),
@@ -372,6 +407,8 @@ struct FoxDen {
     admin: bool,
     focus_next: Option<String>,
     confirm_remove: Option<String>,
+    /// Install an app not from FoxDen: asked first (FD7c)
+    confirm_outside: Option<String>,
     /// The password sheet is up (it took the focus when it came)
     sheet_up: bool,
     waker: Option<rustica_ui::rustica_window::Waker>,
@@ -381,7 +418,20 @@ impl FoxDen {
     fn reload(&mut self) {
         match load_apps() {
             Ok(a) => {
+                // A package file's app (foxden FILE.rpg) stays, unless it
+                // is installed now (then rpg lists it)
+                let files: Vec<App> = self.apps.iter().filter(|x| x.file.is_some()).cloned().collect();
                 self.apps = a;
+                for f in files {
+                    if let Some(i) = self.apps.iter().position(|x| x.id == f.id) {
+                        if self.apps[i].installed.is_some() && f.installed.is_none() {
+                            continue;
+                        }
+                        self.apps[i] = f;
+                    } else {
+                        self.apps.push(f);
+                    }
+                }
                 self.error = None;
                 println!(
                     "foxden: {} apps ({} installed, {} to update)",
@@ -551,11 +601,12 @@ impl FoxDen {
         ui.canvas.text(&mut ui.bold, tx, y1, &name, px, th.text);
         let sum = fit(ui, &a.summary, px * 0.9, maxw, false);
         ui.canvas.text(&mut ui.face, tx, y2, &sum, px * 0.9, th.dim);
-        let badge = if a.upgradable { "Update" } else if a.installed.is_some() { "Installed" } else { "" };
+        let outside = a.outside().is_some();
+        let badge = if a.upgradable { "Update" } else if a.installed.is_some() && !outside { "Installed" } else if outside { "Not from FoxDen" } else { "" };
         if !badge.is_empty() {
             let bw = ui.face.width(badge, px * 0.8) + ui.u(12.0);
             let br = Rect::new(r.right() - bw - ui.u(8.0), r.y + ui.u(8.0), bw, ui.u(20.0));
-            ui.canvas.fill_rounded(br, ui.u(10.0), if a.upgradable { th.accent } else { 0x3B5E45 });
+            ui.canvas.fill_rounded(br, ui.u(10.0), if a.upgradable { th.accent } else if outside { 0x8A5A1E } else { 0x3B5E45 });
             let (bx, by) = (br.x + ui.u(6.0), br.y + ui.u(2.0));
             ui.canvas.text(&mut ui.face, bx, by, badge, px * 0.8, if a.upgradable { th.accent_text } else { 0xF8F8F2 });
         }
@@ -776,12 +827,25 @@ impl FoxDen {
                 ui.column(0.0, |ui| {
                     ui.heading(&a.name);
                     ui.dim_label(&a.summary);
+                    // Not from FoxDen (FD7c): said, and asked about
+                    if let Some(w) = a.outside() {
+                        ui.label(&format!("Not from FoxDen: from {w}."));
+                        ui.dim_label("Nobody has checked this app. It runs in its sandbox with the permissions below.");
+                    }
+                    let asking = self.confirm_outside.as_deref() == Some(a.id.as_str());
                     ui.row(|ui| {
                         if busy {
                             ui.dim_label("Working…");
+                        } else if asking {
+                            if ui.primary_button("Install anyway") {
+                                act = Some("install-anyway");
+                            }
+                            if ui.button("Cancel") {
+                                act = Some("cancel");
+                            }
                         } else if a.installed.is_none() {
                             if ui.primary_button("Install") {
-                                act = Some("install");
+                                act = Some(if a.outside().is_some() { "ask" } else { "install" });
                             }
                         } else {
                             if ui.primary_button("Open") {
@@ -832,13 +896,18 @@ impl FoxDen {
                     (Some(i), true) => format!("{i} installed, {} available", a.version),
                     _ => a.version.clone(),
                 }),
-                ("Developer".into(), a.developer.clone()),
+                ("Developer".into(), if a.outside().is_some() && !a.developer.is_empty() { format!("claims to be {}, not verified", a.developer) } else { a.developer.clone() }),
                 ("Licence".into(), a.license.clone()),
                 ("Download".into(), if a.size > 0 { size_text(a.size) } else { "-".into() }),
                 ("Installed size".into(), size_text(a.installed_size * 1024)),
                 ("Categories".into(), a.categories.join(", ")),
                 ("ID".into(), a.id.clone()),
-                ("From".into(), if a.source == "-" { "a package file".into() } else { a.source.clone() }),
+                ("From".into(), match (&a.file, a.outside()) {
+                    (Some(f), _) => format!("the package file {f}"),
+                    (None, Some(w)) => w,
+                    _ if a.source == "-" => "a package file".into(),
+                    _ => format!("FoxDen ({})", a.source),
+                }),
             ];
             if !a.homepage.is_empty() {
                 rows.push(("Homepage".into(), a.homepage.clone()));
@@ -850,8 +919,22 @@ impl FoxDen {
                 ui.dim_label(&format!("    {k}:  {v}"));
             }
         });
+        let target = a.file.clone().unwrap_or_else(|| a.id.clone());
         match act {
-            Some("install") => self.run("install", Some(&a.id), &["install", "-y", &a.id]),
+            Some("ask") => {
+                println!("foxden: {} is not from FoxDen ({}): asking first", a.id, a.outside().unwrap_or_default());
+                self.confirm_outside = Some(a.id.clone());
+            }
+            Some("cancel") => {
+                println!("foxden: not installed: {}", a.id);
+                self.confirm_outside = None;
+            }
+            Some("install-anyway") => {
+                println!("foxden: install anyway: {}", a.id);
+                self.confirm_outside = None;
+                self.run("install", Some(&a.id), &["install", "-y", &target]);
+            }
+            Some("install") => self.run("install", Some(&a.id), &["install", "-y", &target]),
             Some("update") => self.run("install", Some(&a.id), &["install", "-y", &a.id]),
             Some("remove") => self.confirm_remove = Some(a.id.clone()),
             Some("open") => {
@@ -1031,7 +1114,7 @@ fn fit(ui: &mut Ui, text: &str, px: f32, w: f32, bold: bool) -> String {
 fn main() {
     let arg = std::env::args().nth(1);
     if arg.as_deref().is_some_and(|a| a == "-h" || a == "--help") {
-        println!("usage: foxden [ID | --updates]");
+        println!("usage: foxden [ID | --updates | FILE.rpg]");
         return;
     }
     let (me, uid) = user();
@@ -1058,6 +1141,7 @@ fn main() {
         admin,
         focus_next: None,
         confirm_remove: None,
+        confirm_outside: None,
         sheet_up: false,
         waker: None,
     };
@@ -1066,6 +1150,26 @@ fn main() {
         Some("--updates") => {
             f.tab = 4;
             f.page = Page::Updates;
+        }
+        // A package file (FD7c): its app's page, from the file
+        Some(path) if path.ends_with(".rpg") => {
+            let abs = std::fs::canonicalize(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
+            match load_from(&["list", "--apps", "--file", &abs]) {
+                Ok(mut v) if !v.is_empty() => {
+                    let mut a = v.remove(0);
+                    a.file = Some(abs.clone());
+                    println!("foxden: package file {abs}: {} {}{}", a.id, a.version, if a.outside().is_some() { ", not from FoxDen" } else { "" });
+                    let id = a.id.clone();
+                    if let Some(i) = f.apps.iter().position(|x| x.id == id) {
+                        f.apps[i] = a;
+                    } else {
+                        f.apps.push(a);
+                    }
+                    f.open_page(Page::App(id));
+                }
+                Ok(_) => f.message = Some((format!("{abs}: no app in it"), true)),
+                Err(e) => f.message = Some((e, true)),
+            }
         }
         Some(id) => f.open_page(Page::App(id.to_string())),
         None => {}

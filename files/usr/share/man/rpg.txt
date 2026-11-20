@@ -28,6 +28,8 @@ USAGE
     index --apps REPO [--platform N]                   (an apps repository)
     dev digest DIR | dev verify DIR KEY.pub | dev check-package FILE DIR
                                  (outside developers' apps)
+    config [outside admin|anyone]  who may install apps from package files
+    list --apps --file FILE.rpg  a package file's app, as FoxDen shows it
     permissions ID [grant|revoke PERMISSION...]   an app's permissions, for
                                  you (~/.config/apps/permissions)
     plan install NAME... | upgrade | remove NAME...     what would change,
@@ -157,6 +159,16 @@ APPS
     pkeyutl -sign -rawin, into DIR/SIGNATURE), rpg dev verify DIR KEY.pub
     checks it, and rpg dev check-package FILE DIR checks that a package is
     that folder built (the same files, only its program added).
+
+    Apps not from FoxDen (FoxDen step FD7c): FoxDen is an app source whose
+    index a key in /etc/rpg/store-keys signs. Anything else (a package
+    file, another app source) is installed with a warning, and rpg keeps
+    where each app came from (list --apps --available: From,
+    Installed-From). An app FoxDen has comes only from FoxDen, and one
+    installed from FoxDen is not replaced from elsewhere (remove it
+    first). Who may install package files: rpg config outside admin (the
+    default: an administrator) or anyone (sandboxed apps asking for
+    neither files:home nor system).
 
 THE SYSTEM
     The system is image-based: the kernel file carries every program

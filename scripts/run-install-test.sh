@@ -351,7 +351,8 @@ start_qemu "$W/vars-c.fd" $LIVE $DUAL
 if wait_for "rboot: booting rustica in 2 s" 1 60 && wait_for "rustux:/root > " 1 120; then
     type_text $'rustica-install --disk auto --mode alongside --user bob --password pw3 --hostname dual --yes --no-reboot; poweroff\n'
 fi
-wait_end 240
+# (rpg writes the ~50 MB image to the FAT partition: 4-6 minutes under QEMU)
+wait_end 600
 expect "Rustica Server is installed on vd"
 expect "the hardware clock keeps local time"
 AFTER=$(win_sums "$W/dual.img")

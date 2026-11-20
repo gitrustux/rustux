@@ -221,7 +221,7 @@ check("hello is a system package: an administrator's password is needed" in out 
 out = sh("echo | su carol -c 'rpg install %s'; echo APPS: $(ls /apps)" % H, 'S2B-DONE')
 check("%s asks for files:home (the whole home folder): an administrator's password is needed" % H in out and H not in (apps_line(out) or [H]), 'carol is refused an app with files:home')
 out = sh("echo | su carol -c 'rpg install /mnt/sysmon.rpg'; echo APPS: $(ls /apps)", 'S2C-DONE')
-check("installing a package file: an administrator's password is needed" in out and 'org.rustica.sysmon' not in (apps_line(out) or ['org.rustica.sysmon']), 'carol is refused a package file')
+check("installing a package file (not from FoxDen): an administrator's password is needed" in out and 'org.rustica.sysmon' not in (apps_line(out) or ['org.rustica.sysmon']), 'carol is refused a package file')
 out = sh("printf 'erin\\nwrong\\n' | su carol -c 'rpg install hello'; rpg list --installed | grep -c '^hello '", 'S2D-DONE')
 check('wrong password for erin' in out and re.search(r'\n0\r?\nS2D-DONE', out) is not None, "erin's wrong password is refused")
 out = sh("printf 'dave\\nx\\n' | su carol -c 'rpg install hello'", 'S2E-DONE')

@@ -182,9 +182,21 @@ pub struct Avail {
     pub filename: String,
     pub size: u64,
     pub sha: String,
+    /// From FoxDen: an app source whose index a store key signed
+    /// (/etc/rpg/store-keys; FoxDen step FD7c)
+    pub store: bool,
 }
 
 impl Avail {
+    /// Where it comes from, as the database records it (Origin): foxden,
+    /// or "source URL"
+    pub fn origin(&self) -> String {
+        if self.store {
+            "foxden".into()
+        } else {
+            format!("source {}", self.source.base())
+        }
+    }
     pub fn url(&self) -> String {
         format!("{}/{}", self.source.base(), self.filename)
     }
@@ -339,20 +351,51 @@ fn index_entry(c: &Control, s: &Source) -> Result<Avail, String> {
     }
     let size = c.get("Size").and_then(|v| v.parse().ok()).ok_or(format!("{}: no Size", c.name()))?;
     let sha = c.get("SHA256").filter(|h| h.len() == 64).ok_or(format!("{}: no SHA256", c.name()))?.to_lowercase();
-    Ok(Avail { c: c.clone(), source: s.clone(), filename, size, sha })
+    Ok(Avail { c: c.clone(), source: s.clone(), filename, size, sha, store: false })
+}
+
+/// The store's keys (FoxDen step FD7c): an app source whose index one of
+/// them signs is FoxDen; any other is "not from FoxDen". Key IDs in
+/// /etc/rpg/store-keys, one a line (# comments); without the file,
+/// rustux-apps-2026's
+pub const STORE_KEY: &str = "2f06e52fed979364";
+
+pub fn store_keys(db: &Db) -> Vec<String> {
+    match std::fs::read_to_string(db.path("/etc/rpg/store-keys")) {
+        Ok(t) => t.lines().filter_map(|l| l.split('#').next()).filter_map(|l| l.split_whitespace().next()).map(str::to_lowercase).collect(),
+        Err(_) => vec![STORE_KEY.into()],
+    }
+}
+
+/// Does a store key sign this app source's index (the Release and its
+/// signature rpg update kept)?
+fn is_store(db: &Db, s: &Source, store: &[String]) -> bool {
+    if s.kind != Kind::App {
+        return false;
+    }
+    let dir = lists_dir(db);
+    let (Ok(rel), Ok(sig)) = (std::fs::read(dir.join(format!("{}_Release", s.prefix()))), std::fs::read(dir.join(format!("{}_Release.sig", s.prefix())))) else {
+        return false;
+    };
+    let keys = keys::load(db, Kind::App);
+    keys::verify(&keys, &rel, &sig).is_some_and(|k| store.contains(&k.id()))
 }
 
 /// Every package the sources have (from the lists rpg update made)
 pub fn available(db: &Db) -> Result<Vec<Avail>, String> {
     let mut out = Vec::new();
     let dir = lists_dir(db);
+    let store = store_keys(db);
     for s in sources(db)? {
+        let from_store = is_store(db, &s, &store);
         for (_, list) in indexes(&s) {
             let p = dir.join(list);
             let Ok(t) = std::fs::read_to_string(&p) else { continue };
             for c in control::parse_stanzas(&t).map_err(|e| format!("{}: {e}", p.display()))? {
                 if c.arch() == ARCH || c.arch() == "all" {
-                    out.push(index_entry(&c, &s)?);
+                    let mut a = index_entry(&c, &s)?;
+                    a.store = from_store;
+                    out.push(a);
                 }
             }
         }

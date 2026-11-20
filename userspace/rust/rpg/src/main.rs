@@ -83,6 +83,7 @@ const USAGE: &str = "usage: rpg [--root DIR] COMMAND ...
   index REPO [--suite S] [--section S] [--arch A]   Packages.gz and Release for REPO/pool
   index --apps REPO [--platform N]   an apps repository: Apps.gz, Apps.json.gz, Release, media/
   dev digest DIR | dev verify DIR KEY.pub | dev check-package FILE.rpg DIR   an outside developer's app (FoxDen)
+  config [outside admin|anyone]      who may install apps from package files (not from FoxDen)
   boot list | boot status | boot update   the system images, how each one started, and rboot's entries
   version                      rpg's version";
 
@@ -110,12 +111,20 @@ fn main() {
         // Absolute: scripts run in it, and relative paths would then miss
         root = std::fs::canonicalize(&root).unwrap_or(root);
     }
+    // --preinstalled (root only): the installer service installing the
+    // apps that come with the system (FoxDen step FD7c)
+    let preinstalled = args.iter().any(|a| a == "--preinstalled");
+    args.retain(|a| a != "--preinstalled");
+    #[cfg(target_env = "musl")]
+    if preinstalled && !sys::is_root() {
+        die("--preinstalled is the installer service's");
+    }
     let Some(cmd) = args.first().cloned() else {
         eprintln!("{USAGE}");
         exit(1)
     };
     let rest = &args[1..];
-    let ctx = Ctx { db: Db::new(&root) };
+    let ctx = Ctx { db: Db::new(&root), preinstalled };
     if !matches!(cmd.as_str(), "fix" | "build" | "info" | "index" | "dev" | "pool-path" | "plan" | "permissions" | "version" | "--version" | "help" | "--help" | "-h") {
         if let Some(what) = ctx.interrupted() {
             if matches!(cmd.as_str(), "list" | "show" | "files" | "owner" | "verify" | "search" | "policy") {
@@ -140,6 +149,7 @@ fn main() {
                 (!items.is_empty()).then(|| format!("remove {}", items.join(" ")))
             }
             "update" => Some("update".to_string()),
+            "config" if !rest.is_empty() => Some(format!("config {}", rest.join(" "))),
             "upgrade" | "full-upgrade" | "dist-upgrade" if !rest.iter().any(|a| a == "--plan") => Some("upgrade".to_string()),
             _ => None,
         };
@@ -197,6 +207,7 @@ fn main() {
         }
         "search" => cmd::search(&ctx, rest),
         "plan" => cmd::plan(&ctx, rest),
+        "config" => cmd::config(&ctx, rest),
         "permissions" => cmd::permissions(&ctx, rest),
         "policy" => cmd::policy(&ctx, rest),
         "depends" => cmd::depends(&ctx, rest, false),
@@ -327,6 +338,12 @@ fn json_str(s: &str) -> String {
 }
 
 fn list(ctx: &Ctx, args: &[String]) -> Result<(), String> {
+    // rpg list --apps --file FILE.rpg (FoxDen step FD7c): a package
+    // file's app, as --available shows apps
+    if let Some(i) = args.iter().position(|a| a == "--file") {
+        let f = args.get(i + 1).ok_or("list --apps --file FILE.rpg")?;
+        return cmd::list_apps_file(ctx, f);
+    }
     for a in args {
         if !["--installed", "--json", "--upgradable", "--held", "--apps", "--available"].contains(&a.as_str()) {
             return Err(format!("list: {a}: --installed, --upgradable, --held, --apps [--available], --json"));

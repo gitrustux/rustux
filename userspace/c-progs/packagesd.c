@@ -31,6 +31,16 @@
 // "done CODE". The plan and the change happen under one lock, so nothing
 // changes in between.
 //
+// Apps from outside FoxDen (step FD7c): a package file is an
+// administrator's to install, unless /etc/rpg/install.conf says `outside
+// anyone` (rpg config, an administrator's change: the `config` request):
+// then anyone may install one that asks for neither files:home nor
+// system. A user's package file is copied first (into
+// /var/cache/rpg/incoming, root's), once it is theirs or anyone may read
+// it, and the copy is planned and installed: it cannot change between.
+// rpg plan's ORIGIN is foxden for an app source a store key signs, apps
+// for another (both as before: anyone).
+//
 // A request is one channel message of text; so is each reply. One
 // operation runs at a time. Every day (/etc/rpg/updates.conf: `check
 // daily` or `never`; `delay SECONDS` before the first one, 120) it checks
@@ -307,7 +317,7 @@ static void app_updates(struct text *out) {
         snprintf(line, sizeof line, "%s", l);
         for (char *t = strtok_r(line, " ", &save); t && nf < 8; t = strtok_r(0, " ", &save)) f[nf++] = t;
         l = nl ? nl + 1 : 0;
-        if (nf != 8 || strcmp(f[0], "step") || strcmp(f[1], "upgrade") || strcmp(f[5], "app") || strcmp(f[6], "apps")) continue;
+        if (nf != 8 || strcmp(f[0], "step") || strcmp(f[1], "upgrade") || strcmp(f[5], "app") || (strcmp(f[6], "apps") && strcmp(f[6], "foxden"))) continue;
         char old[300], np[300];
         installed_perms(f[2], old, sizeof old);
         int more = 0;
@@ -477,6 +487,75 @@ static int admin_ok(const rx_sender_t *who, char *auth, char *why, size_t cap) {
     return 1;
 }
 
+// "key value" (a line of a conf file): 0, or -1
+static int sscanf_kv(const char *line, char *k, size_t kc, char *v, size_t vc) {
+    while (*line == ' ' || *line == '\t') line++;
+    size_t a = strcspn(line, " \t\r\n");
+    if (!a || a >= kc) return -1;
+    memcpy(k, line, a);
+    k[a] = 0;
+    line += a;
+    while (*line == ' ' || *line == '\t') line++;
+    size_t b = strcspn(line, " \t\r\n#");
+    if (b >= vc) return -1;
+    memcpy(v, line, b);
+    v[b] = 0;
+    return 0;
+}
+
+// A user's package file, copied into /var/cache/rpg/incoming (root's)
+// when it is a plain file that is theirs or that anyone may read; the
+// copy's path in out. 0, or -1 (why)
+static int copy_users_file(const rx_sender_t *who, const char *path, char *out, size_t cap, char *why, size_t wcap) {
+    // Opened first, then looked at: what is checked is what is read
+    int in = open(path, O_RDONLY | O_NOFOLLOW);
+    struct stat st;
+    if (in < 0 || fstat(in, &st) < 0 || !S_ISREG(st.st_mode)) {
+        snprintf(why, wcap, "%s: not a file", path);
+        if (in >= 0) close(in);
+        return -1;
+    }
+    if (st.st_uid != who->uid && !(st.st_mode & 0004)) {
+        snprintf(why, wcap, "%s: not yours, and not readable by everyone", path);
+        close(in);
+        return -1;
+    }
+    if (st.st_size > 512L * 1024 * 1024) {
+        snprintf(why, wcap, "%s: larger than 512 MiB", path);
+        close(in);
+        return -1;
+    }
+    mkdir("/var/cache/rpg", 0755);
+    mkdir("/var/cache/rpg/incoming", 0700);
+    static unsigned seq;
+    const char *base = strrchr(path, '/') + 1;
+    snprintf(out, cap, "/var/cache/rpg/incoming/%u-%u-%s", (unsigned)getpid(), __atomic_add_fetch(&seq, 1, __ATOMIC_SEQ_CST), base);
+    int o = open(out, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (o < 0) {
+        snprintf(why, wcap, "%s: %s", out, strerror(errno));
+        close(in);
+        return -1;
+    }
+    char buf[65536];
+    ssize_t r;
+    int bad = 0;
+    while ((r = read(in, buf, sizeof buf)) > 0) {
+        if (write(o, buf, (size_t)r) != r) {
+            bad = 1;
+            break;
+        }
+    }
+    if (r < 0) bad = 1;
+    close(in);
+    if (close(o) < 0) bad = 1;
+    if (bad) {
+        unlink(out);
+        snprintf(why, wcap, "%s: could not be copied", path);
+        return -1;
+    }
+    return 0;
+}
+
 // The request's arguments as rpg's: names (lower-case letters, digits,
 // + - .), absolute paths of package files (install), --purge (remove).
 // Count, or -1 (why says what is wrong)
@@ -517,8 +596,24 @@ static int parse_args(const char *verb, char *line, char **argv, int max, int *f
     return n;
 }
 
+// /etc/rpg/install.conf: outside anyone (1) or admin (0, the default)
+static int outside_anyone(void) {
+    FILE *f = fopen("/etc/rpg/install.conf", "r");
+    char line[200];
+    int r = 0;
+    if (!f) return 0;
+    while (fgets(line, sizeof line, f)) {
+        char k[40], v[40];
+        if (line[0] == '#' || sscanf_kv(line, k, sizeof k, v, sizeof v) < 0) continue;
+        if (!strcmp(k, "outside")) r = !strcmp(v, "anyone");
+    }
+    fclose(f);
+    return r;
+}
+
 // From rpg plan's lines: why an administrator is needed ("" if not)
 static void needs_admin(const char *plan, int purge, char *why, size_t cap) {
+    int anyone = outside_anyone();
     why[0] = 0;
     int sys = 0;
     char first_sys[80] = "";
@@ -537,7 +632,7 @@ static void needs_admin(const char *plan, int purge, char *why, size_t cap) {
             if (!sys++) snprintf(first_sys, sizeof first_sys, "%s", name);
             continue;
         }
-        if (!strcmp(origin, "file") && !why[0]) snprintf(why, cap, "%s is a package file (not from a signed app source)", name);
+        if (!strcmp(origin, "file") && !anyone && !why[0]) snprintf(why, cap, "%s is a package file (not from FoxDen or an app source)", name);
         if (!strcmp(origin, "system") && !why[0]) snprintf(why, cap, "%s comes from a system source", name);
         char p[260];
         snprintf(p, sizeof p, ",%s,", perms);
@@ -593,10 +688,25 @@ static void change(rx_handle_t ch, const rx_sender_t *who, const char *verb, cha
         syslog(LOG_WARNING, "%s asked by %s: %s", verb, me, who_ok);
         return;
     }
-    // Package files only with an administrator's say, before rpg reads them
-    if (files && !admin) {
-        send_text(ch, "auth installing a package file");
+    // Package files only with an administrator's say, before rpg reads
+    // them, unless anyone may install apps from outside FoxDen (then the
+    // plan decides, from a copy of the file: step FD7c)
+    if (files && !admin && !outside_anyone()) {
+        send_text(ch, "auth installing a package file (not from FoxDen)");
         return;
+    }
+    char copies[40][200];
+    int ncopies = 0;
+    if (files && !admin) {
+        for (int i = 0; i < n; i++) {
+            if (argv[i][0] != '/') continue;
+            if (copy_users_file(who, argv[i], copies[ncopies], sizeof copies[0], why, sizeof why) < 0) {
+                for (int j = 0; j < ncopies; j++) unlink(copies[j]);
+                deny(ch, verb, why);
+                return;
+            }
+            argv[i] = copies[ncopies++];
+        }
     }
     pthread_mutex_lock(&busy);
     // What would change
@@ -621,6 +731,7 @@ static void change(rx_handle_t ch, const rx_sender_t *who, const char *verb, cha
         }
         free(plan.s);
         pthread_mutex_unlock(&busy);
+        for (int j = 0; j < ncopies; j++) unlink(copies[j]);
         send_done(ch, r);
         return;
     }
@@ -628,6 +739,7 @@ static void change(rx_handle_t ch, const rx_sender_t *who, const char *verb, cha
     free(plan.s);
     if (why[0] && !admin) {
         pthread_mutex_unlock(&busy);
+        for (int j = 0; j < ncopies; j++) unlink(copies[j]);
         char msg[400];
         snprintf(msg, sizeof msg, "auth %s", why);
         send_text(ch, msg);
@@ -649,7 +761,37 @@ static void change(rx_handle_t ch, const rx_sender_t *who, const char *verb, cha
         last_upgrade_code = code;
     }
     pthread_mutex_unlock(&busy);
+    for (int j = 0; j < ncopies; j++) unlink(copies[j]);
     check();   // what is left to upgrade
+    send_done(ch, code);
+}
+
+// config outside admin|anyone: an administrator's (rpg config)
+static void config(rx_handle_t ch, const rx_sender_t *who, char *args, char *auth) {
+    char who_ok[300];
+    if (strcmp(args, "outside admin") && strcmp(args, "outside anyone")) {
+        deny(ch, "config", "config outside admin|anyone");
+        return;
+    }
+    int admin = admin_ok(who, auth, who_ok, sizeof who_ok);
+    if (auth) memset(auth, 0, strlen(auth));
+    if (!admin) {
+        char msg[400];
+        if (who_ok[0] && !strstr(who_ok, "wrong password")) {
+            snprintf(msg, sizeof msg, "denied %s", who_ok);
+        } else {
+            snprintf(msg, sizeof msg, "auth %s", who_ok[0] ? who_ok : "changing who may install apps from outside FoxDen");
+        }
+        send_text(ch, msg);
+        return;
+    }
+    char *v = strchr(args, ' ') + 1;
+    char *argv[] = { RPG, "config", "outside", v, 0 };
+    struct stream st = { ch, "config" };
+    pthread_mutex_lock(&busy);
+    int code = run(argv, stream_line, &st);
+    pthread_mutex_unlock(&busy);
+    syslog(LOG_INFO, "outside %s (installing apps from outside FoxDen), by %s", v, who->euid == 0 ? "root" : who_ok);
     send_done(ch, code);
 }
 
@@ -696,12 +838,14 @@ static void *serve(void *arg) {
             send_done(ch, r == 0 ? 0 : 1);
         } else if (!strcmp(msg, "upgrade")) {
             change(ch, &who, "upgrade", 0, rest);
+        } else if (!strncmp(msg, "config ", 7)) {
+            config(ch, &who, msg + 7, rest);
         } else if (!strncmp(msg, "install ", 8) || !strncmp(msg, "remove ", 7)) {
             char *sp = strchr(msg, ' ');
             *sp = 0;
             change(ch, &who, msg, sp + 1, rest);
         } else {
-            send_text(ch, "error status, check, update, install, remove or upgrade");
+            send_text(ch, "error status, check, update, install, remove, upgrade or config");
         }
         memset(msg, 0, sizeof msg);
     }
@@ -802,7 +946,7 @@ static void preinstall_one(const char *id) {
     // A copy: the boot image's files are read only, its programs too (0444)
     char *cp[] = { "/bin/cp", "-r", src, work, 0 };
     char *build[] = { RPG, "build", work, "-o", pkg, 0 };
-    char *inst[] = { RPG, "install", "-y", pkg, 0 };
+    char *inst[] = { RPG, "install", "-y", "--preinstalled", pkg, 0 };
     struct text out = { 0 };
     int code = -1;
     const char *why = "copying it";

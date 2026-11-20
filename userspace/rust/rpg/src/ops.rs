@@ -106,6 +106,29 @@ struct Op {
 
 pub struct Ctx {
     pub db: Db,
+    /// rpg install --preinstalled (root; the installer service, for the
+    /// apps that come with the system): their Origin is system
+    pub preinstalled: bool,
+}
+
+/// Where an app came from (the database's Origin, FoxDen step FD7c):
+/// FoxDen and the system's own are checked by the project; a package file
+/// or another app source is not
+pub fn from_foxden(origin: &str) -> bool {
+    origin == "foxden" || origin == "system"
+}
+
+/// How an Origin reads
+pub fn origin_words(origin: &str) -> String {
+    match origin {
+        "foxden" => "FoxDen".into(),
+        "system" => "the system".into(),
+        "file" => "a package file".into(),
+        o => match o.strip_prefix("source ") {
+            Some(u) => format!("the app source {u}"),
+            None => "somewhere unknown".into(),
+        },
+    }
 }
 
 fn err(p: &Path, e: std::io::Error) -> String {
@@ -355,9 +378,17 @@ impl Ctx {
     /// rpg install ./FILE.rpg ...
     /// Install packages read already (from files, or downloaded), each
     /// with its mark: Some(true) installed for another package,
-    /// Some(false) asked for, None as the database has it
-    pub fn install_packages(&self, items: Vec<(Package, Option<bool>)>) -> Result<(), String> {
-        let (pkgs, marks): (Vec<Package>, Vec<Option<bool>>) = items.into_iter().unzip();
+    /// Some(false) asked for, None as the database has it; and an app's
+    /// origin (foxden, system, file, "source URL")
+    pub fn install_packages(&self, items: Vec<(Package, Option<bool>, Option<String>)>) -> Result<(), String> {
+        let mut pkgs = Vec::new();
+        let mut marks = Vec::new();
+        let mut origins = Vec::new();
+        for (p, m, o) in items {
+            pkgs.push(p);
+            marks.push(m);
+            origins.push(o);
+        }
         // Dependencies and conflicts, with the whole set as installed
         let installed = self.db.installed()?;
         let names: BTreeSet<String> = pkgs.iter().map(|p| p.control.name().to_string()).collect();
@@ -419,12 +450,12 @@ impl Ctx {
             }
         }
         for i in order {
-            self.install_one(&pkgs[i], marks[i])?;
+            self.install_one(&pkgs[i], marks[i], origins[i].as_deref())?;
         }
         Ok(())
     }
 
-    fn install_one(&self, p: &Package, auto: Option<bool>) -> Result<(), String> {
+    fn install_one(&self, p: &Package, auto: Option<bool>, origin: Option<&str>) -> Result<(), String> {
         let c = &p.control;
         let name = c.name().to_string();
         let old_entry = self.db.entry(&name)?;
@@ -434,6 +465,18 @@ impl Ctx {
             let installed = std::fs::read_to_string(self.db.path(&format!("{}/manifest", crate::app::dir(&name)))).ok().and_then(|t| crate::app::parse_manifest(&t).ok());
             if let Some(i) = installed {
                 crate::app::same_developer(&i, &crate::app::check(p)?).map_err(|e| format!("{e}; nothing was changed"))?;
+            }
+            // FoxDen step FD7c: an app from FoxDen (or the system's) is
+            // replaced only from FoxDen: not by a package file or another
+            // source, which could claim to be its developer
+            let was = old_entry.as_ref().and_then(|e| e.get("Origin")).unwrap_or("");
+            let new = origin.unwrap_or("file");
+            if from_foxden(was) && !from_foxden(new) {
+                return Err(format!(
+                    "{name}: installed from {}; {} does not replace it (rpg remove {name} first, to install the other); nothing was changed",
+                    origin_words(was),
+                    origin_words(new)
+                ));
             }
         }
         let old_files = self.db.files_of(&name)?;
@@ -514,6 +557,11 @@ impl Ctx {
         }
         if was("Hold").as_deref() == Some("yes") {
             control.set("Hold", "yes");
+        }
+        // Where an app came from (FoxDen step FD7c)
+        control.remove("Origin");
+        if c.kind() == "app" {
+            control.set("Origin", origin.unwrap_or("file"));
         }
         let mut op = Op {
             op: "install".into(),

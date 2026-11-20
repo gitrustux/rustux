@@ -200,7 +200,7 @@ time.sleep(3)
 C, H = 'org.rustica.calculator', 'org.test.homeapp'
 NAMES['\\'] = 'backslash'
 
-out = console('mount LABEL=FOXREPO /mnt && rpg key add --apps /mnt/apps.pem apps-test; rpg source remove 1; rpg source remove 1; rpg source add apps file:///mnt/good platform 1; rpg update; useradd -m carol; echo carol:pwc | chpasswd; useradd -m -G sudo erin; echo erin:pwe | chpasswd; echo S0-DONE', 40, r'(?<!echo )S0-DONE\r?\n')
+out = console('mount LABEL=FOXREPO /mnt && rpg key add --apps /mnt/apps.pem apps-test; rpg key list | grep apps-test | cut -d" " -f1 >> /etc/rpg/store-keys; rpg source remove 1; rpg source remove 1; rpg source add apps file:///mnt/good platform 1; rpg update; useradd -m carol; echo carol:pwc | chpasswd; useradd -m -G sudo erin; echo erin:pwe | chpasswd; echo S0-DONE', 40, r'(?<!echo )S0-DONE\r?\n')
 check('file:///mnt/good platform 1: 3 apps' in out, 'the apps source is read (3 apps)')
 
 def since(n, pat, t):

@@ -461,6 +461,74 @@ published with the project's apps (the project's namespace refused); in
 QEMU it installs, shows its developer and source, runs sandboxed, and a
 newer version of the same ID from another developer is refused.
 
+## Apps from outside FoxDen (step FD7c)
+
+Apps can still come from elsewhere, Android's way: a package file a
+developer hands out (`rpg build`, then `rpg install ./FILE.rpg` or FoxDen),
+or an app source of their own (signed with their own key, which an
+administrator adds). They run in the same sandbox; what changes is that
+everyone can see they are not from FoxDen, and that they cannot pass for
+an app that is.
+
+**Which sources are FoxDen.** An app source whose index is signed by a
+store key: `/etc/rpg/store-keys` (key IDs, one a line; the image's lists
+`rustux-apps-2026`; without the file, that key). rpg works it out from the
+Release and signature `rpg update` kept, so nothing is trusted from the
+index itself.
+
+**Where an app came from**, kept in rpg's database as each app's `Origin`:
+`foxden`, `system` (the apps that come with the system: the installer
+service installs them with `rpg install --preinstalled`, root only),
+`file`, or `source URL`. `rpg list --apps --available` shows `From` (where
+the version it offers is from) and `Installed-From`; `rpg plan`'s ORIGIN
+is `foxden` for FoxDen, `apps` for another app source.
+
+**FoxDen first.** An app FoxDen has comes from FoxDen only: another
+source's app of the same ID, even a newer version, is not offered; and an
+app installed from FoxDen (or the system's) takes its updates from FoxDen
+only. An app installed from FoxDen is not replaced by a package file or
+another source ("installed from FoxDen; a package file does not replace
+it": remove it first). So an outside package cannot take over an
+installed app by claiming its ID and developer.
+
+**The warning.** Installing an app not from FoxDen prints "ID VERSION is
+not from FoxDen (a package file | the app source URL): nobody has checked
+it. It runs in its sandbox with ...". FoxDen marks such an app "Not from
+FoxDen" on its card and page, shows its developer as "claims to be ...,
+not verified", and asks before installing it ("Install anyway"). `foxden
+FILE.rpg` shows a package file's app (`rpg list --apps --file FILE`, which
+also takes its icon) with Install; Files opens `.rpg` files with FoxDen.
+Settings > Apps says "Not from FoxDen" under such an app.
+
+**Who may install package files.** An administrator, by default.
+`/etc/rpg/install.conf`: `outside anyone` lets any user install an app
+from a package file that asks for neither `files:home` nor `system` (those,
+and system packages, always need an administrator). An administrator sets
+it with `rpg config outside anyone|admin` or Settings > Apps ("Allow
+everyone to install apps from outside FoxDen"); the installer service's
+`config` request needs an administrator's password. The installer service
+copies a user's package file into `/var/cache/rpg/incoming` first (only a
+plain file that is theirs or readable by everyone; opened, then checked)
+and plans and installs the copy, so it cannot change in between.
+
+**Developer mode.** `appctl run --dir DIR [ARG...]` runs the app in a
+folder of the user's (its manifest and its program: `rpg build`'s DIR, or
+`build-outside-app.sh`'s folder) without installing it: the same sandbox
+as when installed, for that user alone, with DIR read only at its own path
+(fsd views list real paths) and the data folders of the manifest's ID. No
+password: nothing is installed. `appctl view|open|permissions --dir DIR`
+too. It says "developer mode: ID from DIR (not installed, not checked by
+anyone ...)", and notes when an installed app has that ID (they share the
+user's data folders for it).
+
+`scripts/run-sideload-test.sh` (`TESTS.md`): From and Installed-From;
+FoxDen's app not shadowed by a third party's newer one; a package file
+with the warning; a package file not replacing the FoxDen app; a third
+party's app with the warning; carol refused a package file, then allowed
+with `outside anyone`, still refused one asking for `files:home`, unable
+to change the setting; `rpg list --apps --file`; developer mode's view and
+run; FoxDen showing a package file's app.
+
 ## Not yet
 
 The `system` permission's sandbox-free run; FD7b (a service on rustux.com:

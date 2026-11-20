@@ -26,13 +26,30 @@ fn need_lists(ctx: &Ctx) -> Result<Vec<Avail>, String> {
     if !repo::have_lists(&ctx.db) {
         return Err("no package lists yet: rpg update first".into());
     }
-    repo::available(&ctx.db)
+    repo::available(&ctx.db).map(|av| for_installed(ctx, av))
+}
+
+/// What the sources have, FoxDen first (step FD7c): an app FoxDen has
+/// comes from FoxDen only (another source's app of that ID, even newer,
+/// is left out), and an app installed from FoxDen (or the system's)
+/// takes its versions from FoxDen only, so nothing elsewhere is its
+/// upgrade
+fn for_installed(ctx: &Ctx, av: Vec<Avail>) -> Vec<Avail> {
+    let installed = ctx.db.installed().unwrap_or_default();
+    let in_store: std::collections::BTreeSet<String> = av.iter().filter(|a| a.store).map(|a| a.name().to_string()).collect();
+    av.into_iter()
+        .filter(|a| {
+            a.source.kind != Kind::App
+                || a.store
+                || (!in_store.contains(a.name()) && !installed.iter().any(|c| c.name() == a.name() && c.get("Origin").is_some_and(ops::from_foxden)))
+        })
+        .collect()
 }
 
 pub fn update(ctx: &Ctx) -> Result<bool, String> {
     let mut f = fetcher(ctx);
     let failed = repo::update(&ctx.db, &mut f)?;
-    let av = repo::available(&ctx.db)?;
+    let av = for_installed(ctx, repo::available(&ctx.db)?);
     let installed = ctx.db.installed()?;
     let up = upgradable(&installed, &av);
     let names: std::collections::BTreeSet<&str> = av.iter().map(|a| a.name()).collect();
@@ -141,6 +158,11 @@ fn carry_out(ctx: &Ctx, plan: Plan, files: Vec<Package>) -> Result<(), String> {
     let mut files: Vec<Option<Package>> = files.into_iter().map(Some).collect();
     let mut items = Vec::new();
     for s in plan.steps {
+        let origin = match (&s.avail, s.file) {
+            (_, Some(_)) => Some(if ctx.preinstalled { "system".to_string() } else { "file".to_string() }),
+            (Some(a), None) if a.source.kind == Kind::App => Some(a.origin()),
+            _ => None,
+        };
         let p = match (&s.avail, s.file) {
             (_, Some(i)) => files[i].take().ok_or("a package file twice")?,
             (Some(a), None) => {
@@ -184,7 +206,20 @@ fn carry_out(ctx: &Ctx, plan: Plan, files: Vec<Package>) -> Result<(), String> {
             }
             (None, None) => return Err("a step with nothing to install".into()),
         };
-        items.push((p, s.auto));
+        // Not from FoxDen (FoxDen step FD7c): said before it is installed
+        if let Some(o) = origin.as_deref().filter(|o| !ops::from_foxden(o)) {
+            if p.control.kind() == "app" {
+                let perms = crate::app::check(&p).map(|m| m.permissions).unwrap_or_default();
+                println!(
+                    "rpg: {} {} is not from FoxDen ({}): nobody has checked it. It runs in its sandbox with {}.",
+                    p.control.name(),
+                    p.control.version(),
+                    ops::origin_words(o),
+                    if perms.is_empty() { "no permissions".to_string() } else { format!("these permissions: {}", perms.join(" ")) }
+                );
+            }
+        }
+        items.push((p, s.auto, origin));
     }
     ctx.install_packages(items)?;
     // Two system images are kept (step E4): the newest and the running one
@@ -280,8 +315,9 @@ pub fn install(ctx: &Ctx, args: &[String], yes: bool) -> Result<(), String> {
 /// decides from it who may do it. Changes nothing; needs no root:
 ///   step OP NAME FROM TO KIND ORIGIN PERMISSIONS
 /// OP install, upgrade or remove; FROM and TO "-" when none; KIND app or
-/// system; ORIGIN apps (an app source), system (a system source), file
-/// (a package file) or installed (a removal); PERMISSIONS what an app asks
+/// system; ORIGIN foxden (an app source a store key signs, FD7c), apps
+/// (another app source), system (a system source), file (a package file)
+/// or installed (a removal); PERMISSIONS what an app asks
 /// for, joined by ",", or "-"
 pub fn plan(ctx: &Ctx, args: &[String]) -> Result<(), String> {
     let perms_of = |c: &Control, file: Option<&Package>| -> String {
@@ -312,7 +348,9 @@ pub fn plan(ctx: &Ctx, args: &[String]) -> Result<(), String> {
     };
     let show = |plan: &Plan, files: &[Package]| {
         for s in &plan.steps {
+            // foxden: an app source a store key signs (FoxDen step FD7c)
             let origin = match (&s.avail, s.file) {
+                (Some(a), _) if a.source.kind == Kind::App && a.store => "foxden",
                 (Some(a), _) if a.source.kind == Kind::App => "apps",
                 (Some(_), _) => "system",
                 _ => "file",
@@ -785,6 +823,84 @@ pub fn permissions(ctx: &Ctx, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// rpg config [outside admin|anyone] (FoxDen step FD7c):
+/// /etc/rpg/install.conf, which the installer service reads. `outside
+/// anyone`: anyone may install an app from a package file (not from
+/// FoxDen) that asks for neither files:home nor system; `outside admin`
+/// (the default): an administrator says so. Changing it is root's (a user
+/// goes through the installer service, with an administrator's password)
+pub fn config(ctx: &Ctx, args: &[String]) -> Result<(), String> {
+    let path = ctx.db.path("/etc/rpg/install.conf");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let get = |k: &str| text.lines().filter_map(|l| l.split('#').next()).find_map(|l| l.trim().strip_prefix(k).filter(|r| r.starts_with(char::is_whitespace)).map(|v| v.trim().to_string()));
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        [] => {
+            println!("outside {}", get("outside").filter(|v| v == "anyone").unwrap_or_else(|| "admin".into()));
+            Ok(())
+        }
+        ["outside", v @ ("admin" | "anyone")] => {
+            let mut lines: Vec<String> = text.lines().filter(|l| l.split_whitespace().next() != Some("outside")).map(str::to_string).collect();
+            if lines.is_empty() {
+                lines.push("# Installing apps from outside FoxDen (rpg config; FoxDen step FD7c)".into());
+            }
+            lines.push(format!("outside {v}"));
+            if let Some(d) = path.parent() {
+                std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+            }
+            crate::db::write_atomic(&path, (lines.join("\n") + "\n").as_bytes(), 0o644)?;
+            println!(
+                "outside {v}: {}",
+                if *v == "anyone" { "anyone may install an app from a package file (sandboxed; files:home and system still need an administrator)" } else { "installing an app from a package file needs an administrator" }
+            );
+            Ok(())
+        }
+        _ => Err("config [outside admin|anyone]".into()),
+    }
+}
+
+/// rpg list --apps --file FILE.rpg (FoxDen step FD7c): a package file's
+/// app as list --apps --available shows apps (From: file), so FoxDen can
+/// show its page before it is installed; its icon written to
+/// ~/.cache/foxden/ID/file-icon when it has one
+pub fn list_apps_file(ctx: &Ctx, file: &str) -> Result<(), String> {
+    let p = ops::read_file(file)?;
+    let m = crate::app::check(&p).map_err(|e| format!("{file}: {e}"))?;
+    let mut c = p.control.clone();
+    c.set("App-Name", &m.name);
+    c.set("App-Summary", &m.summary);
+    if !m.categories.is_empty() {
+        c.set("Categories", &m.categories.join(" "));
+    }
+    if !m.permissions.is_empty() {
+        c.set("Permissions", &m.permissions.join(" "));
+    }
+    for (k, v) in [("App-Developer", &m.developer), ("App-Developer-Name", &m.developer_name), ("App-Source", &m.source)] {
+        if let Some(v) = v {
+            c.set(k, v);
+        }
+    }
+    if let (Some(i), Ok(home)) = (&m.icon, std::env::var("HOME")) {
+        if let Some(data) = p.data.get(&format!("{}/{i}", crate::app::dir(&m.id))) {
+            let d = std::path::Path::new(&home).join(".cache/foxden").join(&m.id);
+            let f = d.join("file-icon");
+            if std::fs::create_dir_all(&d).is_ok() && std::fs::write(&f, data).is_ok() {
+                c.set("Icon-File", &f.display().to_string());
+            }
+        }
+    }
+    c.set("Source", "-");
+    c.set("From", "file");
+    c.set("Size", &std::fs::metadata(file).map(|x| x.len()).unwrap_or(0).to_string());
+    if let Some(i) = ctx.db.installed()?.iter().find(|i| i.name() == m.id) {
+        c.set("Installed", i.version());
+        if let Some(o) = i.get("Origin") {
+            c.set("Installed-From", o);
+        }
+    }
+    print!("{}", c.text());
+    Ok(())
+}
+
 /// rpg list --apps --available (FoxDen step FD5: what the FoxDen app
 /// shows): a stanza per app, the newest an app source has (its index's
 /// fields, with Source: its base URL) or, for an app installed from a
@@ -792,7 +908,7 @@ pub fn permissions(ctx: &Ctx, args: &[String]) -> Result<(), String> {
 /// Installed: VERSION when installed, Upgradable: yes when a source has
 /// newer. Needs no root.
 pub fn list_apps_available(ctx: &Ctx) -> Result<(), String> {
-    let av: Vec<Avail> = repo::available(&ctx.db)?.into_iter().filter(|a| a.source.kind == Kind::App).collect();
+    let av: Vec<Avail> = for_installed(ctx, repo::available(&ctx.db)?).into_iter().filter(|a| a.source.kind == Kind::App).collect();
     let installed = ctx.db.installed()?;
     let mut names: Vec<&str> = av.iter().map(|a| a.name()).chain(installed.iter().filter(|c| c.kind() == "app").map(|c| c.name())).collect();
     names.sort();
@@ -804,6 +920,8 @@ pub fn list_apps_available(ctx: &Ctx) -> Result<(), String> {
             Some(a) => {
                 let mut c = a.c.clone();
                 c.set("Source", a.source.base());
+                // FoxDen step FD7c: foxden, or the source
+                c.set("From", &a.origin());
                 c
             }
             None => {
@@ -838,6 +956,11 @@ pub fn list_apps_available(ctx: &Ctx) -> Result<(), String> {
         };
         if let Some(i) = inst {
             c.set("Installed", i.version());
+            // Where the installed one came from (FoxDen step FD7c; none:
+            // installed before rpg kept it)
+            if let Some(o) = i.get("Origin") {
+                c.set("Installed-From", o);
+            }
             if version::compare(c.version(), i.version()) == std::cmp::Ordering::Greater {
                 c.set("Upgradable", "yes");
             }

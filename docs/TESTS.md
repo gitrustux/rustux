@@ -482,6 +482,23 @@ it the file, which it reads and nothing beside it (read only, no folder,
 the path still refused); it saves `copy.txt` through the chooser; a
 cancelled question gives it nothing.
 
+## Apps from outside FoxDen test (FoxDen step FD7c)
+
+`scripts/run-sideload-test.sh` (QEMU, the live desktop, a FAT disk: a
+FoxDen stand-in, an app source signed by a key put in
+`/etc/rpg/store-keys`; a third party's source; package files). `rpg list
+--apps --available` shows From; FoxDen's `org.test.store` is not shadowed
+by the third party's newer one, installs from FoxDen without the warning
+and is not upgraded from the third party; a package file installs with the
+warning (Installed-From: file); a package file of the FoxDen app is
+refused; the third party's own app installs with the warning. carol is
+refused a package file, root sets `rpg config outside anyone`, carol
+installs one with no password, is still refused one asking for
+`files:home`, and cannot change the setting; `rpg list --apps --file`.
+Developer mode: carol's `appctl view --dir` (the folder read only, not her
+home), `appctl run --dir` (6*7 = 42 typed), not installed. `foxden
+FILE.rpg` says the app is not from FoxDen.
+
 ## Outside developers test (FoxDen step FD7a)
 
 `scripts/run-outside-test.sh` (QEMU, the live desktop, a FAT disk with a

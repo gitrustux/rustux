@@ -1,0 +1,4 @@
+# The store's keys (FoxDen step FD7c): an app source whose index one of
+# them signs is FoxDen; apps from any other source or a package file are
+# "not from FoxDen" (rpg, FoxDen, Settings > Apps). Key IDs (rpg key list).
+2f06e52fed979364  rustux-apps-2026

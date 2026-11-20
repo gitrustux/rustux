@@ -4,6 +4,7 @@ USAGE
     appctl run ID [ARG...]
     appctl open ID FILE...
     appctl view ID [FILE...]
+    appctl run|open|view|permissions --dir DIR ...
     appctl permissions ID
 
     An app (an rpg package of Kind: app, in /apps/ID) runs sandboxed:
@@ -62,10 +63,18 @@ FILES
                                  "ID: -" for none; an app gets at most
                                  what its manifest asks for
 
+DEVELOPER MODE
+    --dir DIR instead of an ID: the app in DIR (its manifest and its
+    program, as rpg build takes it), not installed, in the same sandbox as
+    when it is installed, for you alone; DIR is in its view read only, at
+    its own path. No password is needed: nothing is installed. Nobody has
+    checked it: it is yours.
+
 EXAMPLES
     appctl run org.rustica.example
     appctl view org.rustica.example
     appctl open org.rustica.texteditor ~/Documents/notes.txt
+    appctl run --dir ~/src/myapp/build
     echo "org.rustica.example: -" >> ~/.config/apps/permissions
 
 SEE ALSO

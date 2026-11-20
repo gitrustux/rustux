@@ -222,7 +222,7 @@ def sh(cmd, mark, t=60):
     return log()[n:]
 
 # 1. Installed from one; the check with two
-out = sh('mount LABEL=UPREPO /mnt && rpg key add --apps /mnt/apps.pem apps-test; rpg source remove 1; rpg source remove 1; rpg source add apps file:///mnt/one platform 1; rpg update; rpg install -y %s %s %s; mkdir -p /root/Documents; echo "a note for portaltest" > /root/Documents/note.txt' % (C, S, P), 'S0-DONE', 90)
+out = sh('mount LABEL=UPREPO /mnt && rpg key add --apps /mnt/apps.pem apps-test; rpg key list | grep apps-test | cut -d" " -f1 >> /etc/rpg/store-keys; rpg source remove 1; rpg source remove 1; rpg source add apps file:///mnt/one platform 1; rpg update; rpg install -y %s %s %s; mkdir -p /root/Documents; echo "a note for portaltest" > /root/Documents/note.txt' % (C, S, P), 'S0-DONE', 90)
 check('%s %s: installed' % (C, V) in out and '%s %s: installed' % (S, V) in out and '%s 1.0: installed' % P in out, 'the three apps installed')
 out = sh('rpg source remove 1; rpg source add apps file:///mnt/two platform 1; updates check; rpg list --apps; updates status --raw | grep "^app"', 'S1-DONE', 120)
 check(re.search(r'%s +1\.1\.0' % re.escape(C), out) is not None, 'the check upgrades the Calculator at once (it asks for nothing more)')

@@ -225,7 +225,7 @@ expect "needs-hello 1: removed"
 expect "hello: its configuration files removed"
 expect "(on Rustux, /bin, /usr and /boot are the boot image, read-only: packages go in /opt, /etc and /var, the system image in /boot/efi); nothing was changed"
 refuse "rpg: the install of in-usr"
-expect "installing a package file: an administrator's password is needed"
+expect "installing a package file (not from FoxDen): an administrator's password is needed"
 expect "rpg: no administrator named"
 expect "big 1: installed (300 files)"
 

@@ -48,6 +48,33 @@ struct SetApp {
     perms: Vec<String>,
     folder: u64, // bytes: /apps/ID
     data: u64,   // bytes: the user's three folders for it
+    /// Where it came from (rpg's Origin: foxden, system, file, "source
+    /// URL"; "" before rpg kept it), FoxDen step FD7c
+    origin: String,
+}
+
+/// Each installed app's Origin, from rpg's database (anyone may read it)
+fn app_origins() -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let text = std::fs::read_to_string("/var/lib/rpg/status").unwrap_or_default();
+    for st in text.split("\n\n") {
+        let get = |k: &str| st.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()));
+        if let (Some(p), Some(o)) = (get("Package:"), get("Origin:")) {
+            out.insert(p, o);
+        }
+    }
+    out
+}
+
+/// /etc/rpg/install.conf: may anyone install apps from package files?
+fn outside_anyone() -> bool {
+    std::fs::read_to_string("/etc/rpg/install.conf")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split('#').next())
+        .filter_map(|l| l.trim().strip_prefix("outside"))
+        .next_back()
+        .is_some_and(|v| v.trim() == "anyone")
 }
 
 fn tree_size(p: &std::path::Path) -> u64 {
@@ -63,6 +90,7 @@ fn load_apps() -> Vec<SetApp> {
     // Versions from rpg (ID VERSION NAME...)
     let list = Command::new("/bin/rpg").args(["list", "--apps"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
     let mut v = Vec::new();
+    let origins = app_origins();
     for l in list.lines() {
         let w: Vec<&str> = l.split_whitespace().collect();
         if w.len() < 2 || !w[0].contains('.') {
@@ -78,6 +106,7 @@ fn load_apps() -> Vec<SetApp> {
             perms: field("Permissions:").split_whitespace().map(str::to_string).collect(),
             folder: tree_size(&std::path::Path::new("/apps").join(&id)),
             data,
+            origin: origins.get(&id).cloned().unwrap_or_default(),
             id,
         });
     }
@@ -960,6 +989,15 @@ impl Settings {
     /// takes up, what it may do (as FoxDen's Installed), Remove
     fn apps_section(&mut self, ui: &mut Ui) {
         ui.heading("Apps");
+        // Apps from outside FoxDen (FoxDen step FD7c): an administrator's
+        // choice whether anyone may install them from package files
+        let mut anyone = outside_anyone();
+        if ui.checkbox(&mut anyone, "Allow everyone to install apps from outside FoxDen (package files)") {
+            let v = if anyone { "anyone" } else { "admin" };
+            self.admin(&format!("apps from outside FoxDen: {v}"), vec![(vec!["/bin/rpg".into(), "config".into(), "outside".into(), v.into()], String::new())]);
+        }
+        ui.dim_label("They still run in their sandbox; files:home and system always need an administrator.");
+        ui.separator();
         if self.apps.is_empty() {
             ui.dim_label("No apps are installed. FoxDen has them.");
             if ui.button("Open FoxDen") {
@@ -976,6 +1014,11 @@ impl Settings {
                 ui.push_id(&a.id);
                 ui.label(&format!("{}  {}", a.name, a.version));
                 ui.dim_label(&format!("    {} — the app {}, your data for it {}", a.id, bytes_text(a.folder), bytes_text(a.data)));
+                match a.origin.as_str() {
+                    "" | "foxden" | "system" => {}
+                    "file" => ui.dim_label("    Not from FoxDen: installed from a package file. Nobody has checked it."),
+                    o => ui.dim_label(&format!("    Not from FoxDen: from {}. Nobody has checked it.", o.strip_prefix("source ").map(|u| format!("the app source {u}")).unwrap_or(o.to_string()))),
+                }
                 let mut g = app_granted(&a.id).unwrap_or_else(|| a.perms.clone());
                 let mut changed = false;
                 if a.perms.is_empty() {

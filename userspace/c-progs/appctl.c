@@ -9,6 +9,11 @@
 //
 //   appctl run ID [ARG...]     start /apps/ID's Exec, sandboxed; waits, and
 //                              exits with its code
+//   appctl run --dir DIR [ARG...]   developer mode (step FD7c): the app in
+//                              DIR (its manifest and program), not
+//                              installed, in the same sandbox for this user
+//                              alone, DIR read only at its own path; also
+//                              open, view and permissions --dir DIR
 //   appctl open ID FILE...     the same, with those files (and nothing beside
 //                              them) in its view, given as its arguments:
 //                              Files opening a file with an app (step FD6b)
@@ -53,6 +58,10 @@
 
 static const char *ID;
 static char manifest[8192];
+// The app's folder: /apps/ID, or the folder of `--dir` (developer mode,
+// FoxDen step FD7c)
+static char APPDIR[512];
+static int devmode;
 
 static int valid_id(const char *s) {
     int parts = 1, len = 0;
@@ -93,17 +102,27 @@ static const char *field(const char *key, char *out, size_t cap) {
 }
 
 static int load_manifest(void) {
-    char p[300];
-    snprintf(p, sizeof p, "/apps/%s/manifest", ID);
+    char p[600];
+    snprintf(p, sizeof p, "%s/manifest", APPDIR);
     FILE *f = fopen(p, "r");
     if (!f) {
-        fprintf(stderr, "appctl: %s: not installed (no %s)\n", ID, p);
+        if (devmode) fprintf(stderr, "appctl: %s: no manifest (an app's folder: manifest, its program)\n", APPDIR);
+        else fprintf(stderr, "appctl: %s: not installed (no %s)\n", ID, p);
         return -1;
     }
     size_t n = fread(manifest, 1, sizeof manifest - 1, f);
     manifest[n] = 0;
     fclose(f);
-    char v[256];
+    static char v[256];
+    if (devmode) {
+        // Developer mode: the folder's manifest says which app it is
+        if (!field("Id", v, sizeof v) || !valid_id(v)) {
+            fprintf(stderr, "appctl: %s/manifest: Id: an app ID (reverse DNS)\n", APPDIR);
+            return -1;
+        }
+        ID = v;
+        return 0;
+    }
     if (!field("Id", v, sizeof v) || strcmp(v, ID)) {
         fprintf(stderr, "appctl: %s: its manifest names another app\n", ID);
         return -1;
@@ -191,7 +210,7 @@ static void mkdirs(const char *path) {
 
 static void build_view(const char *home) {
     static const char *etc[] = { "passwd", "group", "timezone", "localtime", "os-release", "hostname", 0 };
-    add(RX_FS_VIEW_RO, "/apps/%s", ID);
+    add(RX_FS_VIEW_RO, "%s", APPDIR);
     add(RX_FS_VIEW_RO, "/usr", "");
     for (int k = 0; etc[k]; k++) add(RX_FS_VIEW_RO, "/etc/%s", etc[k]);
     add(RX_FS_VIEW_OPEN, "/dev/null", "");
@@ -406,7 +425,7 @@ static int run(int argc, char **argv, const struct passwd *pw) {
         return 1;
     }
     char prog[600];
-    snprintf(prog, sizeof prog, "/apps/%s/%s", ID, args[0]);
+    snprintf(prog, sizeof prog, "%s/%s", APPDIR, args[0]);
     for (int k = 0; k < argc && na < 63; k++) args[na++] = argv[k];
     args[0] = prog;
     args[na] = 0;
@@ -430,7 +449,7 @@ static int run(int argc, char **argv, const struct passwd *pw) {
     ENV("HOME=%s", home);
     ENV("USER=%s", pw->pw_name);
     ENV("LOGNAME=%s", pw->pw_name);
-    ENV("PATH=/apps/%s/bin", ID);
+    ENV("PATH=%s/bin", APPDIR);
     ENV("PWD=%s", dirs[0]);
     ENV("APP_ID=%s", ID);
     ENV("XDG_DATA_HOME=%s", dirs[0]);
@@ -492,16 +511,42 @@ static int run(int argc, char **argv, const struct passwd *pw) {
 }
 
 static int usage(void) {
-    fprintf(stderr, "usage: appctl run ID [ARG...] | open ID FILE... | view ID [FILE...] | permissions ID\n");
+    fprintf(stderr, "usage: appctl run ID [ARG...] | open ID FILE... | view ID [FILE...] | permissions ID\n"
+                    "       appctl run|open|view|permissions --dir DIR ...   (developer mode: the app in DIR, not installed)\n");
     return 2;
 }
 
 int main(int argc, char **argv) {
     if (argc < 3) return usage();
-    ID = argv[2];
-    if (!valid_id(ID)) {
-        fprintf(stderr, "appctl: %s: not an app ID\n", ID);
-        return 2;
+    if (!strcmp(argv[2], "--dir")) {
+        // Developer mode (FoxDen step FD7c): appctl run|open|view --dir
+        // DIR: the app in a folder of the user's, not installed, in the
+        // same sandbox, with the folder at its own path (read only)
+        if (argc < 4) return usage();
+        char real[512];
+        if (!realpath(argv[3], real) || real[0] != '/') {
+            fprintf(stderr, "appctl: %s: %s\n", argv[3], strerror(errno));
+            return 1;
+        }
+        struct stat st;
+        if (stat(real, &st) < 0 || !S_ISDIR(st.st_mode) || !strcmp(real, "/")) {
+            fprintf(stderr, "appctl: %s: an app's folder\n", real);
+            return 1;
+        }
+        snprintf(APPDIR, sizeof APPDIR, "%s", real);
+        devmode = 1;
+        ID = "";
+        // The rest as for an installed app: "--dir" in ID's place, DIR
+        // dropped
+        for (int k = 3; k + 1 < argc; k++) argv[k] = argv[k + 1];
+        argc--;
+    } else {
+        ID = argv[2];
+        if (!valid_id(ID)) {
+            fprintf(stderr, "appctl: %s: not an app ID\n", ID);
+            return 2;
+        }
+        snprintf(APPDIR, sizeof APPDIR, "/apps/%s", ID);
     }
     struct passwd *pw = getpwuid(getuid());
     if (!pw || !pw->pw_dir || pw->pw_dir[0] != '/') {
@@ -509,6 +554,14 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (load_manifest() < 0) return 1;
+    if (devmode) {
+        struct stat st;
+        char inst[300];
+        snprintf(inst, sizeof inst, "/apps/%s/manifest", ID);
+        printf("appctl: developer mode: %s from %s (not installed, not checked by anyone; its sandbox as installed)\n", ID, APPDIR);
+        if (stat(inst, &st) == 0) printf("appctl: note: %s is installed too: they share your data folders for it\n", ID);
+        fflush(stdout);
+    }
     permissions(pw->pw_dir);
     build_view(pw->pw_dir);
     if (!strcmp(argv[1], "run")) return run(argc - 3, argv + 3, pw);
