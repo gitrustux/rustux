@@ -27,15 +27,13 @@ const SHOULD_WAIT: i64 = -13;
 const READABLE: u32 = 1;
 const PEER_CLOSED: u32 = 4;
 
+extern "C" {
+    // The C library's system call (each architecture's in <rustux/arch.h>)
+    fn __rx_syscall(n: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> i64;
+}
+
 fn syscall6(n: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> i64 {
-    let ret: i64;
-    // Rustux's system call: int 0x80, number in rax, arguments in rdi,
-    // rsi, rdx, r10, r8, r9
-    unsafe {
-        std::arch::asm!("int 0x80", inlateout("rax") n => ret, in("rdi") a, in("rsi") b, in("rdx") c,
-                        in("r10") d, in("r8") e, in("r9") f, lateout("rcx") _, lateout("r11") _);
-    }
-    ret
+    unsafe { __rx_syscall(n, a, b, c, d, e, f) }
 }
 
 struct Channel(u32);

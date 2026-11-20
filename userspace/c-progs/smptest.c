@@ -121,6 +121,9 @@ static void parallel(int cpus) {
 
 // ---- 2. SSE registers ----
 
+// The test fills 16 SIMD/FP registers, gets switched out and back, and
+// checks them: one version per architecture (docs/PORTING.md)
+#if defined(__x86_64__)
 static void fill_xmm(uint64_t seed) {
     __asm__ volatile(
         "movq %0, %%rax\n"
@@ -160,6 +163,103 @@ static uint64_t check_xmm(uint64_t seed) {
         : "=&r"(bad) : "r"(seed) : "rcx", "rdx", "cc");
     return bad;
 }
+#elif defined(__aarch64__)
+static void fill_xmm(uint64_t seed) {
+    __asm__ volatile(
+        "mov x9, %0\n"
+        "fmov d0, x9\n add x9, x9, #1\n"
+        "fmov d1, x9\n add x9, x9, #1\n"
+        "fmov d2, x9\n add x9, x9, #1\n"
+        "fmov d3, x9\n add x9, x9, #1\n"
+        "fmov d4, x9\n add x9, x9, #1\n"
+        "fmov d5, x9\n add x9, x9, #1\n"
+        "fmov d6, x9\n add x9, x9, #1\n"
+        "fmov d7, x9\n add x9, x9, #1\n"
+        "fmov d8, x9\n add x9, x9, #1\n"
+        "fmov d9, x9\n add x9, x9, #1\n"
+        "fmov d10, x9\n add x9, x9, #1\n"
+        "fmov d11, x9\n add x9, x9, #1\n"
+        "fmov d12, x9\n add x9, x9, #1\n"
+        "fmov d13, x9\n add x9, x9, #1\n"
+        "fmov d14, x9\n add x9, x9, #1\n"
+        "fmov d15, x9\n add x9, x9, #1\n"
+        : : "r"(seed) : "x9");
+}
+
+// Number of FP registers that do not hold their expected value
+static uint64_t check_xmm(uint64_t seed) {
+    uint64_t bad;
+    __asm__ volatile(
+        "mov %0, #0\n mov x9, %1\n"
+        "fmov x10, d0\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d1\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d2\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d3\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d4\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d5\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d6\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d7\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d8\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d9\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d10\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d11\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d12\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d13\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d14\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        "fmov x10, d15\n cmp x9, x10\n cinc %0, %0, ne\n add x9, x9, #1\n"
+        : "=&r"(bad) : "r"(seed) : "x9", "x10", "cc");
+    return bad;
+}
+#elif defined(__riscv)
+static void fill_xmm(uint64_t seed) {
+    __asm__ volatile(
+        "mv t0, %0\n"
+        "fmv.d.x f0, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f1, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f2, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f3, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f4, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f5, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f6, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f7, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f8, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f9, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f10, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f11, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f12, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f13, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f14, t0\n addi t0, t0, 1\n"
+        "fmv.d.x f15, t0\n addi t0, t0, 1\n"
+        : : "r"(seed) : "t0");
+}
+
+// Number of FP registers that do not hold their expected value
+static uint64_t check_xmm(uint64_t seed) {
+    uint64_t bad;
+    __asm__ volatile(
+        "li %0, 0\n mv t0, %1\n"
+        "fmv.x.d t1, f0\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f1\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f2\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f3\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f4\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f5\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f6\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f7\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f8\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f9\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f10\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f11\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f12\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f13\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f14\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        "fmv.x.d t1, f15\n sub t1, t1, t0\n snez t1, t1\n add %0, %0, t1\n addi t0, t0, 1\n"
+        : "=&r"(bad) : "r"(seed) : "t0", "t1");
+    return bad;
+}
+#else
+#error "smptest: fill_xmm and check_xmm for this architecture"
+#endif
 
 static volatile uint64_t sse_bad[WORKERS], sse_moves[WORKERS];
 

@@ -76,9 +76,11 @@ static volatile uint8_t *ecam_addr(const rx_pci_info_t *d, uint16_t off) {
     return b + ((uint32_t)d->dev << 15 | (uint32_t)d->func << 12 | off);
 }
 
+#ifdef RX_ARCH_HAS_PORT_IO
 static uint32_t cf8(const rx_pci_info_t *d, uint16_t off) {
     return 0x80000000u | (uint32_t)d->bus << 16 | (uint32_t)d->dev << 11 | (uint32_t)d->func << 8 | (off & 0xFC);
 }
+#endif
 
 static uint32_t cfg_read(const rx_pci_info_t *d, uint16_t off, int width) {
     if (use_ecam) {
@@ -88,11 +90,16 @@ static uint32_t cfg_read(const rx_pci_info_t *d, uint16_t off, int width) {
         if (width == 2) return *(volatile uint16_t *)p;
         return *(volatile uint32_t *)p;
     }
+#ifdef RX_ARCH_HAS_PORT_IO
     if (off >= 256) return 0xFFFFFFFF;
     rx_outl(0xCF8, cf8(d, off));
     if (width == 1) return rx_inb(0xCFC + (off & 3));
     if (width == 2) return rx_inw(0xCFC + (off & 2));
     return rx_inl(0xCFC);
+#else
+    (void)width;
+    return 0xFFFFFFFF; // no I/O ports here: PCI only through ECAM
+#endif
 }
 
 static void cfg_write(const rx_pci_info_t *d, uint16_t off, int width, uint32_t v) {
@@ -104,11 +111,15 @@ static void cfg_write(const rx_pci_info_t *d, uint16_t off, int width, uint32_t 
         else *(volatile uint32_t *)p = v;
         return;
     }
+#ifdef RX_ARCH_HAS_PORT_IO
     if (off >= 256) return;
     rx_outl(0xCF8, cf8(d, off));
     if (width == 1) rx_outb(0xCFC + (off & 3), (uint8_t)v);
     else if (width == 2) rx_outw(0xCFC + (off & 2), (uint16_t)v);
     else rx_outl(0xCFC, v);
+#else
+    (void)width; (void)v;
+#endif
 }
 
 #define R8(d, o)  ((uint8_t)cfg_read((d), (o), 1))

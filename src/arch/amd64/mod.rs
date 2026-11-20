@@ -11,6 +11,7 @@
 
 // APIC and interrupt controller
 pub mod apic;
+pub mod cpu;
 pub mod controller;
 
 // Descriptor tables (GDT, IDT)

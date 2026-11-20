@@ -429,6 +429,19 @@ pub struct IndexOpts {
     pub origin: String,
 }
 
+/// The architectures a repository has an index for: every one Rustux
+/// knows, so a computer of any of them finds its index (with the packages
+/// for `all` at least), plus any other a package names.
+fn index_archs(entries: &[Control]) -> Vec<String> {
+    let mut archs: Vec<String> = crate::control::ARCHS.iter().map(|a| a.to_string()).collect();
+    for c in entries {
+        if c.arch() != "all" && !archs.iter().any(|a| a == c.arch()) {
+            archs.push(c.arch().to_string());
+        }
+    }
+    archs
+}
+
 /// rpg index REPO: every .rpg under REPO/pool (checked whole), into
 /// REPO/dists/SUITE/SECTION/ARCH/Packages.gz (packages for all in every
 /// architecture's) and REPO/dists/SUITE/Release. Signing is apart.
@@ -456,12 +469,7 @@ pub fn index(repo: &Path, o: &IndexOpts) -> Result<(), String> {
     }
     let mut archs = o.archs.clone();
     if archs.is_empty() {
-        archs = entries.iter().map(|c| c.arch().to_string()).filter(|a| a != "all").collect();
-        archs.sort();
-        archs.dedup();
-        if archs.is_empty() {
-            archs.push("x86_64".into());
-        }
+        archs = index_archs(&entries);
     }
     let dists = repo.join("dists").join(&o.suite);
     let mut sums = Vec::new();
@@ -587,12 +595,7 @@ pub fn index_apps(repo: &Path, level: u32, origin: &str) -> Result<(), String> {
         }
         entries.push(c);
     }
-    let mut archs: Vec<String> = entries.iter().map(|c| c.arch().to_string()).filter(|a| a != "all").collect();
-    archs.sort();
-    archs.dedup();
-    if archs.is_empty() {
-        archs.push("x86_64".into());
-    }
+    let archs = index_archs(&entries);
     let dist = repo.join("platform").join(level.to_string());
     let mut sums = Vec::new();
     for a in &archs {
@@ -755,6 +758,13 @@ mod tests {
         }
         std::fs::write(root.join("etc/rpg/sources.list"), format!("{line}\n")).unwrap();
         Db::new(&root)
+    }
+
+    #[test]
+    fn every_architecture_has_an_index() {
+        let all = Control::parse("Package: data\nVersion: 1\nArchitecture: all\nDescription: x\n").unwrap();
+        assert_eq!(index_archs(&[all]), ["x86_64", "aarch64", "riscv64"]);
+        assert_eq!(index_archs(&[]), ["x86_64", "aarch64", "riscv64"]);
     }
 
     #[test]

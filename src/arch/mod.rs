@@ -11,6 +11,7 @@
 //! with architecture-specific implementations of common interfaces.
 
 pub mod amd64;
+pub mod cpu;
 pub mod arm64;
 pub mod riscv64;
 

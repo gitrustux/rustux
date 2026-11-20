@@ -9,11 +9,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+// x86-64: rep movsb and rep stosb are fast on current CPUs and safe for
+// any alignment; other architectures a byte at a time until their port
+// brings its own (docs/PORTING.md)
 void *memcpy(void *restrict dst, const void *restrict src, size_t n) {
     unsigned char *d = dst;
     const unsigned char *s = src;
-    // rep movsb is fast on current CPUs and safe for any alignment
+#if defined(__x86_64__)
     __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+#else
+    while (n--) *d++ = *s++;
+#endif
     return dst;
 }
 
@@ -25,13 +31,22 @@ void *memmove(void *dst, const void *src, size_t n) {
     // Overlapping, destination above source: copy backwards
     d += n - 1;
     s += n - 1;
+#if defined(__x86_64__)
     __asm__ volatile("std\n\trep movsb\n\tcld" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+#else
+    while (n--) *d-- = *s--;
+#endif
     return dst;
 }
 
 void *memset(void *dst, int c, size_t n) {
+#if defined(__x86_64__)
     void *d = dst;
     __asm__ volatile("rep stosb" : "+D"(d), "+c"(n) : "a"(c) : "memory");
+#else
+    unsigned char *d = dst;
+    while (n--) *d++ = (unsigned char)c;
+#endif
     return dst;
 }
 

@@ -25,27 +25,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// Disable interrupts; returns whether they were enabled
 #[inline]
 pub fn irq_save() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let flags: u64;
-        unsafe { core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem)) };
-        flags & (1 << 9) != 0
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
-    }
+    crate::arch::cpu::irq_save()
 }
 
 /// Re-enable interrupts if `enabled` (the value from [`irq_save`])
 #[inline]
 pub fn irq_restore(enabled: bool) {
-    #[cfg(target_arch = "x86_64")]
-    if enabled {
-        unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = enabled;
+    crate::arch::cpu::irq_restore(enabled)
 }
 
 /// A spin lock that disables interrupts while held

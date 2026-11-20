@@ -16,9 +16,7 @@ use crate::arch::amd64::mm::kernel_map;
 use crate::arch::amd64::mm::RxStatus;
 
 fn current_pml4() -> u64 {
-    let cr3: u64;
-    unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack)) };
-    cr3 & 0x000f_ffff_ffff_f000
+    crate::arch::cpu::page_table_root()
 }
 
 /// Check `len` bytes at `addr` in the current user address space

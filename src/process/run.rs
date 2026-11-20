@@ -208,10 +208,7 @@ fn pick_next(table: &mut crate::process::table::ProcessTable, cur: Option<u32>) 
 
 /// Load the user FS base (thread-local storage of the thread about to run)
 pub fn set_fs_base(v: u64) {
-    unsafe {
-        core::arch::asm!("wrmsr", in("ecx") 0xC000_0100u32, in("eax") v as u32, in("edx") (v >> 32) as u32,
-                         options(nomem, nostack, preserves_flags));
-    }
+    crate::arch::cpu::set_user_thread_pointer(v)
 }
 
 /// Make `next` this CPU's running thread (table locked); returns the stack
@@ -367,18 +364,12 @@ pub fn alloc_kernel_stack() -> Result<u64, &'static str> {
     Ok(pmm::paddr_to_vaddr(base) as u64 + (KERNEL_STACK_PAGES * 4096) as u64)
 }
 
-fn save_and_disable_interrupts() -> u64 {
-    let flags: u64;
-    unsafe {
-        core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem));
-    }
-    flags
+fn save_and_disable_interrupts() -> bool {
+    crate::arch::cpu::irq_save()
 }
 
-fn restore_interrupts(flags: u64) {
-    if flags & 0x200 != 0 {
-        unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
-    }
+fn restore_interrupts(enabled: bool) {
+    crate::arch::cpu::irq_restore(enabled)
 }
 
 /// A CPU's idle context: run whatever is runnable, halt when nothing is.
@@ -408,7 +399,7 @@ pub fn idle_loop() -> ! {
                 // `sti; hlt` takes a pending interrupt only after `hlt`
                 // has started, so a wake IPI cannot be missed
                 let t0 = crate::kobj::now_ns();
-                unsafe { core::arch::asm!("sti", "hlt", "cli", options(nomem, nostack)) };
+                crate::arch::cpu::wait_for_interrupt();
                 cpu.idle_ns.fetch_add(crate::kobj::now_ns().saturating_sub(t0), Ordering::Relaxed);
                 IDLE_CPUS.fetch_and(!bit, Ordering::AcqRel);
             }
@@ -437,9 +428,7 @@ pub fn exit_thread() -> ! {
     }
     switch_away(ProcessState::Zombie);
     // Not reached: a zombie is never scheduled again
-    loop {
-        unsafe { core::arch::asm!("cli", "hlt", options(nomem, nostack)) };
-    }
+    crate::arch::cpu::halt_forever()
 }
 
 /// Kill a process with return code `code`: every thread is asked to exit

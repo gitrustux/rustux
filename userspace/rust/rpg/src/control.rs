@@ -9,7 +9,7 @@
 //!
 //!   Package: hello
 //!   Version: 1.0-1
-//!   Architecture: x86_64          (or all)
+//!   Architecture: x86_64          (aarch64, riscv64, or all)
 //!   Kind: system                  (or app: FoxDen's, FOXDEN.md)
 //!   Depends: rustica-base (>= 0.1), foo | bar
 //!   Conflicts: ...   Provides: ...
@@ -19,6 +19,10 @@
 //!    and more lines, each starting with a space
 
 use crate::version;
+
+/// The architectures Rustux is built for, or is being ported to
+/// (docs/PORTING.md). A package is for one of them, or for `all`.
+pub const ARCHS: [&str; 3] = ["x86_64", "aarch64", "riscv64"];
 
 #[derive(Clone, Debug, Default)]
 pub struct Control {
@@ -136,8 +140,8 @@ impl Control {
             return Err(format!("{v}: not a version (1.0, 0.1.3-1, 2:1.0~rc1)"));
         }
         let a = self.get("Architecture").ok_or("no Architecture field")?;
-        if !["x86_64", "aarch64", "all"].contains(&a) {
-            return Err(format!("{a}: the architecture is x86_64, aarch64 or all"));
+        if a != "all" && !ARCHS.contains(&a) {
+            return Err(format!("{a}: the architecture is {} or all", ARCHS.join(", ")));
         }
         if !["system", "app"].contains(&self.kind()) {
             return Err(format!("{}: Kind is system or app", self.kind()));
@@ -223,6 +227,14 @@ mod tests {
         let again = parse_stanzas(&c.text()).unwrap();
         assert_eq!(again[0].get("Description"), Some("says hello\na longer text\n\nafter an empty line"));
         assert_eq!(again[0].get("Description"), c.get("Description"));
+    }
+
+    #[test]
+    fn architectures() {
+        for a in ["x86_64", "aarch64", "riscv64", "all"] {
+            let c = Control::parse(&format!("Package: hello\nVersion: 1\nArchitecture: {a}\nDescription: x\n")).unwrap();
+            c.check().unwrap();
+        }
     }
 
     #[test]

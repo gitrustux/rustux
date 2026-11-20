@@ -145,7 +145,7 @@ void __run_init_array(int argc, char **argv, char **envp) {
 
 void __lock(volatile int *l) {
     for (int spins = 0; __atomic_exchange_n(l, 1, __ATOMIC_ACQUIRE); spins++) {
-        if (spins < 100) __builtin_ia32_pause();
+        if (spins < 100) rx_cpu_relax();
         else rx_yield();
     }
 }
@@ -347,15 +347,12 @@ static void start(struct __pthread *t) {
     pthread_exit(t->fn(t->arg));
 }
 
-// The kernel starts a thread with RSP 16-byte aligned; set up a frame as if
-// start() had been called
-__asm__(".text\n"
-        "__thread_entry:\n"
-        "    xor %ebp, %ebp\n"
-        "    and $-16, %rsp\n"
-        "    call start\n"
-        "    ud2\n");
+// Where a new thread starts: src/arch/ARCH.c, which calls __thread_start
+// with the control block as if called (the kernel gives it as the first
+// argument)
 void __thread_entry(void);
+void __thread_start(struct __pthread *t) __attribute__((noreturn, used));
+void __thread_start(struct __pthread *t) { start(t); }
 
 int pthread_attr_init(pthread_attr_t *a) {
     memset(a, 0, sizeof *a);
@@ -573,7 +570,7 @@ int pthread_mutex_lock(pthread_mutex_t *m) {
     }
     int z = 0;
     if (!__atomic_compare_exchange_n(w, &z, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
-        for (int i = 0; i < 100 && __atomic_load_n(w, __ATOMIC_RELAXED); i++) __builtin_ia32_pause();
+        for (int i = 0; i < 100 && __atomic_load_n(w, __ATOMIC_RELAXED); i++) rx_cpu_relax();
         while (__atomic_exchange_n(w, 2, __ATOMIC_ACQUIRE) != 0) __futex_wait(w, 2, RX_TIME_INFINITE);
     }
     if (m->__i[1]) { m->__i[2] = owner_id(); m->__i[3] = 1; }

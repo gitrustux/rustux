@@ -7,7 +7,6 @@
 //! The few Rustux system calls netd needs (<rustux/syscalls.h>), and the
 //! C library's services (/svc/...).
 
-use std::arch::asm;
 
 pub type Handle = u32;
 
@@ -18,15 +17,14 @@ pub const WRITABLE: u32 = 1 << 1;
 pub const PEER_CLOSED: u32 = 1 << 2;
 pub const TIME_INFINITE: u64 = u64::MAX;
 
+extern "C" {
+    // The C library's system call (each architecture's in <rustux/arch.h>)
+    fn __rx_syscall(n: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> i64;
+}
+
 #[inline]
 unsafe fn syscall(n: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> i64 {
-    let ret: i64;
-    asm!("int 0x80",
-         inlateout("rax") n => ret,
-         in("rdi") a, in("rsi") b, in("rdx") c, in("r10") d, in("r8") e, in("r9") f,
-         lateout("rcx") _, lateout("r11") _,
-         options(nostack));
-    ret
+    __rx_syscall(n, a, b, c, d, e, f)
 }
 
 #[repr(C)]

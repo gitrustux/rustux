@@ -225,14 +225,11 @@ fn set_ports(res: u32, port: u64, len: u64, allow: bool) -> R<usize> {
         }
     }
     // The caller is running: reload its bitmap now
-    let flags: u64;
+    let enabled = crate::arch::cpu::irq_save();
     unsafe {
-        core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem));
         descriptor::load_io_map(p.koid, m.as_deref(), true);
-        if flags & (1 << 9) != 0 {
-            core::arch::asm!("sti", options(nomem, nostack));
-        }
     }
+    crate::arch::cpu::irq_restore(enabled);
     Ok(0)
 }
 

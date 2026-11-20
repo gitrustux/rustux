@@ -482,6 +482,17 @@ it the file, which it reads and nothing beside it (read only, no folder,
 the path still refused); it saves `copy.txt` through the chooser; a
 cancelled question gives it nothing.
 
+## Port check (porting preparation)
+
+`scripts/check-ports.sh` (no QEMU; needs clang): compiles the C library
+and every C program for aarch64 and riscv64, and `cargo check`s every
+Rust program for `aarch64-unknown-linux-musl` and
+`riscv64gc-unknown-linux-musl` (`--quick`: C only). It fails on `asm!` in
+the Rust programs, on a C program that does not build (except those in
+`userspace/X86-ONLY`) and on one in that list that does. The kernel's
+side, no `asm!` outside `src/arch` beyond `src/arch/NOT-YET-MOVED`, is
+checked by `build.rs` on every build. docs/PORTING.md.
+
 ## Apps from outside FoxDen test (FoxDen step FD7c)
 
 `scripts/run-sideload-test.sh` (QEMU, the live desktop, a FAT disk: a

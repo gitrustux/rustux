@@ -226,16 +226,13 @@ impl KernelHeap {
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut Heap) -> R) -> R {
-        let flags: u64;
-        unsafe { core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem)) };
+        let enabled = crate::arch::cpu::irq_save();
         while self.lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             core::hint::spin_loop();
         }
         let r = f(unsafe { &mut *self.heap.get() });
         self.lock.store(false, Ordering::Release);
-        if flags & (1 << 9) != 0 {
-            unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
-        }
+        crate::arch::cpu::irq_restore(enabled);
         r
     }
 }

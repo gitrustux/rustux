@@ -52,6 +52,6 @@ typedef struct {
 int rx_dma_alloc(rx_handle_t bti, size_t size, int low, rx_dma_buf_t *out);
 
 // Memory barrier between filling DMA memory and telling the device
-static inline void rx_dma_barrier(void) { __asm__ volatile("mfence" ::: "memory"); }
+static inline void rx_dma_barrier(void) { rx_arch_barrier(); }
 
 #endif

@@ -408,7 +408,7 @@ fn init_memory() {
                         for &byte in msg {
                             crate::klog::put(byte);
                         }
-                        loop { core::arch::asm!("cli; hlt"); }
+                        crate::arch::cpu::halt_forever();
                     }
                 }
             } else {
@@ -541,13 +541,8 @@ pub extern "C" fn idle_thread_entry(_cpu_id: usize) -> ! {
 ///
 /// Must be called after kernel page tables are set up.
 pub unsafe fn get_kernel_pml4_vaddr() -> crate::arch::amd64::mm::VAddr {
-    // Read CR3 to get PML4 physical address
-    let cr3: u64;
-    core::arch::asm!(
-        "mov {}, cr3",
-        out(reg) cr3,
-        options(nomem, nostack)
-    );
+    // The PML4's physical address (CR3)
+    let cr3 = crate::arch::cpu::page_table_root();
 
     // Convert physical address to virtual (identity mapping for low memory)
     (cr3 as crate::arch::amd64::mm::VAddr)

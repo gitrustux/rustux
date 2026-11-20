@@ -34,17 +34,45 @@ fn forbid_static_mut() {
             all
         }
     };
+    let allowed = asm_allowlist();
     for path in files.iter().filter(|p| p.extension().map_or(false, |x| x == "rs")) {
         println!("cargo:rerun-if-changed={}", path.display());
         let text = std::fs::read_to_string(path).unwrap_or_default();
+        let mut asm = 0;
         for (n, line) in text.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
             // A declaration, not a `&'static mut T` type
             if code.match_indices("static mut ").any(|(i, _)| !code[..i].ends_with('\'')) {
                 panic!("{}:{}: `static mut` is not allowed; use IrqMutex, SpinMutex, BootCell, an atomic or per-CPU data", path.display(), n + 1);
             }
+            asm += code.matches("asm!").count();
+        }
+        // Assembly belongs in src/arch (see docs/PORTING.md)
+        let name = path.to_string_lossy().replace('\\', "/");
+        if name.starts_with("src/arch/") {
+            continue;
+        }
+        let limit = allowed.iter().find(|(p, _)| *p == name).map_or(0, |(_, c)| *c);
+        if asm > limit {
+            panic!("{}: {} asm!/global_asm! outside src/arch (allowed {}); put the instruction in src/arch/amd64 behind a function in src/arch/cpu.rs", name, asm, limit);
+        }
+        if asm < limit {
+            panic!("{}: {} asm!/global_asm! but src/arch/NOT-YET-MOVED allows {}; lower its number there", name, asm, limit);
         }
     }
+}
+
+/// src/arch/NOT-YET-MOVED: `path count ...` lines
+fn asm_allowlist() -> Vec<(String, usize)> {
+    println!("cargo:rerun-if-changed=src/arch/NOT-YET-MOVED");
+    let text = std::fs::read_to_string("src/arch/NOT-YET-MOVED").unwrap_or_default();
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| {
+            let mut w = l.split_whitespace();
+            Some((w.next()?.to_string(), w.next()?.parse().ok()?))
+        })
+        .collect()
 }
 
 fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {

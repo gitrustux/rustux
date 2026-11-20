@@ -42,9 +42,7 @@ pub extern "C" fn test_kernel_main() -> ! {
     // Test complete - halt
     qemu_print("\nTest complete. Halting CPU.\n");
     loop {
-        unsafe {
-            core::arch::asm!("hlt", options(nostack));
-        }
+        crate::arch::cpu::halt();
     }
 }
 

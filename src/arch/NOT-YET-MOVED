@@ -1,0 +1,12 @@
+# Assembly outside src/arch that has not moved behind arch::cpu yet.
+#
+# build.rs counts `asm!` and `global_asm!` in every kernel source file
+# outside src/arch and fails the build when a file has more than this
+# list allows, or fewer (lower the number here when you move one). New
+# x86 code goes in src/arch/amd64 with a portable function in
+# src/arch/cpu.rs; see docs/PORTING.md.
+#
+# path                        count  what is left
+src/main.rs                     3    lea of the stack-switch continuation; a debug lea; the interrupt stubs (global_asm)
+src/process/run.rs              1    the user-entry and context-switch stubs (global_asm)
+src/drivers/keyboard/ps2.rs     7    port I/O and delay loops of the PS/2 controller, an x86-only device

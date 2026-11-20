@@ -77,9 +77,15 @@ int main(void) {
     rx_puts(" passed, ");
     rx_putd(failed);
     rx_puts(failed ? " FAILED\n" : " failed\n");
+#ifdef RX_ARCH_HAS_PORT_IO
     rx_puts("drvtest: now reading port 0x60 directly; the CPU should stop us...\n");
     volatile uint8_t v = rx_inb(0x60);
     (void)v;
     rx_puts("  FAIL port 0x60 was readable without permission\n");
     rx_exit(1);
+#else
+    // No I/O ports on this architecture: the device-memory checks above
+    // are the whole test (docs/PORTING.md)
+    rx_exit(failed ? 1 : 0);
+#endif
 }

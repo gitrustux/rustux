@@ -88,23 +88,9 @@ fn kernel_main() -> ! {
     // Uses port 0xE9 which works without framebuffer, stack, or Rust runtime.
     // If you see 'K' in QEMU debug console, kernel entry was reached.
     // ================================================================
-    unsafe {
-        // Step 1: Send 'K' to prove we're in kernel mode
-        core::arch::asm!(
-            "mov dx, 0xE9",
-            "mov al, 0x4B",  // 'K' in ASCII
-            "out dx, al",
-            options(nomem, nostack)
-        );
-
-        // Step 2: Send '1' to prove we can execute sequential instructions
-        core::arch::asm!(
-            "mov dx, 0xE9",
-            "mov al, 0x31",  // '1' in ASCII
-            "out dx, al",
-            options(nomem, nostack)
-        );
-    }
+    // 'K' then '1' on the debug console
+    rustux::arch::cpu::debug_out(b'K');
+    rustux::arch::cpu::debug_out(b'1');
 
     debug_print("╔══════════════════════════════════════════════════════════╗\n");
     debug_print("║  KERNEL MODE - Testing Interrupts                       ║\n");
@@ -144,7 +130,7 @@ fn kernel_main() -> ! {
                 debug_print("[VM] FATAL: ");
                 debug_print(e);
                 debug_print("\n");
-                loop { asm!("hlt"); }
+                loop { rustux::arch::cpu::halt(); }
             }
         }
     }
@@ -165,7 +151,7 @@ fn kernel_main() -> ! {
                 debug_print("[VM] FATAL: ");
                 debug_print(e);
                 debug_print("\n");
-                loop { asm!("hlt"); }
+                loop { rustux::arch::cpu::halt(); }
             }
         }
     };
@@ -398,12 +384,12 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
             }
             Err(_) => {
                 debug_print("[INIT] could not start /bin/init\n");
-                loop { core::arch::asm!("hlt"); }
+                loop { rustux::arch::cpu::halt(); }
             }
         }
 
         // Unreachable
-        loop { unsafe { asm!("hlt"); } }
+        loop { rustux::arch::cpu::halt(); }
     }
 
     // Enable interrupts
@@ -411,7 +397,7 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     debug_print("║  PHASE 4A: Testing Userspace Execution                  ║\n");
     debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
 
-    unsafe { asm!("sti"); }
+    rustux::arch::cpu::irq_enable();
 
     // TEST: Userspace execution (Phase 4A) - MOVED BEFORE exit_boot_services
     // Load and execute the userspace ELF binary
@@ -423,7 +409,7 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
 
     // Never reached
-    loop { unsafe { asm!("hlt"); } }
+    loop { rustux::arch::cpu::halt(); }
 }
 
 /// Wake IPI: only makes a halted CPU look for work
@@ -499,8 +485,7 @@ const EXCEPTION_NAMES: [&str; 21] = [
 /// Report a CPU exception. User-mode faults kill the current process;
 /// kernel-mode faults halt the machine.
 fn handle_exception(vector: u64, code: Option<u64>, frame: &InterruptFrame) {
-    let cr2: u64;
-    unsafe { asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)) };
+    let cr2 = rustux::arch::cpu::fault_address();
     let name = EXCEPTION_NAMES.get(vector as usize).copied().unwrap_or("exception");
     let user = frame.cs & 3 == 3;
     // Demand paging (step F1): a user page not present yet is committed and
@@ -559,9 +544,7 @@ fn handle_exception(vector: u64, code: Option<u64>, frame: &InterruptFrame) {
     if user {
         rustux::process::run::exit_current(rustux::kobj::task::RETCODE_EXCEPTION);
     }
-    loop {
-        unsafe { asm!("cli", "hlt", options(nomem, nostack)) };
-    }
+    rustux::arch::cpu::halt_forever()
 }
 
 macro_rules! exception_handler {
@@ -628,12 +611,10 @@ unsafe fn install_exception_handlers() {
 pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
     // From user mode the thread may be switched out (and resumed on another
     // CPU): keep its FPU/SSE registers on its own kernel stack meanwhile
-    #[repr(C, align(16))]
-    struct FxArea([u8; 512]);
     let from_user = frame.cs & 3 == 3;
-    let mut fx = FxArea([0; 512]);
+    let mut fx = rustux::arch::cpu::FpuArea::new();
     if from_user {
-        unsafe { asm!("fxsave64 [{}]", in(reg) fx.0.as_mut_ptr(), options(nostack)) };
+        fx.save();
     }
     unsafe {
         // Report the first tick only (test-qemu.sh looks for it); a line per
@@ -660,7 +641,7 @@ pub extern "x86-interrupt" fn timer_handler(frame: InterruptFrame) {
         rustux::process::run::exit_if_killed();
     }
     if from_user {
-        unsafe { asm!("fxrstor64 [{}]", in(reg) fx.0.as_ptr(), options(nostack)) };
+        fx.restore();
     }
 }
 
@@ -1170,7 +1151,7 @@ fn print_hex(n: u64) {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // Report where and why, then stop this CPU for good
-    unsafe { asm!("cli", options(nostack, nomem)) };
+    rustux::arch::cpu::irq_disable();
     struct Out;
     impl core::fmt::Write for Out {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -1192,5 +1173,5 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         rustux::arch::amd64::tsc::delay_ms(secs.min(3600) * 1000);
         rustux::arch::amd64::platform::reboot();
     }
-    loop { unsafe { asm!("cli", "hlt", options(nostack, nomem)) }; }
+    rustux::arch::cpu::halt_forever()
 }

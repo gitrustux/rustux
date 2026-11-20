@@ -33,14 +33,13 @@ struct Stats {
     kernel_heap_used: u64,
 }
 
+extern "C" {
+    // The C library's system call (each architecture's in <rustux/arch.h>)
+    fn __rx_syscall(n: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> i64;
+}
+
 fn syscall(n: i64, a: i64, b: i64) -> i64 {
-    let ret: i64;
-    // Rustux's system call: int 0x80, number in rax, arguments in rdi, rsi
-    unsafe {
-        std::arch::asm!("int 0x80", inlateout("rax") n => ret, in("rdi") a, in("rsi") b, in("rdx") 0i64,
-                        in("r10") 0i64, in("r8") 0i64, in("r9") 0i64, lateout("rcx") _, lateout("r11") _);
-    }
-    ret
+    unsafe { __rx_syscall(n, a, b, 0, 0, 0, 0) }
 }
 
 fn stats() -> Option<Stats> {

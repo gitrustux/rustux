@@ -18,19 +18,17 @@ fn address(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
 
 /// Read a 32-bit configuration register
 pub fn read32(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
-    let v: u32;
     unsafe {
-        core::arch::asm!("out dx, eax", in("dx") CONFIG_ADDRESS, in("eax") address(bus, dev, func, reg), options(nomem, nostack));
-        core::arch::asm!("in eax, dx", in("dx") CONFIG_DATA, out("eax") v, options(nomem, nostack));
+        crate::arch::amd64::ioport::outl(CONFIG_ADDRESS, address(bus, dev, func, reg));
+        crate::arch::amd64::ioport::inl(CONFIG_DATA)
     }
-    v
 }
 
 /// Write a 32-bit configuration register
 pub fn write32(bus: u8, dev: u8, func: u8, reg: u8, value: u32) {
     unsafe {
-        core::arch::asm!("out dx, eax", in("dx") CONFIG_ADDRESS, in("eax") address(bus, dev, func, reg), options(nomem, nostack));
-        core::arch::asm!("out dx, eax", in("dx") CONFIG_DATA, in("eax") value, options(nomem, nostack));
+        crate::arch::amd64::ioport::outl(CONFIG_ADDRESS, address(bus, dev, func, reg));
+        crate::arch::amd64::ioport::outl(CONFIG_DATA, value);
     }
 }
 

@@ -443,32 +443,17 @@ static uint64_t mix(uint64_t x) {
     return x ^ (x >> 31);
 }
 
-static int has_rdrand(void) {
-    static int known = -1;
-    if (known < 0) {
-        unsigned a = 1, b, c, d;
-        __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
-        known = (c >> 30) & 1;
-    }
-    return known;
-}
-
-// RDRAND where the CPU has it, mixed with the time stamp counter and the
-// clocks (no kernel entropy source yet)
+// The CPU's random numbers where it has them (RDRAND), mixed with its
+// cycle counter and the clocks (no kernel entropy source yet;
+// <rustux/arch.h>)
 ssize_t getrandom(void *buf, size_t len, unsigned flags) {
     (void)flags;
     static uint64_t state;
     unsigned char *p = buf;
-    uint64_t lo, hi;
     for (size_t i = 0; i < len;) {
-        __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-        uint64_t v = mix(state ^ (hi << 32 | lo) ^ rx_clock_get_monotonic() ^ (uint64_t)rx_clock_get_utc());
-        if (has_rdrand()) {
-            uint64_t r = 0;
-            unsigned char ok = 0;
-            for (int t = 0; t < 10 && !ok; t++) __asm__ volatile("rdrand %0; setc %1" : "=r"(r), "=qm"(ok));
-            v ^= r;
-        }
+        uint64_t v = mix(state ^ rx_arch_cycles() ^ rx_clock_get_monotonic() ^ (uint64_t)rx_clock_get_utc());
+        uint64_t r = 0;
+        if (rx_arch_hw_random(&r)) v ^= r;
         state = v;
         for (int k = 0; k < 8 && i < len; k++, i++) p[i] = (unsigned char)(v >> (8 * k));
     }

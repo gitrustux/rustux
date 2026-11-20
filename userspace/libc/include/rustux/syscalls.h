@@ -170,17 +170,8 @@ typedef struct {
     uint32_t pending;
 } rx_wait_item_t;
 
-static inline int64_t rx_syscall(int64_t n, int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f) {
-    register int64_t r10 __asm__("r10") = d;
-    register int64_t r8 __asm__("r8") = e;
-    register int64_t r9 __asm__("r9") = f;
-    int64_t ret;
-    __asm__ volatile("int $0x80"
-                     : "=a"(ret)
-                     : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9)
-                     : "memory", "rcx", "r11");
-    return ret;
-}
+// rx_syscall: the architecture's system call (<rustux/arch.h>)
+#include <rustux/arch.h>
 
 #define RX_SYS(n, a, b, c, d) rx_syscall((n), (int64_t)(a), (int64_t)(b), (int64_t)(c), (int64_t)(d), 0, 0)
 #define RX_SYS6(n, a, b, c, d, e, f) rx_syscall((n), (int64_t)(a), (int64_t)(b), (int64_t)(c), (int64_t)(d), (int64_t)(e), (int64_t)(f))
@@ -345,24 +336,7 @@ static inline rx_status_t rx_interrupt_ack(rx_handle_t h) { return RX_SYS(0x82, 
 static inline rx_status_t rx_interrupt_destroy(rx_handle_t h) { return RX_SYS(0x83, h, 0, 0, 0); }
 static inline rx_status_t rx_ioports_request(rx_handle_t resource, uint16_t port, uint32_t len) { return RX_SYS(0x84, resource, port, len, 0); }
 static inline rx_status_t rx_ioports_release(rx_handle_t resource, uint16_t port, uint32_t len) { return RX_SYS(0x85, resource, port, len, 0); }
-static inline uint8_t rx_inb(uint16_t port) {
-    uint8_t v;
-    __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
-    return v;
-}
-static inline void rx_outb(uint16_t port, uint8_t v) { __asm__ volatile("outb %0, %1" : : "a"(v), "Nd"(port)); }
-static inline uint16_t rx_inw(uint16_t port) {
-    uint16_t v;
-    __asm__ volatile("inw %1, %0" : "=a"(v) : "Nd"(port));
-    return v;
-}
-static inline void rx_outw(uint16_t port, uint16_t v) { __asm__ volatile("outw %0, %1" : : "a"(v), "Nd"(port)); }
-static inline uint32_t rx_inl(uint16_t port) {
-    uint32_t v;
-    __asm__ volatile("inl %1, %0" : "=a"(v) : "Nd"(port));
-    return v;
-}
-static inline void rx_outl(uint16_t port, uint32_t v) { __asm__ volatile("outl %0, %1" : : "a"(v), "Nd"(port)); }
+// rx_inb() and the like: <rustux/arch.h>, on x86 (RX_ARCH_HAS_PORT_IO)
 
 // Debugging / tests
 static inline int64_t rx_debug_cpu(void) { return RX_SYS(0x51, 0, 0, 0, 0); }

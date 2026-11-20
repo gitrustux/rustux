@@ -20,8 +20,10 @@ mkdir -p "$OUT/libc" bin
 
 # The library
 objs=()
-for src in libc/src/*.c; do
+# (libc/src/arch/: x86_64.c, this architecture's part; docs/PORTING.md)
+for src in libc/src/*.c libc/src/arch/x86_64.c; do
     obj="$OUT/libc/$(basename "${src%.c}").o"
+    [[ $src == */arch/* ]] && obj="$OUT/libc/arch-$(basename "${src%.c}").o"
     $CC $CFLAGS -c "$src" -o "$obj"
     [[ $src == */crt0.c ]] || objs+=("$obj")
 done

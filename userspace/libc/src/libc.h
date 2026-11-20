@@ -47,11 +47,13 @@ uint32_t __pty_poll_signals(void);
 void __pty_ref(struct fd *f);
 void __pty_release(struct fd *f);
 
-// Threads. The thread pointer (FS base) points at the thread's control
-// block; its thread-local storage lies just below it (x86-64 variant II).
+// Threads. The thread pointer (on x86-64 the FS base) points at the
+// thread's control block; its thread-local storage lies just below it
+// (x86-64 variant II; another architecture's port settles its own:
+// docs/PORTING.md).
 #define RX_KEYS_MAX 128
 struct __pthread {
-    struct __pthread *self;     // must stay first: %fs:0
+    struct __pthread *self;     // must stay first: %fs:0 on x86-64
     int err;                    // errno
     volatile int detach_state;  // 0 joinable, 1 detached, 2 joined
     rx_handle_t handle;         // the thread
@@ -68,11 +70,7 @@ struct __pthread {
     char name[32];
 };
 
-static inline struct __pthread *__self(void) {
-    struct __pthread *t;
-    __asm__("mov %%fs:0, %0" : "=r"(t));
-    return t;
-}
+static inline struct __pthread *__self(void) { return (struct __pthread *)rx_arch_thread_pointer(); }
 
 // A spin lock for the library's internals (malloc, filesystem calls,
 // futex queues): spins briefly, then yields the CPU

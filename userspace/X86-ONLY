@@ -1,0 +1,6 @@
+# C programs that are x86-only by nature: scripts/check-ports.sh does not
+# expect them to build for aarch64 or riscv64 (docs/PORTING.md). Remove a
+# line once its program builds everywhere.
+#
+# program   why
+ps2kbd      the PS/2 keyboard controller, reached through I/O ports: a PC device

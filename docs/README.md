@@ -89,6 +89,7 @@ docs/
 ├── ARCHITECTURE.md               # Kernel architecture
 ├── OBJECTS.md                    # Kernel object reference
 ├── SYSCALL.md                    # System call reference
+├── PORTING.md                    # Porting to aarch64 and riscv64: what is ready, the rules
 ├── TESTS.md                      # Build, QEMU testing and debugging
 ├── USERS.md                      # Users, permissions, login, su, sudo (step 17)
 ├── SERVICES.md                   # Services (init, svc) and the system log (step 18)
@@ -396,6 +397,7 @@ Should show:
 | `docs/ARCHITECTURE.md` | Kernel architecture |
 | `docs/OBJECTS.md` | Kernel objects |
 | `docs/SYSCALL.md` | System calls |
+| `docs/PORTING.md` | Porting to other architectures |
 | `docs/TESTS.md` | Build, QEMU testing and debugging |
 | `docs/ROADMAP.md` | Architecture checklist |
 | `docs/HISTORY.md` | Project history and decisions |

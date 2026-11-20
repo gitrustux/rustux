@@ -22,7 +22,7 @@ static WRITTEN: AtomicU64 = AtomicU64::new(0);
 /// Write one byte to the debug port only
 #[inline(always)]
 pub fn port_put(b: u8) {
-    unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b, options(nomem, nostack, preserves_flags)) };
+    crate::arch::cpu::debug_out(b)
 }
 
 /// Log one byte

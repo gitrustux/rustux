@@ -31,8 +31,10 @@ The Rustux system call interface provides a stable, cross-architecture ABI for u
 | Architecture | Syscall Instruction | Status |
 |--------------|---------------------|--------|
 | AMD64 (x86_64) | `int 0x80` (see note below) | ✅ Implemented |
-| ARM64 (AArch64) | `svc #0` | 🔶 ABI defined |
-| RISC-V | `ecall` | 🔶 ABI defined |
+| ARM64 (AArch64) | `svc #0` | 🔶 ABI defined; the C library's side written |
+| RISC-V | `ecall` | 🔶 ABI defined; the C library's side written |
+
+Programs never write the instruction themselves: C calls `rx_syscall()` from `<rustux/arch.h>` (through `<rustux/syscalls.h>`), and Rust programs call the C library's `__rx_syscall(n, a, b, c, d, e, f)`. Each architecture has its version in `userspace/libc/include/rustux/arch/`; docs/PORTING.md has the rest.
 
 ---
 
@@ -77,8 +79,9 @@ svc #0                      ; Enter kernel
 ```
 
 **Register Usage:**
-- `x8`: Syscall number (in) / Return value (out)
-- `x0-x5`: Arguments (in order)
+- `x8`: Syscall number (in)
+- `x0-x5`: Arguments (in order); `x0` is the return value (out)
+- All other registers are preserved (the same promise as on x86-64)
 
 ### RISC-V
 
@@ -96,8 +99,9 @@ ecall                       ; Enter kernel
 ```
 
 **Register Usage:**
-- `a7`: Syscall number (in) / Return value (out)
-- `a0-a5`: Arguments (in order)
+- `a7`: Syscall number (in)
+- `a0-a5`: Arguments (in order); `a0` is the return value (out)
+- All other registers are preserved (the same promise as on x86-64)
 
 ---
 

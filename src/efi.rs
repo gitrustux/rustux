@@ -108,30 +108,16 @@ pub fn ready() -> bool {
     READY.load(Ordering::Acquire)
 }
 
-#[repr(C, align(16))]
-struct FxArea([u8; 512]);
-
 /// Run `f` as a firmware call: alone, interrupts off, SSE state kept
 fn call<T>(f: impl FnOnce() -> T) -> T {
-    let mut fx = FxArea([0; 512]);
-    let flags: u64;
-    unsafe {
-        core::arch::asm!("pushfq", "pop {}", "cli", out(reg) flags);
-    }
+    let mut fx = crate::arch::cpu::FpuArea::new();
+    let enabled = crate::arch::cpu::irq_save();
     let g = LOCK.lock();
-    unsafe {
-        core::arch::asm!("fxsave64 [{}]", in(reg) fx.0.as_mut_ptr(), options(nostack));
-    }
+    fx.save();
     let r = f();
-    unsafe {
-        core::arch::asm!("fxrstor64 [{}]", in(reg) fx.0.as_ptr(), options(nostack));
-    }
+    fx.restore();
     drop(g);
-    unsafe {
-        if flags & (1 << 9) != 0 {
-            core::arch::asm!("sti");
-        }
-    }
+    crate::arch::cpu::irq_restore(enabled);
     r
 }
 

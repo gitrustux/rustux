@@ -62,8 +62,6 @@ int *__errno_location(void);
 #define ENOMEDIUM 123
 #define EDEADLK 35
 #define ENODATA 61
-#define ENOTSUP 95
-#define EOPNOTSUPP 95
 #define ECANCELED 125
 // Networking (Linux's numbers, as Rust's std expects; network step D2)
 #define EDESTADDRREQ 89
