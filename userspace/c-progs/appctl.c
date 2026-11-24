@@ -286,6 +286,32 @@ static int add_file(const char *arg, char *abs, size_t cap) {
     return 0;
 }
 
+// The theme (theme= of ~/.config/rustica.conf, else of
+// /etc/rustica/appearance): the app cannot read the user's file in its
+// sandbox, so it gets RUSTICA_THEME (later changes come from the
+// compositor)
+static void user_theme(const char *home, char *out, size_t n) {
+    const char *e = getenv("RUSTICA_THEME");
+    out[0] = 0;
+    if (e && *e) {
+        snprintf(out, n, "%s", e);
+        return;
+    }
+    char p[600], line[256];
+    snprintf(p, sizeof p, "%s/.config/rustica.conf", home);
+    const char *files[] = { "/etc/rustica/appearance", p };
+    for (int i = 0; i < 2; i++) {
+        FILE *f = fopen(files[i], "r");
+        if (!f) continue;
+        while (fgets(line, sizeof line, f))
+            if (!strncmp(line, "theme=", 6)) {
+                line[strcspn(line, " \t\r\n")] = 0;
+                snprintf(out, n, "%s", line + 6);
+            }
+        fclose(f);
+    }
+}
+
 static const char *mode_name(int m) { return m == RX_FS_VIEW_RO ? "ro" : m == RX_FS_VIEW_RW ? "rw" : "open"; }
 
 // ---- running it ----
@@ -458,6 +484,9 @@ static int run(int argc, char **argv, const struct passwd *pw) {
     ENV("TMPDIR=%s", tmp);
     float sc = user_scale(home);
     if (sc >= 1 && sc <= 4) ENV("RUSTICA_SCALE=%d", (int)(sc + 0.5f));
+    char theme[32];
+    user_theme(home, theme, sizeof theme);
+    if (theme[0] && strspn(theme, "abcdefghijklmnopqrstuvwxyz") == strlen(theme)) ENV("RUSTICA_THEME=%s", theme);
     static const char *pass[] = { "RUSTICA_WINDOW_AT", "TZ", "LANG", "TERM", 0 };
     for (int k = 0; pass[k]; k++) {
         const char *v = getenv(pass[k]);

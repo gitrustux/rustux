@@ -93,6 +93,7 @@ uses).
 | `userdel`, `usermod` | `userdel [-r]`; `usermod [-a] -G GROUPS`, `-g -s -d -c`, `-L` / `-U` (lock, unlock) |
 | `groupadd`, `groupdel` | `groupadd [-g GID]`; a group that is someone's primary group is not removed |
 | `chpasswd` | lines `USER:PASSWORD` on stdin (root) |
+| `theme` | the colour theme, Rustica or Dracula: `theme` shows the console's and the desktop's, `theme NAME` sets both, `--console` (OSC sequences; as root kept in `/etc/console-theme`) or `--desktop` (`~/.config/rustica.conf`) one; `theme list` |
 | `timedatectl` | `status`, `list-timezones`, `set-timezone ZONE`, `set-time "YYYY-MM-DD HH:MM:SS"`, `set-local-rtc 0|1`; no NTP |
 | `localectl` | `status`, `list-keymaps`, `set-keymap NAME` (the input service changes layout at once, for the console and graphics alike); the locale is always `C.UTF-8` |
 | `poweroff`, `reboot` | root (or `sudo poweroff`): init stops the services (logd last), writes out and marks clean every filesystem, then the power |

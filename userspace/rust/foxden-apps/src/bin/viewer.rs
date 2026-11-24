@@ -59,7 +59,7 @@ impl Viewer {
         }
         let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let (w, h) = (ui.canvas.width(), ui.canvas.height());
-        ui.canvas.fill_rect(Rect::new(0.0, 0.0, w, h), 0x1E1F29);
+        ui.canvas.fill_rect(Rect::new(0.0, 0.0, w, h), ui.theme.background);
         match &self.image {
             Some((_, Ok(img))) => {
                 ctl.requests.push(rustica_ui::Request::Title(format!("{name} ({}×{}) — Image Viewer", img.width(), img.height())));

@@ -1,0 +1,10 @@
+Rustica's wallpapers, in QOI (qoiformat.org), the format the compositor
+reads:
+
+  rustica-fox.qoi            the default, landscape screens (1207x941)
+  rustica-fox-portrait.qoi   the default, portrait screens and the mobile
+                             edition (451x941)
+
+The fox artwork was given to the project by its owner (2026-11-24) as
+Rustica's default wallpaper. Settings > Appearance turns another picture
+(PNG, JPEG or QOI) into ~/.config/rustica/wallpaper.qoi.

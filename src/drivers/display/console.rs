@@ -15,7 +15,10 @@
 //!   accented Latin letters show without the accent; anything else is a box
 //! - control characters BS, HT, LF, VT, FF, CR; ESC 7/8 (save/restore
 //!   cursor), ESC D/M/E (index, reverse index, next line), ESC c (reset);
-//!   OSC strings (window title) are skipped
+//!   OSC 4 (a palette colour), 10 and 11 (the default foreground and
+//!   background), 104, 110 and 111 (back to Dracula) change the colours;
+//!   other OSC strings (the window title) are skipped. The `theme` command
+//!   uses them (Rustica or Dracula, the default)
 //! - CSI A B C D E F G H f d (cursor), J K X (erase), L M (insert/delete
 //!   lines), @ P (insert/delete characters), S T (scroll), r (scrolling
 //!   region), s u (save/restore), m (bold, underline, reverse, 16 and 256
@@ -73,9 +76,25 @@ const ATTR_REVERSE: u8 = 4;
 
 const SCROLLBACK: usize = 500;
 
+/// The 16 colours and the default foreground and background now (OSC 4,
+/// 10, 11), as 0xRRGGBB; u32::MAX (not set) means Dracula's
+static PAL: [core::sync::atomic::AtomicU32; 18] = [const { core::sync::atomic::AtomicU32::new(u32::MAX) }; 18];
+
+fn pal(i: usize) -> Color {
+    let v = PAL[i].load(Ordering::Relaxed);
+    if v == u32::MAX {
+        return match i {
+            16 => DRACULA_FG,
+            17 => DRACULA_BG,
+            _ => ANSI16[i],
+        };
+    }
+    Color::new((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
 fn palette(i: u16) -> Color {
     match i {
-        0..=15 => ANSI16[i as usize],
+        0..=15 => pal(i as usize),
         16..=231 => {
             let n = i - 16;
             let level = |v: u16| if v == 0 { 0 } else { (55 + v * 40) as u8 };
@@ -85,9 +104,36 @@ fn palette(i: u16) -> Color {
             let v = (8 + (i - 232) * 10) as u8;
             Color::new(v, v, v)
         }
-        DEF_FG => DRACULA_FG,
-        _ => DRACULA_BG,
+        DEF_FG => pal(16),
+        _ => pal(17),
     }
+}
+
+/// "#RRGGBB" or "rgb:RR/GG/BB" (or 4 hex digits each, of which the first two)
+fn parse_color(s: &[u8]) -> Option<u32> {
+    let hex = |b: &[u8]| -> Option<u32> {
+        let mut v = 0u32;
+        for &c in b {
+            v = v * 16 + (c as char).to_digit(16)?;
+        }
+        Some(v)
+    };
+    if s.len() == 7 && s[0] == b'#' {
+        return hex(&s[1..]);
+    }
+    let rest = s.strip_prefix(b"rgb:")?;
+    let mut parts = rest.split(|&c| c == b'/');
+    let mut v = 0u32;
+    for _ in 0..3 {
+        let p = parts.next()?;
+        if p.is_empty() || p.len() > 4 {
+            return None;
+        }
+        let c = hex(&p[..p.len().min(2)])?;
+        let c = if p.len() == 1 { c * 17 } else { c };
+        v = v << 8 | c;
+    }
+    Some(v)
 }
 
 /// Nearest palette entry for a true colour (the 6x6x6 cube)
@@ -152,6 +198,8 @@ pub struct TextConsole {
     esc_params: [u16; 16],
     esc_nparams: usize,
     esc_private: bool,
+    osc: [u8; 160],
+    osc_len: usize,
     utf8_cp: u32,
     utf8_left: u8,
 }
@@ -191,8 +239,53 @@ impl TextConsole {
             esc_params: [0; 16],
             esc_nparams: 0,
             esc_private: false,
+            osc: [0; 160],
+            osc_len: 0,
             utf8_cp: 0,
             utf8_left: 0,
+        }
+    }
+
+    /// An OSC string ended: the colour ones change the palette, and the
+    /// whole screen is drawn again in it
+    fn osc_done(&mut self) {
+        let s = &self.osc[..self.osc_len.min(self.osc.len())];
+        let mut it = s.split(|&c| c == b';');
+        let Some(cmd) = it.next() else { return };
+        let mut changed = false;
+        match cmd {
+            b"4" => {
+                while let (Some(n), Some(c)) = (it.next(), it.next()) {
+                    let n = core::str::from_utf8(n).ok().and_then(|n| n.parse::<usize>().ok());
+                    if let (Some(n), Some(v)) = (n, parse_color(c)) {
+                        if n < 16 {
+                            PAL[n].store(v, Ordering::Relaxed);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            b"10" | b"11" => {
+                if let Some(v) = it.next().and_then(parse_color) {
+                    PAL[if cmd == b"10" { 16 } else { 17 }].store(v, Ordering::Relaxed);
+                    changed = true;
+                }
+            }
+            b"104" => {
+                for i in 0..16 {
+                    PAL[i].store(u32::MAX, Ordering::Relaxed);
+                }
+                changed = true;
+            }
+            b"110" | b"111" => {
+                PAL[if cmd == b"110" { 16 } else { 17 }].store(u32::MAX, Ordering::Relaxed);
+                changed = true;
+            }
+            _ => {}
+        }
+        self.osc_len = 0;
+        if changed {
+            self.mark_all();
         }
     }
 
@@ -368,9 +461,20 @@ impl TextConsole {
             3 => {
                 // OSC: until BEL or ESC \
                 match ch {
-                    0x07 => self.esc_state = 0,
-                    0x1B => self.esc_state = 4,
-                    _ => {}
+                    0x07 => {
+                        self.esc_state = 0;
+                        self.osc_done();
+                    }
+                    0x1B => {
+                        self.esc_state = 4;
+                        self.osc_done();
+                    }
+                    _ => {
+                        if self.osc_len < self.osc.len() {
+                            self.osc[self.osc_len] = ch;
+                            self.osc_len += 1;
+                        }
+                    }
                 }
                 return;
             }
@@ -458,7 +562,10 @@ impl TextConsole {
                 self.esc_nparams = 0;
                 self.esc_private = false;
             }
-            b']' => self.esc_state = 3,
+            b']' => {
+                self.esc_state = 3;
+                self.osc_len = 0;
+            }
             b'(' | b')' => self.esc_state = 5,
             b'7' => self.save_cursor(),
             b'8' => self.restore_cursor(),
@@ -1255,6 +1362,6 @@ pub fn set_color(_fg: Color, _bg: Color) {}
 pub fn get_color() -> (Color, Color) {
     match CONSOLE.lock().as_ref() {
         Some(console) => (console.fg_color(), console.bg_color()),
-        None => (DRACULA_FG, DRACULA_BG),
+        None => (pal(16), pal(17)),
     }
 }

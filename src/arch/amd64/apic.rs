@@ -171,6 +171,16 @@ pub fn apic_local_init() {
 
         // Disable x2APIC if enabled and ensure APIC is on
         if (msr_value & X2APIC_ENABLE_BIT) != 0 {
+            // x2APIC to xAPIC directly is an invalid transition (#GP on
+            // Intel and AMD): go through "disabled" (both bits clear) first
+            let off = msr_value & !(X2APIC_ENABLE_BIT | APIC_ENABLE_BIT);
+            core::arch::asm!(
+                "wrmsr",
+                in("ecx") IA32_APIC_BASE,
+                in("eax") (off as u32),
+                in("edx") ((off >> 32) as u32),
+                options(nomem, nostack, preserves_flags)
+            );
             msr_value &= !X2APIC_ENABLE_BIT;
             msr_value |= APIC_ENABLE_BIT;
             core::arch::asm!(

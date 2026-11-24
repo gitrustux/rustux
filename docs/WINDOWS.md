@@ -42,6 +42,8 @@ animation to what the screen takes.
 | `CLOSE_REQUEST` | the close button or Alt+F4 |
 | `FRAME` | the last commit is on the screen |
 | `WINDOW_INFO` | (to the panel) x -1 starts a new list, then one per window: its id, title (15 characters), focused, minimised; sent on every change |
+| `APPEARANCE` | (110) the theme or the wallpaper changed; text: the theme's name (`rustica`, `dracula`). `SESSION.md` "Appearance" |
+| `DESKTOP` | (111, to the panel) the desktop's menu was used: flags 1 Change wallpaper, 2 Appearance settings |
 
 | Client to compositor | |
 |---|---|

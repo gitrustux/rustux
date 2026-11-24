@@ -8,6 +8,11 @@
 //! and a password; desktop --run starts it (as root) and checks them: the
 //! greeter writes "login\tNAME\tPASSWORD" on its stdout and reads "ok" or
 //! "fail" on its stdin. It ends when someone has logged in.
+//!
+//!   greeter [--auto NAME]
+//!
+//! With --auto (the live system: /etc/autologin names NAME), it also
+//! offers "Continue as NAME" without a password, and writes "auto\tNAME".
 
 use rustica_ui::{Control, Request, Ui};
 use std::io::{BufRead, Write};
@@ -18,11 +23,16 @@ struct Greeter {
     message: String,
     first: bool,
     host: String,
+    auto: Option<String>,
 }
 
 fn check(name: &str, password: &str) -> bool {
+    ask(&format!("login\t{name}\t{password}"))
+}
+
+fn ask(line: &str) -> bool {
     let mut out = std::io::stdout();
-    if writeln!(out, "login\t{name}\t{password}").is_err() || out.flush().is_err() {
+    if writeln!(out, "{line}").is_err() || out.flush().is_err() {
         return false;
     }
     let mut line = String::new();
@@ -45,6 +55,17 @@ fn frame(g: &mut Greeter, ui: &mut Ui, ctl: &mut Control) {
             ui.heading("Rustica");
             ui.dim_label(&format!("Log in to {}", g.host));
             ui.space(10.0);
+            if let Some(a) = g.auto.clone() {
+                if ui.primary_button(&format!("Continue as {a}")) {
+                    if ask(&format!("auto\t{a}")) {
+                        ctl.quit = true;
+                    } else {
+                        g.message = "Cannot log in".into();
+                    }
+                }
+                ui.dim_label("This live system needs no password. Or log in as someone else:");
+                ui.space(6.0);
+            }
             ui.label("Name");
             let (_, e1) = ui.text_field("name", &mut g.name, 360.0);
             ui.label("Password");
@@ -70,7 +91,9 @@ fn frame(g: &mut Greeter, ui: &mut Ui, ctl: &mut Control) {
 
 fn main() {
     let host = std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()).unwrap_or_else(|_| "rustica".into());
-    let mut g = Greeter { name: String::new(), password: String::new(), message: String::new(), first: true, host };
+    let args: Vec<String> = std::env::args().collect();
+    let auto = args.iter().position(|a| a == "--auto").and_then(|i| args.get(i + 1)).cloned();
+    let mut g = Greeter { name: String::new(), password: String::new(), message: String::new(), first: true, host, auto };
     if let Err(e) = rustica_ui::run("Log in", 640, 480, None, |ui, ctl| frame(&mut g, ui, ctl)) {
         eprintln!("greeter: {e}");
         std::process::exit(1);

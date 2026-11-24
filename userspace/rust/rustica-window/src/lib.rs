@@ -108,6 +108,11 @@ pub enum Event {
     WindowInfo { id: i32, title: String, focused: bool, minimized: bool },
     /// [`Waker::wake`] was called
     Wake,
+    /// The theme or the wallpaper changed; the theme's name
+    Appearance { theme: String },
+    /// To the panel: the desktop's menu was used (1 change the wallpaper,
+    /// 2 the appearance settings)
+    Desktop(u32),
 }
 
 /// Wakes a window's event loop from another thread: its next_event
@@ -232,6 +237,8 @@ impl Window {
         const STATE: u32 = 107;
         const WINDOW_INFO: u32 = 108;
         const WAKE: u32 = 109;
+        const APPEARANCE: u32 = 110;
+        const DESKTOP: u32 = 111;
         Some(match ev.op {
             CONFIGURE => Event::Configure { width: ev.w, height: ev.h },
             KEY => {
@@ -254,6 +261,11 @@ impl Window {
             },
             FRAME => Event::Frame,
             WAKE => Event::Wake,
+            APPEARANCE => {
+                let len = ev.text.iter().position(|&b| b == 0).unwrap_or(ev.text.len());
+                Event::Appearance { theme: String::from_utf8_lossy(&ev.text[..len]).into_owned() }
+            }
+            DESKTOP => Event::Desktop(ev.flags),
             WINDOW_INFO => {
                 let len = ev.text.iter().position(|&b| b == 0).unwrap_or(ev.text.len());
                 Event::WindowInfo {

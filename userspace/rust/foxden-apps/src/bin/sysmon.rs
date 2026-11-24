@@ -150,9 +150,9 @@ impl Mon {
         ui.dim_label(&self.version);
         ui.space(4.0);
         let cpus = format!("Processors ({})", s.cpus);
-        Self::graph(ui, &cpus, &cpu_now, &self.cpu, 0x50FA7B);
+        Self::graph(ui, &cpus, &cpu_now, &self.cpu, ui.theme.good);
         let mem_now = format!("{} of {}", mib(used), mib(s.total_bytes));
-        Self::graph(ui, "Memory", &mem_now, &self.mem, 0xBD93F9);
+        Self::graph(ui, "Memory", &mem_now, &self.mem, ui.theme.accent);
         ui.row(|ui| {
             ui.label(&format!("Up {}", uptime(s.uptime)));
             ui.dim_label(&format!("{} threads", s.threads));

@@ -77,7 +77,9 @@ static int compositor_alive(void) {
 }
 
 // The graphical login: the name of who logged in (in user), 0 on success
-static int greet(char *user, size_t usize) {
+// auto: the user /etc/autologin names (the live system), who may log in
+// again without a password ("auto\tNAME"), or ""
+static int greet(char *user, size_t usize, const char *autou) {
     int to[2], from[2];
     if (pipe(to) < 0 || pipe(from) < 0) return -1;
     posix_spawn_file_actions_t fa;
@@ -86,7 +88,7 @@ static int greet(char *user, size_t usize) {
     posix_spawn_file_actions_adddup2(&fa, from[1], 1);
     posix_spawn_file_actions_addclose(&fa, to[1]);
     posix_spawn_file_actions_addclose(&fa, from[0]);
-    char *argv[] = { "greeter", 0 };
+    char *argv[] = { "greeter", autou[0] ? "--auto" : 0, (char *)autou, 0 };
     extern char **environ;
     pid_t pid;
     int r = posix_spawn(&pid, "/bin/greeter", &fa, 0, argv, environ);
@@ -105,6 +107,17 @@ static int greet(char *user, size_t usize) {
     while (in && fgets(line, sizeof line, in)) {
         line[strcspn(line, "\r\n")] = 0;
         char *save, *cmd = strtok_r(line, "\t", &save), *name = strtok_r(0, "\t", &save), *pw = strtok_r(0, "", &save);
+        if (cmd && name && !strcmp(cmd, "auto")) {
+            if (autou[0] && !strcmp(name, autou) && getpwnam(name)) {
+                write(to[1], "ok\n", 3);
+                snprintf(user, usize, "%s", name);
+                printf("desktop: %s logged in again (/etc/autologin)\n", name);
+                result = 0;
+                break;
+            }
+            write(to[1], "fail\n", 5);
+            continue;
+        }
         if (!cmd || strcmp(cmd, "login") || !name) continue;
         if (!pw) pw = "";
         struct passwd *p = getpwnam(name);
@@ -220,7 +233,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             char user[64];
-            if (greet(user, sizeof user) == 0) session(user);
+            if (greet(user, sizeof user, auto_user[0] && getpwnam(auto_user) ? auto_user : "") == 0) session(user);
             else sleep(1);
         }
     }

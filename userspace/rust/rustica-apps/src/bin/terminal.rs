@@ -29,14 +29,33 @@ use std::sync::{Arc, Mutex};
 const FONT: &str = "/usr/share/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf";
 const FONT_BOLD: &str = "/usr/share/fonts/jetbrains-mono/JetBrainsMono-Bold.ttf";
 
-const BG: u32 = 0x282A36;
-const FG: u32 = 0xF8F8F2;
-const BAR: u32 = 0x21222C;
-const TAB: u32 = 0x343746;
-const TAB_ON: u32 = 0x44475A;
-const ACCENT: u32 = 0xBD93F9;
-const DIM_TEXT: u32 = 0x9EA3BD;
-const SELECTION: u32 = 0x5A4D80;
+// The colours: the desktop's theme (rustica-ui's), changed while running
+// when the compositor says so (Event::Appearance)
+static THEME: std::sync::Mutex<Option<rustica_ui::Theme>> = std::sync::Mutex::new(None);
+fn th() -> rustica_ui::Theme {
+    let mut g = THEME.lock().unwrap();
+    *g.get_or_insert_with(rustica_ui::current_theme)
+}
+#[allow(non_snake_case)]
+fn BG() -> u32 { th().background }
+#[allow(non_snake_case)]
+fn FG() -> u32 { th().text }
+#[allow(non_snake_case)]
+fn BAR() -> u32 { th().ansi[0] }
+#[allow(non_snake_case)]
+fn TAB() -> u32 { th().surface }
+#[allow(non_snake_case)]
+fn TAB_ON() -> u32 { th().surface_hi }
+#[allow(non_snake_case)]
+fn ACCENT() -> u32 { th().accent }
+#[allow(non_snake_case)]
+fn DIM_TEXT() -> u32 { th().dim }
+#[allow(non_snake_case)]
+fn SELECTION() -> u32 { th().selection }
+/// The xterm palette with the theme's 16 colours
+fn pal(i: u8) -> u32 {
+    if i < 16 { th().ansi[i as usize] } else { vt::palette(i) }
+}
 
 const MOD_CTRL: u32 = 0x11;
 const MOD_SHIFT: u32 = 0x22;
@@ -413,12 +432,12 @@ impl App {
         match c {
             Color::Default => {
                 if fg {
-                    FG
+                    FG()
                 } else {
-                    BG
+                    BG()
                 }
             }
-            Color::Index(i) => vt::palette(i),
+            Color::Index(i) => pal(i),
             Color::Rgb(v) => v,
         }
     }
@@ -428,39 +447,39 @@ impl App {
         if self.canvas.pixmap.width() != w || self.canvas.pixmap.height() != h {
             self.canvas = Canvas::new(w, h);
         }
-        self.canvas.clear(BG);
+        self.canvas.clear(BG());
         // The tab bar
         let bh = self.bar_h();
-        self.canvas.fill_rect(Rect::new(0.0, 0.0, w as f32, bh), BAR);
+        self.canvas.fill_rect(Rect::new(0.0, 0.0, w as f32, bh), BAR());
         let (tabs, plus) = self.tab_rects();
         let ui_px = 13.0 * self.scale;
         let labels: Vec<String> = self.tabs.iter().map(|t| t.label()).collect();
         for (i, ((r, close), label)) in tabs.iter().zip(labels.iter()).enumerate() {
             let on = i == self.cur;
-            self.canvas.fill_rounded(*r, self.u(6.0), if on { TAB_ON } else { TAB });
+            self.canvas.fill_rounded(*r, self.u(6.0), if on { TAB_ON() } else { TAB() });
             if on {
-                self.canvas.fill_rect(Rect::new(r.x + self.u(8.0), r.bottom() - self.u(2.0), r.w - self.u(16.0), self.u(2.0)), ACCENT);
+                self.canvas.fill_rect(Rect::new(r.x + self.u(8.0), r.bottom() - self.u(2.0), r.w - self.u(16.0), self.u(2.0)), ACCENT());
             }
             let ty = r.y + (r.h - self.face.line(ui_px).2) / 2.0;
             let (clip_w, tx) = (close.x - r.x - self.u(4.0), r.x + self.u(10.0));
             self.canvas.push_clip(Rect::new(r.x, r.y, clip_w, r.h));
-            self.canvas.text(&mut self.face, tx, ty, label, ui_px, if on { FG } else { DIM_TEXT });
+            self.canvas.text(&mut self.face, tx, ty, label, ui_px, if on { FG() } else { DIM_TEXT() });
             self.canvas.pop_clip();
             let hover = close.contains(self.mouse.0, self.mouse.1);
             if hover {
-                self.canvas.fill_rounded(*close, self.u(4.0), 0x55596E);
+                self.canvas.fill_rounded(*close, self.u(4.0), th().border);
             }
             let (cx, cy, d) = (close.x + close.w / 2.0, close.y + close.h / 2.0, self.u(4.0));
             let t = self.u(1.5).max(1.0);
             for k in 0..(2.0 * d) as i32 {
                 let k = k as f32;
-                self.canvas.fill_rect(Rect::new(cx - d + k, cy - d + k, t, t), DIM_TEXT);
-                self.canvas.fill_rect(Rect::new(cx + d - k - t, cy - d + k, t, t), DIM_TEXT);
+                self.canvas.fill_rect(Rect::new(cx - d + k, cy - d + k, t, t), DIM_TEXT());
+                self.canvas.fill_rect(Rect::new(cx + d - k - t, cy - d + k, t, t), DIM_TEXT());
             }
         }
         let (cx, cy, d, t) = (plus.x + plus.w / 2.0, plus.y + plus.h / 2.0, self.u(6.0), self.u(2.0).max(1.0));
-        self.canvas.fill_rect(Rect::new((cx - d).round(), (cy - t / 2.0).round(), 2.0 * d, t), DIM_TEXT);
-        self.canvas.fill_rect(Rect::new((cx - t / 2.0).round(), (cy - d).round(), t, 2.0 * d), DIM_TEXT);
+        self.canvas.fill_rect(Rect::new((cx - d).round(), (cy - t / 2.0).round(), 2.0 * d, t), DIM_TEXT());
+        self.canvas.fill_rect(Rect::new((cx - t / 2.0).round(), (cy - d).round(), t, 2.0 * d), DIM_TEXT());
 
         // The terminal
         let Some(tab) = self.tabs.get(self.cur) else { return };
@@ -485,7 +504,7 @@ impl App {
                 if attr & vt::BOLD != 0 {
                     if let Color::Index(i) = fg {
                         if i < 8 {
-                            fgc = vt::palette(i + 8);
+                            fgc = pal(i + 8);
                         }
                     }
                 }
@@ -496,24 +515,24 @@ impl App {
                     fgc = (fgc >> 1) & 0x7F7F7F | (bgc >> 1) & 0x7F7F7F;
                 }
                 if in_sel(l, col) {
-                    bgc = SELECTION;
+                    bgc = SELECTION();
                 }
                 let cursor = tab.view == 0 && tab.term.cursor_visible && row == tab.term.cy && col == tab.term.cx && !tab.ended;
                 if cursor && self.focused {
                     std::mem::swap(&mut fgc, &mut bgc);
-                    if bgc == BG {
-                        bgc = FG;
+                    if bgc == BG() {
+                        bgc = FG();
                     }
                 }
-                if bgc != BG {
+                if bgc != BG() {
                     self.canvas.fill_rect(Rect::new(x, y, cw, ch), bgc);
                 }
                 if cursor && !self.focused {
                     let t = self.u(1.0).max(1.0);
-                    self.canvas.fill_rect(Rect::new(x, y, cw, t), FG);
-                    self.canvas.fill_rect(Rect::new(x, y + ch - t, cw, t), FG);
-                    self.canvas.fill_rect(Rect::new(x, y, t, ch), FG);
-                    self.canvas.fill_rect(Rect::new(x + cw - t, y, t, ch), FG);
+                    self.canvas.fill_rect(Rect::new(x, y, cw, t), FG());
+                    self.canvas.fill_rect(Rect::new(x, y + ch - t, cw, t), FG());
+                    self.canvas.fill_rect(Rect::new(x, y, t, ch), FG());
+                    self.canvas.fill_rect(Rect::new(x + cw - t, y, t, ch), FG());
                 }
                 if c != ' ' {
                     glyphs.push((x, y, c, fgc, bgc, attr & vt::BOLD != 0, attr & vt::UNDERLINE != 0));
@@ -540,7 +559,7 @@ impl App {
             let area = h as f32 - y0;
             let bar_h = (area * tab.term.rows as f32 / total).max(self.u(20.0));
             let top = y0 + (area - bar_h) * (first as f32 / sb.max(1) as f32);
-            self.canvas.fill_rounded(Rect::new(w as f32 - self.u(6.0), top, self.u(4.0), bar_h), self.u(2.0), 0x6272A4);
+            self.canvas.fill_rounded(Rect::new(w as f32 - self.u(6.0), top, self.u(4.0), bar_h), self.u(2.0), th().ansi[8]);
         }
     }
 }
@@ -737,6 +756,10 @@ fn main() {
             }
             Event::Focus(f) => {
                 app.focused = f;
+                app.dirty = true;
+            }
+            Event::Appearance { theme } => {
+                *THEME.lock().unwrap() = Some(rustica_ui::theme_named(&theme));
                 app.dirty = true;
             }
             Event::CloseRequest => {

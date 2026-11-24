@@ -135,6 +135,12 @@ fn main() {
                 } else {
                     wins.push(Win { id, title, focused, minimized });
                 }
+            } else if let Event::Desktop(_) = e {
+                // The desktop's menu (a right click on the wallpaper):
+                // Change wallpaper and Appearance settings both open
+                // Settings > Appearance
+                println!("panel: desktop menu, Settings > Appearance");
+                let _ = std::process::Command::new("/bin/settings").arg("appearance").spawn();
             }
         }
         let th = ui.theme;

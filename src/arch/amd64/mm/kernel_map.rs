@@ -77,6 +77,8 @@ static MMIO_NEXT: AtomicU64 = AtomicU64::new(MMIO_BASE);
 const PTE_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 
 static HHDM_READY: AtomicBool = AtomicBool::new(false);
+/// End of the physical range the direct map covers (set by [`init`])
+static DIRECT_END: AtomicU64 = AtomicU64::new(0);
 static KERNEL_PML4: AtomicU64 = AtomicU64::new(0);
 static KERNEL_IMAGE_BASE: AtomicU64 = AtomicU64::new(0);
 static KERNEL_IMAGE_SIZE: AtomicU64 = AtomicU64::new(0);
@@ -112,6 +114,13 @@ pub fn kernel_image() -> (u64, u64) {
 /// Physical address of the kernel's PML4 (0 before [`init`]).
 pub fn kernel_pml4() -> u64 {
     KERNEL_PML4.load(Ordering::Acquire)
+}
+
+/// End of the physical range the direct map covers (at most 512 GiB).
+/// Device memory above it (a graphics card's framebuffer behind a large
+/// BAR) is reached through [`map_mmio`] instead.
+pub fn direct_map_end() -> u64 {
+    DIRECT_END.load(Ordering::Relaxed)
 }
 
 /// True once the HHDM is active.
@@ -181,6 +190,7 @@ pub unsafe fn init(alloc: AllocFn) -> Result<(), &'static str> {
     let limit = PHYS_LIMIT.load(Ordering::Relaxed).max(4 * gib);
     let limit = ((limit + gib - 1) / gib * gib).min(512 * gib);
     let gigabytes = (limit / gib) as usize;
+    DIRECT_END.store(limit, Ordering::Relaxed);
 
     let pml4 = alloc().ok_or("kernel_map: out of pages (PML4)")?;
     let pdpt = alloc().ok_or("kernel_map: out of pages (PDPT)")?;

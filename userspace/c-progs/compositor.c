@@ -37,12 +37,23 @@
 //
 //   compositor [-v]     -v: print what happens (for the tests)
 //
+// Appearance (2026-11-24): the theme (Rustica, the default, or Dracula)
+// and the wallpaper come from /etc/rustica/appearance and then the
+// session user's ~/.config/rustica.conf (theme=, wallpaper=: rustica,
+// gradient, or a QOI file of theirs, which Settings makes), checked every
+// second; windows hear of a change (RX_WINDOW_EV_APPEARANCE). A right
+// click on the desktop opens a small menu whose choices the panel carries
+// out (RX_WINDOW_EV_DESKTOP).
+//
 // Root only (the display and input services give the screen and the
 // input to root).
 
 #include <errno.h>
+#include <fcntl.h>
+#include <pwd.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <rustux/display.h>
-#include <rustux/font8x16.h>
 #include <rustux/input.h>
 #include <rustux/process.h>
 #include <rustux/service.h>
@@ -50,6 +61,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "titlefont.h"
 #include "userdb.h"
 
 #define MAX_WINDOWS 32
@@ -60,16 +72,28 @@
 #define MIN_W 64
 #define MIN_H 32
 
-// Dracula
-#define C_DESKTOP     0x1E1F29
-#define C_TITLE       0x44475A
-#define C_TITLE_OFF   0x2E303E
-#define C_TEXT        0xF8F8F2
-#define C_TEXT_OFF    0x8A8FA8
-#define C_BORDER      0xBD93F9
-#define C_BORDER_OFF  0x44475A
-#define C_CLOSE       0xFF5555
-#define C_BUTTON      0x6272A4
+// The themes (the toolkit's, rustica-ui ui.rs, has the same colours)
+typedef struct {
+    const char *name;
+    uint32_t desktop, title, title_off, text, text_off, border, border_off, close, button, surface, field, hover;
+} ctheme_t;
+static const ctheme_t themes[] = {
+    // Rustica: fiery orange, fox red, near-black, smoky charcoal, warm white, amber
+    { "rustica", 0x101012, 0x1C1B20, 0x151418, 0xF5F2EF, 0x8C857F, 0xFF5A1F, 0x2A2830, 0xC8101E, 0x3A3640, 0x1C1B20,
+      0x101012, 0x4A2414 },
+    { "dracula", 0x1E1F29, 0x44475A, 0x2E303E, 0xF8F8F2, 0x8A8FA8, 0xBD93F9, 0x44475A, 0xFF5555, 0x6272A4, 0x343746,
+      0x282A36, 0x5A4D80 },
+};
+static const ctheme_t *th = &themes[0];
+#define C_DESKTOP     (th->desktop)
+#define C_TITLE       (th->title)
+#define C_TITLE_OFF   (th->title_off)
+#define C_TEXT        (th->text)
+#define C_TEXT_OFF    (th->text_off)
+#define C_BORDER      (th->border)
+#define C_BORDER_OFF  (th->border_off)
+#define C_CLOSE       (th->close)
+#define C_BUTTON      (th->button)
 
 typedef struct {
     int used;
@@ -193,17 +217,15 @@ static void fill(int x, int y, int w, int h, uint32_t c, const rx_display_rect_t
     }
 }
 
-// The next character of UTF-8 text as the 8x16 font has it: ASCII, a few
-// look-alikes (dashes, x, bullet, quotes), '?' for the rest
-static unsigned char next_char(const char **sp) {
+// One UTF-8 code point (an invalid byte counts as itself)
+static uint32_t next_cp(const char **sp) {
     const unsigned char *s = (const unsigned char *)*sp;
     if (*s < 0x80) {
         *sp += 1;
         return *s;
     }
-    uint32_t cp = 0;
     int n = *s >= 0xF0 ? 4 : *s >= 0xE0 ? 3 : *s >= 0xC0 ? 2 : 1;
-    cp = n == 1 ? 0 : *s & (0x3F >> (n - 1));
+    uint32_t cp = n == 1 ? *s : (uint32_t)(*s & (0x3F >> (n - 1)));
     for (int i = 1; i < n; i++) {
         if ((s[i] & 0xC0) != 0x80) {
             n = i;
@@ -212,30 +234,68 @@ static unsigned char next_char(const char **sp) {
         cp = cp << 6 | (s[i] & 0x3F);
     }
     *sp += n;
-    switch (cp) {
-    case 0x2013: case 0x2014: case 0x2212: return '-';
-    case 0xD7: return 'x';
-    case 0x2022: case 0xB7: return '*';
-    case 0x2018: case 0x2019: return '\'';
-    case 0x201C: case 0x201D: return '"';
-    case 0x2026: return '.';
-    default: return '?';
-    }
+    return cp;
 }
 
+static const titlefont_glyph_t *title_glyph(uint32_t cp) {
+    int lo = 0, hi = (int)(sizeof titlefont_glyphs / sizeof titlefont_glyphs[0]) - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (titlefont_glyphs[mid].cp == cp) return &titlefont_glyphs[mid];
+        if (titlefont_glyphs[mid].cp < cp) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return cp == '?' ? 0 : title_glyph('?');
+}
+
+static uint32_t blend(uint32_t bg, uint32_t fg, unsigned a) {
+    uint32_t out = 0;
+    for (int sh = 0; sh <= 16; sh += 8) {
+        unsigned b = (bg >> sh) & 0xFF, f = (fg >> sh) & 0xFF;
+        out |= ((b * (255 - a) + f * a + 127) / 255) << sh;
+    }
+    return out;
+}
+
+// Text in the toolkit's font (Inter SemiBold, anti-aliased) on a line 16
+// pixels high whose top is y; what does not fit in maxw pixels ends in an
+// ellipsis
 static void text(int x, int y, const char *s, int maxw, uint32_t c, const rx_display_rect_t *r) {
-    while (*s && maxw >= 8) {
-        const uint8_t *g = font8x16_glyph(next_char(&s));
-        for (int row = 0; row < 16; row++) {
-            int yy = y + row;
+    y += 12; // the baseline
+    const titlefont_glyph_t *dots = title_glyph(0x2026);
+    int room = maxw * 64 - (dots ? dots->adv : 0);
+    int pen = 0; // 1/64 pixel
+    while (*s) {
+        const char *at = s;
+        const titlefont_glyph_t *g = title_glyph(next_cp(&s));
+        if (!g) continue;
+        if (pen + g->adv > maxw * 64 || (*s && pen + g->adv > room)) {
+            // Too long: an ellipsis instead of the rest (unless it all fits)
+            int all = pen;
+            for (const char *t = at; *t;) {
+                const titlefont_glyph_t *h = title_glyph(next_cp(&t));
+                all += h ? h->adv : 0;
+            }
+            if (all <= maxw * 64) goto draw;
+            g = dots;
+            if (!g || pen + g->adv > maxw * 64) break;
+            s = "";
+        }
+    draw:;
+        int gx = x + pen / 64 + g->dx, gy = y + g->dy;
+        const uint8_t *cov = titlefont_data + g->off;
+        for (int row = 0; row < g->h; row++) {
+            int yy = gy + row;
             if (yy < (int)r->y || yy >= (int)(r->y + r->h)) continue;
-            for (int b = 0; b < 8; b++) {
-                int xx = x + b;
-                if ((g[row] & (0x80 >> b)) && xx >= (int)r->x && xx < (int)(r->x + r->w)) fbp[(uint64_t)yy * W + xx] = c;
+            for (int col = 0; col < g->w; col++) {
+                int xx = gx + col;
+                unsigned a = cov[row * g->w + col];
+                if (!a || xx < (int)r->x || xx >= (int)(r->x + r->w)) continue;
+                uint32_t *px = &fbp[(uint64_t)yy * W + xx];
+                *px = a == 255 ? c : blend(*px, c, a);
             }
         }
-        x += 8;
-        maxw -= 8;
+        pen += g->adv;
     }
 }
 
@@ -277,7 +337,7 @@ static void draw_window(const window_t *w, int focused, const rx_display_rect_t 
                 fill(bx + 4, by + BTN - 6, BTN - 8, 2, ink, r);
         }
         int room = (int)w->w - 3 * (BTN + 4) - 16;
-        text(w->x + 8, w->y - TITLE_H + (TITLE_H - 16) / 2, w->title, room, focused ? C_TEXT : C_TEXT_OFF, r);
+        text(w->x + 10, w->y - TITLE_H + (TITLE_H - 16) / 2 + 1, w->title, room, focused ? C_TEXT : C_TEXT_OFF, r);
     }
     // The content
     int x0 = w->x > (int)r->x ? w->x : (int)r->x, y0 = w->y > (int)r->y ? w->y : (int)r->y;
@@ -299,34 +359,167 @@ static void draw_cursor(const rx_display_rect_t *r) {
         }
 }
 
-// The wallpaper: a vertical Dracula gradient with a soft purple glow low
-// on the left (computed once)
+// ---- appearance ----
+
+static char wall_choice[256] = "rustica"; // rustica, gradient, or a file of the user's
+static uid_t session_uid = (uid_t)-1;
+
+// A QOI image (qoiformat.org) as 0x00RRGGBB; its size in *w, *h. The file
+// may be the user's: every length is checked.
+static uint32_t *qoi_load(int fd, uint32_t *w, uint32_t *h) {
+    struct stat st;
+    if (fstat(fd, &st) < 0 || st.st_size < 22 || st.st_size > 64 << 20) return 0;
+    size_t n = (size_t)st.st_size;
+    uint8_t *b = malloc(n);
+    if (!b) return 0;
+    size_t got = 0;
+    while (got < n) {
+        ssize_t k = read(fd, b + got, n - got);
+        if (k <= 0) break;
+        got += (size_t)k;
+    }
+    uint32_t *px = 0;
+    if (got == n && !memcmp(b, "qoif", 4)) {
+        uint32_t iw = (uint32_t)b[4] << 24 | (uint32_t)b[5] << 16 | (uint32_t)b[6] << 8 | b[7];
+        uint32_t ih = (uint32_t)b[8] << 24 | (uint32_t)b[9] << 16 | (uint32_t)b[10] << 8 | b[11];
+        if (iw && ih && iw <= 16384 && ih <= 16384 && (uint64_t)iw * ih <= 40u << 20)
+            px = malloc((size_t)iw * ih * 4);
+        if (px) {
+            uint8_t idx[64][4];
+            memset(idx, 0, sizeof idx);
+            uint8_t c[4] = { 0, 0, 0, 255 };
+            size_t p = 14, end = n - 8, total = (size_t)iw * ih;
+            int run = 0;
+            for (size_t i = 0; i < total; i++) {
+                if (run > 0) {
+                    run--;
+                } else if (p < end) {
+                    uint8_t b1 = b[p++];
+                    if (b1 == 0xFE && p + 3 <= end) {
+                        c[0] = b[p]; c[1] = b[p + 1]; c[2] = b[p + 2]; p += 3;
+                    } else if (b1 == 0xFF && p + 4 <= end) {
+                        c[0] = b[p]; c[1] = b[p + 1]; c[2] = b[p + 2]; c[3] = b[p + 3]; p += 4;
+                    } else if ((b1 & 0xC0) == 0x00) {
+                        memcpy(c, idx[b1], 4);
+                    } else if ((b1 & 0xC0) == 0x40) {
+                        c[0] += ((b1 >> 4) & 3) - 2; c[1] += ((b1 >> 2) & 3) - 2; c[2] += (b1 & 3) - 2;
+                    } else if ((b1 & 0xC0) == 0x80 && p < end) {
+                        uint8_t b2 = b[p++];
+                        int vg = (b1 & 0x3F) - 32;
+                        c[0] += vg - 8 + ((b2 >> 4) & 0xF); c[1] += vg; c[2] += vg - 8 + (b2 & 0xF);
+                    } else if ((b1 & 0xC0) == 0xC0) {
+                        run = b1 & 0x3F;
+                    }
+                    memcpy(idx[(c[0] * 3 + c[1] * 5 + c[2] * 7 + c[3] * 11) % 64], c, 4);
+                }
+                px[i] = (uint32_t)c[0] << 16 | (uint32_t)c[1] << 8 | c[2];
+            }
+            *w = iw;
+            *h = ih;
+        }
+    }
+    free(b);
+    return px;
+}
+
+// The wallpaper, computed once for the screen's size
 static uint32_t *wallpaper;
+
+// A gradient in the theme's colours with a soft glow of its accent low on
+// the left
+static void make_gradient(void) {
+    // Ordered dithering (4x4 Bayer) keeps the gradient free of bands
+    static const int bayer[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+    int64_t rad = (int64_t)H * 10 / 14, r2 = rad * rad;
+    uint32_t top = th->desktop, bot = th->surface, acc = th->border;
+    int64_t t0r = top >> 16 & 255, t0g = top >> 8 & 255, t0b = top & 255;
+    int64_t t1r = bot >> 16 & 255, t1g = bot >> 8 & 255, t1b = bot & 255;
+    int64_t ar = acc >> 16 & 255, ag = acc >> 8 & 255, ab = acc & 255;
+    for (uint32_t y = 0; y < H; y++) {
+        int64_t t = (int64_t)y * 256 / H;
+        int64_t br = t0r * 256 + (t1r - t0r) * t, bg = t0g * 256 + (t1g - t0g) * t, bb = t0b * 256 + (t1b - t0b) * t;
+        for (uint32_t x = 0; x < W; x++) {
+            int64_t dx = (int64_t)x - W / 4, dy = (int64_t)y - 3 * H / 4, d2 = dx * dx + dy * dy;
+            int64_t f = d2 < r2 ? (r2 - d2) * 4096 / r2 : 0;
+            int64_t g = 41 * f * f / 4096;
+            int64_t r = br + ((ar * 256 - br) * g) / (256 * 4096), gg = bg + ((ag * 256 - bg) * g) / (256 * 4096),
+                    b = bb + ((ab * 256 - bb) * g) / (256 * 4096);
+            int dth = bayer[y & 3][x & 3] * 16 + 8;
+            wallpaper[(uint64_t)y * W + x] = (uint32_t)((r + dth) >> 8) << 16 | (uint32_t)((gg + dth) >> 8) << 8 |
+                                             (uint32_t)((b + dth) >> 8);
+        }
+    }
+}
+
+// An image scaled to cover the screen (cut at the sides that stick out),
+// bilinear
+static void cover(const uint32_t *src, uint32_t sw, uint32_t sh) {
+    // Scale in 1/65536ths: the source pixels per screen pixel
+    uint64_t sx = (uint64_t)sw * 65536 / W, sy = (uint64_t)sh * 65536 / H;
+    uint64_t s = sx < sy ? sx : sy;
+    uint64_t ox = ((uint64_t)sw * 65536 - s * W) / 2, oy = ((uint64_t)sh * 65536 - s * H) / 2;
+    for (uint32_t y = 0; y < H; y++) {
+        uint64_t fy = oy + y * s + s / 2;
+        fy = fy > 32768 ? fy - 32768 : 0;
+        uint32_t y0 = (uint32_t)(fy >> 16), y1 = y0 + 1 < sh ? y0 + 1 : y0;
+        uint32_t wy = (uint32_t)(fy & 0xFFFF) >> 8;
+        if (y0 >= sh) y0 = y1 = sh - 1;
+        for (uint32_t x = 0; x < W; x++) {
+            uint64_t fx = ox + x * s + s / 2;
+            fx = fx > 32768 ? fx - 32768 : 0;
+            uint32_t x0 = (uint32_t)(fx >> 16), x1 = x0 + 1 < sw ? x0 + 1 : x0;
+            uint32_t wx = (uint32_t)(fx & 0xFFFF) >> 8;
+            if (x0 >= sw) x0 = x1 = sw - 1;
+            uint32_t a = src[(uint64_t)y0 * sw + x0], b = src[(uint64_t)y0 * sw + x1];
+            uint32_t c = src[(uint64_t)y1 * sw + x0], d = src[(uint64_t)y1 * sw + x1];
+            uint32_t out = 0;
+            for (int sh8 = 0; sh8 <= 16; sh8 += 8) {
+                uint32_t top = ((a >> sh8 & 255) * (256 - wx) + (b >> sh8 & 255) * wx) >> 8;
+                uint32_t bot = ((c >> sh8 & 255) * (256 - wx) + (d >> sh8 & 255) * wx) >> 8;
+                out |= ((top * (256 - wy) + bot * wy) >> 8) << sh8;
+            }
+            wallpaper[(uint64_t)y * W + x] = out;
+        }
+    }
+}
+
+// Open a file of the session user's (theirs and a plain file: as root we
+// must not show them another user's file, or a system one)
+static int open_users(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    struct stat st;
+    if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) || st.st_uid != session_uid) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
 
 static void make_wallpaper(void) {
     free(wallpaper);
     wallpaper = malloc((size_t)W * H * 4);
     if (!wallpaper) return;
-    // Ordered dithering (4x4 Bayer) keeps the gradient free of bands
-    static const int bayer[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
-    int64_t rad = (int64_t)H * 10 / 14, r2 = rad * rad;
-    for (uint32_t y = 0; y < H; y++) {
-        // 0x1E1F29 at the top to 0x2B2D3C at the bottom, in 1/256ths
-        int64_t t = (int64_t)y * 256 / H;
-        int64_t br = 0x1E * 256 + (0x2B - 0x1E) * t, bg = 0x1F * 256 + (0x2D - 0x1F) * t, bb = 0x29 * 256 + (0x3C - 0x29) * t;
-        for (uint32_t x = 0; x < W; x++) {
-            // The glow: centre at (W/4, 3H/4), strength up to 16% of the accent
-            int64_t dx = (int64_t)x - W / 4, dy = (int64_t)y - 3 * H / 4, d2 = dx * dx + dy * dy;
-            // (in 1/4096ths, eased: no steps where it falls off)
-            int64_t f = d2 < r2 ? (r2 - d2) * 4096 / r2 : 0;
-            int64_t g = 41 * f * f / 4096; // 0..41 of 256, times 4096
-            int64_t r = br + ((0xBD * 256 - br) * g) / (256 * 4096), gg = bg + ((0x93 * 256 - bg) * g) / (256 * 4096),
-                    b = bb + ((0xF9 * 256 - bb) * g) / (256 * 4096);
-            int dth = bayer[y & 3][x & 3] * 16 + 8; // 0..255
-            wallpaper[(uint64_t)y * W + x] = (uint32_t)((r + dth) >> 8) << 16 | (uint32_t)((gg + dth) >> 8) << 8 |
-                                             (uint32_t)((b + dth) >> 8);
+    if (strcmp(wall_choice, "gradient")) {
+        int fd;
+        if (wall_choice[0] == '/')
+            fd = open_users(wall_choice);
+        else
+            fd = open(H > W ? "/usr/share/backgrounds/rustica-fox-portrait.qoi" : "/usr/share/backgrounds/rustica-fox.qoi",
+                      O_RDONLY);
+        if (fd >= 0) {
+            uint32_t sw, sh, *src = qoi_load(fd, &sw, &sh);
+            close(fd);
+            if (src) {
+                cover(src, sw, sh);
+                free(src);
+                vlog("wallpaper %s (%ux%u)\n", wall_choice, sw, sh);
+                return;
+            }
         }
+        vlog("wallpaper %s: cannot read it, the gradient instead\n", wall_choice);
     }
+    make_gradient();
 }
 
 static void draw_wallpaper(const rx_display_rect_t *r) {
@@ -343,13 +536,13 @@ static void draw_wallpaper(const rx_display_rect_t *r) {
 #define LOCK_H 150
 static void draw_lock(const rx_display_rect_t *r) {
     int x = ((int)PW - LOCK_W) / 2, y = ((int)PH - LOCK_H) / 2;
-    fill(x, y, LOCK_W, LOCK_H, 0x343746, r);
+    fill(x, y, LOCK_W, LOCK_H, th->surface, r);
     fill(x, y, LOCK_W, 2, C_BORDER, r);
     char line[96];
     snprintf(line, sizeof line, "Locked: %s", session_user);
     text(x + 24, y + 22, line, LOCK_W - 48, C_TEXT, r);
     text(x + 24, y + 48, "Type your password and Enter", LOCK_W - 48, C_TEXT_OFF, r);
-    fill(x + 24, y + 78, LOCK_W - 48, 28, 0x282A36, r);
+    fill(x + 24, y + 78, LOCK_W - 48, 28, th->field, r);
     char dots[65];
     size_t n = strlen(lock_pw);
     for (size_t i = 0; i < n; i++) dots[i] = '*';
@@ -369,11 +562,13 @@ static void draw_toasts(const rx_display_rect_t *r) {
     for (int i = 0; i < ntoasts; i++) {
         int x, y;
         toast_rect(i, &x, &y);
-        fill(x, y, TOAST_W, TOAST_H, 0x44475A, r);
+        fill(x, y, TOAST_W, TOAST_H, th->surface, r);
         fill(x, y, 3, TOAST_H, C_BORDER, r);
         text(x + 14, y + 16, toasts[i].text, TOAST_W - 24, C_TEXT, r);
     }
 }
+
+static void draw_menu(const rx_display_rect_t *r);
 
 static void compose(void) {
     if (!ndamage) return;
@@ -389,6 +584,7 @@ static void compose(void) {
                 draw_window(w, order[k] == focus, r);
             }
             draw_toasts(r);
+            draw_menu(r);
         }
         draw_cursor(r);
     }
@@ -453,6 +649,127 @@ static void notify_panels(void) {
             send_event(&wins[p], &ev);
         }
     }
+}
+
+// key=value lines of one file into the theme's and wallpaper's names
+static void read_appearance(int fd, char *theme, size_t tn, char *wall, size_t wn) {
+    char buf[1024];
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    if (n <= 0) return;
+    buf[n] = 0;
+    for (char *save, *l = strtok_r(buf, "\n", &save); l; l = strtok_r(0, "\n", &save)) {
+        while (*l == ' ' || *l == '\t') l++;
+        char *v = strchr(l, '=');
+        if (!v) continue;
+        *v++ = 0;
+        v[strcspn(v, " \t\r")] = 0;
+        if (!strcmp(l, "theme")) snprintf(theme, tn, "%s", v);
+        if (!strcmp(l, "wallpaper")) snprintf(wall, wn, "%s", v);
+    }
+}
+
+// The appearance now: the system's, then the session user's; on a change
+// the wallpaper is made again, everything redrawn and every window told
+static char conf_path[160];
+static struct timespec conf_mtime;
+static off_t conf_size = -1;
+
+static void load_appearance(int force) {
+    struct stat st;
+    int have = conf_path[0] && stat(conf_path, &st) == 0;
+    if (!force) {
+        if (!have && conf_size == -1) return;
+        if (have && st.st_mtim.tv_sec == conf_mtime.tv_sec && st.st_mtim.tv_nsec == conf_mtime.tv_nsec &&
+            st.st_size == conf_size)
+            return;
+    }
+    if (have) {
+        conf_mtime = st.st_mtim;
+        conf_size = st.st_size;
+    } else {
+        conf_size = -1;
+    }
+    char theme[32] = "rustica", wall[256] = "rustica";
+    int fd = open("/etc/rustica/appearance", O_RDONLY);
+    if (fd >= 0) {
+        read_appearance(fd, theme, sizeof theme, wall, sizeof wall);
+        close(fd);
+    }
+    if (conf_path[0] && (fd = open_users(conf_path)) >= 0) {
+        read_appearance(fd, theme, sizeof theme, wall, sizeof wall);
+        close(fd);
+    }
+    const ctheme_t *nt = &themes[0];
+    for (size_t i = 0; i < sizeof themes / sizeof themes[0]; i++)
+        if (!strcmp(theme, themes[i].name)) nt = &themes[i];
+    int changed = nt != th || strcmp(wall, wall_choice) || force;
+    if (!changed) return;
+    th = nt;
+    snprintf(wall_choice, sizeof wall_choice, "%s", wall);
+    vlog("appearance: theme %s, wallpaper %s\n", th->name, wall_choice);
+    make_wallpaper();
+    add_damage(0, 0, (int)W, (int)H);
+    for (int k = 0; k < MAX_WINDOWS; k++) {
+        if (!wins[k].used) continue;
+        rx_window_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.op = RX_WINDOW_EV_APPEARANCE;
+        snprintf(ev.text, sizeof ev.text, "%s", th->name);
+        send_event(&wins[k], &ev);
+    }
+}
+
+// Whose appearance: the session user's (or none)
+static void set_session_user(const char *name) {
+    snprintf(session_user, sizeof session_user, "%s", name);
+    conf_path[0] = 0;
+    session_uid = (uid_t)-1;
+    struct passwd *pw = name[0] ? getpwnam(name) : 0;
+    if (pw) {
+        session_uid = pw->pw_uid;
+        snprintf(conf_path, sizeof conf_path, "%s/.config/rustica.conf", pw->pw_dir);
+    }
+    load_appearance(1);
+}
+
+// ---- the desktop's menu (a right click on the wallpaper) ----
+
+#define MENU_W 220
+#define MENU_ROW 28
+static const char *menu_items[] = { "Change wallpaper...", "Appearance settings..." };
+#define MENU_N 2
+static int menu_open, menu_x, menu_y, menu_hover = -1;
+
+static void draw_menu(const rx_display_rect_t *r) {
+    if (!menu_open) return;
+    int h = MENU_N * MENU_ROW + 8;
+    fill(menu_x, menu_y, MENU_W, h, C_BORDER_OFF, r);
+    fill(menu_x + 1, menu_y + 1, MENU_W - 2, h - 2, th->surface, r);
+    for (int i = 0; i < MENU_N; i++) {
+        int y = menu_y + 4 + i * MENU_ROW;
+        if (i == menu_hover) {
+            fill(menu_x + 4, y, MENU_W - 8, MENU_ROW, th->hover, r);
+            fill(menu_x + 4, y, 3, MENU_ROW, C_BORDER, r);
+        }
+        text(menu_x + 16, y + (MENU_ROW - 16) / 2, menu_items[i], MENU_W - 28, C_TEXT, r);
+    }
+}
+
+static void damage_menu(void) {
+    add_damage(menu_x, menu_y, MENU_W, MENU_N * MENU_ROW + 8);
+}
+
+static int menu_item_at(int x, int y) {
+    if (x < menu_x + 4 || x >= menu_x + MENU_W - 4 || y < menu_y + 4) return -1;
+    int i = (y - menu_y - 4) / MENU_ROW;
+    return i < MENU_N ? i : -1;
+}
+
+// What the menu's choice does is the panel's to do (it runs as the user)
+static void menu_choose(int i) {
+    vlog("desktop menu: %s\n", menu_items[i]);
+    for (int k = 0; k < MAX_WINDOWS; k++)
+        if (wins[k].used && wins[k].panel) send_simple(&wins[k], RX_WINDOW_EV_DESKTOP, (uint32_t)i + 1);
 }
 
 static void set_focus(int k) {
@@ -1099,7 +1416,31 @@ static void pointer_event(const rx_input_event_t *e) {
     }
     grab_win = -1;
 
+    // The desktop's menu: it takes the pointer while it is open
+    if (menu_open) {
+        int i = menu_item_at(cx, cy);
+        if (i != menu_hover) {
+            menu_hover = i;
+            damage_menu();
+        }
+        if (pressed) {
+            damage_menu();
+            menu_open = 0;
+            if (i >= 0) menu_choose(i);
+        }
+        return;
+    }
     int k, edges = 0, where = hit(cx, cy, &k, &edges);
+    if ((pressed & 2) && where == HIT_NONE && session_user[0]) {
+        menu_open = 1;
+        menu_hover = -1;
+        menu_x = cx + MENU_W <= (int)PW ? cx : (int)PW - MENU_W;
+        menu_y = cy + MENU_N * MENU_ROW + 8 <= (int)PH - panel_h ? cy : cy - (MENU_N * MENU_ROW + 8);
+        if (menu_y < 0) menu_y = 0;
+        damage_menu();
+        vlog("desktop menu at %d,%d\n", menu_x, menu_y);
+        return;
+    }
     if (pressed) {
         if (k >= 0 && !wins[k].panel) {
             raise(k);
@@ -1256,7 +1597,7 @@ int main(int argc, char **argv) {
     fbp = d.pixels;
     cx = (int)PW / 2;
     cy = (int)PH / 2;
-    make_wallpaper();
+    load_appearance(1);
     setup_hwcursor();
     rx_handle_t control = rx_take_startup_handle(RX_PA_USER0); // from desktop --run, if it started us
     connect_input();
@@ -1292,8 +1633,10 @@ int main(int argc, char **argv) {
         for (int i = 0; i < ntoasts; i++)
             if (toasts[i].until < deadline) deadline = toasts[i].until;
         // Without the input service, look for it again now and then
-        if (!input_ch && deadline > rx_clock_get_monotonic() + 1000000000ull) deadline = rx_clock_get_monotonic() + 1000000000ull;
+        // At least once a second: the appearance may have changed
+        if (deadline > rx_clock_get_monotonic() + 1000000000ull) deadline = rx_clock_get_monotonic() + 1000000000ull;
         rx_object_wait_many(items, (uint64_t)n, deadline);
+        load_appearance(0);
 
         if (i_ctl >= 0 && items[i_ctl].pending) {
             // The desktop: "user NAME" or "user"; when it ends, so do we
@@ -1303,7 +1646,7 @@ int main(int argc, char **argv) {
             while ((cs = rx_channel_read(control, 0, msg, 0, sizeof msg - 1, 0, &nb, 0)) == RX_OK) {
                 msg[nb] = 0;
                 if (!strncmp(msg, "user", 4)) {
-                    snprintf(session_user, sizeof session_user, "%s", msg[4] == ' ' ? msg + 5 : "");
+                    set_session_user(msg[4] == ' ' ? msg + 5 : "");
                     vlog("session user \"%s\"\n", session_user);
                     if (!session_user[0] && locked) {
                         locked = 0;

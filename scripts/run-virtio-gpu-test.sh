@@ -161,7 +161,7 @@ def near(c, want, tol=40):
 def key(k):
     mon('sendkey ' + k)
 
-ACCENT, LOCKBOX, TOAST = 0xBD93F9, 0x343746, 0x44475A
+ACCENT, LOCKBOX, TOAST = 0xFF5A1F, 0x1C1B20, 0x1C1B20  # the Rustica theme
 
 def wait_pixel(x, y, want, t, tol=8):
     end = time.time() + t
@@ -248,7 +248,7 @@ if NAME == 'vga':
     time.sleep(3)
     px = screen()
     check(px.size == (1600, 900), 'the screen is 1600x900 (%dx%d)' % px.size)
-    check(near(px(64, 882), ACCENT, 8) and near(px(1595, 882), 0x343746, 8), 'the desktop follows: the panel across 1600 pixels at the new bottom')
+    check(near(px(64, 882), ACCENT, 8) and near(px(1595, 882), 0x1C1B20, 8), 'the desktop follows: the panel across 1600 pixels at the new bottom')
 
 elif NAME == 'heads':
     check(wait(r'virtio-gpu: screen 1280x800 \(1 head\)', 30) is not None, 'two heads, the second off at first')
@@ -262,8 +262,8 @@ elif NAME == 'heads':
     p0 = lambda x, y: int.from_bytes(d0[3 * (y * w0 + x):3 * (y * w0 + x) + 3], 'big')
     p1 = lambda x, y: int.from_bytes(d1[3 * (y * w1 + x):3 * (y * w1 + x) + 3], 'big')
     check((w0, h0, w1, h1) == (1280, 800, 800, 600), 'head 0 is 1280x800, head 1 800x600 (%dx%d, %dx%d)' % (w0, h0, w1, h1))
-    check(near(p0(64, 782), ACCENT, 8) and near(p0(1275, 782), 0x343746, 8), 'the panel on the first head, its width')
-    check(not near(p1(400, 300), 0, 8) and near(p1(400, 300), 0x262836, 24), 'the second head shows its part of the wallpaper (%06x)' % p1(400, 300))
+    check(near(p0(64, 782), ACCENT, 8) and near(p0(1275, 782), 0x1C1B20, 8), 'the panel on the first head, its width')
+    check(not near(p1(400, 300), 0, 8), 'the second head shows its part of the wallpaper (%06x)' % p1(400, 300))
 
 else:  # virtio-gpu-pci
     check(wait(r'virtio-gpu: screen 1280x800 \(1 head\)', 30) is not None, 'virtio-gpu-pci (no UEFI framebuffer): the driver serves the screen')

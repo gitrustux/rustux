@@ -219,7 +219,7 @@ impl Calc {
         let top = pretty(&self.expr);
         let (line, line_c) = match &self.result {
             Some(Ok(v)) => (show(*v), th.text),
-            Some(Err(e)) => (e.clone(), 0xFF5555),
+            Some(Err(e)) => (e.clone(), ui.theme.danger),
             None => (if top.is_empty() { "0".to_string() } else { top.clone() }, th.text),
         };
         let shown_top = if self.result.is_some() { format!("{top} =") } else { String::new() };
@@ -247,13 +247,13 @@ impl Calc {
                 let op = ci == 3 || ri == 0;
                 let eq = *k == "=";
                 let bg = if eq {
-                    if hot { 0xCAA9FA } else { th.accent }
+                    if hot { rustica_ui::ui::mix(th.accent, 0xFFFFFF, 0.22) } else { th.accent }
                 } else if hot && down {
                     th.selection
                 } else if hot {
                     th.surface_hi
                 } else if op {
-                    0x343746
+                    rustica_ui::ui::mix(th.surface, th.surface_hi, 0.5)
                 } else {
                     th.surface
                 };

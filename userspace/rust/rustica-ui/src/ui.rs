@@ -20,9 +20,13 @@ use std::collections::{HashMap, HashSet};
 
 pub type Id = u64;
 
-/// The Dracula colours
+/// A colour theme. Rustica (the desktop's default, 2026-11-24) and Dracula
+/// (the server's console and the earlier desktop); the compositor has the
+/// same colours (compositor.c), and the console the same ANSI ones
+/// (`theme`, the kernel console's default is Dracula).
 #[derive(Clone, Copy)]
 pub struct Theme {
+    pub name: &'static str,
     pub background: Color,
     pub surface: Color,
     pub surface_hi: Color,
@@ -34,9 +38,16 @@ pub struct Theme {
     pub border: Color,
     pub danger: Color,
     pub good: Color,
+    /// The keyboard focus and other highlights
+    pub highlight: Color,
+    /// A second brand colour (Rustica's fox red)
+    pub secondary: Color,
+    /// The 16 ANSI colours for terminals (normal, then bright)
+    pub ansi: [Color; 16],
 }
 
 pub const DRACULA: Theme = Theme {
+    name: "dracula",
     background: 0x282A36,
     surface: 0x343746,
     surface_hi: 0x44475A,
@@ -48,7 +59,68 @@ pub const DRACULA: Theme = Theme {
     border: 0x55596E,
     danger: 0xFF5555,
     good: 0x50FA7B,
+    highlight: 0xBD93F9,
+    secondary: 0xFF79C6,
+    ansi: [
+        0x21222C, 0xFF5555, 0x50FA7B, 0xF1FA8C, 0xBD93F9, 0xFF79C6, 0x8BE9FD, 0xF8F8F2, //
+        0x6272A4, 0xFF6E6E, 0x69FF94, 0xFFFFA5, 0xD6ACFF, 0xFF92DF, 0xA4FFFF, 0xFFFFFF,
+    ],
 };
+
+/// Rustica: fiery orange #FF5A1F, fox red #C8101E, near-black #101012,
+/// smoky charcoal #1C1B20, warm white #F5F2EF, amber #FFB347
+pub const RUSTICA: Theme = Theme {
+    name: "rustica",
+    background: 0x101012,
+    surface: 0x1C1B20,
+    surface_hi: 0x2A2830,
+    text: 0xF5F2EF,
+    dim: 0xA8A19B,
+    accent: 0xFF5A1F,
+    accent_text: 0xFFFFFF,
+    selection: 0x4A2414,
+    border: 0x3A3640,
+    danger: 0xE5383B,
+    good: 0x7BD88F,
+    highlight: 0xFFB347,
+    secondary: 0xC8101E,
+    ansi: [
+        0x1C1B20, 0xE5383B, 0x9CCC65, 0xFFB347, 0x6CA6E0, 0xD96BA0, 0x5FC4C4, 0xE8E2DC, //
+        0x5A5560, 0xFF5A5F, 0xB5E07A, 0xFFD08A, 0x8FC1F0, 0xF08CC0, 0x8AE0E0, 0xFFFFFF,
+    ],
+};
+
+/// a and b mixed (k of b)
+pub fn mix(a: Color, b: Color, k: f32) -> Color {
+    let ch = |s: u32| -> u32 {
+        let (x, y) = ((a >> s & 255) as f32, (b >> s & 255) as f32);
+        ((x + (y - x) * k).round() as u32).min(255) << s
+    };
+    ch(16) | ch(8) | ch(0)
+}
+
+/// The themes there are, by name
+pub const THEMES: [Theme; 2] = [RUSTICA, DRACULA];
+
+/// The theme of that name (Rustica for an unknown one)
+pub fn theme_named(name: &str) -> Theme {
+    THEMES.iter().copied().find(|t| t.name == name.trim()).unwrap_or(RUSTICA)
+}
+
+/// The theme to draw in: RUSTICA_THEME (appctl sets it for sandboxed
+/// apps), else theme= in ~/.config/rustica.conf, else in
+/// /etc/rustica/appearance, else Rustica
+pub fn current_theme() -> Theme {
+    if let Ok(t) = std::env::var("RUSTICA_THEME") {
+        return theme_named(&t);
+    }
+    let key = |path: String| -> Option<String> {
+        let text = std::fs::read_to_string(path).ok()?;
+        text.lines().find_map(|l| l.trim().strip_prefix("theme=").map(|v| v.trim().to_string()))
+    };
+    let user = std::env::var("HOME").ok().and_then(|h| key(format!("{h}/.config/rustica.conf")));
+    theme_named(&user.or_else(|| key("/etc/rustica/appearance".into())).unwrap_or_default())
+}
 
 // HID usages
 pub mod keys {
@@ -256,7 +328,7 @@ impl Ui {
             canvas: Canvas::new(1, 1),
             face,
             bold,
-            theme: DRACULA,
+            theme: current_theme(),
             scale,
             input: Input::default(),
             platform,
@@ -440,7 +512,7 @@ impl Ui {
     fn focus_ring(&mut self, r: Rect, focused: bool) {
         if focused && self.keyboard_focus {
             let s = self.scale;
-            self.canvas.stroke_rounded(Rect::new(r.x - 2.0 * s, r.y - 2.0 * s, r.w + 4.0 * s, r.h + 4.0 * s), 7.0 * s, 2.0 * s, self.theme.accent);
+            self.canvas.stroke_rounded(Rect::new(r.x - 2.0 * s, r.y - 2.0 * s, r.w + 4.0 * s, r.h + 4.0 * s), 7.0 * s, 2.0 * s, self.theme.highlight);
         }
     }
 
@@ -587,7 +659,7 @@ impl Ui {
             }
         }
         let th = self.theme;
-        let bg = if self.hover(r) { 0xCAA9FA } else { th.accent };
+        let bg = if self.hover(r) { mix(th.accent, 0xFFFFFF, 0.22) } else { th.accent };
         self.canvas.fill_rounded(r, self.u(6.0), bg);
         let tw = self.bold.width(label, px);
         self.draw_text(true, r.x + (r.w - tw) / 2.0, r.y + self.u(6.0), label, px, th.accent_text);
@@ -1054,32 +1126,35 @@ impl Ui {
     pub fn icon(&mut self, icon: Icon, x: f32, y: f32, sz: f32) {
         let s = sz / 16.0;
         let r = |dx: f32, dy: f32, w: f32, h: f32| Rect::new((x + dx * s).round(), (y + dy * s).round(), (w * s).round().max(1.0), (h * s).round().max(1.0));
+        let th = self.theme;
+        // Folders in the theme's own colour (Rustica's amber, Dracula's purple)
+        let (folder, folder_hi) = if th.name == "dracula" { (0xBD93F9, 0xD6ACFF) } else { (0xF0962E, th.highlight) };
         match icon {
             Icon::None => {}
             Icon::Folder => {
-                self.canvas.fill_rounded(r(1.0, 2.0, 6.0, 3.0), s, 0xBD93F9);
-                self.canvas.fill_rounded(r(1.0, 4.0, 14.0, 10.0), 1.5 * s, 0xBD93F9);
-                self.canvas.fill_rounded(r(1.0, 6.0, 14.0, 8.0), 1.5 * s, 0xD6ACFF);
+                self.canvas.fill_rounded(r(1.0, 2.0, 6.0, 3.0), s, folder);
+                self.canvas.fill_rounded(r(1.0, 4.0, 14.0, 10.0), 1.5 * s, folder);
+                self.canvas.fill_rounded(r(1.0, 6.0, 14.0, 8.0), 1.5 * s, folder_hi);
             }
             Icon::File | Icon::Image | Icon::Program => {
-                self.canvas.fill_rounded(r(3.0, 1.0, 10.0, 14.0), 1.5 * s, 0xF8F8F2);
+                self.canvas.fill_rounded(r(3.0, 1.0, 10.0, 14.0), 1.5 * s, th.text);
                 let c = match icon {
-                    Icon::Image => 0x50FA7B,
-                    Icon::Program => 0xFF79C6,
-                    _ => 0x9EA3BD,
+                    Icon::Image => th.ansi[2],
+                    Icon::Program => th.ansi[5],
+                    _ => th.dim,
                 };
                 for k in 0..3 {
                     self.canvas.fill_rect(r(5.0, 5.0 + 3.0 * k as f32, 6.0, 1.0), c);
                 }
             }
             Icon::Drive => {
-                self.canvas.fill_rounded(r(1.0, 4.0, 14.0, 8.0), 2.0 * s, 0x8BE9FD);
-                self.canvas.fill_rect(r(11.0, 7.0, 2.0, 2.0), 0x282A36);
+                self.canvas.fill_rounded(r(1.0, 4.0, 14.0, 8.0), 2.0 * s, th.ansi[6]);
+                self.canvas.fill_rect(r(11.0, 7.0, 2.0, 2.0), th.background);
             }
             Icon::Trash => {
-                self.canvas.fill_rect(r(2.0, 3.0, 12.0, 2.0), 0x9EA3BD);
-                self.canvas.fill_rect(r(6.0, 1.0, 4.0, 2.0), 0x9EA3BD);
-                self.canvas.fill_rounded(r(3.0, 5.0, 10.0, 10.0), 1.5 * s, 0x9EA3BD);
+                self.canvas.fill_rect(r(2.0, 3.0, 12.0, 2.0), th.dim);
+                self.canvas.fill_rect(r(6.0, 1.0, 4.0, 2.0), th.dim);
+                self.canvas.fill_rounded(r(3.0, 5.0, 10.0, 10.0), 1.5 * s, th.dim);
             }
         }
     }

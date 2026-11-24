@@ -98,6 +98,7 @@ fn kernel_main() -> ! {
 
     // CRITICAL: Initialize PMM first (needed for stack allocation)
     rustux::init::pmm_init();
+    boot_mark(0);
 
     // No-execute pages, before any page table entry uses bit 63
     if unsafe { rustux::arch::amd64::mm::kernel_map::enable_nx() } {
@@ -113,6 +114,7 @@ fn kernel_main() -> ! {
         use rustux::arch::amd64::mm::kernel_map;
         match kernel_map::init(|| rustux::mm::pmm::pmm_alloc_kernel_page().ok()) {
             Ok(()) => {
+                boot_mark(1);
                 debug_print("[VM] Kernel page tables active, physical memory mapped at 0x");
                 print_hex(kernel_map::HHDM_BASE);
                 debug_print("\n");
@@ -125,6 +127,7 @@ fn kernel_main() -> ! {
                     debug_print(rustux::efi::init());
                     debug_print("\n");
                 }
+                boot_mark(2);
             }
             Err(e) => {
                 debug_print("[VM] FATAL: ");
@@ -142,6 +145,7 @@ fn kernel_main() -> ! {
         use rustux::arch::amd64::mm::kernel_map;
         match kernel_map::relocate_kernel(|| rustux::mm::pmm::pmm_alloc_kernel_page().ok()) {
             Ok(d) => {
+                boot_mark(3);
                 debug_print("[VM] Kernel image relocated to 0x");
                 print_hex(kernel_map::KERNEL_VBASE);
                 debug_print("\n");
@@ -186,11 +190,13 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     }
     // Pointers the boot code stored at runtime before the move
     rustux::init::after_relocation();
+    boot_mark(4);
 
     // Complete the rest of kernel initialization on the new stack
     debug_print("[INIT] Calling kernel_init_rest()...\n");
     rustux::init::kernel_init_rest();
     debug_print("[INIT] kernel_init_rest() returned!\n");
+    boot_mark(5);
 
     // Setup GDT
     debug_print("[1/5] Setting up GDT...\n");
@@ -208,6 +214,19 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     unsafe { rustux::arch::amd64::mm::kernel_map::drop_identity_map(); }
     debug_print("[VM] Boot identity map removed\n");
     debug_print("      ✓ IDT configured\n");
+    boot_mark(6);
+
+    // The text console, early: from here on each boot step and any kernel
+    // fault are on the screen (unless `quiet`, faults always)
+    debug_print("╔══════════════════════════════════════════════════════════╗\n");
+    debug_print("║  PHASE 6B: Initializing Display Console                   ║\n");
+    debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
+    rustux::drivers::display::set_quiet(cmdline_has("quiet"));
+    unsafe {
+        init_display_console();
+    }
+    debug_print("      ✓ Display console initialized\n\n");
+    boot_step("[boot] Kernel memory, GDT and IDT ready\n");
 
     // Install timer handler
     debug_print("[3/5] Installing timer handler...\n");
@@ -232,23 +251,23 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     debug_print("      ✓ Syscall handler at vector 0x80\n");
 
     // Initialize APIC
-    debug_print("[4/5] Initializing APIC...\n");
+    boot_step("[boot] Local APIC\n");
     unsafe { apic::apic_local_init(); }
     debug_print("      ✓ APIC initialized\n");
 
     // Configure keyboard IRQ
-    debug_print("[4.5/5] Configuring keyboard IRQ...\n");
+    boot_step("[boot] I/O APIC\n");
     unsafe { apic::apic_io_init(1, 33); }
     debug_print("      ✓ IRQ1 → Vector 33\n");
     apic::apic_io_init(12, 44);
 
     // Initialize keyboard controller
-    debug_print("[4.6/5] Initializing keyboard controller...\n");
+    boot_step("[boot] PS/2 controller\n");
     keyboard_controller_init();
     debug_print("      ✓ Keyboard controller initialized\n");
 
     // Configure timer
-    debug_print("[5/5] Configuring timer...\n");
+    boot_step("[boot] Timer\n");
     // Calibrate the TSC (PIT), then measure the LAPIC timer against it and
     // program a 10 ms periodic tick. The tick drives preemption and wakes
     // processes whose wait deadlines have passed.
@@ -276,18 +295,10 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     }
     debug_print("      ✓ Timer configured\n\n");
 
-    // Initialize display console (Phase 6B)
-    debug_print("╔══════════════════════════════════════════════════════════╗\n");
-    debug_print("║  PHASE 6B: Initializing Display Console                   ║\n");
-    debug_print("╚══════════════════════════════════════════════════════════╝\n\n");
-    rustux::drivers::display::set_quiet(cmdline_has("quiet"));
-    unsafe {
-        init_display_console();
-    }
-    debug_print("      ✓ Display console initialized\n\n");
 
     // USB keyboards (xHCI, hubs), after the console so the log is visible.
     // (The TSC was calibrated with the timer.)
+    boot_step("[boot] USB\n");
     rustux::drivers::usb::init();
 
     // Start init from the boot image
@@ -305,6 +316,7 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
         // them)
         // Wall-clock time from the CMOS real-time clock
         rustux::arch::amd64::platform::init_clock();
+        boot_step("[boot] Clock done; starting the other CPUs\n");
         let aps = rustux::arch::amd64::smp::start_aps();
         debug_print("[SMP] ");
         print_hex(1 + aps as u64);
@@ -536,9 +548,38 @@ fn handle_exception(vector: u64, code: Option<u64>, frame: &InterruptFrame) {
     // service, so a line from here would appear before it); the details
     // above go to the debug port (readable with `dmesg` from step 9).
     if !user && rustux::drivers::display::is_initialized() {
-        rustux::drivers::display::write_str("\n[");
-        rustux::drivers::display::write_str(name);
-        rustux::drivers::display::write_str(if user { ": process killed]\n" } else { ": kernel halted]\n" });
+        let mut b = [0u8; 96];
+        let mut n = 0;
+        let mut put = |s: &[u8]| {
+            for &c in s {
+                if n < b.len() {
+                    b[n] = c;
+                    n += 1;
+                }
+            }
+        };
+        let hex = |v: u64, out: &mut dyn FnMut(&[u8])| {
+            let mut d = [0u8; 16];
+            for i in 0..16 {
+                let x = ((v >> (60 - 4 * i)) & 0xF) as u8;
+                d[i] = if x < 10 { b'0' + x } else { b'a' + x - 10 };
+            }
+            out(&d);
+        };
+        put(b"\n[");
+        put(name.as_bytes());
+        put(b": kernel halted] rip=");
+        hex(frame.rip, &mut put);
+        if vector == 14 {
+            put(b" addr=");
+            hex(cr2, &mut put);
+        }
+        if let Some(c) = code {
+            put(b" err=");
+            hex(c, &mut put);
+        }
+        put(b"\n");
+        rustux::drivers::display::write_str(core::str::from_utf8(&b[..n]).unwrap_or("\n[kernel halted]\n"));
     }
 
     if user {
@@ -1012,7 +1053,8 @@ fn fill_screen(r: u8, g: u8, b: u8) {
         } else {
             (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
         };
-        let base = rustux::arch::amd64::mm::kernel_map::phys_to_virt(FB.get().addr) as *mut u32;
+        let Some(base) = fb_base() else { return };
+        let base = base as *mut u32;
         let limit = FB.get().size as usize / 4;
         for y in 0..FB.get().height {
             for x in 0..FB.get().width {
@@ -1023,6 +1065,67 @@ fn fill_screen(r: u8, g: u8, b: u8) {
             }
         }
     }
+}
+
+/// Where the kernel draws the framebuffer: its physical address while the
+/// firmware's identity map is in use, then the direct map, or, for a
+/// framebuffer above the direct map (a graphics card's large BAR, as AMD's
+/// with Resizable BAR), a mapping of its own in the device window
+fn fb_base() -> Option<u64> {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    use rustux::arch::amd64::mm::kernel_map;
+    static MAPPED: AtomicU64 = AtomicU64::new(0);
+    let (addr, size) = unsafe { (FB.get().addr, FB.get().size) };
+    if addr == 0 {
+        return None;
+    }
+    if !kernel_map::hhdm_ready() {
+        return Some(addr);
+    }
+    if addr + size <= kernel_map::direct_map_end() {
+        return Some(kernel_map::phys_to_virt(addr));
+    }
+    let m = MAPPED.load(Ordering::Acquire);
+    if m != 0 {
+        return Some(m);
+    }
+    match unsafe { kernel_map::map_mmio(addr, size, || rustux::mm::pmm::pmm_alloc_kernel_page().ok()) } {
+        Ok(v) => {
+            MAPPED.store(v, Ordering::Release);
+            Some(v)
+        }
+        Err(_) => None,
+    }
+}
+
+/// Early boot progress, before the text console: a white segment per
+/// step along the top of the green screen, so that a computer that stops
+/// there shows how far it got (12 segments, see the calls)
+fn boot_mark(step: usize) {
+    unsafe {
+        if FB.get().addr == 0 || rustux::drivers::display::is_initialized() {
+            return;
+        }
+        let Some(base) = fb_base() else { return };
+        let base = base as *mut u32;
+        let (w, stride) = (FB.get().width, FB.get().stride);
+        let seg = w / 12;
+        let limit = FB.get().size as usize / 4;
+        for y in 8..40usize.min(FB.get().height) {
+            for x in step * seg + 4..(step + 1) * seg - 4 {
+                let i = y * stride + x;
+                if x < w && i < limit {
+                    write_volatile(base.add(i), 0x00FF_FFFF);
+                }
+            }
+        }
+    }
+}
+
+/// A boot step: in the kernel log, and on the screen unless `quiet`
+fn boot_step(s: &str) {
+    debug_print(s);
+    rustux::drivers::display::kernel_message(s);
 }
 
 /// Fill framebuffer red - EFI entry point reached
@@ -1081,8 +1184,12 @@ pub unsafe fn init_display_console() {
 
     // Draw through the direct map so the console also works while a user
     // address space is active (e.g. during sys_write).
+    let Some(base) = fb_base() else {
+        debug_print("[DISPLAY] Framebuffer cannot be mapped, skipping console init\n");
+        return;
+    };
     let framebuffer = Framebuffer::new(
-        rustux::arch::amd64::mm::kernel_map::phys_to_virt(FB.get().addr),
+        base,
         FB.get().width,
         FB.get().height,
         pitch,

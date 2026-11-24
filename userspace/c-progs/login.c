@@ -11,7 +11,8 @@
 //   login -f USER   no password (init: autologin, from /etc/autologin or
 //                   the kernel command line's autologin=USER)
 //
-// Then, as that user: /etc/motd, and the user's shell (from /etc/passwd)
+// It first sets the console's colours (/etc/console-theme: Dracula by
+// default, or Rustica; `theme`). Then, as that user: /etc/motd, and the user's shell (from /etc/passwd)
 // in the home directory with HOME, USER, LOGNAME, SHELL, PATH set. login
 // waits for it and ends with its exit code. Only root may run login.
 
@@ -21,6 +22,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "consoletheme.h"
 #include "userdb.h"
 
 static int run_session(struct passwd *pw) {
@@ -61,6 +63,12 @@ int main(int argc, char **argv) {
     if (geteuid() != 0) {
         fprintf(stderr, "login: only root may run login (it is started by init)\n");
         return 1;
+    }
+    {
+        char name[32];
+        console_theme_saved(name, sizeof name);
+        // Dracula is the console's own: only another one needs the sequences
+        if (strcmp(name, "dracula")) console_theme_apply(stdout, console_theme_find(name));
     }
     if (argc == 3 && !strcmp(argv[1], "-f")) {
         struct passwd *pw = getpwnam(argv[2]);

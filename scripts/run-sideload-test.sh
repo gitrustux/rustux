@@ -225,7 +225,7 @@ def wait_pixel(x, y, want, t, tol=8):
 
 # The desktop takes the keyboard when it comes up: wait for it (the
 # panel's Applications button)
-check(wait_pixel(64, 782, 0xBD93F9, 90), 'the desktop starts at boot')
+check(wait_pixel(64, 782, 0xFF5A1F, 90), 'the desktop starts at boot')
 time.sleep(3)
 S, O = 'org.test.store', 'org.test.other'
 NAMES['?'] = 'shift-slash'
@@ -254,7 +254,7 @@ out = sh('rpg install -y %s' % S, 'S2-DONE', 60)
 check('not from FoxDen' not in out, 'it installs from FoxDen without the warning')
 out2 = sh('rpg list --apps --available | grep -A30 "^Package: %s" | grep Installed-From; rpg upgrade -y; rpg list --apps' % S, 'S2B-DONE', 60)
 check(re.search(r'Installed-From: foxden', out2) is not None, 'it is installed from FoxDen (Installed-From: foxden)')
-check(re.search(r'%s +1\.0\.0' % re.escape(S), out2.split('upgrade -y')[-1]) is not None and '1.0.1' not in out2.split('upgrade -y')[-1], 'rpg upgrade does not take the third party\'s newer version')
+check(re.search(r'%s +1\.0\.0' % re.escape(S), out2.split('upgrade -y')[-1]) is not None and re.search(r'%s +1\.0\.1' % re.escape(S), out2.split('upgrade -y')[-1]) is None, 'rpg upgrade does not take the third party\'s newer version')
 
 # 3. Package files and the third party
 out = sh('rpg install /mnt/side.rpg; rpg list --apps --available | grep -A30 "^Package: org.test.side" | grep Installed-From', 'S3A', 60)

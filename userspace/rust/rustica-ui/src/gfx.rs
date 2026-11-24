@@ -302,7 +302,7 @@ impl Canvas {
     }
 }
 
-/// An image from a PNG or JPEG file
+/// An image from a PNG, JPEG or QOI file
 pub fn load_image(path: &str) -> Result<Pixmap, String> {
     let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     decode_image(&data)
@@ -329,5 +329,112 @@ pub fn decode_image(data: &[u8]) -> Result<Pixmap, String> {
         }
         return Ok(pm);
     }
-    Err("not a PNG or JPEG image".into())
+    if data.starts_with(b"qoif") {
+        return decode_qoi(data);
+    }
+    Err("not a PNG, JPEG or QOI image".into())
+}
+
+/// A QOI image (qoiformat.org: the wallpapers' format, which the
+/// compositor reads); alpha is kept as it is
+pub fn decode_qoi(data: &[u8]) -> Result<Pixmap, String> {
+    if data.len() < 22 || !data.starts_with(b"qoif") {
+        return Err("not a QOI image".into());
+    }
+    let w = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    let h = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
+    if w == 0 || h == 0 || w > 16384 || h > 16384 {
+        return Err("bad QOI size".into());
+    }
+    let mut pm = Pixmap::new(w, h).ok_or("bad size")?;
+    let (mut idx, mut c, mut run, mut p) = ([[0u8; 4]; 64], [0u8, 0, 0, 255], 0u32, 14usize);
+    let end = data.len() - 8;
+    for px in pm.data_mut().chunks_exact_mut(4) {
+        if run > 0 {
+            run -= 1;
+        } else if p < end {
+            let b1 = data[p];
+            p += 1;
+            match b1 {
+                0xFE if p + 3 <= end => {
+                    c[..3].copy_from_slice(&data[p..p + 3]);
+                    p += 3;
+                }
+                0xFF if p + 4 <= end => {
+                    c.copy_from_slice(&data[p..p + 4]);
+                    p += 4;
+                }
+                _ if b1 >> 6 == 0 => c = idx[b1 as usize],
+                _ if b1 >> 6 == 1 => {
+                    c[0] = c[0].wrapping_add((b1 >> 4) & 3).wrapping_sub(2);
+                    c[1] = c[1].wrapping_add((b1 >> 2) & 3).wrapping_sub(2);
+                    c[2] = c[2].wrapping_add(b1 & 3).wrapping_sub(2);
+                }
+                _ if b1 >> 6 == 2 && p < end => {
+                    let b2 = data[p];
+                    p += 1;
+                    let vg = (b1 & 0x3F).wrapping_sub(32);
+                    c[0] = c[0].wrapping_add(vg.wrapping_sub(8).wrapping_add(b2 >> 4));
+                    c[1] = c[1].wrapping_add(vg);
+                    c[2] = c[2].wrapping_add(vg.wrapping_sub(8).wrapping_add(b2 & 0xF));
+                }
+                _ if b1 >> 6 == 3 => run = (b1 & 0x3F) as u32,
+                _ => {}
+            }
+            let hsh = (c[0] as usize * 3 + c[1] as usize * 5 + c[2] as usize * 7 + c[3] as usize * 11) % 64;
+            idx[hsh] = c;
+        }
+        // tiny-skia keeps premultiplied colours
+        let a = c[3] as u32;
+        px.copy_from_slice(&[(c[0] as u32 * a / 255) as u8, (c[1] as u32 * a / 255) as u8, (c[2] as u32 * a / 255) as u8, c[3]]);
+    }
+    Ok(pm)
+}
+
+/// A pixmap as a QOI file (opaque: RGB)
+pub fn encode_qoi(pm: &Pixmap) -> Vec<u8> {
+    let (w, h) = (pm.width(), pm.height());
+    let mut out = Vec::with_capacity((w * h) as usize + 22);
+    out.extend_from_slice(b"qoif");
+    out.extend_from_slice(&w.to_be_bytes());
+    out.extend_from_slice(&h.to_be_bytes());
+    out.extend_from_slice(&[3, 0]);
+    let (mut idx, mut prev, mut run) = ([[0u8; 4]; 64], [0u8, 0, 0, 255], 0u8);
+    let px: Vec<[u8; 4]> = pm.pixels().iter().map(|p| { let c = p.demultiply(); [c.red(), c.green(), c.blue(), 255] }).collect();
+    let n = px.len();
+    for (i, &c) in px.iter().enumerate() {
+        if c == prev {
+            run += 1;
+            if run == 62 || i == n - 1 {
+                out.push(0xC0 | (run - 1));
+                run = 0;
+            }
+            continue;
+        }
+        if run > 0 {
+            out.push(0xC0 | (run - 1));
+            run = 0;
+        }
+        let hsh = (c[0] as usize * 3 + c[1] as usize * 5 + c[2] as usize * 7 + c[3] as usize * 11) % 64;
+        if idx[hsh] == c {
+            out.push(hsh as u8);
+        } else {
+            idx[hsh] = c;
+            let dr = c[0].wrapping_sub(prev[0]) as i8;
+            let dg = c[1].wrapping_sub(prev[1]) as i8;
+            let db = c[2].wrapping_sub(prev[2]) as i8;
+            let (drg, dbg) = (dr.wrapping_sub(dg), db.wrapping_sub(dg));
+            if (-2..=1).contains(&dr) && (-2..=1).contains(&dg) && (-2..=1).contains(&db) {
+                out.push(0x40 | ((dr + 2) as u8) << 4 | ((dg + 2) as u8) << 2 | (db + 2) as u8);
+            } else if (-32..=31).contains(&dg) && (-8..=7).contains(&drg) && (-8..=7).contains(&dbg) {
+                out.push(0x80 | (dg + 32) as u8);
+                out.push(((drg + 8) as u8) << 4 | (dbg + 8) as u8);
+            } else {
+                out.extend_from_slice(&[0xFE, c[0], c[1], c[2]]);
+            }
+        }
+        prev = c;
+    }
+    out.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]);
+    out
 }

@@ -18,7 +18,7 @@ paper, building them only if ours falls short:
 | Licence | GPLv3, or Slint's royalty-free licence with conditions, or commercial | MIT | ours (MIT); dependencies BSD-3, MIT, Apache-2.0, Zlib; Inter under the OFL |
 | Porting work | a platform backend (window, events, software renderer's target) | a windowing backend (winit-like) and its async runtime | none: written for the compositor |
 | Footprint | a markup compiler at build time, a runtime | large (wgpu or tiny-skia, async executor, many crates) | `uidemo` is 1.1 MB static, 30 crates |
-| Look | polished, themable | good, themable | Dracula, as we draw it |
+| Look | polished, themable | good, themable | Rustica or Dracula, as we draw it |
 | Keyboard navigation | yes | partial | yes, from the start |
 | Maintenance | upstream, fast moving | upstream, breaking releases | ours to maintain |
 
@@ -53,7 +53,10 @@ iced is the fallback to build next (MIT, tiny-skia renderer).
   it when it came from the keyboard), Enter and Space press buttons,
   arrows, Home, End, Page Up and Down in lists, trees and tabs; F10 opens
   the menus; Esc closes menus and dialogs.
-- **Theme**: Dracula. **Scaling**: integer, 1x and 2x (`RUSTICA_SCALE`,
+- **Theme**: Rustica (the default) or Dracula: `Theme`, `RUSTICA`,
+  `DRACULA`, `current_theme()` (`RUSTICA_THEME`, else `theme=` in
+  `~/.config/rustica.conf`, else `/etc/rustica/appearance`); a running
+  window follows a change (`SESSION.md` "Appearance"). **Scaling**: integer, 1x and 2x (`RUSTICA_SCALE`,
   or `uidemo --scale 2`; else `scale=` in `~/.config/rustica.conf`, which
   Settings writes: step F7).
 - **Password fields** (`password_field`): dots, nothing copied out (step

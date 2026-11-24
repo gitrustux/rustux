@@ -81,6 +81,12 @@ typedef struct {
 #define RX_WINDOW_EV_WINDOW_INFO   108u
 // Not from the compositor: rx_window_wake was called (from another thread)
 #define RX_WINDOW_EV_WAKE          109u
+// The theme or the wallpaper changed: text = the theme's name ("rustica",
+// "dracula"); clients redraw in it
+#define RX_WINDOW_EV_APPEARANCE    110u
+// To the panel: the desktop's menu was used (flags 1 change the wallpaper,
+// 2 the appearance settings)
+#define RX_WINDOW_EV_DESKTOP       111u
 
 // Pointer event flags
 #define RX_WINDOW_PTR_MOTION  0x01u

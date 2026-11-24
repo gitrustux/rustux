@@ -123,7 +123,7 @@ def wait(pat, t, start=0):
 
 NAMES = {' ': 'spc', '\n': 'ret', '-': 'minus', '/': 'slash', '.': 'dot', ';': 'semicolon', "'": 'apostrophe',
          '|': 'shift-backslash', '&': 'shift-7', '$': 'shift-4', '(': 'shift-9', ')': 'shift-0', ',': 'comma',
-         '"': 'shift-apostrophe'}
+         '"': 'shift-apostrophe', '=': 'equal', '\\': 'backslash', '>': 'shift-dot'}
 
 def type_(text):
     for ch in text:
@@ -152,22 +152,28 @@ ONE, TWO = 0xFF8080, 0x80FF80
 BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
 
 def wallpaper(x, y, W=1280, H=800):
-    # compositor.c's make_wallpaper(), the same integer arithmetic
+    # compositor.c's make_gradient(), the same integer arithmetic: the
+    # Rustica theme's gradient (the test sets wallpaper=gradient)
+    top, bot, acc = 0x101012, 0x1C1B20, 0xFF5A1F
     rad = H * 10 // 14
     r2 = rad * rad
     t = y * 256 // H
-    br, bg, bb = 0x1E * 256 + (0x2B - 0x1E) * t, 0x1F * 256 + (0x2D - 0x1F) * t, 0x29 * 256 + (0x3C - 0x29) * t
+    ch = lambda c, s: c >> s & 255
+    br = ch(top, 16) * 256 + (ch(bot, 16) - ch(top, 16)) * t
+    bg = ch(top, 8) * 256 + (ch(bot, 8) - ch(top, 8)) * t
+    bb = ch(top, 0) * 256 + (ch(bot, 0) - ch(top, 0)) * t
     dx, dy = x - W // 4, y - 3 * H // 4
     d2 = dx * dx + dy * dy
     f = (r2 - d2) * 4096 // r2 if d2 < r2 else 0
     g = 41 * f * f // 4096
-    r = br + ((0xBD * 256 - br) * g) // (256 * 4096)
-    gg = bg + ((0x93 * 256 - bg) * g) // (256 * 4096)
-    b = bb + ((0xF9 * 256 - bb) * g) // (256 * 4096)
+    def mixc(b, a):
+        q = (a * 256 - b) * g
+        return b + (abs(q) // (256 * 4096)) * (1 if q >= 0 else -1)
+    r, gg, b = mixc(br, ch(acc, 16)), mixc(bg, ch(acc, 8)), mixc(bb, ch(acc, 0))
     d = BAYER[y & 3][x & 3] * 16 + 8
     return ((r + d) >> 8) << 16 | ((gg + d) >> 8) << 8 | ((b + d) >> 8)
 
-TITLE, TITLE_OFF = 0x44475A, 0x2E303E
+TITLE, TITLE_OFF = 0x1C1B20, 0x151418  # the Rustica theme
 
 def px_is(px, x, y, want, what):
     got = px(x, y)
@@ -179,7 +185,7 @@ if not wait(r'rustux.*:.*/root.* > ', 120):
     sys.exit(1)
 
 n0 = len(log())
-type_('compositor -v & sleep 1; wintest one -c ff8080 -p 100,100 -k & sleep 1; wintest two -c 80ff80 -p 300,200 -s 400x300 -k -t "from two" &\n')
+type_('printf "theme=rustica\\nwallpaper=gradient\\n" > /etc/rustica/appearance; compositor -v & sleep 1; wintest one -c ff8080 -p 100,100 -k & sleep 1; wintest two -c 80ff80 -p 300,200 -s 400x300 -k -t "from two" &\n')
 check(wait(r'compositor: (\d+)x(\d+), /svc/window', 20, n0) is not None, 'the compositor starts')
 check(wait(r'wintest two: window 400x300', 20, n0) is not None and wait(r'wintest one: window 320x200', 1, n0) is not None,
       'two windows from separate processes')

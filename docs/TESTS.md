@@ -482,6 +482,18 @@ it the file, which it reads and nothing beside it (read only, no folder,
 the path still refused); it saves `copy.txt` through the chooser; a
 cancelled question gives it nothing.
 
+## Appearance test (2026-11-24)
+
+`scripts/run-appearance-test.sh`: the desktop in QEMU. The Rustica theme
+and the fox wallpaper by default; a right click on the wallpaper opens the
+desktop's menu, whose first choice opens Settings > Appearance through the
+panel; there Dracula changes the panel and the title bars at once, and a
+picture of the user's (a screenshot in `~/Pictures`) becomes the
+wallpaper as `~/.config/rustica/wallpaper-N.qoi`; `theme` at the console
+sets the desktop back to Rustica and the console's own colours
+(`/etc/console-theme`); Log out on the live system offers Continue as
+root, without a password. `SESSION.md` "Appearance".
+
 ## Port check (porting preparation)
 
 `scripts/check-ports.sh` (no QEMU; needs clang): compiles the C library
@@ -685,7 +697,7 @@ PS/2: test=55 cfg=77->65 port=00 kbd=FA
 [TICK]
 ```
 
-The screen turns red at UEFI entry and green after ExitBootServices, then the console clears to the Dracula background and the shell prompt (`rustux >`) appears. Try `help`, `ls /bin`, `echo hi > /tmp/a`, `cat /tmp/a | upper`, `fstest`.
+The screen turns red at UEFI entry and green after ExitBootServices; white bars then appear one by one along its top as the kernel sets up its memory (seven at most), then the console clears to the Dracula background, shows each boot step (`[boot] Local APIC`, `[boot] Timer`, ...) and the shell prompt (`rustux >`) appears. Try `help`, `ls /bin`, `echo hi > /tmp/a`, `cat /tmp/a | upper`, `fstest`.
 
 A CPU exception in a user program makes the shell print `[crashed (CPU exception): -1025]`; the kernel prints a `[FAULT] ...` line with RIP, error code and fault address on the debug port; the shell keeps running.
 

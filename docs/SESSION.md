@@ -52,10 +52,48 @@ Ctrl+Alt+F1 throughout.
   list; Enter or Open starts one, Esc or Close ends it. Step F7 added
   Terminal, Files, Settings, the Text Editor and the Image Viewer (the
   last two apps since FoxDen step FD6b, listed as installed apps).
-- **compositor** (`WINDOWS.md`): the wallpaper (a dithered Dracula gradient
-  with a purple glow, computed for the screen's size), notifications (top
+- **compositor** (`WINDOWS.md`): the wallpaper, notifications (top
   right, 5 seconds, three at most: `notify TEXT`, or `RX_WINDOW_NOTIFY`
-  from any client), the lock screen.
+  from any client), the lock screen, the desktop's menu.
+
+## Appearance (2026-11-24)
+
+Two themes: **Rustica**, the desktop's default (fiery orange `#FF5A1F`,
+fox red `#C8101E`, near-black `#101012`, smoky charcoal `#1C1B20`, warm
+white `#F5F2EF`, amber `#FFB347`; Inter throughout, the title bars too),
+and **Dracula**, the server console's default and the desktop's earlier
+look. The wallpaper is the Rustica fox (`/usr/share/backgrounds/`, QOI;
+the portrait one on screens taller than wide), a gradient in the theme's
+colours, or a picture of the user's.
+
+- Where it is set: `theme=` and `wallpaper=` (`rustica`, `gradient`, or a
+  QOI file of the user's) in `~/.config/rustica.conf`, else in
+  `/etc/rustica/appearance`. Settings > Appearance writes them (a picture
+  from `~/Pictures` or the home folder becomes
+  `~/.config/rustica/wallpaper-N.qoi`); so does `theme --desktop NAME`.
+- How it spreads: the compositor looks at the session user's file every
+  second; on a change it makes the wallpaper again, redraws, and sends
+  every window `RX_WINDOW_EV_APPEARANCE` with the theme's name, so
+  rustica-ui windows (and the Terminal) change at once. Sandboxed apps
+  start with `RUSTICA_THEME` from appctl, since they cannot read the
+  user's file. The compositor reads the user's files as root, so it takes
+  only plain files that user owns.
+- A right click on the wallpaper opens a menu (Change wallpaper...,
+  Appearance settings...); the compositor sends the choice to the panel
+  (`RX_WINDOW_EV_DESKTOP`), which runs as the user and opens Settings >
+  Appearance.
+- The console: `theme --console NAME` (OSC 4, 10 and 11 sequences, which
+  the kernel console understands); as root it is kept in
+  `/etc/console-theme`, which login sets at every start.
+
+## Logging out of the live system
+
+On the live image `/etc/autologin` names root, whose session starts
+without the login. After Log out, the greeter (`greeter --auto root`)
+offers **Continue as root**, which needs no password (the desktop accepts
+it only for the user `/etc/autologin` names), beside the usual name and
+password. An installed system has no `/etc/autologin`, so its login always
+asks.
 
 ## Locking
 

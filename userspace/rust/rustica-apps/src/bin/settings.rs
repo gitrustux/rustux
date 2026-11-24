@@ -5,7 +5,8 @@
 // https://opensource.org/licenses/MIT
 
 //! settings: Rustica's Settings (DESKTOP.md step F7). Display (the scale,
-//! ~/.config/rustica.conf), keyboard layout (localectl), mouse speed
+//! ~/.config/rustica.conf), appearance (the theme and the wallpaper, the
+//! same file; the compositor and every window follow at once), keyboard layout (localectl), mouse speed
 //! (inputctl), network (the interfaces, DHCP or a fixed address, DNS
 //! servers: netcfg; network step D6), date, time and time zone
 //! (timedatectl), users (useradd, userdel, chpasswd, usermod), disks
@@ -14,7 +15,7 @@
 //! Install updates, a restart for a new system image; package step E6),
 //! about.
 //!
-//!   settings [SECTION]     display, keyboard, mouse, network, time, users, disks, updates, about
+//!   settings [SECTION]     display, appearance, keyboard, mouse, network, time, users, disks, updates, about
 //!
 //! What is the system's (in /etc) is root's: another user is asked for
 //! their password and the change goes through sudo -S. Prints what it
@@ -33,11 +34,77 @@ fn say(s: &str) {
     let _ = std::io::stdout().flush();
 }
 
-const SECTIONS: [&str; 10] = ["Display", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "Updates", "Apps", "About"];
-const S_DISKS: usize = 6;
-const S_UPDATES: usize = 7;
-const S_APPS: usize = 8;
-const S_ABOUT: usize = 9;
+const SECTIONS: [&str; 11] =
+    ["Display", "Appearance", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "Updates", "Apps", "About"];
+const S_APPEARANCE: usize = 1;
+const S_DISKS: usize = 7;
+const S_UPDATES: usize = 8;
+const S_APPS: usize = 9;
+const S_ABOUT: usize = 10;
+
+/// One key of ~/.config/rustica.conf, else of /etc/rustica/appearance
+fn appearance_key(key: &str) -> String {
+    let find = |p: &std::path::Path| -> Option<String> {
+        let text = std::fs::read_to_string(p).ok()?;
+        text.lines().find_map(|l| l.trim().strip_prefix(&format!("{key}=")).map(|v| v.trim().to_string()))
+    };
+    find(&sys::config_dir().join("rustica.conf"))
+        .or_else(|| find(std::path::Path::new("/etc/rustica/appearance")))
+        .unwrap_or_else(|| "rustica".into())
+}
+
+/// The pictures in ~/Pictures (and ~), for the wallpaper
+fn pictures() -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for dir in [sys::home().join("Pictures"), sys::home()] {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
+                if ["png", "jpg", "jpeg", "qoi"].contains(&ext.as_str()) && p.is_file() {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A picture made into the wallpaper: at most 3840 pixels on its long side,
+/// as QOI (the compositor's format) in ~/.config/rustica/, a new name each
+/// time so that the compositor sees the change; the older ones go
+fn make_wallpaper(src: &std::path::Path) -> Result<String, String> {
+    let pm = rustica_ui::gfx::load_image(&src.to_string_lossy())?;
+    let (w, h) = (pm.width(), pm.height());
+    let k = (3840.0 / w.max(h) as f32).min(1.0);
+    let pm = if k < 1.0 {
+        let (nw, nh) = (((w as f32 * k) as u32).max(1), ((h as f32 * k) as u32).max(1));
+        let mut out = rustica_ui::gfx::Pixmap::new(nw, nh).ok_or("bad size")?;
+        let paint = rustica_ui::gfx::PixmapPaint { quality: rustica_ui::gfx::FilterQuality::Bilinear, ..Default::default() };
+        out.draw_pixmap(0, 0, pm.as_ref(), &paint, rustica_ui::gfx::Transform::from_scale(k, k), None);
+        out
+    } else {
+        pm
+    };
+    let dir = sys::config_dir().join("rustica");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let name = dir.join(format!("wallpaper-{stamp}.qoi"));
+    let tmp = dir.join(".wallpaper.tmp");
+    std::fs::write(&tmp, rustica_ui::gfx::encode_qoi(&pm)).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &name).map_err(|e| format!("{}: {e}", name.display()))?;
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if n.starts_with("wallpaper-") && n.ends_with(".qoi") && p != name {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+    Ok(name.to_string_lossy().into_owned())
+}
 
 /// An installed app, for Settings > Apps (FoxDen step FD6)
 #[derive(Clone)]
@@ -248,6 +315,10 @@ struct Pending {
 
 struct Settings {
     section: Option<usize>,
+    theme: String,
+    wallpaper: String,
+    pictures: Vec<std::path::PathBuf>,
+    picture: Option<usize>,
     apps: Vec<SetApp>,
     scale: u32,
     keymaps: Vec<String>,
@@ -328,6 +399,10 @@ impl Settings {
     fn new() -> Settings {
         let mut s = Settings {
             section: Some(0),
+            theme: appearance_key("theme"),
+            wallpaper: appearance_key("wallpaper"),
+            pictures: Vec::new(),
+            picture: None,
             apps: Vec::new(),
             scale: rustica_ui::app::scale_from_env() as u32,
             keymaps: Vec::new(),
@@ -567,6 +642,72 @@ impl Settings {
         }
         ui.space(8.0);
         ui.dim_label(&format!("Your settings: {}", sys::config_dir().join("rustica.conf").display()));
+    }
+
+    fn set_appearance(&mut self, key: &str, value: &str) {
+        let p = sys::config_dir().join("rustica.conf");
+        let _ = std::fs::create_dir_all(sys::config_dir());
+        match sys::write_kv(&p, key, value) {
+            Ok(()) => say(&format!("{key} {value}")),
+            Err(e) => self.message = Some(("Could not save".into(), format!("{}: {e}", p.display()))),
+        }
+    }
+
+    fn appearance(&mut self, ui: &mut Ui) {
+        ui.heading("Appearance");
+        ui.label("Theme");
+        let mut theme = None;
+        ui.row(|ui| {
+            for (name, label) in [("rustica", "Rustica"), ("dracula", "Dracula")] {
+                let pressed = if self.theme == name { ui.primary_button(label) } else { ui.button(label) };
+                if pressed {
+                    theme = Some(name);
+                }
+            }
+        });
+        if let Some(t) = theme {
+            if t != self.theme {
+                self.theme = t.into();
+                ui.theme = rustica_ui::theme_named(t);
+                self.set_appearance("theme", t);
+                self.status = format!("Theme {}", if t == "rustica" { "Rustica" } else { "Dracula" });
+            }
+        }
+        ui.dim_label("Windows, the panel and the title bars change at once.");
+        ui.space(8.0);
+        ui.label("Wallpaper");
+        let mut wall = None;
+        ui.row(|ui| {
+            for (name, label) in [("rustica", "Rustica fox"), ("gradient", "Gradient")] {
+                let pressed = if self.wallpaper == name { ui.primary_button(label) } else { ui.button(label) };
+                if pressed {
+                    wall = Some(name.to_string());
+                }
+            }
+        });
+        ui.dim_label("Or a picture of yours (PNG, JPEG or QOI, in Pictures or your home folder):");
+        if self.pictures.is_empty() {
+            ui.dim_label("No pictures found.");
+        } else {
+            let names: Vec<String> = self.pictures.iter().map(|p| {
+                let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if p.parent() == Some(sys::home().join("Pictures").as_path()) { format!("Pictures/{n}") } else { n }
+            }).collect();
+            ui.list("pictures", &names, &mut self.picture, 120.0);
+            if ui.button("Use this picture") {
+                if let Some(p) = self.picture.and_then(|i| self.pictures.get(i)).cloned() {
+                    match make_wallpaper(&p) {
+                        Ok(f) => wall = Some(f),
+                        Err(e) => self.message = Some(("Cannot use that picture".into(), e)),
+                    }
+                }
+            }
+        }
+        if let Some(w) = wall {
+            self.wallpaper = w.clone();
+            self.set_appearance("wallpaper", &w);
+            self.status = "Wallpaper changed".into();
+        }
     }
 
     fn keyboard(&mut self, ui: &mut Ui) {
@@ -1092,11 +1233,12 @@ impl Settings {
             });
             ui.column(0.0, |ui| match self.section.unwrap_or(0) {
                 0 => self.display(ui),
-                1 => self.keyboard(ui),
-                2 => self.mouse(ui),
-                3 => self.network(ui, ctl),
-                4 => self.time(ui, ctl),
-                5 => self.users_section(ui),
+                S_APPEARANCE => self.appearance(ui),
+                2 => self.keyboard(ui),
+                3 => self.mouse(ui),
+                4 => self.network(ui, ctl),
+                5 => self.time(ui, ctl),
+                6 => self.users_section(ui),
                 S_DISKS => self.disks_section(ui),
                 S_UPDATES => self.updates_section(ui, ctl),
                 S_APPS => self.apps_section(ui),
@@ -1114,6 +1256,9 @@ impl Settings {
             }
             if self.section == Some(S_UPDATES) {
                 self.ups = up_status();
+            }
+            if self.section == Some(S_APPEARANCE) {
+                self.pictures = pictures();
             }
             if self.section == Some(S_APPS) {
                 self.apps = load_apps();
@@ -1180,6 +1325,9 @@ fn main() {
         s.section = SECTIONS.iter().position(|n| n.to_lowercase().contains(&a)).or(Some(0));
         if s.section == Some(S_APPS) {
             s.apps = load_apps();
+        }
+        if s.section == Some(S_APPEARANCE) {
+            s.pictures = pictures();
         }
     }
     say("started");

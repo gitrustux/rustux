@@ -608,7 +608,7 @@ impl FoxDen {
             let br = Rect::new(r.right() - bw - ui.u(8.0), r.y + ui.u(8.0), bw, ui.u(20.0));
             ui.canvas.fill_rounded(br, ui.u(10.0), if a.upgradable { th.accent } else if outside { 0x8A5A1E } else { 0x3B5E45 });
             let (bx, by) = (br.x + ui.u(6.0), br.y + ui.u(2.0));
-            ui.canvas.text(&mut ui.face, bx, by, badge, px * 0.8, if a.upgradable { th.accent_text } else { 0xF8F8F2 });
+            ui.canvas.text(&mut ui.face, bx, by, badge, px * 0.8, if a.upgradable { th.accent_text } else { th.text });
         }
         hot && ui.input.released
     }
@@ -1064,7 +1064,7 @@ impl FoxDen {
                     let px = ui.font_px();
                     let w = ui.face.width(&m, px);
                     let r = ui.alloc(w, ui.line_h());
-                    ui.canvas.text(&mut ui.face, r.x, r.y, &m, px, 0xFF5555);
+                    ui.canvas.text(&mut ui.face, r.x, r.y, &m, px, ui.theme.danger);
                 } else {
                     ui.label(&m);
                 }

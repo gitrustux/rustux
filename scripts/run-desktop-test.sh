@@ -155,7 +155,7 @@ def near(c, want, tol=40):
 def key(k):
     mon('sendkey ' + k)
 
-ACCENT, LOCKBOX, TOAST = 0xBD93F9, 0x343746, 0x44475A
+ACCENT, LOCKBOX, TOAST = 0xFF5A1F, 0x1C1B20, 0x1C1B20  # the Rustica theme
 
 def wait_pixel(x, y, want, t, tol=8):
     end = time.time() + t
@@ -173,15 +173,15 @@ if not wait(r'rustux.*:.*/root.* > ', 120):
 # 1. The desktop at boot
 check(wait_pixel(64, 782, ACCENT, 90), 'the desktop starts at boot: the panel (Applications)')
 px = screen()
-check(not near(px(640, 300), 0x282A36, 2), 'the wallpaper (%06x)' % px(640, 300))
+check(not near(px(640, 300), 0x101012, 2), 'the wallpaper (%06x)' % px(640, 300))
 
 # 2. The launcher
 click(64, 782)
-check(wait_pixel(150, 48, 0x44475A, 20), 'Applications opens the launcher (a focused window; %06x)' % screen()(150, 48))
+check(wait_pixel(150, 48, 0x1C1B20, 20), 'Applications opens the launcher (a focused window; %06x)' % screen()(150, 48))
 key('ret')
 time.sleep(4)
 px = screen()
-check(not near(px(150, 48), 0x44475A, 2) or not near(px(150, 100), 0x343746, 30), 'Enter starts an application and closes the launcher')
+check(not near(px(150, 48), 0x1C1B20, 2) or not near(px(150, 100), 0x101012, 30), 'Enter starts an application and closes the launcher')
 
 # 3. A notification from the console
 key('ctrl-alt-f1')
@@ -196,7 +196,7 @@ check(near(px(SW - 16 - 320 + 200, 30), TOAST, 4), 'the notification, top right'
 
 # 4. Log out, the login, alice
 click(1187, 782)
-check(wait_pixel(SW // 2, 20, 0x282A36, 15, 2), 'Log out: the graphical login, full screen')
+check(wait_pixel(SW // 2, 20, 0x101012, 15, 2), 'Log out: the graphical login, full screen')
 time.sleep(2)
 type_('alice')
 key('tab')

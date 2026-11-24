@@ -196,6 +196,15 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
                     dirty = true;
                 }
                 Event::Wake => dirty = true,
+                Event::Appearance { ref theme } => {
+                    ui.theme = crate::ui::theme_named(theme);
+                    ctl.events.push(e);
+                    dirty = true;
+                }
+                Event::Desktop(_) => {
+                    ctl.events.push(e);
+                    dirty = true;
+                }
                 Event::CloseRequest => return Ok(()),
             }
             if now {

@@ -167,7 +167,7 @@ def near(c, want, tol=40):
 def key(k):
     mon('sendkey ' + k)
 
-ACCENT, LOCKBOX, TOAST = 0xBD93F9, 0x343746, 0x44475A
+ACCENT, LOCKBOX, TOAST = 0xFF5A1F, 0x1C1B20, 0x1C1B20  # the Rustica theme
 
 def wait_pixel(x, y, want, t, tol=8):
     end = time.time() + t
@@ -205,7 +205,7 @@ console('terminal &', 8)
 type_('echo term-$((40+2)) > /tmp/term.txt\n')
 time.sleep(2)
 px = screen()
-check(near(px(300, 300), 0x282A36, 4), 'Terminal: a window with the terminal background')
+check(near(px(300, 300), 0x101012, 4), 'Terminal: a window with the terminal background')
 key('ctrl-shift-t')
 time.sleep(5)
 type_('echo tab2 > /tmp/tab2.txt; exit\n')
@@ -214,7 +214,7 @@ type_('top\n')
 time.sleep(5)
 px = screen()
 # top's header line is drawn in reverse video: light pixels in the second tab's first rows
-check(any(near(px(x, y), 0xF8F8F2, 30) for x in range(60, 600, 7) for y in range(150, 190, 3)), 'Terminal: top runs (its reverse-video header)')
+check(any(near(px(x, y), 0xF5F2EF, 30) for x in range(60, 600, 7) for y in range(150, 190, 3)), 'Terminal: top runs (its reverse-video header)')
 key('q')
 time.sleep(2)
 type_('exit\n')
@@ -257,7 +257,7 @@ time.sleep(2)
 keys('alt-ret')
 time.sleep(2)
 px = screen()
-check(near(px(470, 200), 0x343746, 6), 'Files: the properties dialog')
+check(near(px(470, 200), 0x1C1B20, 6), 'Files: the properties dialog')
 keys('ret')
 # A text file: Enter opens it in the Text Editor; type, save
 keys('home', 'ret')                 # docs
@@ -350,7 +350,7 @@ click(64, 782)                          # Applications: Settings is the 6th (Fox
 time.sleep(4)
 keys('down', 'down', 'down', 'down', 'down', 'ret')
 time.sleep(8)
-keys('down', 'down')                    # Mouse
+keys('down', 'down', 'down')            # Mouse (after Display, Appearance, Keyboard)
 keys(*(['tab'] * 6), 'ret')             # 200%: the password bar
 time.sleep(2)
 type_('secret\n')

@@ -1,0 +1,5 @@
+# The system-wide appearance of the desktop (each user's
+# ~/.config/rustica.conf comes first): theme=rustica|dracula,
+# wallpaper=rustica|gradient|/path/to/file.qoi
+theme=rustica
+wallpaper=rustica

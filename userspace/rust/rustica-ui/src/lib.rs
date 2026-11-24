@@ -9,7 +9,7 @@
 //! with fontdue and the Inter font, PNG and JPEG images, and
 //! immediate-mode widgets (buttons, text fields, a text editor field,
 //! lists, trees, scroll areas, tabs, menus, dialogs) with keyboard
-//! navigation, the Dracula theme and integer scaling, in a window of the
+//! navigation, the Rustica and Dracula themes and integer scaling, in a window of the
 //! compositor (rustica-window).
 //!
 //! ```no_run
@@ -27,4 +27,4 @@ pub mod ui;
 
 pub use app::{run, Control, Request};
 pub use rustica_window;
-pub use ui::{Column, Icon, Key, Row, TableResponse, TreeNode, Ui};
+pub use ui::{current_theme, theme_named, Column, Icon, Key, Row, TableResponse, Theme, TreeNode, Ui, DRACULA, RUSTICA, THEMES};
