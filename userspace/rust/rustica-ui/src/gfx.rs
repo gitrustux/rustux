@@ -294,6 +294,13 @@ impl Canvas {
         );
     }
 
+    /// The pixels as premultiplied 0xAARRGGBB (the desktop role's buffer)
+    pub fn copy_to_alpha(&self, out: &mut [u32]) {
+        for (o, p) in out.iter_mut().zip(self.pixmap.data().chunks_exact(4)) {
+            *o = (p[3] as u32) << 24 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32;
+        }
+    }
+
     /// The pixels as 0x00RRGGBB, for a window buffer of the same size
     pub fn copy_to(&self, out: &mut [u32]) {
         for (o, p) in out.iter_mut().zip(self.pixmap.data().chunks_exact(4)) {

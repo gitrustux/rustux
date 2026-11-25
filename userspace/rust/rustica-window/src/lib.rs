@@ -77,6 +77,7 @@ extern "C" {
     fn rx_window_destroy(w: *mut RawWindow);
     fn rx_window_set_role(w: *mut RawWindow, role: u32) -> i32;
     fn rx_window_activate(w: *mut RawWindow, id: i32) -> i32;
+    fn rx_window_set_panel(w: *mut RawWindow, edge: u32, size: i32, autohide: i32) -> i32;
     fn rx_window_lock(w: *mut RawWindow) -> i32;
     fn rx_window_notify(w: *mut RawWindow, text: *const u8) -> i32;
     fn rx_window_wake(ch: u32) -> i32;
@@ -128,6 +129,11 @@ impl Waker {
 
 /// The panel's role (set_role)
 pub const ROLE_PANEL: u32 = 1;
+pub const ROLE_DESKTOP: u32 = 2;
+pub const EDGE_BOTTOM: u32 = 0;
+pub const EDGE_TOP: u32 = 1;
+pub const EDGE_LEFT: u32 = 2;
+pub const EDGE_RIGHT: u32 = 3;
 
 /// A notification on the desktop without a window
 pub fn notify(text: &str) -> std::io::Result<()> {
@@ -297,6 +303,12 @@ impl Window {
     /// The desktop session (step F6): become the panel
     pub fn set_role(&mut self, role: u32) {
         unsafe { rx_window_set_role(&mut *self.raw, role) };
+    }
+
+    /// (The panel) dock at an edge (EDGE_*), this thick, maybe hidden
+    /// until the pointer reaches the edge
+    pub fn set_panel(&mut self, edge: u32, size: i32, autohide: bool) {
+        unsafe { rx_window_set_panel(&mut *self.raw, edge, size, autohide as i32) };
     }
 
     /// (The panel) focus and raise a window, or minimise it if focused

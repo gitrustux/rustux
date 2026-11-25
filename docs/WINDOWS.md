@@ -52,7 +52,8 @@ animation to what the screen takes.
 | `BUFFER` | a new buffer after `CONFIGURE` |
 | `SET_TITLE`, `SET_FULLSCREEN` | |
 | `CLIPBOARD_SET`, `CLIPBOARD_GET` | text, up to 4000 bytes; `GET` is answered with the text |
-| `SET_ROLE` | `PANEL` (step F6): no frame, docked at the bottom with the screen's width, always on top, never focused (it gets the pointer while over it); maximised windows stop above it |
+| `SET_ROLE` | `PANEL` (step F6): no frame, docked at an edge, always on top, never focused (it gets the pointer while over it); maximised and tiled windows stay out of it. `DESKTOP` (step F12): no frame, the work area, always below every other window, never in the panel's list; its buffer's top byte is premultiplied alpha, so it is drawn over the wallpaper (the desktop's icons) |
+| `SET_PANEL` | (the panel, step F10) flags: its edge (`RX_WINDOW_EDGE_BOTTOM`, `TOP`, `LEFT`, `RIGHT`), x: its thickness (24-400), y: 1 auto-hide (it takes no room and shows while the pointer is at that edge or over it). Maximised and tiled windows, the desktop and notifications move to the new work area |
 | `ACTIVATE` | (the panel) a window's id: focus and raise it, bring it back if minimised, minimise it if it has the focus |
 | `NOTIFY` | text: a notification, top right, 5 s; also as a connection's first message, without a window (`notify`) |
 | `LOCK` | lock the screen (`SESSION.md`) |
@@ -74,12 +75,21 @@ be woken when, for example, a terminal's program prints.
 - The right and bottom border and the corner (with 5 pixels outside them):
   drag to resize. The client is asked for one size at a time, the next
   when it has answered.
+- **Tiling** (step F13): a window dragged with the pointer to the left or
+  right edge of the work area fills that half; to the edge's upper or
+  lower quarter, that quarter; to the top edge, the whole work area
+  (maximised). A tinted outline shows where while dragging. Dragged away,
+  it gets its own size back. Super+Left and Super+Right tile the focused
+  window (from the other half, they first give it its size back),
+  Super+Up maximises, Super+Down restores a tiled or maximised window and
+  minimises any other. A maximised window can be dragged out too.
 - Alt+Tab: the bottom-most other window comes to the top with the focus
   (a minimised one comes back); repeated, it goes through all of them.
 - Alt+F4: ask the focused window to close. F11: full screen and back.
 - Keys go to the focused window only. Pointer events go to it while the
   pointer is over its content; while a button is held, to the window it
-  went down in.
+  went down in. The wheel scrolls the window under the pointer, focused
+  or not (step F13).
 
 ## The desktop session (step F6)
 

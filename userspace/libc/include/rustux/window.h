@@ -62,7 +62,13 @@ typedef struct {
 #define RX_WINDOW_ACTIVATE       9u  // (the panel) x = a window's id: focus and raise it, or minimise it if focused
 #define RX_WINDOW_NOTIFY         10u // + text: a notification (also as a connection's first message, without a window)
 #define RX_WINDOW_LOCK           11u // lock the screen (the session's user's password unlocks it)
+#define RX_WINDOW_SET_PANEL      12u // (the panel) flags = edge (RX_WINDOW_EDGE_*), x = thickness, y = 1 auto-hide
 #define RX_WINDOW_ROLE_PANEL     1u
+#define RX_WINDOW_ROLE_DESKTOP   2u  // the desktop's icons: the work area, below every window; the buffer's top byte is premultiplied alpha
+#define RX_WINDOW_EDGE_BOTTOM    0u
+#define RX_WINDOW_EDGE_TOP       1u
+#define RX_WINDOW_EDGE_LEFT      2u
+#define RX_WINDOW_EDGE_RIGHT     3u
 
 #define RX_WINDOW_MAX_TITLE      64
 #define RX_WINDOW_MAX_RECTS      64
@@ -144,6 +150,8 @@ void rx_window_destroy(rx_window_t *win);
 // The desktop session (step F6)
 int rx_window_set_role(rx_window_t *win, uint32_t role);
 int rx_window_activate(rx_window_t *win, int id);
+// (the panel) its edge (RX_WINDOW_EDGE_*), thickness and auto-hide
+int rx_window_set_panel(rx_window_t *win, uint32_t edge, int size, int autohide);
 int rx_window_lock(rx_window_t *win);
 // A notification, with or without a window (win 0: a connection of its own)
 int rx_window_notify(rx_window_t *win, const char *text);

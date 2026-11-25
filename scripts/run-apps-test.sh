@@ -346,11 +346,11 @@ type_('secret')
 key('ret')
 check(wait_pixel(64, 782, ACCENT, 30), 'carol logs in')
 time.sleep(3)
-click(64, 782)                          # Applications: Settings is the 6th (FoxDen came, FD5)
+click(64, 782)                          # Apps: Settings is the 6th in the menu's All
 time.sleep(4)
 keys('down', 'down', 'down', 'down', 'down', 'ret')
 time.sleep(8)
-keys('down', 'down', 'down')            # Mouse (after Display, Appearance, Keyboard)
+keys('down', 'down', 'down', 'down', 'down')  # Mouse (after Display, Appearance, Panel, Desktop, Keyboard)
 keys(*(['tab'] * 6), 'ret')             # 200%: the password bar
 time.sleep(2)
 type_('secret\n')

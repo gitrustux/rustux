@@ -34,13 +34,136 @@ fn say(s: &str) {
     let _ = std::io::stdout().flush();
 }
 
-const SECTIONS: [&str; 11] =
-    ["Display", "Appearance", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "Updates", "Apps", "About"];
+const SECTIONS: [&str; 13] =
+    ["Display", "Appearance", "Panel", "Desktop", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "Updates", "Apps", "About"];
+const S_DISPLAY: usize = 0;
 const S_APPEARANCE: usize = 1;
-const S_DISKS: usize = 7;
-const S_UPDATES: usize = 8;
-const S_APPS: usize = 9;
-const S_ABOUT: usize = 10;
+const S_PANEL: usize = 2;
+const S_DESKTOP: usize = 3;
+const S_KEYBOARD: usize = 4;
+const S_MOUSE: usize = 5;
+const S_NETWORK: usize = 6;
+const S_TIME: usize = 7;
+const S_USERS: usize = 8;
+const S_DISKS: usize = 9;
+const S_UPDATES: usize = 10;
+const S_APPS: usize = 11;
+const S_ABOUT: usize = 12;
+
+/// The panel's applets (DESKTOP.md step F10), with what Settings calls them
+const APPLETS: [(&str, &str); 11] = [
+    ("menu", "Menu (Apps)"),
+    ("launchers", "Launchers"),
+    ("windows", "Window list"),
+    ("updates", "Updates"),
+    ("keyboard", "Keyboard layout"),
+    ("volume", "Volume"),
+    ("network", "Network"),
+    ("clock", "Clock"),
+    ("lock", "Lock"),
+    ("logout", "Log out"),
+    ("foxden", "FoxDen"),
+];
+
+/// ~/.config/rustica/panel.conf as the panel reads it (the same defaults)
+#[derive(Clone)]
+struct PanelConf {
+    position: String,
+    size: i32,
+    width: i32,
+    autohide: bool,
+    zones: [Vec<String>; 3],
+    launchers: Vec<String>,
+}
+
+impl PanelConf {
+    fn path() -> std::path::PathBuf {
+        sys::config_dir().join("rustica").join("panel.conf")
+    }
+
+    fn load() -> Self {
+        let mut c = PanelConf {
+            position: "bottom".into(),
+            size: 36,
+            width: 180,
+            autohide: false,
+            zones: [
+                vec!["menu".into(), "launchers".into(), "windows".into()],
+                vec![],
+                vec!["updates".into(), "keyboard".into(), "volume".into(), "network".into(), "clock".into(), "lock".into(), "logout".into()],
+            ],
+            launchers: vec!["foxden".into(), "files".into(), "terminal".into()],
+        };
+        let text = std::fs::read_to_string(Self::path()).or_else(|_| std::fs::read_to_string("/etc/rustica/panel.conf")).unwrap_or_default();
+        let words = |v: &str| v.split(|ch: char| ch == ',' || ch.is_whitespace()).filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>();
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let v = v.trim();
+            match k.trim() {
+                "position" => c.position = v.into(),
+                "size" => c.size = v.parse().unwrap_or(36),
+                "width" => c.width = v.parse().unwrap_or(180),
+                "autohide" => c.autohide = v == "yes" || v == "true" || v == "1",
+                "start" => c.zones[0] = words(v),
+                "centre" | "center" => c.zones[1] = words(v),
+                "end" => c.zones[2] = words(v),
+                "launchers" => c.launchers = words(v),
+                _ => {}
+            }
+        }
+        c
+    }
+
+    fn save(&self) -> std::io::Result<()> {
+        let p = Self::path();
+        std::fs::create_dir_all(p.parent().unwrap())?;
+        let text = format!(
+            "# The panel (Settings > Panel; DESKTOP.md step F10)\nposition={}\nsize={}\nwidth={}\nautohide={}\nstart={}\ncentre={}\nend={}\nlaunchers={}\n",
+            self.position,
+            self.size,
+            self.width,
+            if self.autohide { "yes" } else { "no" },
+            self.zones[0].join(" "),
+            self.zones[1].join(" "),
+            self.zones[2].join(" "),
+            self.launchers.join(" ")
+        );
+        let tmp = p.with_extension("tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, &p)
+    }
+}
+
+/// The apps that can be pinned: /usr/share/applications/*.app (by name)
+/// and installed FoxDen apps (by ID), with their names
+fn pinnable() -> Vec<(String, String)> {
+    let mut v = Vec::new();
+    if let Ok(rd) = std::fs::read_dir("/usr/share/applications") {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("app") {
+                continue;
+            }
+            let id = p.file_stem().and_then(|x| x.to_str()).unwrap_or("").to_string();
+            let name = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| t.lines().find_map(|l| l.strip_prefix("name=").map(|v| v.trim().to_string())))
+                .unwrap_or_else(|| id.clone());
+            v.push((id, name));
+        }
+    }
+    if let Ok(rd) = std::fs::read_dir("/apps") {
+        for e in rd.flatten() {
+            let id = e.file_name().to_string_lossy().into_owned();
+            if let Ok(t) = std::fs::read_to_string(e.path().join("manifest")) {
+                let name = t.lines().find_map(|l| l.strip_prefix("Name:").map(|v| v.trim().to_string())).unwrap_or_else(|| id.clone());
+                v.push((id, name));
+            }
+        }
+    }
+    v.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    v
+}
 
 /// One key of ~/.config/rustica.conf, else of /etc/rustica/appearance
 fn appearance_key(key: &str) -> String {
@@ -331,6 +454,13 @@ struct Settings {
     /// The picture file field, and the file chooser while it is open
     /// (with the file it writes the choice to)
     picture_path: String,
+    /// Settings > Panel: the configuration, the applet chosen (zone,
+    /// place), the launcher chosen, the apps that can be pinned
+    panel: PanelConf,
+    panel_sel: Option<(usize, usize)>,
+    launcher_sel: Option<usize>,
+    pinnable: Vec<(String, String)>,
+    pin_sel: Option<usize>,
     chooser: Option<(std::process::Child, std::path::PathBuf)>,
     apps: Vec<SetApp>,
     scale: u32,
@@ -417,6 +547,11 @@ impl Settings {
             pictures: Vec::new(),
             picture: None,
             picture_path: String::new(),
+            panel: PanelConf::load(),
+            panel_sel: None,
+            launcher_sel: None,
+            pinnable: Vec::new(),
+            pin_sel: None,
             chooser: None,
             apps: Vec::new(),
             scale: rustica_ui::app::scale_from_env() as u32,
@@ -755,6 +890,212 @@ impl Settings {
             self.wallpaper = w.clone();
             self.set_appearance("wallpaper", &w);
             self.status = "Wallpaper changed".into();
+        }
+    }
+
+    /// Settings > Panel (DESKTOP.md step F10): where the panel is, how
+    /// big, auto-hide, its applets and its launchers; saved at once, and
+    /// the panel follows within a second
+    fn panel_section(&mut self, ui: &mut Ui) {
+        ui.heading("Panel");
+        let mut changed = false;
+        ui.label("Position");
+        ui.row(|ui| {
+            for (p, l) in [("bottom", "Bottom"), ("top", "Top"), ("left", "Left"), ("right", "Right")] {
+                if ui.button_ex(&format!("pos-{p}"), l, 0.0, false, self.panel.position == p).clicked && self.panel.position != p {
+                    self.panel.position = p.into();
+                    changed = true;
+                }
+            }
+        });
+        let side = self.panel.position == "left" || self.panel.position == "right";
+        ui.label(if side { "Width" } else { "Height" });
+        ui.row(|ui| {
+            let sizes: &[i32] = if side { &[120, 160, 180, 220, 280] } else { &[28, 32, 36, 44, 56] };
+            for &n in sizes {
+                let cur = if side { self.panel.width } else { self.panel.size };
+                if ui.button_ex(&format!("size-{n}"), &n.to_string(), 0.0, false, cur == n).clicked && cur != n {
+                    if side {
+                        self.panel.width = n;
+                    } else {
+                        self.panel.size = n;
+                    }
+                    changed = true;
+                }
+            }
+        });
+        if ui.checkbox(&mut self.panel.autohide, "Hide the panel until the pointer reaches its edge") {
+            changed = true;
+        }
+        ui.space(6.0);
+        ui.label("Applets (choose one to move or remove it)");
+        let zone_names = ["Start", "Centre", "End"];
+        for z in 0..3 {
+            ui.row(|ui| {
+                ui.dim_label(zone_names[z]);
+                if self.panel.zones[z].is_empty() {
+                    ui.dim_label("(empty)");
+                }
+                for (i, a) in self.panel.zones[z].clone().iter().enumerate() {
+                    let label = APPLETS.iter().find(|x| x.0 == a).map(|x| x.1).unwrap_or(a);
+                    if ui.button_ex(&format!("applet-{z}-{i}"), label, 0.0, false, self.panel_sel == Some((z, i))).clicked {
+                        self.panel_sel = if self.panel_sel == Some((z, i)) { None } else { Some((z, i)) };
+                    }
+                }
+            });
+        }
+        if let Some((z, i)) = self.panel_sel.filter(|&(z, i)| i < self.panel.zones[z].len()) {
+            let mut act = None;
+            ui.row(|ui| {
+                for (k, l) in [(0, "Earlier"), (1, "Later"), (2, "To start"), (3, "To centre"), (4, "To end"), (5, "Remove")] {
+                    if ui.button(l) {
+                        act = Some(k);
+                    }
+                }
+            });
+            if let Some(k) = act {
+                let a = self.panel.zones[z][i].clone();
+                match k {
+                    0 if i > 0 => {
+                        self.panel.zones[z].swap(i, i - 1);
+                        self.panel_sel = Some((z, i - 1));
+                    }
+                    1 if i + 1 < self.panel.zones[z].len() => {
+                        self.panel.zones[z].swap(i, i + 1);
+                        self.panel_sel = Some((z, i + 1));
+                    }
+                    2..=4 => {
+                        let to = k - 2;
+                        if to != z {
+                            self.panel.zones[z].remove(i);
+                            self.panel.zones[to].push(a);
+                            self.panel_sel = Some((to, self.panel.zones[to].len() - 1));
+                        }
+                    }
+                    5 => {
+                        self.panel.zones[z].remove(i);
+                        self.panel_sel = None;
+                    }
+                    _ => {}
+                }
+                changed = true;
+            }
+        }
+        let missing: Vec<(&str, &str)> = APPLETS
+            .iter()
+            .filter(|(id, _)| *id != "foxden" && !self.panel.zones.iter().flatten().any(|a| a == id))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            ui.row(|ui| {
+                ui.dim_label("Add:");
+                for (id, l) in &missing {
+                    if ui.button_ex(&format!("add-{id}"), l, 0.0, false, false).clicked {
+                        self.panel.zones[2].insert(0, id.to_string());
+                        changed = true;
+                    }
+                }
+            });
+        }
+        ui.space(6.0);
+        ui.label("Launchers (pinned apps)");
+        ui.row(|ui| {
+            if self.panel.launchers.is_empty() {
+                ui.dim_label("(none)");
+            }
+            for (i, l) in self.panel.launchers.clone().iter().enumerate() {
+                let name = self.pinnable.iter().find(|p| &p.0 == l).map(|p| p.1.clone()).unwrap_or_else(|| l.clone());
+                if ui.button_ex(&format!("pinned-{i}"), &name, 0.0, false, self.launcher_sel == Some(i)).clicked {
+                    self.launcher_sel = if self.launcher_sel == Some(i) { None } else { Some(i) };
+                }
+            }
+        });
+        if let Some(i) = self.launcher_sel.filter(|&i| i < self.panel.launchers.len()) {
+            ui.row(|ui| {
+                if ui.button("Earlier") && i > 0 {
+                    self.panel.launchers.swap(i, i - 1);
+                    self.launcher_sel = Some(i - 1);
+                    changed = true;
+                }
+                if ui.button("Later") && i + 1 < self.panel.launchers.len() {
+                    self.panel.launchers.swap(i, i + 1);
+                    self.launcher_sel = Some(i + 1);
+                    changed = true;
+                }
+                if ui.button("Unpin") {
+                    self.panel.launchers.remove(i);
+                    self.launcher_sel = None;
+                    changed = true;
+                }
+            });
+        }
+        let names: Vec<String> = self.pinnable.iter().map(|p| p.1.clone()).collect();
+        if !names.is_empty() {
+            ui.list("pinnable", &names, &mut self.pin_sel, 110.0);
+            if ui.button("Pin to the panel") {
+                if let Some((id, _)) = self.pin_sel.and_then(|i| self.pinnable.get(i)).cloned() {
+                    if !self.panel.launchers.contains(&id) {
+                        self.panel.launchers.push(id);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            match self.panel.save() {
+                Ok(()) => {
+                    say(&format!(
+                        "panel {} {} {} start={} centre={} end={} launchers={}",
+                        self.panel.position,
+                        if side { self.panel.width } else { self.panel.size },
+                        if self.panel.autohide { "autohide" } else { "shown" },
+                        self.panel.zones[0].join(","),
+                        self.panel.zones[1].join(","),
+                        self.panel.zones[2].join(","),
+                        self.panel.launchers.join(",")
+                    ));
+                    self.status = "Panel changed".into();
+                }
+                Err(e) => self.message = Some(("Could not save".into(), format!("{}: {e}", PanelConf::path().display()))),
+            }
+        }
+    }
+
+    /// Settings > Desktop (DESKTOP.md step F12): which icons the desktop
+    /// shows (~/.config/rustica/desktop.conf), and arranging them again
+    fn desktop_section(&mut self, ui: &mut Ui) {
+        ui.heading("Desktop");
+        let p = sys::config_dir().join("rustica").join("desktop.conf");
+        let kv = sys::parse_kv(&std::fs::read_to_string(&p).unwrap_or_default());
+        let on = |k: &str| !matches!(kv.get(k).map(String::as_str), Some("no") | Some("false") | Some("0"));
+        let mut changed = None;
+        for (k, label) in [
+            ("icons", "Show icons on the desktop"),
+            ("home", "Home"),
+            ("trash", "Trash"),
+            ("drives", "Mounted drives"),
+        ] {
+            let mut v = on(k);
+            if ui.checkbox(&mut v, label) {
+                changed = Some((k, v));
+            }
+        }
+        ui.dim_label("Files and folders in your Desktop folder are always shown with the icons.");
+        if let Some((k, v)) = changed {
+            let _ = std::fs::create_dir_all(p.parent().unwrap());
+            match sys::write_kv(&p, k, if v { "yes" } else { "no" }) {
+                Ok(()) => {
+                    say(&format!("desktop {k} {}", if v { "yes" } else { "no" }));
+                    self.status = "Desktop changed".into();
+                }
+                Err(e) => self.message = Some(("Could not save".into(), format!("{}: {e}", p.display()))),
+            }
+        }
+        ui.space(6.0);
+        if ui.button("Arrange the icons again") {
+            let _ = std::fs::remove_file(sys::config_dir().join("rustica").join("desktop-icons"));
+            say("desktop icons arranged");
+            self.status = "The icons are back in their columns".into();
         }
     }
 
@@ -1283,18 +1624,24 @@ impl Settings {
                 let h = (ui.remaining_height() - ui.line_h() * 2.0) / ui.scale;
                 ui.list("sections", &names, &mut self.section, h);
             });
-            ui.column(0.0, |ui| match self.section.unwrap_or(0) {
-                0 => self.display(ui),
-                S_APPEARANCE => self.appearance(ui),
-                2 => self.keyboard(ui),
-                3 => self.mouse(ui),
-                4 => self.network(ui, ctl),
-                5 => self.time(ui, ctl),
-                6 => self.users_section(ui),
-                S_DISKS => self.disks_section(ui),
-                S_UPDATES => self.updates_section(ui, ctl),
-                S_APPS => self.apps_section(ui),
-                _ => self.about_section(ui),
+            // The section's page scrolls when the window is too small
+            ui.column(0.0, |ui| {
+                let sec = self.section.unwrap_or(0);
+                ui.scroll_page(&format!("page{sec}"), 30.0, |ui| match sec {
+                    S_DISPLAY => self.display(ui),
+                    S_APPEARANCE => self.appearance(ui),
+                    S_PANEL => self.panel_section(ui),
+                    S_DESKTOP => self.desktop_section(ui),
+                    S_KEYBOARD => self.keyboard(ui),
+                    S_MOUSE => self.mouse(ui),
+                    S_NETWORK => self.network(ui, ctl),
+                    S_TIME => self.time(ui, ctl),
+                    S_USERS => self.users_section(ui),
+                    S_DISKS => self.disks_section(ui),
+                    S_UPDATES => self.updates_section(ui, ctl),
+                    S_APPS => self.apps_section(ui),
+                    _ => self.about_section(ui),
+                })
             });
         });
         if self.section != before {
@@ -1314,6 +1661,10 @@ impl Settings {
             }
             if self.section == Some(S_APPS) {
                 self.apps = load_apps();
+            }
+            if self.section == Some(S_PANEL) {
+                self.panel = PanelConf::load();
+                self.pinnable = pinnable();
             }
         }
         ui.focus_if_none("sections");
@@ -1406,6 +1757,10 @@ fn main() {
         s.section = SECTIONS.iter().position(|n| n.to_lowercase().contains(&a)).or(Some(0));
         if s.section == Some(S_APPS) {
             s.apps = load_apps();
+        }
+        if s.section == Some(S_PANEL) {
+            s.panel = PanelConf::load();
+            s.pinnable = pinnable();
         }
         if s.section == Some(S_APPEARANCE) {
             s.pictures = pictures();

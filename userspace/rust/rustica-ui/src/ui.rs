@@ -159,6 +159,9 @@ pub enum Icon {
     Program,
     Drive,
     Trash,
+    /// The trash with something in it
+    TrashFull,
+    Home,
 }
 
 /// A row of a table: its icon and its cells, one per column
@@ -213,6 +216,14 @@ impl Key {
     }
 }
 
+/// What a [`Ui::button_ex`] saw
+#[derive(Clone, Copy)]
+pub struct ButtonResponse {
+    pub clicked: bool,
+    pub right_clicked: bool,
+    pub rect: Rect,
+}
+
 /// What happened since the last frame
 #[derive(Default, Clone)]
 pub struct Input {
@@ -254,6 +265,9 @@ struct Layout {
     start_x: f32,
     start_y: f32,
     max: f32, // a row's height, a column's widest
+    /// Where the visible space ends for remaining_height (the window's
+    /// bottom, or a scroll area's, in this layout's coordinates)
+    bottom: f32,
 }
 
 struct OpenMenu {
@@ -306,6 +320,8 @@ pub struct Ui {
     last_click: Option<(Id, usize, std::time::Instant)>, // for double-clicks
     /// Around the window's content, in units (12)
     pub padding: f32,
+    /// Start each frame transparent and send the alpha (the desktop role)
+    pub transparent: bool,
 }
 
 fn hash(parent: Id, s: &str) -> Id {
@@ -352,6 +368,7 @@ impl Ui {
             redraw: false,
             last_click: None,
             padding: 12.0,
+            transparent: false,
         }
     }
 
@@ -366,7 +383,7 @@ impl Ui {
     pub fn line_h(&self) -> f32 {
         (self.face.line(self.font_px()).2).ceil()
     }
-    fn row_h(&self) -> f32 {
+    pub fn row_h(&self) -> f32 {
         self.line_h() + self.u(12.0)
     }
 
@@ -389,7 +406,11 @@ impl Ui {
         if self.canvas.pixmap.width() != w || self.canvas.pixmap.height() != h {
             self.canvas = Canvas::new(w, h);
         }
-        self.canvas.clear(self.theme.background);
+        if self.transparent {
+            self.canvas.pixmap.fill(tiny_skia::Color::TRANSPARENT);
+        } else {
+            self.canvas.clear(self.theme.background);
+        }
         self.focus_order.clear();
         self.consumed.clear();
         self.modal = self.modal_now;
@@ -416,6 +437,7 @@ impl Ui {
             start_x: pad,
             start_y: pad,
             max: 0.0,
+            bottom: h as f32,
         });
     }
 
@@ -555,7 +577,8 @@ impl Ui {
             let l = self.layouts.last().unwrap();
             (l.x, l.y, self.available_width())
         };
-        self.layouts.push(Layout { dir: Dir::Row, x, y, width, start_x: x, start_y: y, max: 0.0 });
+        let bottom = self.layouts.last().unwrap().bottom;
+        self.layouts.push(Layout { dir: Dir::Row, x, y, width, start_x: x, start_y: y, max: 0.0, bottom });
         let r = f(self);
         let l = self.layouts.pop().unwrap();
         self.alloc(l.x - l.start_x - self.u(8.0), l.max);
@@ -569,7 +592,8 @@ impl Ui {
             (l.x, l.y, self.available_width())
         };
         let width = if w <= 0.0 { avail } else { w };
-        self.layouts.push(Layout { dir: Dir::Column, x, y, width, start_x: x, start_y: y, max: 0.0 });
+        let bottom = self.layouts.last().unwrap().bottom;
+        self.layouts.push(Layout { dir: Dir::Column, x, y, width, start_x: x, start_y: y, max: 0.0, bottom });
         let r = f(self);
         let l = self.layouts.pop().unwrap();
         let h = (l.y - l.start_y - self.u(8.0)).max(0.0);
@@ -642,6 +666,69 @@ impl Ui {
         self.draw_text(false, r.x + (r.w - tw) / 2.0, r.y + self.u(6.0), label, px, th.text);
         self.focus_ring(r, focused);
         clicked
+    }
+
+    /// `text` shortened with an ellipsis to fit `max` pixels
+    pub fn elide(&mut self, text: &str, max: f32, bold: bool) -> String {
+        let px = self.font_px();
+        let wid = |ui: &mut Ui, t: &str| if bold { ui.bold.width(t, px) } else { ui.face.width(t, px) };
+        if wid(self, text) <= max {
+            return text.to_string();
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let mut n = chars.len();
+        while n > 0 {
+            let t: String = chars[..n].iter().collect::<String>() + "\u{2026}";
+            if wid(self, &t) <= max {
+                return t;
+            }
+            n -= 1;
+        }
+        "\u{2026}".to_string()
+    }
+
+    /// A button of a given width (0: its label's; the label is shortened
+    /// to fit), plain, in the accent colour (`primary`), or marked as the
+    /// current one (`selected`: a highlighted background and an accent
+    /// line); its id is `name`. Says whether it was clicked, and whether
+    /// the right button went down on it.
+    pub fn button_ex(&mut self, name: &str, label: &str, w: f32, primary: bool, selected: bool) -> ButtonResponse {
+        let id = self.id(name);
+        let px = self.font_px();
+        let natural = if primary { self.bold.width(label, px) } else { self.face.width(label, px) } + self.u(32.0);
+        let bw = if w > 0.0 { w } else { natural };
+        let h = self.row_h();
+        let r = self.alloc(bw, h);
+        let focused = self.focusable(id, r);
+        let mut clicked = self.input.released && self.active == Some(id) && self.hover(r);
+        for k in self.keys_for(id) {
+            if k.usage == keys::ENTER || k.usage == keys::SPACE || k.usage == keys::KP_ENTER {
+                clicked = true;
+            }
+        }
+        let right = self.input.right_pressed && self.hover(r);
+        let hot = self.hover(r);
+        let th = self.theme;
+        let (bg, fg) = if primary {
+            (if hot { mix(th.accent, 0xFFFFFF, 0.22) } else { th.accent }, th.accent_text)
+        } else if selected {
+            (if hot { mix(th.selection, 0xFFFFFF, 0.08) } else { th.selection }, th.text)
+        } else {
+            (if hot { th.surface_hi } else { th.surface }, th.text)
+        };
+        self.canvas.fill_rounded(r, self.u(6.0), bg);
+        if !primary {
+            self.canvas.stroke_rounded(r, self.u(6.0), 1.0, if focused { th.accent } else { th.border });
+        }
+        if selected && !primary {
+            let line = Rect::new(r.x + self.u(6.0), r.y + r.h - self.u(3.0), r.w - self.u(12.0), self.u(2.0));
+            self.canvas.fill_rect(line, th.accent);
+        }
+        let shown = self.elide(label, r.w - self.u(16.0), primary);
+        let tw = if primary { self.bold.width(&shown, px) } else { self.face.width(&shown, px) };
+        self.draw_text(primary, r.x + (r.w - tw) / 2.0, r.y + self.u(6.0), &shown, px, fg);
+        self.focus_ring(r, focused);
+        ButtonResponse { clicked, right_clicked: right, rect: r }
     }
 
     /// A button in the accent colour
@@ -958,6 +1045,7 @@ impl Ui {
         }
         if self.hover(r) && self.input.wheel != 0.0 {
             st.scroll = (st.scroll - self.input.wheel * lh * 3.0).max(0.0);
+            self.input.wheel = 0.0;
         }
         let keys = self.keys_for(id);
         let had_keys = !keys.is_empty();
@@ -1050,6 +1138,7 @@ impl Ui {
         let before = *selected;
         if self.hover(r) && self.input.wheel != 0.0 {
             scroll -= self.input.wheel * rh * 3.0;
+            self.input.wheel = 0.0;
         }
         let page = ((r.h / rh) as usize).max(1);
         let mut moved = false;
@@ -1119,7 +1208,7 @@ impl Ui {
     /// The height left below the current position (down to the padding)
     pub fn remaining_height(&self) -> f32 {
         let l = self.layouts.last().unwrap();
-        (self.canvas.height() - l.y - self.u(self.padding)).max(self.u(40.0))
+        (l.bottom - l.y - self.u(self.padding)).max(self.u(40.0))
     }
 
     /// Draw an icon of size `sz` with its top left at x, y
@@ -1151,10 +1240,25 @@ impl Ui {
                 self.canvas.fill_rounded(r(1.0, 4.0, 14.0, 8.0), 2.0 * s, th.ansi[6]);
                 self.canvas.fill_rect(r(11.0, 7.0, 2.0, 2.0), th.background);
             }
-            Icon::Trash => {
+            Icon::Trash | Icon::TrashFull => {
                 self.canvas.fill_rect(r(2.0, 3.0, 12.0, 2.0), th.dim);
                 self.canvas.fill_rect(r(6.0, 1.0, 4.0, 2.0), th.dim);
                 self.canvas.fill_rounded(r(3.0, 5.0, 10.0, 10.0), 1.5 * s, th.dim);
+                if icon == Icon::TrashFull {
+                    // Paper showing over the rim
+                    self.canvas.fill_rect(r(4.0, 6.0, 8.0, 1.0), th.text);
+                    self.canvas.fill_rect(r(5.0, 8.0, 6.0, 1.0), th.text);
+                    self.canvas.fill_rect(r(4.0, 10.0, 7.0, 1.0), th.text);
+                }
+            }
+            Icon::Home => {
+                // A roof in steps, the house, its door
+                for k in 0..6 {
+                    let k = k as f32;
+                    self.canvas.fill_rect(r(6.0 - k, 1.0 + k, 4.0 + 2.0 * k, 1.0), th.accent);
+                }
+                self.canvas.fill_rect(r(3.0, 7.0, 10.0, 8.0), folder_hi);
+                self.canvas.fill_rect(r(7.0, 10.0, 2.0, 5.0), th.background);
             }
         }
     }
@@ -1177,6 +1281,7 @@ impl Ui {
         let mut out = TableResponse::default();
         if self.hover(body) && self.input.wheel != 0.0 {
             scroll -= self.input.wheel * rh * 3.0;
+            self.input.wheel = 0.0;
         }
         let page = ((body.h / rh) as usize).max(1);
         let mut moved = false;
@@ -1337,6 +1442,7 @@ impl Ui {
         let mut scroll = *self.scrolls.get(&id).unwrap_or(&0.0);
         if self.hover(r) && self.input.wheel != 0.0 {
             scroll -= self.input.wheel * rh * 3.0;
+            self.input.wheel = 0.0;
         }
         let sel = self.selected_node.get(&id).copied();
         let mut cur = sel.and_then(|s| rows.iter().position(|row| row.0 == s));
@@ -1444,15 +1550,20 @@ impl Ui {
         }
     }
 
+    /// A scrolled area filling the rest of the window but `reserve` (in
+    /// unscaled pixels) below it: a page that scrolls when the window is
+    /// smaller than what it shows
+    pub fn scroll_page(&mut self, name: &str, reserve: f32, f: impl FnOnce(&mut Ui)) {
+        let h = (self.remaining_height() / self.scale - reserve).max(40.0);
+        self.scroll_area(name, h, f);
+    }
+
     /// A scrolled area of height h holding what f draws
     pub fn scroll_area(&mut self, name: &str, h: f32, f: impl FnOnce(&mut Ui)) {
         let id = self.id(name);
         let r = self.alloc(0.0, self.u(h));
         let mut scroll = *self.scrolls.get(&id).unwrap_or(&0.0);
         let content = *self.heights.get(&id).unwrap_or(&0.0);
-        if self.hover(r) && self.input.wheel != 0.0 {
-            scroll -= self.input.wheel * self.line_h() * 3.0;
-        }
         scroll = scroll.clamp(0.0, (content - r.h).max(0.0));
         self.canvas.push_clip(r);
         let pad = self.u(4.0);
@@ -1464,6 +1575,7 @@ impl Ui {
             start_x: r.x + pad,
             start_y: r.y + pad - scroll,
             max: 0.0,
+            bottom: r.y + r.h - pad - scroll,
         });
         self.push_id(name);
         f(self);
@@ -1475,6 +1587,12 @@ impl Ui {
             self.redraw = true;
         }
         self.heights.insert(id, used);
+        // The wheel, unless a list or text area inside took it
+        if self.hover(r) && self.input.wheel != 0.0 {
+            scroll = (scroll - self.input.wheel * self.line_h() * 3.0).clamp(0.0, (used - r.h).max(0.0));
+            self.input.wheel = 0.0;
+            self.redraw = true;
+        }
         self.scrollbar(r, used, &mut scroll, id);
         self.scrolls.insert(id, scroll);
     }

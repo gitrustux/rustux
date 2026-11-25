@@ -25,6 +25,10 @@ name = "foxden"
 path = "src/bin/foxden.rs"
 
 [[bin]]
+name = "desk"
+path = "src/bin/desk.rs"
+
+[[bin]]
 name = "settings"
 path = "src/bin/settings.rs"
 

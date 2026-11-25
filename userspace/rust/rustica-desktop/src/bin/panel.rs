@@ -4,24 +4,37 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-//! panel: the desktop's panel (DESKTOP.md step F6), docked at the bottom
-//! of the screen: Applications (the launcher), FoxDen (the app store,
-//! FoxDen step FD5), a button per window (click: focus it, or minimise it
-//! if it has the focus), the keyboard layout,
-//! volume (not there yet), the network (Net: the interface and its
-//! address, network step D6; a click opens Settings > Network), the
-//! clock, Lock and Log out. The session lasts as long as the panel: Log
-//! out ends it. Apps updated in the background, and app updates that wait
-//! because they ask for more, are notified (FoxDen step FD6). Updates
-//! (package step E6): when the installer service's
-//! last check found some (/var/lib/rpg/updates), an "Updates (N)" button
-//! opens Settings > Updates, and a notification says so when N grows.
+//! panel: the desktop's panel (DESKTOP.md steps F6 and F10), docked at an
+//! edge of the screen (bottom by default; top, left or right) and made of
+//! applets in three zones, start, centre and end, as Cinnamon's:
+//!
+//! - menu: Apps (the launcher; the Super key alone does the same)
+//! - launchers: one button per pinned app (FoxDen, Files, Terminal)
+//! - windows: a button per window (click: focus it, or minimise it if it
+//!   has the focus); they share what room is left, their titles shortened,
+//!   and past a minimum width a "+N" button stands for the rest, so the
+//!   end of the panel never leaves the screen
+//! - updates: "Updates (N)" when the installer service found some (package
+//!   step E6), a notification when N grows
+//! - keyboard (the layout), volume (not there yet), network (Net: the
+//!   interface and its address; a click opens Settings > Network), clock,
+//!   lock, logout
+//!
+//! Its settings are in ~/.config/rustica/panel.conf (else
+//! /etc/rustica/panel.conf), read again when they change: position=
+//! bottom|top|left|right, size= (the thickness of a bottom or top panel),
+//! width= (of a side panel), autohide=yes|no, start=, centre=, end= (the
+//! applets, in order), launchers= (names of /usr/share/applications/*.app,
+//! or FoxDen app IDs). Settings > Panel writes them; a right click on the
+//! panel opens it. The session lasts as long as the panel: Log out ends
+//! it. Apps updated in the background, and app updates that wait because
+//! they ask for more, are notified (FoxDen step FD6).
 //!
 //! It also starts the programs in /etc/autostart (one command a line).
 
-use rustica_ui::rustica_window::{Event, ROLE_PANEL};
+use rustica_ui::rustica_window::{Event, EDGE_BOTTOM, EDGE_LEFT, EDGE_RIGHT, EDGE_TOP, ROLE_PANEL};
 use rustica_ui::{Control, Request, Ui};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 #[repr(C)]
 #[derive(Default)]
@@ -115,6 +128,91 @@ fn toggle_launcher(launcher: &mut Option<std::process::Child>) {
     *launcher = std::process::Command::new("/bin/launcher").spawn().ok();
 }
 
+/// The panel's settings
+#[derive(Clone, PartialEq)]
+struct Config {
+    edge: u32,
+    size: i32,
+    width: i32,
+    autohide: bool,
+    zones: [Vec<String>; 3],
+    launchers: Vec<String>,
+}
+
+fn config_paths() -> Vec<std::path::PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+    vec![std::path::Path::new(&home).join(".config/rustica/panel.conf"), "/etc/rustica/panel.conf".into()]
+}
+
+fn load_config() -> Config {
+    let mut c = Config {
+        edge: EDGE_BOTTOM,
+        size: 36,
+        width: 180,
+        autohide: false,
+        zones: [
+            vec!["menu".into(), "launchers".into(), "windows".into()],
+            vec![],
+            vec!["updates".into(), "keyboard".into(), "volume".into(), "network".into(), "clock".into(), "lock".into(), "logout".into()],
+        ],
+        launchers: vec!["foxden".into(), "files".into(), "terminal".into()],
+    };
+    let text = config_paths().iter().find_map(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    let words = |v: &str| v.split(|ch: char| ch == ',' || ch.is_whitespace()).filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let v = v.trim();
+        match k.trim() {
+            "position" => {
+                c.edge = match v {
+                    "top" => EDGE_TOP,
+                    "left" => EDGE_LEFT,
+                    "right" => EDGE_RIGHT,
+                    _ => EDGE_BOTTOM,
+                }
+            }
+            "size" => c.size = v.parse().unwrap_or(36).clamp(28, 96),
+            "width" => c.width = v.parse().unwrap_or(180).clamp(48, 400),
+            "autohide" => c.autohide = v == "yes" || v == "true" || v == "1",
+            "start" => c.zones[0] = words(v),
+            "centre" | "center" => c.zones[1] = words(v),
+            "end" => c.zones[2] = words(v),
+            "launchers" => c.launchers = words(v),
+            _ => {}
+        }
+    }
+    c
+}
+
+fn config_mtime() -> Option<SystemTime> {
+    config_paths().iter().find_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+}
+
+/// A pinned app: its name and the command that starts it
+struct Launcher {
+    name: String,
+    exec: Vec<String>,
+}
+
+fn launcher(id: &str) -> Option<Launcher> {
+    if let Ok(t) = std::fs::read_to_string(format!("/usr/share/applications/{id}.app")) {
+        let get = |k: &str| t.lines().find_map(|l| l.strip_prefix(&format!("{k}=")).map(|v| v.trim().to_string()));
+        let exec = get("exec")?;
+        return Some(Launcher { name: get("name").unwrap_or_else(|| id.into()), exec: exec.split_whitespace().map(str::to_string).collect() });
+    }
+    if std::path::Path::new(&format!("/apps/{id}/manifest")).exists() {
+        return Some(Launcher { name: app_name(id), exec: vec!["/bin/appctl".into(), "run".into(), id.into()] });
+    }
+    None
+}
+
+fn start(cmd: &[String]) {
+    if let Some((p, a)) = cmd.split_first() {
+        println!("panel: start {}", cmd.join(" "));
+        let _ = std::process::Command::new(p).args(a).spawn();
+    }
+}
+
 fn main() {
     let user = std::env::var("USER").unwrap_or_default();
     if let Ok(list) = std::fs::read_to_string("/etc/autostart") {
@@ -127,6 +225,10 @@ fn main() {
     }
     let mut wins: Vec<Win> = Vec::new();
     let mut first = true;
+    let mut cfg = load_config();
+    let mut cfg_mtime = config_mtime();
+    let mut cfg_at = Instant::now();
+    let mut launchers: Vec<Launcher> = cfg.launchers.iter().filter_map(|l| launcher(l)).collect();
     // The network's state, asked again every 3 seconds
     let mut net = String::new();
     let mut net_at: Option<Instant> = None;
@@ -138,15 +240,68 @@ fn main() {
     let (done0, waits0) = app_news();
     let mut seen_updated = done0.iter().map(|d| d.0).max().unwrap_or(0);
     let mut seen_waits: Vec<String> = waits0.iter().map(|w| format!("{} {}", w.0, w.1)).collect();
+    // The "+N" button: which of the windows that did not fit comes next
+    let mut more_next = 0usize;
     println!("panel: session of {user}");
-    let mut launcher: Option<std::process::Child> = None;
+    let mut launcher_proc: Option<std::process::Child> = None;
+    // The desktop's icons (step F12): started with the session, again if
+    // they end with an error (at most 5 times)
+    let start_desk = || std::process::Command::new("/bin/desk").spawn().ok();
+    let mut desk = start_desk();
+    let mut desk_restarts = 0;
     let r = rustica_ui::run("Panel", 800, 36, Some((0, 0)), |ui: &mut Ui, ctl: &mut Control| {
         if first {
             ui.padding = 3.0;
             ctl.requests.push(Request::SetRole(ROLE_PANEL));
+            let size = if cfg.edge == EDGE_LEFT || cfg.edge == EDGE_RIGHT { cfg.width } else { cfg.size };
+            ctl.requests.push(Request::SetPanel { edge: cfg.edge, size, autohide: cfg.autohide });
             first = false;
         }
-        ctl.wake_after = Some(Duration::from_secs(5));
+        ctl.wake_after = Some(Duration::from_secs(2));
+        if let Some(d) = desk.as_mut() {
+            if let Ok(Some(st)) = d.try_wait() {
+                desk = None;
+                if !st.success() && desk_restarts < 5 {
+                    desk_restarts += 1;
+                    println!("panel: the desktop's icons ended ({st}); starting them again");
+                    desk = start_desk();
+                }
+            }
+        }
+        // The menu ended: its Log out and Lock are the panel's to do
+        if let Some(c) = launcher_proc.as_mut() {
+            ctl.wake_after = Some(Duration::from_millis(300));
+            if let Ok(Some(st)) = c.try_wait() {
+                launcher_proc = None;
+                match st.code() {
+                    Some(10) => {
+                        println!("panel: log out (menu)");
+                        ctl.quit = true;
+                    }
+                    Some(11) => {
+                        println!("panel: lock (menu)");
+                        ctl.requests.push(Request::Lock);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // The settings changed (Settings > Panel)
+        if cfg_at.elapsed() >= Duration::from_secs(1) {
+            cfg_at = Instant::now();
+            let m = config_mtime();
+            if m != cfg_mtime {
+                cfg_mtime = m;
+                let n = load_config();
+                if n != cfg {
+                    let size = if n.edge == EDGE_LEFT || n.edge == EDGE_RIGHT { n.width } else { n.size };
+                    ctl.requests.push(Request::SetPanel { edge: n.edge, size, autohide: n.autohide });
+                    println!("panel: settings changed");
+                    launchers = n.launchers.iter().filter_map(|l| launcher(l)).collect();
+                    cfg = n;
+                }
+            }
+        }
         for e in ctl.events.drain(..) {
             if let Event::WindowInfo { id, title, focused, minimized } = e {
                 if id < 0 {
@@ -156,7 +311,7 @@ fn main() {
                 }
             } else if let Event::Desktop(LAUNCHER_KEY) = e {
                 // The Super key alone
-                toggle_launcher(&mut launcher);
+                toggle_launcher(&mut launcher_proc);
             } else if let Event::Desktop(_) = e {
                 // The desktop's menu (a right click on the wallpaper):
                 // Change wallpaper and Appearance settings both open
@@ -165,11 +320,6 @@ fn main() {
                 let _ = std::process::Command::new("/bin/settings").arg("appearance").spawn();
             }
         }
-        let th = ui.theme;
-        let w = ui.canvas.width();
-        let h = ui.canvas.height();
-        ui.canvas.fill_rect(rustica_ui::gfx::Rect::new(0.0, 0.0, w, h), th.surface);
-        ui.canvas.fill_rect(rustica_ui::gfx::Rect::new(0.0, 0.0, w, 1.0), th.border);
         if net_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(3)) {
             let s = format!("Net: {}", rustica_ui::net::summary(rustica_ui::net::interfaces().as_deref()));
             if s != net {
@@ -207,73 +357,254 @@ fn main() {
             }
             ups_at = Some(Instant::now());
         }
-        let ups_text = if ups > 0 { format!("Updates ({ups})") } else { String::new() };
-        let left_text = format!("{}    Vol \u{2014}", layout());
-        let right_text = clock();
-        let right_w = ui.text_width(&left_text)
-            + ui.text_width(&net)
-            + ui.text_width(&right_text)
-            + ui.text_width("Lock")
-            + ui.text_width("Log out")
-            + if ups > 0 { ui.text_width(&ups_text) + ui.u(40.0) } else { 0.0 }
-            + ui.u(32.0 * 3.0 + 8.0 * 6.0 + 16.0);
-        ui.row(|ui| {
-            if ui.primary_button("Applications") {
-                toggle_launcher(&mut launcher);
-            }
-            // The app store (FoxDen step FD5)
-            if ui.button("FoxDen") {
-                println!("panel: foxden");
-                let _ = std::process::Command::new("/bin/foxden").spawn();
-            }
-            for win in &wins {
-                let mut t = win.title.clone();
-                if win.minimized {
-                    t = format!("({t})");
+
+        let th = ui.theme;
+        let w = ui.canvas.width();
+        let h = ui.canvas.height();
+        let vertical = cfg.edge == EDGE_LEFT || cfg.edge == EDGE_RIGHT;
+        ui.canvas.fill_rect(rustica_ui::gfx::Rect::new(0.0, 0.0, w, h), th.surface);
+        // The line on the side that faces the desktop
+        let line = match cfg.edge {
+            EDGE_TOP => rustica_ui::gfx::Rect::new(0.0, h - 1.0, w, 1.0),
+            EDGE_LEFT => rustica_ui::gfx::Rect::new(w - 1.0, 0.0, 1.0, h),
+            EDGE_RIGHT => rustica_ui::gfx::Rect::new(0.0, 0.0, 1.0, h),
+            _ => rustica_ui::gfx::Rect::new(0.0, 0.0, w, 1.0),
+        };
+        ui.canvas.fill_rect(line, th.border);
+        // A right click anywhere on the panel: its settings
+        if ui.input.right_pressed {
+            println!("panel: panel settings");
+            let _ = std::process::Command::new("/bin/settings").arg("panel").spawn();
+        }
+
+        let mut actions: Vec<Action> = Vec::new();
+        let state = State { wins: &wins, launchers: &launchers, net: &net, ups, vertical };
+        let gap = ui.u(8.0);
+        if vertical {
+            // One applet under the other; the window list takes the height left
+            let fixed: f32 = cfg.zones.iter().flatten().filter(|a| *a != "windows").map(|a| applet_size(ui, a, &state, true)).sum();
+            let room = ui.remaining_height() - fixed;
+            ui.column(0.0, |ui| {
+                for (zi, zone) in cfg.zones.iter().enumerate() {
+                    if zi == 2 {
+                        // The end zone at the bottom
+                        let rest: f32 = cfg.zones[2].iter().map(|a| if a == "windows" { 0.0 } else { applet_size(ui, a, &state, true) }).sum();
+                        let left = ui.remaining_height() - rest;
+                        if left > 0.0 && !cfg.zones[2].iter().any(|a| a == "windows") {
+                            ui.alloc(1.0, left - gap);
+                        }
+                    }
+                    for a in zone {
+                        applet(ui, a, &state, room, &mut more_next, &mut actions);
+                    }
                 }
-                ui.push_id(&win.id.to_string());
-                let clicked = if win.focused { ui.primary_button(&t) } else { ui.button(&t) };
-                ui.pop_id();
-                if clicked {
-                    println!("panel: activate {}", win.title);
-                    ctl.requests.push(Request::Activate(win.id));
+            });
+        } else {
+            // Side by side: the end zone right-aligned, the window list
+            // taking what is left between
+            let total = ui.available_width();
+            let fixed: f32 = cfg.zones.iter().flatten().filter(|a| *a != "windows").map(|a| applet_size(ui, a, &state, false)).sum();
+            let room = total - fixed;
+            ui.row(|ui| {
+                for (zi, zone) in cfg.zones.iter().enumerate() {
+                    if zi > 0 {
+                        // Push this zone right: the centre one to the middle
+                        let this: f32 = zone.iter().map(|a| if a == "windows" { room.max(0.0) } else { applet_size(ui, a, &state, false) }).sum();
+                        let after: f32 = if zi == 1 {
+                            cfg.zones[2].iter().map(|a| if a == "windows" { room.max(0.0) } else { applet_size(ui, a, &state, false) }).sum()
+                        } else {
+                            0.0
+                        };
+                        let free = ui.available_width() - this - after;
+                        let push = if zi == 1 { ((total - this) / 2.0 - (total - ui.available_width())).min(free) } else { free };
+                        if push > gap {
+                            ui.alloc(push - gap, 1.0);
+                        }
+                    }
+                    for a in zone {
+                        applet(ui, a, &state, room, &mut more_next, &mut actions);
+                    }
+                }
+            });
+        }
+        for a in actions {
+            match a {
+                Action::Menu => toggle_launcher(&mut launcher_proc),
+                Action::Start(cmd) => start(&cmd),
+                Action::Activate(id, title) => {
+                    println!("panel: activate {title}");
+                    ctl.requests.push(Request::Activate(id));
+                }
+                Action::Settings(page) => {
+                    println!("panel: {page} settings");
+                    let _ = std::process::Command::new("/bin/settings").arg(page).spawn();
+                }
+                Action::Lock => {
+                    println!("panel: lock");
+                    ctl.requests.push(Request::Lock);
+                }
+                Action::Logout => {
+                    println!("panel: log out");
+                    ctl.quit = true;
                 }
             }
-            let left = ui.available_width() - right_w;
-            if left > 0.0 {
-                ui.alloc(left, 1.0);
-            }
-            // The status text, centred on the buttons' line
-            let status = |ui: &mut Ui, text: &str| {
-                let tw = ui.text_width(text);
-                let bh = ui.line_h() + ui.u(12.0);
-                let r = ui.alloc(tw, bh);
-                let px = ui.font_px();
-                let ty = r.y + (bh - ui.line_h()) / 2.0;
-                ui.canvas.text(&mut ui.face, r.x, ty, text, px, th.dim);
-            };
-            if ups > 0 && ui.primary_button(&ups_text) {
-                println!("panel: updates settings");
-                let _ = std::process::Command::new("/bin/settings").arg("updates").spawn();
-            }
-            status(ui, &left_text);
-            if ui.button(&net) {
-                println!("panel: network settings");
-                let _ = std::process::Command::new("/bin/settings").arg("network").spawn();
-            }
-            status(ui, &right_text);
-            if ui.button("Lock") {
-                println!("panel: lock");
-                ctl.requests.push(Request::Lock);
-            }
-            if ui.button("Log out") {
-                println!("panel: log out");
-                ctl.quit = true;
-            }
-        });
+        }
     });
     if let Err(e) = r {
         eprintln!("panel: {e}");
         std::process::exit(1);
+    }
+}
+
+struct State<'a> {
+    wins: &'a [Win],
+    launchers: &'a [Launcher],
+    net: &'a str,
+    ups: usize,
+    vertical: bool,
+}
+
+enum Action {
+    Menu,
+    Start(Vec<String>),
+    Activate(i32, String),
+    Settings(&'static str),
+    Lock,
+    Logout,
+}
+
+/// The smallest a window's button gets before "+N" takes the rest
+const WIN_MIN: f32 = 90.0;
+const WIN_MAX: f32 = 220.0;
+
+/// The room an applet takes (its width side by side, its height in a
+/// column), the gap after it included; the window list's is what is left
+fn applet_size(ui: &mut Ui, name: &str, s: &State, vertical: bool) -> f32 {
+    let gap = ui.u(8.0);
+    let bw = |ui: &mut Ui, t: &str| ui.text_width(t) + ui.u(32.0) + gap;
+    let bh = ui.row_h() + gap;
+    if vertical {
+        return match name {
+            "launchers" => s.launchers.len() as f32 * bh,
+            "updates" if s.ups == 0 => 0.0,
+            "volume" | "keyboard" => ui.line_h() + gap,
+            "clock" => ui.line_h() + gap,
+            _ => bh,
+        };
+    }
+    match name {
+        "menu" => ui.text_width("Apps") * 1.1 + ui.u(32.0) + gap,
+        "launchers" => s.launchers.iter().map(|l| bw(ui, &l.name)).sum(),
+        "updates" => {
+            if s.ups > 0 {
+                bw(ui, &format!("Updates ({})", s.ups))
+            } else {
+                0.0
+            }
+        }
+        "keyboard" => ui.text_width(&layout()) + gap,
+        "volume" => ui.text_width("Vol \u{2014}") + gap,
+        "network" => bw(ui, s.net),
+        "clock" => ui.text_width(&clock()) + gap,
+        "lock" => bw(ui, "Lock"),
+        "logout" => bw(ui, "Log out"),
+        _ => 0.0,
+    }
+}
+
+/// Status text, centred on the buttons' line (side by side) or a line of
+/// its own (in a column)
+fn status(ui: &mut Ui, text: &str, vertical: bool) {
+    let th = ui.theme;
+    let tw = ui.text_width(text);
+    let bh = if vertical { ui.line_h() } else { ui.row_h() };
+    let r = ui.alloc(if vertical { 0.0 } else { tw }, bh);
+    let px = ui.font_px();
+    let ty = r.y + (bh - ui.line_h()) / 2.0;
+    let tx = if vertical { r.x + (r.w - tw) / 2.0 } else { r.x };
+    ui.canvas.text(&mut ui.face, tx, ty, text, px, th.dim);
+}
+
+fn applet(ui: &mut Ui, name: &str, s: &State, room: f32, more_next: &mut usize, actions: &mut Vec<Action>) {
+    let v = s.vertical;
+    let full = if v { ui.available_width() } else { 0.0 };
+    match name {
+        "menu" => {
+            if ui.button_ex("menu", "Apps", full, true, false).clicked {
+                actions.push(Action::Menu);
+            }
+        }
+        "launchers" => {
+            for (i, l) in s.launchers.iter().enumerate() {
+                if ui.button_ex(&format!("launcher{i}"), &l.name, full, false, false).clicked {
+                    actions.push(Action::Start(l.exec.clone()));
+                }
+            }
+        }
+        "windows" => window_list(ui, s, room, more_next, actions),
+        "updates" => {
+            if s.ups > 0 && ui.button_ex("updates", &format!("Updates ({})", s.ups), full, true, false).clicked {
+                actions.push(Action::Settings("updates"));
+            }
+        }
+        "keyboard" => status(ui, &layout(), v),
+        "volume" => status(ui, "Vol \u{2014}", v),
+        "network" => {
+            if ui.button_ex("network", s.net, full, false, false).clicked {
+                actions.push(Action::Settings("network"));
+            }
+        }
+        "clock" => status(ui, &clock(), v),
+        "lock" => {
+            if ui.button_ex("lock", "Lock", full, false, false).clicked {
+                actions.push(Action::Lock);
+            }
+        }
+        "logout" => {
+            if ui.button_ex("logout", "Log out", full, false, false).clicked {
+                actions.push(Action::Logout);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The open windows: each button gets an equal share of `room` (at most
+/// WIN_MAX, its title shortened to fit); when even WIN_MIN each does not
+/// fit, the first ones that do are shown and "+N" activates the others in
+/// turn
+fn window_list(ui: &mut Ui, s: &State, room: f32, more_next: &mut usize, actions: &mut Vec<Action>) {
+    let n = s.wins.len();
+    if n == 0 {
+        return;
+    }
+    let gap = ui.u(8.0);
+    let v = s.vertical;
+    let (each, shown) = if v {
+        let bh = ui.row_h() + gap;
+        let fits = ((room / bh).floor().max(0.0)) as usize;
+        let shown = if fits >= n { n } else { fits.saturating_sub(1) };
+        (ui.available_width(), shown)
+    } else {
+        let fits = ((room / (ui.u(WIN_MIN) + gap)).floor().max(0.0)) as usize;
+        let shown = if fits >= n { n } else { fits.saturating_sub(1).max(1) };
+        let more_w = if shown < n { ui.text_width("+99") + ui.u(32.0) + gap } else { 0.0 };
+        let each = ((room - more_w) / shown as f32 - gap).clamp(ui.u(40.0), ui.u(WIN_MAX));
+        (each, shown)
+    };
+    for win in &s.wins[..shown] {
+        let t = if win.minimized { format!("({})", win.title) } else { win.title.clone() };
+        if ui.button_ex(&format!("win{}", win.id), &t, each, false, win.focused).clicked {
+            actions.push(Action::Activate(win.id, win.title.clone()));
+        }
+    }
+    if shown < n {
+        let hidden = &s.wins[shown..];
+        let label = format!("+{}", hidden.len());
+        if ui.button_ex("more", &label, if v { each } else { 0.0 }, false, false).clicked {
+            let w = &hidden[*more_next % hidden.len()];
+            *more_next += 1;
+            actions.push(Action::Activate(w.id, w.title.clone()));
+        }
     }
 }

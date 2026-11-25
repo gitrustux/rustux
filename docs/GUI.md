@@ -77,6 +77,15 @@ iced is the fallback to build next (MIT, tiny-skia renderer).
   `has_focus`, `remaining_height`. `Key::ctrl()` and `shift()` are public.
   `RUSTICA_WINDOW_AT=X,Y` places a window that has no position of its own
   (scripts and tests).
+- **Steps F10-F13** added (2026-11-25): `scroll_page` (a scroll area
+  filling the rest of the window: a page that scrolls when the window is
+  too small; `remaining_height` inside a scroll area counts its visible
+  part), the wheel taken by the innermost list, text area or scroll area
+  under the pointer, `button_ex` (a button of a given width, its label
+  shortened, plain, primary or marked as current; it reports the right
+  button too), `elide`, `row_h`, the icons `Home` and `TrashFull`,
+  `Ui::transparent` (frames start transparent and the window gets the
+  alpha: the desktop role), `Request::SetPanel`.
 - **Running** (`app.rs`): `rustica_ui::run(title, w, h, position, frame)`
   opens the window, turns the compositor's events into input, calls the
   frame function, copies the canvas into the window's buffer and commits.

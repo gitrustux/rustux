@@ -35,6 +35,8 @@ impl Platform for Clipboard {
 pub enum Request {
     /// Become the panel (rustica_window::ROLE_PANEL)
     SetRole(u32),
+    /// (The panel) its edge, thickness and auto-hide
+    SetPanel { edge: u32, size: i32, autohide: bool },
     /// (The panel) activate a window
     Activate(i32),
     Lock,
@@ -112,6 +114,7 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
             let mut w = win.borrow_mut();
             match r {
                 Request::SetRole(role) => w.set_role(role),
+                Request::SetPanel { edge, size, autohide } => w.set_panel(edge, size, autohide),
                 Request::Activate(id) => w.activate(id),
                 Request::Lock => w.lock(),
                 Request::Notify(t) => w.notify(&t),
@@ -127,7 +130,11 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
         ctl.events.clear();
         if commit {
             let mut w = win.borrow_mut();
-            ui.canvas.copy_to(w.pixels());
+            if ui.transparent {
+                ui.canvas.copy_to_alpha(w.pixels());
+            } else {
+                ui.canvas.copy_to(w.pixels());
+            }
             w.commit(&[]);
         }
     };

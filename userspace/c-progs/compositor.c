@@ -111,7 +111,9 @@ typedef struct {
     int committed;              // something committed since the last FRAME
     uint64_t close_deadline;    // after a close request, 0 if none
     uint32_t want_w, want_h;    // the size asked for with CONFIGURE (0: none pending)
-    int panel;                  // the panel: no frame, docked at the bottom, on top, never focused
+    int panel;                  // the panel: no frame, docked at an edge, on top, never focused
+    int tiled;                  // SNAP_*: filling a half or a quarter of the work area
+    int desktop;                // the desktop's icons (step F12): the work area, no frame, below every window, blended over the wallpaper
 } window_t;
 
 static window_t wins[MAX_WINDOWS];
@@ -128,7 +130,43 @@ static int visible = 1;
 static char clipboard[RX_WINDOW_MAX_CLIPBOARD + 1];
 static size_t clipboard_len;
 
-static int panel_h;             // the screen's bottom rows the panel takes
+// The panel (step F10): its edge (RX_WINDOW_EDGE_*), its thickness, and
+// auto-hide (then it takes no room and shows when the pointer reaches the
+// edge)
+static int panel_edge = RX_WINDOW_EDGE_BOTTOM, panel_size, panel_autohide, panel_shown = 1;
+
+// What windows may use: the first head without the panel
+static void work_area(int *x, int *y, int *w, int *h) {
+    int r = panel_autohide ? 0 : panel_size;
+    *x = 0; *y = 0; *w = (int)PW; *h = (int)PH;
+    switch (panel_edge) {
+    case RX_WINDOW_EDGE_TOP: *y = r; *h -= r; break;
+    case RX_WINDOW_EDGE_LEFT: *x = r; *w -= r; break;
+    case RX_WINDOW_EDGE_RIGHT: *w -= r; break;
+    default: *h -= r; break;
+    }
+}
+
+static void relayout(void);
+static void toggle_maximize(int k);
+
+// Tiling (step F13): the part of the work area a window snaps to
+enum { SNAP_NONE, SNAP_LEFT, SNAP_RIGHT, SNAP_TL, SNAP_TR, SNAP_BL, SNAP_BR, SNAP_MAX };
+static void snap_rect(int z, int *x, int *y, int *w, int *h) {
+    int ax, ay, aw, ah;
+    work_area(&ax, &ay, &aw, &ah);
+    int hw = aw / 2, hh = ah / 2;
+    *x = ax; *y = ay; *w = aw; *h = ah;
+    switch (z) {
+    case SNAP_LEFT: *w = hw; break;
+    case SNAP_RIGHT: *x = ax + hw; *w = aw - hw; break;
+    case SNAP_TL: *w = hw; *h = hh; break;
+    case SNAP_TR: *x = ax + hw; *w = aw - hw; *h = hh; break;
+    case SNAP_BL: *y = ay + hh; *w = hw; *h = ah - hh; break;
+    case SNAP_BR: *x = ax + hw; *y = ay + hh; *w = aw - hw; *h = ah - hh; break;
+    default: break;
+    }
+}
 static char session_user[64];   // who unlocks the screen ("" without a session)
 static int locked;
 static char lock_pw[65];
@@ -174,7 +212,7 @@ static void add_damage(int x, int y, int w, int h) {
 
 // The whole frame of a window (border, title bar, content) and the resize grips
 static void frame_rect(const window_t *w, int *x, int *y, int *fw, int *fh) {
-    if (w->fullscreen || w->panel) {
+    if (w->fullscreen || w->panel || w->desktop) {
         *x = w->x; *y = w->y; *fw = (int)w->w; *fh = (int)w->h;
         return;
     }
@@ -306,7 +344,7 @@ static void button_rect(const window_t *w, int k, int *x, int *y) {
 }
 
 static void draw_window(const window_t *w, int focused, const rx_display_rect_t *r) {
-    if (!w->fullscreen && !w->panel) {
+    if (!w->fullscreen && !w->panel && !w->desktop) {
         int fx, fy, fw, fh;
         frame_rect(w, &fx, &fy, &fw, &fh);
         uint32_t bc = focused ? C_BORDER : C_BORDER_OFF;
@@ -344,6 +382,27 @@ static void draw_window(const window_t *w, int focused, const rx_display_rect_t 
     int x1 = w->x + (int)w->w < (int)(r->x + r->w) ? w->x + (int)w->w : (int)(r->x + r->w);
     int y1 = w->y + (int)w->h < (int)(r->y + r->h) ? w->y + (int)w->h : (int)(r->y + r->h);
     if (x1 <= x0) return;
+    if (w->desktop) {
+        // Premultiplied alpha in the top byte: over what is below
+        for (int yy = y0; yy < y1; yy++) {
+            uint32_t *dst = fbp + (uint64_t)yy * W + x0;
+            const uint32_t *src = w->pix + (uint64_t)(yy - w->y) * w->w + (x0 - w->x);
+            for (int i = 0; i < x1 - x0; i++) {
+                uint32_t s = src[i], a = s >> 24;
+                if (!a) continue;
+                if (a == 255) {
+                    dst[i] = s & 0xFFFFFF;
+                    continue;
+                }
+                uint32_t d = dst[i], k = 255 - a;
+                uint32_t rr = ((s >> 16) & 255) + (((d >> 16) & 255) * k + 127) / 255;
+                uint32_t gg = ((s >> 8) & 255) + (((d >> 8) & 255) * k + 127) / 255;
+                uint32_t bb = (s & 255) + ((d & 255) * k + 127) / 255;
+                dst[i] = (rr > 255 ? 255 : rr) << 16 | (gg > 255 ? 255 : gg) << 8 | (bb > 255 ? 255 : bb);
+            }
+        }
+        return;
+    }
     for (int yy = y0; yy < y1; yy++)
         memcpy(fbp + (uint64_t)yy * W + x0, w->pix + (uint64_t)(yy - w->y) * w->w + (x0 - w->x), (size_t)(x1 - x0) * 4);
 }
@@ -554,8 +613,10 @@ static void draw_lock(const rx_display_rect_t *r) {
 #define TOAST_W 320
 #define TOAST_H 48
 static void toast_rect(int i, int *x, int *y) {
-    *x = (int)PW - TOAST_W - 16;
-    *y = 16 + i * (TOAST_H + 8);
+    int ax, ay, aw, ah;
+    work_area(&ax, &ay, &aw, &ah);
+    *x = ax + aw - TOAST_W - 16;
+    *y = ay + 16 + i * (TOAST_H + 8);
 }
 
 static void draw_toasts(const rx_display_rect_t *r) {
@@ -570,6 +631,34 @@ static void draw_toasts(const rx_display_rect_t *r) {
 
 static void draw_menu(const rx_display_rect_t *r);
 
+// The tiling preview while a window is dragged to an edge
+static int snap_zone;
+static void draw_snap(const rx_display_rect_t *r) {
+    if (!snap_zone) return;
+    int x, y, w, h;
+    snap_rect(snap_zone, &x, &y, &w, &h);
+    x += 6; y += 6; w -= 12; h -= 12;
+    // A tint of the accent over what is there, and its outline
+    int x0 = x > (int)r->x ? x : (int)r->x, y0 = y > (int)r->y ? y : (int)r->y;
+    int x1 = x + w < (int)(r->x + r->w) ? x + w : (int)(r->x + r->w);
+    int y1 = y + h < (int)(r->y + r->h) ? y + h : (int)(r->y + r->h);
+    for (int py = y0; py < y1; py++) {
+        uint32_t *row = fbp + (uint64_t)py * W;
+        for (int px = x0; px < x1; px++) row[px] = blend(row[px], C_BORDER, 60);
+    }
+    fill(x, y, w, 2, C_BORDER, r);
+    fill(x, y + h - 2, w, 2, C_BORDER, r);
+    fill(x, y, 2, h, C_BORDER, r);
+    fill(x + w - 2, y, 2, h, C_BORDER, r);
+}
+
+static void damage_snap(int z) {
+    if (!z) return;
+    int x, y, w, h;
+    snap_rect(z, &x, &y, &w, &h);
+    add_damage(x, y, w, h);
+}
+
 static void compose(void) {
     if (!ndamage) return;
     for (int i = 0; i < ndamage; i++) {
@@ -580,9 +669,10 @@ static void compose(void) {
         } else {
             for (int k = 0; k < norder; k++) {
                 const window_t *w = &wins[order[k]];
-                if (w->minimized || !w->pix) continue;
+                if (w->minimized || !w->pix || (w->panel && !panel_shown)) continue;
                 draw_window(w, order[k] == focus, r);
             }
+            draw_snap(r);
             draw_toasts(r);
             draw_menu(r);
         }
@@ -640,7 +730,7 @@ static void notify_panels(void) {
         send_event(&wins[p], &ev);
         for (int i = 0; i < norder; i++) {
             const window_t *w = &wins[order[i]];
-            if (w->panel) continue;
+            if (w->panel || w->desktop) continue;
             memset(&ev, 0, sizeof ev);
             ev.op = RX_WINDOW_EV_WINDOW_INFO;
             ev.x = order[i];
@@ -804,12 +894,19 @@ static void raise(int k) {
         j--;
         n--;
     }
+    // The desktop stays at the bottom
+    for (int j = 1; j < norder; j++) {
+        int p = order[j];
+        if (!wins[p].desktop) continue;
+        for (int m = j; m > 0; m--) order[m] = order[m - 1];
+        order[0] = p;
+    }
 }
 
-// The topmost window that is not minimised (nor a panel), or -1
+// The topmost window that is not minimised (nor a panel or the desktop), or -1
 static int top_window(void) {
     for (int i = norder - 1; i >= 0; i--)
-        if (!wins[order[i]].minimized && !wins[order[i]].panel) return order[i];
+        if (!wins[order[i]].minimized && !wins[order[i]].panel && !wins[order[i]].desktop) return order[i];
     return -1;
 }
 
@@ -860,7 +957,10 @@ static void remove_window(int k, const char *why) {
     norder = j;
     int was_panel = w->panel;
     memset(w, 0, sizeof *w);
-    if (was_panel) panel_h = 0;
+    if (was_panel) {
+        panel_size = 0;
+        relayout();
+    }
     if (focus == k) {
         focus = -1;
         set_focus(top_window());
@@ -898,19 +998,99 @@ static void restore_geometry(window_t *w) {
     damage_window(w);
 }
 
+// Put a window's frame in a part of the work area
+static void place_in(window_t *w, int z) {
+    int x, y, fw, fh;
+    snap_rect(z, &x, &y, &fw, &fh);
+    damage_window(w);
+    w->x = x + BORDER;
+    w->y = y + TITLE_H + BORDER;
+    configure(w, (uint32_t)(fw - 2 * BORDER), (uint32_t)(fh - TITLE_H - 2 * BORDER));
+    damage_window(w);
+}
+
+// Tile a window (SNAP_LEFT ... SNAP_BR), or untile it (SNAP_NONE)
+static void tile(int k, int z) {
+    window_t *w = &wins[k];
+    if (w->fullscreen || w->panel || w->desktop) return;
+    if (z == SNAP_MAX) {
+        if (!w->maximized) toggle_maximize(k);
+        return;
+    }
+    if (z == SNAP_NONE) {
+        if (w->maximized) toggle_maximize(k);
+        else if (w->tiled) {
+            w->tiled = 0;
+            restore_geometry(w);
+            vlog("window \"%s\" untiled\n", w->title);
+        }
+        return;
+    }
+    if (!w->maximized && !w->tiled) save_geometry(w);
+    w->maximized = 0;
+    w->tiled = z;
+    place_in(w, z);
+    static const char *names[] = { "", "left", "right", "top left", "top right", "bottom left", "bottom right" };
+    vlog("window \"%s\" tiled %s\n", w->title, names[z]);
+    send_state(w);
+}
+
+// The panel at its edge
+static void place_panel(window_t *w) {
+    damage_window(w);
+    switch (panel_edge) {
+    case RX_WINDOW_EDGE_TOP: w->x = 0; w->y = 0; configure(w, PW, (uint32_t)panel_size); break;
+    case RX_WINDOW_EDGE_LEFT: w->x = 0; w->y = 0; configure(w, (uint32_t)panel_size, PH); break;
+    case RX_WINDOW_EDGE_RIGHT: w->x = (int)PW - panel_size; w->y = 0; configure(w, (uint32_t)panel_size, PH); break;
+    default: w->x = 0; w->y = (int)PH - panel_size; configure(w, PW, (uint32_t)panel_size); break;
+    }
+    damage_window(w);
+}
+
+// The work area changed (the panel moved, the screen resized): maximised
+// and tiled windows follow, the others keep their title bars reachable
+static void relayout(void) {
+    int ax, ay, aw, ah;
+    work_area(&ax, &ay, &aw, &ah);
+    for (int k = 0; k < MAX_WINDOWS; k++) {
+        window_t *w = &wins[k];
+        if (!w->used) continue;
+        if (w->panel) {
+            place_panel(w);
+        } else if (w->desktop) {
+            damage_window(w);
+            w->x = ax;
+            w->y = ay;
+            configure(w, (uint32_t)aw, (uint32_t)ah);
+            damage_window(w);
+        } else if (w->fullscreen) {
+            configure(w, PW, PH);
+        } else if (w->maximized) {
+            place_in(w, SNAP_MAX);
+        } else if (w->tiled) {
+            place_in(w, w->tiled);
+        } else {
+            damage_window(w);
+            if (w->x > ax + aw - 64) w->x = ax + aw - 64 > ax + BORDER ? ax + aw - 64 : ax + BORDER;
+            if (w->x + (int)w->w < ax + 64) w->x = ax + 64 - (int)w->w;
+            if (w->y > ay + ah - 8) w->y = ay + ah - 8 > ay + TITLE_H + BORDER ? ay + ah - 8 : ay + TITLE_H + BORDER;
+            if (w->y < ay + TITLE_H + BORDER) w->y = ay + TITLE_H + BORDER;
+            damage_window(w);
+        }
+    }
+}
+
 static void toggle_maximize(int k) {
     window_t *w = &wins[k];
-    if (w->fullscreen) return;
+    if (w->fullscreen || w->desktop || w->panel) return;
     if (w->maximized) {
         w->maximized = 0;
         restore_geometry(w);
     } else {
-        save_geometry(w);
+        if (!w->tiled) save_geometry(w);
+        w->tiled = 0;
         w->maximized = 1;
-        damage_window(w);
-        w->x = BORDER;
-        w->y = TITLE_H + BORDER;
-        configure(w, PW - 2 * BORDER, PH - (uint32_t)panel_h - TITLE_H - 2 * BORDER);
+        place_in(w, SNAP_MAX);
     }
     vlog("window \"%s\" %s\n", w->title, w->maximized ? "maximized" : "restored");
     send_state(w);
@@ -929,9 +1109,9 @@ static void set_fullscreen(int k, int on) {
     } else {
         w->fullscreen = 0;
         if (w->maximized) {
-            w->x = BORDER;
-            w->y = TITLE_H + BORDER;
-            configure(w, PW - 2 * BORDER, PH - (uint32_t)panel_h - TITLE_H - 2 * BORDER);
+            place_in(w, SNAP_MAX);
+        } else if (w->tiled) {
+            place_in(w, w->tiled);
         } else {
             restore_geometry(w);
         }
@@ -1030,7 +1210,11 @@ static void expire_toasts(uint64_t now) {
     int j = 0;
     for (int i = 0; i < ntoasts; i++)
         if (toasts[i].until > now) toasts[j++] = toasts[i];
-    if (j != ntoasts) add_damage((int)PW - TOAST_W - 16, 16, TOAST_W, MAX_TOASTS * (TOAST_H + 8));
+    if (j != ntoasts) {
+        int x, y;
+        toast_rect(0, &x, &y);
+        add_damage(x, y, TOAST_W, MAX_TOASTS * (TOAST_H + 8));
+    }
     ntoasts = j;
 }
 
@@ -1136,6 +1320,20 @@ static int client_messages(int k) {
             if (!w->panel) set_fullscreen(k, r.flags != 0);
             break;
         case RX_WINDOW_SET_ROLE:
+            if (r.flags == RX_WINDOW_ROLE_DESKTOP && !w->panel && !w->desktop) {
+                // The desktop's icons: the work area, below every window
+                damage_window(w);
+                w->desktop = 1;
+                int ax, ay, aw, ah;
+                work_area(&ax, &ay, &aw, &ah);
+                w->x = ax;
+                w->y = ay;
+                configure(w, (uint32_t)aw, (uint32_t)ah);
+                raise(k); // which puts it at the bottom
+                damage_window(w);
+                vlog("window \"%s\" is the desktop\n", w->title);
+                notify_panels();
+            }
             if (r.flags == RX_WINDOW_ROLE_PANEL && !w->panel) {
                 // Docked at the bottom, the screen's width, on top
                 damage_window(w);
@@ -1144,14 +1342,29 @@ static int client_messages(int k) {
                     set_focus(top_window());
                 }
                 w->panel = 1;
-                panel_h = (int)w->h;
-                w->x = 0;
-                w->y = (int)PH - panel_h;
-                configure(w, PW, w->h);
+                panel_edge = RX_WINDOW_EDGE_BOTTOM;
+                panel_size = (int)w->h;
+                panel_autohide = 0;
+                panel_shown = 1;
+                place_panel(w);
                 raise(k);
+                relayout();
                 damage_window(w);
                 vlog("window \"%s\" is the panel\n", w->title);
                 notify_panels();
+            }
+            break;
+        case RX_WINDOW_SET_PANEL:
+            // The panel's edge (flags), thickness (x) and auto-hide (y)
+            if (w->panel && r.flags <= RX_WINDOW_EDGE_RIGHT && r.x >= 24 && r.x <= 400) {
+                damage_window(w);
+                panel_edge = (int)r.flags;
+                panel_size = r.x;
+                panel_autohide = r.y != 0;
+                panel_shown = !panel_autohide;
+                static const char *edges[] = { "bottom", "top", "left", "right" };
+                vlog("panel: %s, %d, %s\n", edges[panel_edge], panel_size, panel_autohide ? "auto-hide" : "always shown");
+                relayout();
             }
             break;
         case RX_WINDOW_ACTIVATE:
@@ -1252,10 +1465,10 @@ static int hit(int px, int py, int *which, int *edges) {
     for (int i = norder - 1; i >= 0; i--) {
         int k = order[i];
         const window_t *w = &wins[k];
-        if (w->minimized) continue;
+        if (w->minimized || (w->panel && !panel_shown)) continue;
         *which = k;
         if (px >= w->x && px < w->x + (int)w->w && py >= w->y && py < w->y + (int)w->h) return HIT_CONTENT;
-        if (w->fullscreen || w->panel) continue;
+        if (w->fullscreen || w->panel || w->desktop) continue;
         if (px >= w->x && px < w->x + (int)w->w && py >= w->y - TITLE_H && py < w->y) {
             for (int b = 0; b < 3; b++) {
                 int bx, by;
@@ -1335,23 +1548,7 @@ static void screen_resized(void) {
     make_wallpaper();
     if (cx >= (int)W) cx = (int)W - 1;
     if (cy >= (int)H) cy = (int)H - 1;
-    for (int k = 0; k < MAX_WINDOWS; k++) {
-        window_t *w = &wins[k];
-        if (!w->used) continue;
-        if (w->panel) {
-            w->x = 0;
-            w->y = (int)PH - panel_h;
-            configure(w, PW, w->h);
-        } else if (w->fullscreen) {
-            configure(w, PW, PH);
-        } else if (w->maximized) {
-            configure(w, PW - 2 * BORDER, PH - (uint32_t)panel_h - TITLE_H - 2 * BORDER);
-        } else {
-            // Keep the title bar on the screen
-            if (w->x > (int)W - 64) w->x = (int)W - 64 > BORDER ? (int)W - 64 : BORDER;
-            if (w->y > (int)PH - panel_h - 8) w->y = (int)PH - panel_h - 8 > TITLE_H + BORDER ? (int)PH - panel_h - 8 : TITLE_H + BORDER;
-        }
-    }
+    relayout();
     if (hwcursor) rx_display_cursor_move(&d, cx, cy, 1);
     vlog("the screen is %ux%u (the first head %ux%u)\n", W, H, PW, PH);
     add_damage(0, 0, (int)W, (int)H);
@@ -1373,6 +1570,23 @@ static void pointer_event(const rx_input_event_t *e) {
     else
         move_cursor(cx + e->x, cy + e->y);
     int moved = cx != ox || cy != oy;
+    if (panel_autohide && panel_size && moved && drag == DRAG_NONE) {
+        int near;
+        switch (panel_edge) {
+        case RX_WINDOW_EDGE_TOP: near = cy <= (panel_shown ? panel_size : 1); break;
+        case RX_WINDOW_EDGE_LEFT: near = cx <= (panel_shown ? panel_size : 1); break;
+        case RX_WINDOW_EDGE_RIGHT: near = cx >= (int)PW - (panel_shown ? panel_size : 2); break;
+        default: near = cy >= (int)PH - (panel_shown ? panel_size : 2); break;
+        }
+        if (near != panel_shown) {
+            panel_shown = near;
+            for (int k = 0; k < MAX_WINDOWS; k++)
+                if (wins[k].used && wins[k].panel) {
+                    damage_window(&wins[k]);
+                    if (near) raise(k);
+                }
+        }
+    }
     uint32_t old = buttons;
     buttons = e->code;
     uint32_t pressed = buttons & ~old, released = old & ~buttons;
@@ -1381,11 +1595,35 @@ static void pointer_event(const rx_input_event_t *e) {
     if (drag != DRAG_NONE) {
         window_t *w = &wins[drag_win];
         if (moved && drag == DRAG_MOVE) {
+            if (w->maximized || w->tiled) {
+                // Dragged out of its tile: its own size again, under the pointer
+                int fw = (int)w->sw;
+                if (fw <= 0) fw = (int)w->w;
+                drag_dx = drag_dx * fw / ((int)w->w > 0 ? (int)w->w : 1);
+                w->maximized = 0;
+                w->tiled = 0;
+                damage_window(w);
+                configure(w, w->sw ? w->sw : w->w, w->sh ? w->sh : w->h);
+                send_state(w);
+            }
             damage_window(w);
             w->x = cx - drag_dx;
             w->y = cy - drag_dy;
             if (w->y < TITLE_H + BORDER) w->y = TITLE_H + BORDER; // the title bar stays reachable
             damage_window(w);
+            // Near an edge of the work area: where it would snap
+            int ax, ay, aw, ah, z = SNAP_NONE;
+            work_area(&ax, &ay, &aw, &ah);
+            int left = cx <= ax + 2, right = cx >= ax + aw - 3, top = cy <= ay + 2;
+            int upper = cy < ay + ah / 4, lower = cy > ay + ah * 3 / 4;
+            if (left) z = upper ? SNAP_TL : lower ? SNAP_BL : SNAP_LEFT;
+            else if (right) z = upper ? SNAP_TR : lower ? SNAP_BR : SNAP_RIGHT;
+            else if (top) z = SNAP_MAX;
+            if (z != snap_zone) {
+                damage_snap(snap_zone);
+                snap_zone = z;
+                damage_snap(snap_zone);
+            }
         } else if (moved && drag == DRAG_RESIZE) {
             int nw = (drag_edges & 1) ? cx - w->x - drag_dx : (int)w->w;
             int nh = (drag_edges & 2) ? cy - w->y - drag_dy : (int)w->h;
@@ -1398,6 +1636,17 @@ static void pointer_event(const rx_input_event_t *e) {
                 int nh = (drag_edges & 2) ? cy - w->y - drag_dy : (int)w->h;
                 if (nw > 0 && nh > 0) configure(w, (uint32_t)nw, (uint32_t)nh);
                 vlog("window \"%s\" resized to %dx%d\n", w->title, nw < MIN_W ? MIN_W : nw, nh < MIN_H ? MIN_H : nh);
+            } else if (snap_zone) {
+                int z = snap_zone;
+                damage_snap(z);
+                snap_zone = 0;
+                // Its size before the drag is what it gets back later
+                w->sx = w->x;
+                w->sy = w->y;
+                w->sw = w->w;
+                w->sh = w->h;
+                w->tiled = 0;
+                tile(drag_win, z);
             } else {
                 vlog("window \"%s\" moved to %d,%d\n", w->title, w->x, w->y);
             }
@@ -1435,7 +1684,7 @@ static void pointer_event(const rx_input_event_t *e) {
         menu_open = 1;
         menu_hover = -1;
         menu_x = cx + MENU_W <= (int)PW ? cx : (int)PW - MENU_W;
-        menu_y = cy + MENU_N * MENU_ROW + 8 <= (int)PH - panel_h ? cy : cy - (MENU_N * MENU_ROW + 8);
+        menu_y = cy + MENU_N * MENU_ROW + 8 <= (int)PH ? cy : cy - (MENU_N * MENU_ROW + 8);
         if (menu_y < 0) menu_y = 0;
         damage_menu();
         vlog("desktop menu at %d,%d\n", menu_x, menu_y);
@@ -1458,7 +1707,6 @@ static void pointer_event(const rx_input_event_t *e) {
                 }
                 last_click = now;
                 last_click_win = k;
-                if (w->maximized) return;
                 drag = DRAG_MOVE;
                 drag_win = k;
                 drag_dx = cx - w->x;
@@ -1481,7 +1729,9 @@ static void pointer_event(const rx_input_event_t *e) {
     }
     // Pointer events reach the focused window only, while over its content
     // (and the panel, which is never focused)
-    if (where == HIT_CONTENT && (k == focus || wins[k].panel)) {
+    // (and the panel, which is never focused); the wheel scrolls the window
+    // under the pointer, focused or not
+    if (where == HIT_CONTENT && (k == focus || wins[k].panel || (e->wheel && !pressed && !released))) {
         if (pointer_in >= 0 && pointer_in != k && wins[pointer_in].used) pointer_to(pointer_in, RX_WINDOW_PTR_LEAVE, 0);
         uint32_t f = (moved ? RX_WINDOW_PTR_MOTION : 0) | (pressed || released ? RX_WINDOW_PTR_BUTTON : 0) |
                      (e->wheel ? RX_WINDOW_PTR_WHEEL : 0);
@@ -1500,7 +1750,7 @@ static void pointer_event(const rx_input_event_t *e) {
 static void cycle_focus(void) {
     int k = -1;
     for (int i = 0; i < norder; i++)
-        if (order[i] != focus) {
+        if (order[i] != focus && !wins[order[i]].panel && !wins[order[i]].desktop) {
             k = order[i];
             break;
         }
@@ -1542,6 +1792,23 @@ static void key_event(const rx_input_event_t *e) {
                                        ((e->mods & (RX_INPUT_MOD_LCTRL | RX_INPUT_MOD_RCTRL)) && (e->mods & (RX_INPUT_MOD_LALT | RX_INPUT_MOD_RALT))))) {
         lock_screen();
         return;
+    }
+    // Super+arrows: tile left or right, maximise, restore (step F13)
+    if (pressed && (e->mods & (RX_INPUT_MOD_LGUI | RX_INPUT_MOD_RGUI)) && focus >= 0 && !wins[focus].panel && !wins[focus].desktop) {
+        window_t *f = &wins[focus];
+        int z = -1;
+        if (e->code == 0x50) z = f->tiled == SNAP_RIGHT ? SNAP_NONE : SNAP_LEFT;
+        else if (e->code == 0x4F) z = f->tiled == SNAP_LEFT ? SNAP_NONE : SNAP_RIGHT;
+        else if (e->code == 0x52) z = SNAP_MAX;
+        else if (e->code == 0x51) z = (f->maximized || f->tiled) ? SNAP_NONE : -2;
+        if (z == -2) {
+            minimize(focus);
+            return;
+        }
+        if (z >= 0) {
+            tile(focus, z);
+            return;
+        }
     }
     int alt = e->mods & (RX_INPUT_MOD_LALT | RX_INPUT_MOD_RALT);
     if (pressed && alt && e->code == 0x2B) { // Alt+Tab

@@ -218,6 +218,11 @@ int rx_window_activate(rx_window_t *win, int id) {
     return send_req(win, &req, 0, 0, 0);
 }
 
+int rx_window_set_panel(rx_window_t *win, uint32_t edge, int size, int autohide) {
+    rx_window_req_t req = { RX_WINDOW_SET_PANEL, 0, size, autohide ? 1 : 0, 0, 0, edge };
+    return send_req(win, &req, 0, 0, 0);
+}
+
 int rx_window_lock(rx_window_t *win) {
     rx_window_req_t req = { RX_WINDOW_LOCK, 0, 0, 0, 0, 0, 0 };
     return send_req(win, &req, 0, 0, 0);

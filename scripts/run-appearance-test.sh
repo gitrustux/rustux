@@ -2,8 +2,8 @@
 # The appearance test (2026-11-24, docs/TESTS.md): themes, wallpapers and
 # the live session's login. Boots the desktop in QEMU and checks:
 #   1. the Rustica theme and the fox wallpaper by default;
-#   2. a right click on the wallpaper opens the desktop's menu; its first
-#      choice opens Settings > Appearance (through the panel);
+#   2. a right click on the wallpaper opens the desktop's menu; Change
+#      background... opens Settings > Appearance;
 #   3. there, Dracula: the windows' title bars and the panel change at
 #      once; a picture of the user's, its path typed in the picture
 #      field, becomes the wallpaper (as QOI); `settings --wallpaper FILE`
@@ -197,10 +197,11 @@ rbutton(False)
 time.sleep(1)
 px = screen()
 check(near(px(1000, 204), 0x1C1B20, 6) and near(px(1000, 240), 0x1C1B20, 6), 'a right click on the wallpaper: the menu (%06x)' % px(1000, 204))
-to(960, 218)
+# The desktop's own menu (desk, step F12): its third item, Change background...
+to(960, 278)
 time.sleep(0.5)
 px = screen()
-check(near(px(1050, 218), 0x4A2414, 10), 'the item under the pointer is highlighted (%06x)' % px(1050, 218))
+check(near(px(1050, 278), 0x4A2414, 10), 'the item under the pointer is highlighted (%06x)' % px(1050, 278))
 button(True)
 button(False)
 time.sleep(5)
@@ -241,12 +242,11 @@ check(wait_pixel(64, 782, ACCENT, 30), 'Continue as root: back in, no password')
 key('ctrl-alt-f1')
 time.sleep(1)
 n = len(log())
-type_('echo console works; logs | grep -E "settings: (started|theme|wallpaper)|appearance:|desktop menu|desktop: root|wallpaper /root"; cat /etc/console-theme\n')
+type_('echo console works; logs | grep -E "settings: (started|theme|wallpaper)|appearance:|desk: menu|desktop: root|wallpaper /root"; cat /etc/console-theme\n')
 wait(r'console works', 10, n)
 time.sleep(5)
 out = log()[n0:]
-check(re.search(r'compositor: desktop menu: Change wallpaper', out) is not None, 'the menu\'s choice went to the panel')
-check(re.search(r'panel: desktop menu, Settings > Appearance', out) is not None and 'settings: started' in out, 'the panel opened Settings > Appearance')
+check('desk: menu: Change background...' in out and 'settings: started' in out, 'the desktop menu\'s Change background... opened Settings > Appearance')
 check(re.search(r'settings: theme dracula', out) is not None and re.search(r'compositor: appearance: theme dracula', out) is not None, 'Settings set Dracula; the compositor followed')
 check(len(re.findall(r'settings: wallpaper /root/\.config/rustica/wallpaper-\d+\.qoi', out)) >= 2, 'the picture became ~/.config/rustica/wallpaper-*.qoi, from the field and from settings --wallpaper')
 check('set-from-files' in out, 'settings --wallpaper succeeded')

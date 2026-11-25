@@ -22,7 +22,8 @@ Ctrl+Alt+F1 throughout.
                                              |-- compositor (root; control channel: "user NAME")
                                              |-- greeter (root; stdin/stdout: "login\tNAME\tPASSWORD" -> "ok"/"fail")
                                              `-- job of the session, as the user:
-                                                   panel --> launcher --> applications
+                                                   panel --> launcher (the menu) --> applications
+                                                     `-- desk (the desktop's icons)
 ```
 
 - **desktop --run** (`c-progs/desktop.c`): starts the compositor, then over
@@ -37,26 +38,55 @@ Ctrl+Alt+F1 throughout.
   and the service manager starts it again.
 - **greeter** (Rust, rustica-ui): full screen, the host name, Name and
   Password (dots), Log in; "Wrong name or password" on failure.
-- **panel** (Rust, rustica-ui), the session's first program and its life:
-  docked at the bottom (the compositor's panel role: no frame, always on
-  top, never focused; maximised windows stop above it). FoxDen (the app
-  store, `FOXDEN.md` step FD5) beside Applications. Applications (the
-  launcher: a second click, or the Super key pressed alone, which the
-  compositor passes on as `RX_WINDOW_EV_DESKTOP` with
-  `RX_WINDOW_DESKTOP_LAUNCHER`, opens it or closes it), a button per window (click: focus it, or minimise it when it
-  has the focus; a minimised one in brackets), the keyboard layout
-  (`/etc/keymap`), volume and network placeholders, the clock (redrawn
-  every 5 seconds), Lock, Log out. It starts the commands in
-  `/etc/autostart`.
-- **launcher** (Rust): the applications in `/usr/share/applications/*.app`
-  (`name=`, `exec=`, `comment=` lines; `types=` lists the file name
-  extensions an application opens, for Files: step F7, `APPS.md`), in a
-  list; Enter or Open starts one, Esc or Close ends it. Step F7 added
-  Terminal, Files, Settings, the Text Editor and the Image Viewer (the
-  last two apps since FoxDen step FD6b, listed as installed apps).
+- **panel** (Rust, rustica-ui), the session's first program and its life
+  (step F10): docked at an edge (the compositor's panel role: no frame,
+  always on top, never focused; maximised windows stay out of it) and
+  made of applets in three zones, start, centre and end, as Cinnamon's:
+  **Apps** (the menu: a second click, or the Super key pressed alone,
+  which the compositor passes on as `RX_WINDOW_EV_DESKTOP` with
+  `RX_WINDOW_DESKTOP_LAUNCHER`, opens it or closes it), the launchers
+  (pinned apps: FoxDen, Files, Terminal), the window list (click: focus,
+  or minimise when it has the focus; a minimised one in brackets; the
+  buttons share the room left, their titles shortened, and past 90 pixels
+  each a "+N" button stands for the rest, so the end of the panel never
+  leaves the screen), Updates (when there are some), the keyboard layout
+  (`/etc/keymap`), volume (a placeholder), the network, the clock, Lock,
+  Log out. Its settings are `~/.config/rustica/panel.conf` (else
+  `/etc/rustica/panel.conf`): `position=bottom|top|left|right`, `size=`
+  (a bottom or top panel's height, 36), `width=` (a side panel's, 180),
+  `autohide=yes|no`, `start=`, `centre=`, `end=` (applet names: `menu
+  launchers windows updates keyboard volume network clock lock logout`),
+  `launchers=` (`.app` names or FoxDen app IDs). Settings > Panel writes
+  them, and a right click on the panel opens it; the panel reads them
+  again within a second and asks the compositor to dock it anew
+  (`SET_PANEL`). It starts the commands in `/etc/autostart` and the
+  desktop's icons (`desk`, again if they fail).
+- **launcher**, the menu (Rust, step F11): a search field, focused at
+  once (apps by name, description and keywords; Settings pages; Lock,
+  Log out, Restart, Shut down; files in the home folder by name; Up, Down,
+  Enter, Esc), or, without a search, the categories (from `categories=`
+  in `.app` files and `Categories:` in apps' manifests, freedesktop.org
+  names) and their apps; a side bar of favourites
+  (`~/.config/rustica/favorites`) and places (Home, Documents, Downloads,
+  Pictures, Trash); for the app chosen Open, Favourite, Pin to panel, To
+  desktop. Apps come from `/usr/share/applications/*.app` (`name=`,
+  `exec=`, `comment=`, `categories=`, `keywords=`; `types=` lists the
+  file name extensions an application opens, for Files: step F7,
+  `APPS.md`) and the installed apps (FoxDen). Log out and Lock end the
+  menu with status 10 and 11, which the panel carries out.
+- **desk**, the desktop's icons (Rust, step F12): the compositor's
+  desktop role. Home, Trash (full or empty), the drives under `/media`,
+  then `~/Desktop`'s folders, files and app shortcuts (`.app` files: the
+  menu's To desktop); in columns, or where one was dragged
+  (`~/.config/rustica/desktop-icons`). A double click or Enter opens one;
+  dropped on the trash, or with Delete, it goes to the trash. A right
+  click: Open, Move to the trash, Empty the trash; on the desktop New
+  folder, Open in Terminal, Change background, Desktop settings. Settings
+  > Desktop (`~/.config/rustica/desktop.conf`) hides them or some of them.
 - **compositor** (`WINDOWS.md`): the wallpaper, notifications (top
-  right, 5 seconds, three at most: `notify TEXT`, or `RX_WINDOW_NOTIFY`
-  from any client), the lock screen, the desktop's menu.
+  right of the work area, 5 seconds, three at most: `notify TEXT`, or
+  `RX_WINDOW_NOTIFY` from any client), the lock screen, tiling, the
+  desktop's own menu when `desk` is not running.
 
 ## Appearance (2026-11-24)
 
