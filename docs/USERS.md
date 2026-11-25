@@ -130,7 +130,9 @@ Each use (and refusal) goes to `/var/log/auth.log`.
   as Windows does, local time).
 - `localectl`: the keyboard layout; `set-keymap NAME` writes
   `/etc/keymap` and the console uses it at once.
-- `poweroff`, `reboot` (root, or `sudo poweroff`): init ends the session
+- `poweroff`, `reboot` (root, the user of the graphical session, whose
+  uid `desktop --run` keeps in `/run/desktop-session` while it lasts, as
+  logind's active session; others `sudo poweroff`): init ends the session
   and authd (with what they started), every filesystem writes everything
   out and is marked clean (`SHUTDOWN_ALL`), the root filesystem last, then
   the power goes off or the computer restarts.

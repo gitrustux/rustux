@@ -219,7 +219,7 @@ click(64, 782)
 time.sleep(3)
 key('ret')          # an application in her session, to be killed at logout
 time.sleep(3)
-click(1140, 782)
+click(1103, 782)
 time.sleep(2)
 px = screen()
 check(px(SW // 2, SH // 2 - 30) == LOCKBOX, 'Lock: the lock screen')

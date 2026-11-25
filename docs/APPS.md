@@ -103,7 +103,14 @@ and the path (type one and Enter), the side bar and the folder as a table
 - **Properties** (Alt+Enter, File > Properties): kind (and the application
   that opens it), size (of everything in a folder), modified, accessed and
   changed times, owner and group, permissions.
-- **Disks**: the side bar has Home, Computer (/), Trash, and every USB
+- **Drag and drop** (2026-11-25): a row dragged out of the table goes to
+  the window it is dropped on (the compositor's `DRAG_START` and
+  `EV_DROP`): another Files window or the desktop (into `~/Desktop`, or
+  onto the trash). Dropped on Files, files move into the folder under the
+  pointer, else the one shown (on another filesystem: copied, then
+  removed).
+- **Disks**: the side bar has Home, Desktop, Documents, Downloads,
+  Pictures (made when first opened), Computer (/), Trash, and every USB
   stick or removable disk with a filesystem (`lsblk -J`, every 3 seconds).
   Clicking one that is not mounted mounts it at `/media/LABEL` (`mount`,
   step 14) and shows it; Eject under the side bar unmounts the one shown
@@ -149,9 +156,11 @@ Applications in their sandbox:
   a new file asks where), Save as and Quit (Ctrl+Q; with changes it asks
   to save). Open and Save as ask with the file chooser; outside a sandbox
   Save as asks for a path. The title marks unsaved changes.
-- `viewer FILE`: the picture made smaller (never larger) to fit the
+- `viewer [FILE]`: the picture made smaller (never larger) to fit the
   window, centred; Left and Right step through the pictures it can see in
-  its folder.
+  its folder. File > Open… (Ctrl+O), and at once when started without a
+  picture (from the menu), asks with the file chooser (version 1.0.2,
+  2026-11-25: before, started alone it ended at once).
 
 ## Tests
 

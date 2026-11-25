@@ -51,11 +51,14 @@ Ctrl+Alt+F1 throughout.
   each a "+N" button stands for the rest, so the end of the panel never
   leaves the screen), Updates (when there are some), the keyboard layout
   (`/etc/keymap`), volume (a placeholder), the network, the clock, Lock,
-  Log out. Its settings are `~/.config/rustica/panel.conf` (else
+  Log out, and the power button at the far end (`powermenu`: Lock screen,
+  Log out, Restart, Shut down, Power settings; Suspend and Hibernate wait
+  for ACPI). Its settings are `~/.config/rustica/panel.conf` (else
   `/etc/rustica/panel.conf`): `position=bottom|top|left|right`, `size=`
   (a bottom or top panel's height, 36), `width=` (a side panel's, 180),
   `autohide=yes|no`, `start=`, `centre=`, `end=` (applet names: `menu
-  launchers windows updates keyboard volume network clock lock logout`),
+  launchers windows updates keyboard volume network clock lock logout
+  power`),
   `launchers=` (`.app` names or FoxDen app IDs). Settings > Panel writes
   them, and a right click on the panel opens it; the panel reads them
   again within a second and asks the compositor to dock it anew
@@ -77,9 +80,13 @@ Ctrl+Alt+F1 throughout.
 - **desk**, the desktop's icons (Rust, step F12): the compositor's
   desktop role. Home, Trash (full or empty), the drives under `/media`,
   then `~/Desktop`'s folders, files and app shortcuts (`.app` files: the
-  menu's To desktop); in columns, or where one was dragged
+  menu's To desktop; `~/Desktop` is made when the session starts); in
+  columns, or where one was dragged
   (`~/.config/rustica/desktop-icons`). A double click or Enter opens one;
-  dropped on the trash, or with Delete, it goes to the trash. A right
+  dropped on the trash, or with Delete, it goes to the trash. Files,
+  folders and shortcuts can be dragged into Files (and Files' rows onto
+  the desktop, a folder icon or the trash), through the compositor's drag
+  and drop; Home, Trash and drives stay. A right
   click: Open, Move to the trash, Empty the trash; on the desktop New
   folder, Open in Terminal, Change background, Desktop settings. Settings
   > Desktop (`~/.config/rustica/desktop.conf`) hides them or some of them.

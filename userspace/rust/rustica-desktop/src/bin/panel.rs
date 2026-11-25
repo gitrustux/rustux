@@ -18,7 +18,8 @@
 //!   step E6), a notification when N grows
 //! - keyboard (the layout), volume (not there yet), network (Net: the
 //!   interface and its address; a click opens Settings > Network), clock,
-//!   lock, logout
+//!   lock, logout, power (the power menu: Lock, Log out, Restart, Shut
+//!   down, Power settings; the far end of the panel by default)
 //!
 //! Its settings are in ~/.config/rustica/panel.conf (else
 //! /etc/rustica/panel.conf), read again when they change: position=
@@ -113,19 +114,24 @@ fn layout() -> String {
 /// RX_WINDOW_DESKTOP_LAUNCHER: the compositor saw the Super key alone
 const LAUNCHER_KEY: u32 = 100;
 
-/// The Applications button and the Super key: open the launcher, or close
-/// it if it is open
+/// The Apps button and the Super key: open the menu, or close it if it is
+/// open
 fn toggle_launcher(launcher: &mut Option<std::process::Child>) {
-    if let Some(mut c) = launcher.take() {
+    toggle(launcher, "/bin/launcher", &[], "launcher");
+}
+
+/// Start a program, or end it if it is running (a menu's button)
+fn toggle(slot: &mut Option<std::process::Child>, prog: &str, args: &[&str], what: &str) {
+    if let Some(mut c) = slot.take() {
         if matches!(c.try_wait(), Ok(None)) {
-            println!("panel: launcher closed");
+            println!("panel: {what} closed");
             let _ = c.kill();
             let _ = c.wait();
             return;
         }
     }
-    println!("panel: launcher");
-    *launcher = std::process::Command::new("/bin/launcher").spawn().ok();
+    println!("panel: {what}");
+    *slot = std::process::Command::new(prog).args(args).spawn().ok();
 }
 
 /// The panel's settings
@@ -153,7 +159,7 @@ fn load_config() -> Config {
         zones: [
             vec!["menu".into(), "launchers".into(), "windows".into()],
             vec![],
-            vec!["updates".into(), "keyboard".into(), "volume".into(), "network".into(), "clock".into(), "lock".into(), "logout".into()],
+            vec!["updates".into(), "keyboard".into(), "volume".into(), "network".into(), "clock".into(), "lock".into(), "logout".into(), "power".into()],
         ],
         launchers: vec!["foxden".into(), "files".into(), "terminal".into()],
     };
@@ -244,6 +250,7 @@ fn main() {
     let mut more_next = 0usize;
     println!("panel: session of {user}");
     let mut launcher_proc: Option<std::process::Child> = None;
+    let mut power_proc: Option<std::process::Child> = None;
     // The desktop's icons (step F12): started with the session, again if
     // they end with an error (at most 5 times)
     let start_desk = || std::process::Command::new("/bin/desk").spawn().ok();
@@ -268,11 +275,13 @@ fn main() {
                 }
             }
         }
-        // The menu ended: its Log out and Lock are the panel's to do
-        if let Some(c) = launcher_proc.as_mut() {
+        // The menu or the power menu ended: their Log out and Lock are the
+        // panel's to do
+        for proc_ in [&mut launcher_proc, &mut power_proc] {
+            let Some(c) = proc_.as_mut() else { continue };
             ctl.wake_after = Some(Duration::from_millis(300));
             if let Ok(Some(st)) = c.try_wait() {
-                launcher_proc = None;
+                *proc_ = None;
                 match st.code() {
                     Some(10) => {
                         println!("panel: log out (menu)");
@@ -404,7 +413,8 @@ fn main() {
             // taking what is left between
             let total = ui.available_width();
             let fixed: f32 = cfg.zones.iter().flatten().filter(|a| *a != "windows").map(|a| applet_size(ui, a, &state, false)).sum();
-            let room = total - fixed;
+            // (two gaps kept free, so the end zone can always be pushed flush right)
+            let room = total - fixed - 2.0 * gap;
             ui.row(|ui| {
                 for (zi, zone) in cfg.zones.iter().enumerate() {
                     if zi > 0 {
@@ -430,6 +440,15 @@ fn main() {
         for a in actions {
             match a {
                 Action::Menu => toggle_launcher(&mut launcher_proc),
+                Action::Power => {
+                    // Beside the panel's power button
+                    let at = match cfg.edge {
+                        EDGE_TOP => (-2, cfg.size + 40),
+                        EDGE_LEFT => (cfg.width + 12, -2),
+                        _ => (-2, -2),
+                    };
+                    toggle(&mut power_proc, "/bin/powermenu", &[&at.0.to_string(), &at.1.to_string()], "power menu");
+                }
                 Action::Start(cmd) => start(&cmd),
                 Action::Activate(id, title) => {
                     println!("panel: activate {title}");
@@ -466,6 +485,7 @@ struct State<'a> {
 
 enum Action {
     Menu,
+    Power,
     Start(Vec<String>),
     Activate(i32, String),
     Settings(&'static str),
@@ -508,6 +528,7 @@ fn applet_size(ui: &mut Ui, name: &str, s: &State, vertical: bool) -> f32 {
         "clock" => ui.text_width(&clock()) + gap,
         "lock" => bw(ui, "Lock"),
         "logout" => bw(ui, "Log out"),
+        "power" => ui.row_h() + gap,
         _ => 0.0,
     }
 }
@@ -565,6 +586,15 @@ fn applet(ui: &mut Ui, name: &str, s: &State, room: f32, more_next: &mut usize, 
                 actions.push(Action::Logout);
             }
         }
+        "power" => {
+            let side = ui.row_h();
+            let r = ui.button_ex("power", "", if v { full } else { side }, false, false);
+            let isz = side * 0.62;
+            ui.icon(rustica_ui::Icon::Power, r.rect.x + (r.rect.w - isz) / 2.0, r.rect.y + (r.rect.h - isz) / 2.0, isz);
+            if r.clicked {
+                actions.push(Action::Power);
+            }
+        }
         _ => {}
     }
 }
@@ -588,7 +618,7 @@ fn window_list(ui: &mut Ui, s: &State, room: f32, more_next: &mut usize, actions
     } else {
         let fits = ((room / (ui.u(WIN_MIN) + gap)).floor().max(0.0)) as usize;
         let shown = if fits >= n { n } else { fits.saturating_sub(1).max(1) };
-        let more_w = if shown < n { ui.text_width("+99") + ui.u(32.0) + gap } else { 0.0 };
+        let more_w = if shown < n { ui.text_width(&format!("+{}", n - shown)) + ui.u(32.0) + gap } else { 0.0 };
         let each = ((room - more_w) / shown as f32 - gap).clamp(ui.u(40.0), ui.u(WIN_MAX));
         (each, shown)
     };

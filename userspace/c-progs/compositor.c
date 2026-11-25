@@ -631,6 +631,36 @@ static void draw_toasts(const rx_display_rect_t *r) {
 
 static void draw_menu(const rx_display_rect_t *r);
 
+// Drag and drop between windows (step F12): what is dragged (paths, a
+// line each), its label by the pointer, the window it came from
+// Power settings (Settings > Power, step F15): blank the screen after so
+// many idle minutes (0 never), with what (blank: black; dim: the
+// wallpaper, dimmed), and lock it then
+static int idle_minutes = 15, idle_lock;
+static char saver_kind[16] = "blank";
+static uint64_t last_input;
+static int saver_on;
+
+static int grab_win = -1;       // the window a button went down in
+static int dnd_active, dnd_src = -1;
+static char dnd_text[RX_WINDOW_MAX_CLIPBOARD + 1];
+static size_t dnd_len;
+static char dnd_label[64];
+#define DND_W 220
+#define DND_H 26
+
+static void damage_dnd(void) {
+    if (dnd_active) add_damage(cx + 14, cy + 14, DND_W, DND_H);
+}
+
+static void draw_dnd(const rx_display_rect_t *r) {
+    if (!dnd_active) return;
+    int x = cx + 14, y = cy + 14;
+    fill(x, y, DND_W, DND_H, C_BORDER, r);
+    fill(x + 1, y + 1, DND_W - 2, DND_H - 2, th->surface, r);
+    text(x + 10, y + (DND_H - 16) / 2, dnd_label, DND_W - 20, C_TEXT, r);
+}
+
 // The tiling preview while a window is dragged to an edge
 static int snap_zone;
 static void draw_snap(const rx_display_rect_t *r) {
@@ -663,6 +693,20 @@ static void compose(void) {
     if (!ndamage) return;
     for (int i = 0; i < ndamage; i++) {
         const rx_display_rect_t *r = &damage[i];
+        if (saver_on) {
+            // The screensaver: black, or the wallpaper at a quarter
+            if (!strcmp(saver_kind, "dim")) {
+                draw_wallpaper(r);
+                for (uint32_t yy = r->y; yy < r->y + r->h; yy++)
+                    for (uint32_t xx = r->x; xx < r->x + r->w; xx++) {
+                        uint32_t *p = &fbp[(uint64_t)yy * W + xx];
+                        *p = (*p >> 2) & 0x3F3F3F;
+                    }
+            } else {
+                fill((int)r->x, (int)r->y, (int)r->w, (int)r->h, 0x000000, r);
+            }
+            continue;
+        }
         draw_wallpaper(r);
         if (locked) {
             draw_lock(r);
@@ -674,6 +718,7 @@ static void compose(void) {
             }
             draw_snap(r);
             draw_toasts(r);
+            draw_dnd(r);
             draw_menu(r);
         }
         draw_cursor(r);
@@ -755,6 +800,9 @@ static void read_appearance(int fd, char *theme, size_t tn, char *wall, size_t w
         v[strcspn(v, " \t\r")] = 0;
         if (!strcmp(l, "theme")) snprintf(theme, tn, "%s", v);
         if (!strcmp(l, "wallpaper")) snprintf(wall, wn, "%s", v);
+        if (!strcmp(l, "blank")) idle_minutes = atoi(v) < 0 ? 0 : atoi(v);
+        if (!strcmp(l, "screensaver")) snprintf(saver_kind, sizeof saver_kind, "%s", v);
+        if (!strcmp(l, "lock_on_blank")) idle_lock = !strcmp(v, "yes") || !strcmp(v, "1") || !strcmp(v, "true");
     }
 }
 
@@ -780,6 +828,9 @@ static void load_appearance(int force) {
         conf_size = -1;
     }
     char theme[32] = "rustica", wall[256] = "rustica";
+    idle_minutes = 15;
+    idle_lock = 0;
+    snprintf(saver_kind, sizeof saver_kind, "blank");
     int fd = open("/etc/rustica/appearance", O_RDONLY);
     if (fd >= 0) {
         read_appearance(fd, theme, sizeof theme, wall, sizeof wall);
@@ -955,6 +1006,12 @@ static void remove_window(int k, const char *why) {
     for (; i < norder; i++)
         if (order[i] != k) order[j++] = order[i];
     norder = j;
+    if (dnd_active && dnd_src == k) {
+        damage_dnd();
+        dnd_active = 0;
+        dnd_src = -1;
+    }
+    if (grab_win == k) grab_win = -1;
     int was_panel = w->panel;
     memset(w, 0, sizeof *w);
     if (was_panel) {
@@ -1158,6 +1215,15 @@ static int new_window(rx_handle_t ch, const rx_window_req_t *r, const char *payl
     if (r->x >= 0 && r->y >= 0) {
         w->x = r->x;
         w->y = r->y;
+    } else if (r->x != -1 || r->y != -1) {
+        // RX_WINDOW_AT_END (-2) for x or y: against the work area's right
+        // or bottom edge (a menu by the panel), the other as given
+        int ax, ay, aw, ah;
+        work_area(&ax, &ay, &aw, &ah);
+        w->x = r->x == RX_WINDOW_AT_END ? ax + aw - (int)r->w - BORDER - 8 : r->x;
+        w->y = r->y == RX_WINDOW_AT_END ? ay + ah - (int)r->h - BORDER - 8 : r->y;
+        if (w->x < ax + BORDER) w->x = ax + BORDER;
+        if (w->y < ay + TITLE_H + BORDER) w->y = ay + TITLE_H + BORDER;
     } else {
         w->x = 40 + (cascade % 10) * 32;
         w->y = 40 + TITLE_H + (cascade % 10) * 32;
@@ -1299,6 +1365,33 @@ static int client_messages(int k) {
             notify_panels();
             break;
         }
+        case RX_WINDOW_DRAG_START:
+            // Only while the left button is held in this window
+            if (grab_win == k && (buttons & 1) && plen > 0) {
+                dnd_len = plen < RX_WINDOW_MAX_CLIPBOARD ? plen : RX_WINDOW_MAX_CLIPBOARD;
+                memcpy(dnd_text, payload, dnd_len);
+                dnd_text[dnd_len] = 0;
+                // The label: the first name, and how many more
+                const char *first = dnd_text, *nl = strchr(dnd_text, '\n');
+                size_t fl = nl ? (size_t)(nl - dnd_text) : dnd_len;
+                const char *slash = first;
+                for (size_t i = 0; i < fl; i++)
+                    if (first[i] == '/') slash = first + i + 1;
+                int more = 0;
+                for (size_t i = 0; i < dnd_len; i++)
+                    if (dnd_text[i] == '\n' && i + 1 < dnd_len) more++;
+                size_t nl2 = fl - (size_t)(slash - first);
+                if (nl2 > 40) nl2 = 40;
+                if (more)
+                    snprintf(dnd_label, sizeof dnd_label, "%.*s and %d more", (int)nl2, slash, more);
+                else
+                    snprintf(dnd_label, sizeof dnd_label, "%.*s", (int)nl2, slash);
+                dnd_active = 1;
+                dnd_src = k;
+                damage_dnd();
+                vlog("drag from \"%s\": %s\n", w->title, dnd_label);
+            }
+            break;
         case RX_WINDOW_CLIPBOARD_SET:
             clipboard_len = plen < RX_WINDOW_MAX_CLIPBOARD ? plen : RX_WINDOW_MAX_CLIPBOARD;
             memcpy(clipboard, payload, clipboard_len);
@@ -1454,7 +1547,6 @@ static int pending_message(int i) {
 
 enum { DRAG_NONE, DRAG_MOVE, DRAG_RESIZE };
 static int drag, drag_win, drag_dx, drag_dy, drag_edges;  // edges: 1 right, 2 bottom
-static int grab_win = -1;       // the window a button went down in
 static int pointer_in = -1;     // the window that last got a pointer event
 static uint64_t last_click;
 static int last_click_win = -1;
@@ -1655,6 +1747,44 @@ static void pointer_event(const rx_input_event_t *e) {
         return;
     }
 
+    // A drag between windows: the label follows the pointer; on release
+    // the window under it gets the drop
+    if (dnd_active && moved) {
+        int nx = cx, ny = cy;
+        cx = ox; cy = oy;
+        damage_dnd();
+        cx = nx; cy = ny;
+        damage_dnd();
+    }
+    if (dnd_active && !(buttons & 1)) {
+        damage_dnd();
+        dnd_active = 0;
+        if (grab_win >= 0 && wins[grab_win].used) pointer_to(grab_win, RX_WINDOW_PTR_BUTTON, 0);
+        grab_win = -1;
+        int t, e2 = 0;
+        if (hit(cx, cy, &t, &e2) == HIT_CONTENT && t >= 0 && !wins[t].panel) {
+            static char out[sizeof(rx_window_event_t) + RX_WINDOW_MAX_CLIPBOARD];
+            rx_window_event_t ev;
+            memset(&ev, 0, sizeof ev);
+            ev.op = RX_WINDOW_EV_DROP;
+            ev.x = cx - wins[t].x;
+            ev.y = cy - wins[t].y;
+            ev.flags = t == dnd_src ? 1u : 0u;
+            ev.n = (uint32_t)dnd_len;
+            memcpy(out, &ev, sizeof ev);
+            memcpy(out + sizeof ev, dnd_text, dnd_len);
+            rx_channel_write(wins[t].ch, 0, out, (uint32_t)(sizeof ev + dnd_len), 0, 0);
+            vlog("drop on \"%s\": %s\n", wins[t].title, dnd_label);
+            if (t != dnd_src && !wins[t].desktop) {
+                raise(t);
+                set_focus(t);
+            }
+        } else {
+            vlog("drop on nothing\n");
+        }
+        dnd_src = -1;
+        return;
+    }
     // A button held: the window it went down in gets everything
     if (grab_win >= 0 && wins[grab_win].used) {
         uint32_t f = (moved ? RX_WINDOW_PTR_MOTION : 0) | (pressed || released ? RX_WINDOW_PTR_BUTTON : 0) |
@@ -1848,6 +1978,14 @@ static void input_events(void) {
             return;
         }
         if (nb != sizeof e) continue; // the GRAPHICS reply
+        last_input = rx_clock_get_monotonic();
+        if (saver_on) {
+            // Any input ends the screensaver (and does nothing else)
+            saver_on = 0;
+            vlog("screensaver off\n");
+            add_damage(0, 0, (int)W, (int)H);
+            continue;
+        }
         if (e.type == RX_INPUT_KEY) key_event(&e);
         else if (e.type == RX_INPUT_POINTER) pointer_event(&e);
     }
@@ -1865,6 +2003,7 @@ static void connect_input(void) {
 // ---- main ----
 
 int main(int argc, char **argv) {
+    last_input = rx_clock_get_monotonic();
     if (argc == 2 && !strcmp(argv[1], "-v")) verbose = 1;
     else if (argc != 1) {
         fprintf(stderr, "usage: compositor [-v]\n");
@@ -1917,6 +2056,9 @@ int main(int argc, char **argv) {
         for (int i = 0; i < ntoasts; i++)
             if (toasts[i].until < deadline) deadline = toasts[i].until;
         // Without the input service, look for it again now and then
+        // The screensaver's time
+        uint64_t idle_ns = (uint64_t)idle_minutes * 60000000000ull;
+        if (idle_minutes && !saver_on && visible && last_input + idle_ns < deadline) deadline = last_input + idle_ns;
         // At least once a second: the appearance may have changed
         if (deadline > rx_clock_get_monotonic() + 1000000000ull) deadline = rx_clock_get_monotonic() + 1000000000ull;
         rx_object_wait_many(items, (uint64_t)n, deadline);
@@ -1947,6 +2089,7 @@ int main(int argc, char **argv) {
             while ((pr = rx_display_poll(&d, &ev)) > 0) {
                 if (ev.op == RX_DISPLAY_EV_VISIBLE) {
                     visible = (int)ev.a;
+                    last_input = rx_clock_get_monotonic();
                     if (visible) {
                         add_damage(0, 0, (int)W, (int)H);
                         if (hwcursor) rx_display_cursor_move(&d, cx, cy, 1);
@@ -1979,6 +2122,12 @@ int main(int argc, char **argv) {
             }
         }
         uint64_t now = rx_clock_get_monotonic();
+        if (idle_minutes && !saver_on && visible && session_user[0] && now >= last_input + idle_ns) {
+            saver_on = 1;
+            vlog("screensaver on (%s, after %d minutes)\n", saver_kind, idle_minutes);
+            if (idle_lock) lock_screen();
+            add_damage(0, 0, (int)W, (int)H);
+        }
         expire_toasts(now);
         for (int k = 0; k < MAX_WINDOWS; k++)
             if (wins[k].used && wins[k].close_deadline && now >= wins[k].close_deadline)

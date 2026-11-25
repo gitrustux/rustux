@@ -227,13 +227,14 @@ check(re.search(r'\n0\s*\n', out) is not None, 'Terminal: the window closes with
 # 2. Files
 console('mkdir -p /root/ft/docs; echo hello > /root/ft/a.txt; RUSTICA_WINDOW_AT=40,64 files /root/ft &', 8)
 keys('down', 'down', 'ctrl-c')
-# The stick in the side bar (Home, Computer, Trash, then it): mount it
+# The stick in the side bar (Home, Desktop, Documents, Downloads, Pictures,
+# Computer, Trash, then it): mount it
 # (the button held a while: Files reads the stick every 3 seconds, and a
 # short click on a busy USB bus can come and go between two reports)
 n = len(log())
-click(100, 240, 0.5)
+click(100, 348, 0.5)
 if not wait(r'files: folder /media/STICK', 10, n):
-    click(100, 240, 0.5)
+    click(100, 348, 0.5)
     wait(r'files: folder /media/STICK', 10, n)
 time.sleep(1)
 keys('ctrl-v')
@@ -271,7 +272,7 @@ time.sleep(2)
 keys('ctrl-q')
 time.sleep(2)
 # Eject the stick: to it, then the button under the side bar
-click(100, 240, 0.5)
+click(100, 348, 0.5)
 time.sleep(3)
 click(85, 557, 0.5)
 time.sleep(4)

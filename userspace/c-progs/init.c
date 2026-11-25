@@ -52,6 +52,7 @@
 #include <sys/mount.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -354,9 +355,20 @@ static void sys_request(int k) {
         rx_channel_write(ch, 0, svc_reply, (uint32_t)svc_rlen, 0, 0);
         return;
     }
+    // The graphical session's user may shut down and restart too
+    // (/run/desktop-session, written by desktop --run as root)
+    int session_user = 0;
+    if ((op == RX_SYSTEM_OP_POWEROFF || op == RX_SYSTEM_OP_REBOOT) && who.euid != 0) {
+        int fd = open("/run/desktop-session", O_RDONLY);
+        if (fd >= 0) {
+            char b[16] = { 0 };
+            if (read(fd, b, sizeof b - 1) > 0 && (uint32_t)atoi(b) == who.euid) session_user = 1;
+            close(fd);
+        }
+    }
     if (op == RX_SYSTEM_OP_RELOAD_KEYMAP) {
         to_input(RX_INPUT_OP_RELOAD_KEYMAP);
-    } else if (who.euid != 0) {
+    } else if (who.euid != 0 && !session_user) {
         st = -EPERM;
     } else if (op == RX_SYSTEM_OP_POWEROFF || op == RX_SYSTEM_OP_REBOOT) {
         shut_down(op == RX_SYSTEM_OP_REBOOT ? RX_SYSTEM_POWERCTL_REBOOT : RX_SYSTEM_POWERCTL_POWEROFF);

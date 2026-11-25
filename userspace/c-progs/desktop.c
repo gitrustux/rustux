@@ -157,6 +157,13 @@ static void session(const char *name) {
     char who[80];
     snprintf(who, sizeof who, "user %s", name);
     tell_compositor(who);
+    // The session's user may shut down and restart (as with logind's
+    // active session): init reads this
+    FILE *sf = fopen("/run/desktop-session", "w");
+    if (sf) {
+        fprintf(sf, "%u\n", (unsigned)pw->pw_uid);
+        fclose(sf);
+    }
     char *argv[] = { "panel", 0 };
     rx_handle_t proc;
     // In the home directory, like a login
@@ -176,6 +183,7 @@ static void session(const char *name) {
     // Everything the session started goes with it
     rx_task_kill(job);
     rx_handle_close(job);
+    unlink("/run/desktop-session");
     tell_compositor("user");
     printf("desktop: %s logged out\n", name);
 }

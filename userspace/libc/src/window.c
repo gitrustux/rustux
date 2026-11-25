@@ -31,6 +31,18 @@ static int send_req(rx_window_t *win, const rx_window_req_t *r, const void *payl
 
 // One message from the compositor: 1, 0 if none by the deadline, or -EPIPE;
 // extra (a reply's text) is copied to extra_buf
+// The last drop's text (one at a time per process)
+static char drop_buf[RX_WINDOW_MAX_CLIPBOARD + 1];
+static size_t drop_len;
+
+int rx_window_drop_text(char *buf, size_t size) {
+    if (!size) return (int)drop_len;
+    size_t c = drop_len < size - 1 ? drop_len : size - 1;
+    memcpy(buf, drop_buf, c);
+    buf[c] = 0;
+    return (int)drop_len;
+}
+
 static int read_one(rx_window_t *win, rx_window_event_t *ev, uint64_t deadline, char *extra_buf, size_t extra_size,
                     uint32_t *extra_len) {
     char buf[sizeof(rx_window_event_t) + RX_WINDOW_MAX_CLIPBOARD];
@@ -55,6 +67,13 @@ static int read_one(rx_window_t *win, rx_window_event_t *ev, uint64_t deadline, 
         if (nh) rx_handle_close(h);
         if (nb < sizeof *ev) continue;
         memcpy(ev, buf, sizeof *ev);
+        if (ev->op == RX_WINDOW_EV_DROP) {
+            size_t n = nb - sizeof *ev;
+            if (n > RX_WINDOW_MAX_CLIPBOARD) n = RX_WINDOW_MAX_CLIPBOARD;
+            memcpy(drop_buf, buf + sizeof *ev, n);
+            drop_buf[n] = 0;
+            drop_len = n;
+        }
         if (extra_len) {
             uint32_t n = nb - (uint32_t)sizeof *ev;
             if (extra_buf && extra_size) {
@@ -221,6 +240,13 @@ int rx_window_activate(rx_window_t *win, int id) {
 int rx_window_set_panel(rx_window_t *win, uint32_t edge, int size, int autohide) {
     rx_window_req_t req = { RX_WINDOW_SET_PANEL, 0, size, autohide ? 1 : 0, 0, 0, edge };
     return send_req(win, &req, 0, 0, 0);
+}
+
+int rx_window_drag_start(rx_window_t *win, const char *text) {
+    size_t n = strlen(text);
+    if (n > RX_WINDOW_MAX_CLIPBOARD) return -E2BIG;
+    rx_window_req_t req = { RX_WINDOW_DRAG_START, (uint32_t)n, 0, 0, 0, 0, 0 };
+    return send_req(win, &req, text, (uint32_t)n, 0);
 }
 
 int rx_window_lock(rx_window_t *win) {

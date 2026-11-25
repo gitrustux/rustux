@@ -88,8 +88,17 @@ woken and auto-negotiation restarted over `MDIC`, the MAC address from
 `RAL0`/`RAH0`, one receive and one transmit queue of 256 advanced
 descriptors with 2 KiB buffers, broadcast and all multicast taken. MSI on
 a thread (polling every millisecond besides); the link and its speed (10,
-100, 1000 or 2500 Mbit/s) from `STATUS`. **Tested in QEMU (igb) only:**
-the laptop's E3100 is the first real one.
+100, 1000 or 2500 Mbit/s) from `STATUS`. On the I225 (2026-11-25, after
+the laptop showed `NO-CARRIER` with a cable in): a PHY reset
+(`CTRL.PHY_RST`, then `PHPM.RST_COMPL`), the PHY power management
+register `PHPM` (0x0E14) cleared of go-link-disconnect, the 1000 and
+2500 limits and ULP, which the firmware or Windows can leave set (Linux
+and the BSDs clear `GO_LINKD` when setting up the link), and the
+advertisements written (10/100 half and full, 1000 full, 2500 full
+through MMD 7). While there is no link it logs STATUS, CTRL, PHPM and the
+PHY's registers at 5, 10, 20, 40 seconds, then every 2 minutes (`logs |
+grep igc`). **Tested in QEMU (igb) only:** the laptop's E3100 is the
+first real one.
 
 ## netd
 

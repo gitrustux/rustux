@@ -34,24 +34,26 @@ fn say(s: &str) {
     let _ = std::io::stdout().flush();
 }
 
-const SECTIONS: [&str; 13] =
-    ["Display", "Appearance", "Panel", "Desktop", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "Updates", "Apps", "About"];
+const SECTIONS: [&str; 14] =
+    ["Display", "Appearance", "Panel", "Desktop", "Keyboard", "Mouse", "Power", "Network", "Date & Time", "Users", "Disks", "Updates", "Apps", "About"];
 const S_DISPLAY: usize = 0;
 const S_APPEARANCE: usize = 1;
 const S_PANEL: usize = 2;
 const S_DESKTOP: usize = 3;
 const S_KEYBOARD: usize = 4;
 const S_MOUSE: usize = 5;
-const S_NETWORK: usize = 6;
-const S_TIME: usize = 7;
-const S_USERS: usize = 8;
-const S_DISKS: usize = 9;
-const S_UPDATES: usize = 10;
-const S_APPS: usize = 11;
-const S_ABOUT: usize = 12;
+const S_POWER: usize = 6;
+const S_NETWORK: usize = 7;
+const S_TIME: usize = 8;
+const S_USERS: usize = 9;
+const S_DISKS: usize = 10;
+const S_UPDATES: usize = 11;
+const S_APPS: usize = 12;
+const S_ABOUT: usize = 13;
 
 /// The panel's applets (DESKTOP.md step F10), with what Settings calls them
 const APPLETS: [(&str, &str); 11] = [
+    ("power", "Power menu"),
     ("menu", "Menu (Apps)"),
     ("launchers", "Launchers"),
     ("windows", "Window list"),
@@ -62,7 +64,6 @@ const APPLETS: [(&str, &str); 11] = [
     ("clock", "Clock"),
     ("lock", "Lock"),
     ("logout", "Log out"),
-    ("foxden", "FoxDen"),
 ];
 
 /// ~/.config/rustica/panel.conf as the panel reads it (the same defaults)
@@ -90,7 +91,7 @@ impl PanelConf {
             zones: [
                 vec!["menu".into(), "launchers".into(), "windows".into()],
                 vec![],
-                vec!["updates".into(), "keyboard".into(), "volume".into(), "network".into(), "clock".into(), "lock".into(), "logout".into()],
+                vec!["updates".into(), "keyboard".into(), "volume".into(), "network".into(), "clock".into(), "lock".into(), "logout".into(), "power".into()],
             ],
             launchers: vec!["foxden".into(), "files".into(), "terminal".into()],
         };
@@ -983,7 +984,7 @@ impl Settings {
         }
         let missing: Vec<(&str, &str)> = APPLETS
             .iter()
-            .filter(|(id, _)| *id != "foxden" && !self.panel.zones.iter().flatten().any(|a| a == id))
+            .filter(|(id, _)| !self.panel.zones.iter().flatten().any(|a| a == id))
             .copied()
             .collect();
         if !missing.is_empty() {
@@ -1097,6 +1098,85 @@ impl Settings {
             say("desktop icons arranged");
             self.status = "The icons are back in their columns".into();
         }
+    }
+
+    /// Settings > Power (DESKTOP.md step F15): the screensaver (blank
+    /// after, how, lock then: ~/.config/rustica.conf, which the compositor
+    /// reads), and what the lid and the power button do
+    /// (~/.config/rustica/power.conf, for when the ACPI work lets Rustica
+    /// see them)
+    fn power_section(&mut self, ui: &mut Ui) {
+        ui.heading("Power");
+        let conf = sys::config_dir().join("rustica.conf");
+        let kv = sys::parse_kv(&std::fs::read_to_string(&conf).unwrap_or_default());
+        let blank: u32 = kv.get("blank").and_then(|v| v.parse().ok()).unwrap_or(15);
+        let saver = kv.get("screensaver").cloned().unwrap_or_else(|| "blank".into());
+        let mut lock = matches!(kv.get("lock_on_blank").map(String::as_str), Some("yes"));
+        let mut set: Option<(&str, String)> = None;
+        ui.label("Blank the screen when idle for");
+        ui.row(|ui| {
+            for (m, l) in [(0u32, "Never"), (1, "1 min"), (5, "5 min"), (10, "10 min"), (15, "15 min"), (30, "30 min"), (60, "1 hour")] {
+                if ui.button_ex(&format!("blank-{m}"), l, 0.0, false, blank == m).clicked && blank != m {
+                    set = Some(("blank", m.to_string()));
+                }
+            }
+        });
+        ui.label("Screensaver");
+        ui.row(|ui| {
+            for (k, l) in [("blank", "Black screen"), ("dim", "Dimmed wallpaper")] {
+                if ui.button_ex(&format!("saver-{k}"), l, 0.0, false, saver == k).clicked && saver != k {
+                    set = Some(("screensaver", k.to_string()));
+                }
+            }
+        });
+        if ui.checkbox(&mut lock, "Lock the screen when it blanks") {
+            set = Some(("lock_on_blank", if lock { "yes" } else { "no" }.into()));
+        }
+        ui.dim_label("Locking needs a password: the live system's root has none (set one with passwd).");
+        if let Some((k, v)) = set {
+            let _ = std::fs::create_dir_all(sys::config_dir());
+            match sys::write_kv(&conf, k, &v) {
+                Ok(()) => {
+                    say(&format!("power {k} {v}"));
+                    self.status = "Power settings changed".into();
+                }
+                Err(e) => self.message = Some(("Could not save".into(), format!("{}: {e}", conf.display()))),
+            }
+        }
+        ui.space(8.0);
+        let pconf = sys::config_dir().join("rustica").join("power.conf");
+        let pk = sys::parse_kv(&std::fs::read_to_string(&pconf).unwrap_or_default());
+        let lid = pk.get("lid").cloned().unwrap_or_else(|| "suspend".into());
+        let button = pk.get("power_button").cloned().unwrap_or_else(|| "ask".into());
+        let mut pset: Option<(&str, &str)> = None;
+        ui.label("When the laptop's lid is closed");
+        ui.row(|ui| {
+            for (k, l) in [("suspend", "Suspend"), ("lock", "Lock the screen"), ("nothing", "Keep running")] {
+                if ui.button_ex(&format!("lid-{k}"), l, 0.0, false, lid == k).clicked && lid != k {
+                    pset = Some(("lid", k));
+                }
+            }
+        });
+        ui.label("When the power button is pressed");
+        ui.row(|ui| {
+            for (k, l) in [("ask", "Show the power menu"), ("poweroff", "Shut down"), ("suspend", "Suspend"), ("nothing", "Nothing")] {
+                if ui.button_ex(&format!("pb-{k}"), l, 0.0, false, button == k).clicked && button != k {
+                    pset = Some(("power_button", k));
+                }
+            }
+        });
+        if let Some((k, v)) = pset {
+            let _ = std::fs::create_dir_all(pconf.parent().unwrap());
+            match sys::write_kv(&pconf, k, v) {
+                Ok(()) => {
+                    say(&format!("power {k} {v}"));
+                    self.status = "Power settings changed".into();
+                }
+                Err(e) => self.message = Some(("Could not save".into(), format!("{}: {e}", pconf.display()))),
+            }
+        }
+        ui.dim_label("The lid, the power button, the battery, Suspend and Hibernate need Rustica to read the");
+        ui.dim_label("firmware's ACPI tables (planned): these choices are kept for then.");
     }
 
     fn keyboard(&mut self, ui: &mut Ui) {
@@ -1632,6 +1712,7 @@ impl Settings {
                     S_APPEARANCE => self.appearance(ui),
                     S_PANEL => self.panel_section(ui),
                     S_DESKTOP => self.desktop_section(ui),
+                    S_POWER => self.power_section(ui),
                     S_KEYBOARD => self.keyboard(ui),
                     S_MOUSE => self.mouse(ui),
                     S_NETWORK => self.network(ui, ctl),

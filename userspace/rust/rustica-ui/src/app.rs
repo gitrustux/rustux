@@ -37,6 +37,8 @@ pub enum Request {
     SetRole(u32),
     /// (The panel) its edge, thickness and auto-hide
     SetPanel { edge: u32, size: i32, autohide: bool },
+    /// Drag these paths (a line each) while the left button is held
+    StartDrag(String),
     /// (The panel) activate a window
     Activate(i32),
     Lock,
@@ -115,6 +117,7 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
             match r {
                 Request::SetRole(role) => w.set_role(role),
                 Request::SetPanel { edge, size, autohide } => w.set_panel(edge, size, autohide),
+                Request::StartDrag(t) => w.drag_start(&t),
                 Request::Activate(id) => w.activate(id),
                 Request::Lock => w.lock(),
                 Request::Notify(t) => w.notify(&t),
@@ -207,6 +210,12 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
                     ui.theme = crate::ui::theme_named(theme);
                     ctl.events.push(e);
                     dirty = true;
+                }
+                Event::Drop { x, y, .. } => {
+                    // Where it was dropped is where the pointer is
+                    ui.input.mouse = (x as f32, y as f32);
+                    ctl.events.push(e);
+                    now = true;
                 }
                 Event::Desktop(_) => {
                     ctl.events.push(e);

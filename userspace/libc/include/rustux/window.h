@@ -63,6 +63,8 @@ typedef struct {
 #define RX_WINDOW_NOTIFY         10u // + text: a notification (also as a connection's first message, without a window)
 #define RX_WINDOW_LOCK           11u // lock the screen (the session's user's password unlocks it)
 #define RX_WINDOW_SET_PANEL      12u // (the panel) flags = edge (RX_WINDOW_EDGE_*), x = thickness, y = 1 auto-hide
+#define RX_WINDOW_DRAG_START     13u // + text: while the left button is held, drag this (file paths, a line each); the drop goes to the window under the pointer
+#define RX_WINDOW_AT_END         (-2) // CREATE's x or y: against the work area's right or bottom edge
 #define RX_WINDOW_ROLE_PANEL     1u
 #define RX_WINDOW_ROLE_DESKTOP   2u  // the desktop's icons: the work area, below every window; the buffer's top byte is premultiplied alpha
 #define RX_WINDOW_EDGE_BOTTOM    0u
@@ -93,6 +95,10 @@ typedef struct {
 // To the panel: the desktop's menu was used (flags 1 change the wallpaper,
 // 2 the appearance settings)
 #define RX_WINDOW_EV_DESKTOP       111u
+// A drag (RX_WINDOW_DRAG_START) ended over this window: x, y in the content,
+// flags 1 if it came from this same window; n bytes of text follow (the
+// paths, a line each): rx_window_drop_text gives them
+#define RX_WINDOW_EV_DROP          112u
 #define RX_WINDOW_DESKTOP_LAUNCHER 100u // EV_DESKTOP flags: the Super key alone (open or close the launcher)
 
 // Pointer event flags
@@ -150,6 +156,11 @@ void rx_window_destroy(rx_window_t *win);
 // The desktop session (step F6)
 int rx_window_set_role(rx_window_t *win, uint32_t role);
 int rx_window_activate(rx_window_t *win, int id);
+// Start dragging text (file paths, a line each) while the left button is held
+int rx_window_drag_start(rx_window_t *win, const char *text);
+// The text of the last RX_WINDOW_EV_DROP read (into buf, NUL-terminated);
+// returns its length
+int rx_window_drop_text(char *buf, size_t size);
 // (the panel) its edge (RX_WINDOW_EDGE_*), thickness and auto-hide
 int rx_window_set_panel(rx_window_t *win, uint32_t edge, int size, int autohide);
 int rx_window_lock(rx_window_t *win);

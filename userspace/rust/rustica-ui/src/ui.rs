@@ -162,6 +162,8 @@ pub enum Icon {
     /// The trash with something in it
     TrashFull,
     Home,
+    /// The power symbol (a ring open at the top, a bar through the gap)
+    Power,
 }
 
 /// A row of a table: its icon and its cells, one per column
@@ -190,6 +192,9 @@ pub struct TableResponse {
     pub context: Option<usize>,
     /// Keys the table did not use while it had the focus (Delete, F2, Ctrl+C...)
     pub keys: Vec<Key>,
+    /// The pointer is over the table's rows; the row under it, if any
+    pub over: bool,
+    pub hover: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -1251,6 +1256,14 @@ impl Ui {
                     self.canvas.fill_rect(r(4.0, 10.0, 7.0, 1.0), th.text);
                 }
             }
+            Icon::Power => {
+                let c = th.text;
+                // The ring: a stroked circle, then the gap at the top
+                let ring = r(2.0, 3.0, 12.0, 12.0);
+                self.canvas.stroke_rounded(ring, 6.0 * s, 1.6 * s, c);
+                self.canvas.fill_rect(r(6.0, 1.0, 4.0, 5.0), th.surface);
+                self.canvas.fill_rect(r(7.25, 1.0, 1.5, 7.0), c);
+            }
             Icon::Home => {
                 // A roof in steps, the house, its door
                 for k in 0..6 {
@@ -1284,6 +1297,14 @@ impl Ui {
             self.input.wheel = 0.0;
         }
         let page = ((body.h / rh) as usize).max(1);
+        if self.hover(body) {
+            out.over = true;
+            let (_, my) = self.input.mouse;
+            let i = ((my - body.y + scroll.clamp(0.0, (content - body.h).max(0.0))) / rh).floor();
+            if i >= 0.0 && (i as usize) < rows.len() {
+                out.hover = Some(i as usize);
+            }
+        }
         let mut moved = false;
         for k in self.keys_for(id) {
             let n = rows.len();

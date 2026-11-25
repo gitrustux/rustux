@@ -47,12 +47,13 @@ animation to what the screen takes.
 
 | Client to compositor | |
 |---|---|
-| `CREATE` | title, size, position or -1,-1, the buffer: answered with the window's place |
+| `CREATE` | title, size, position or -1,-1 (the compositor chooses), or `RX_WINDOW_AT_END` (-2) for x or y: against the work area's right or bottom edge (menus by the panel); the buffer: answered with the window's place |
 | `COMMIT` | up to 64 damaged rectangles (none: all) |
 | `BUFFER` | a new buffer after `CONFIGURE` |
 | `SET_TITLE`, `SET_FULLSCREEN` | |
 | `CLIPBOARD_SET`, `CLIPBOARD_GET` | text, up to 4000 bytes; `GET` is answered with the text |
 | `SET_ROLE` | `PANEL` (step F6): no frame, docked at an edge, always on top, never focused (it gets the pointer while over it); maximised and tiled windows stay out of it. `DESKTOP` (step F12): no frame, the work area, always below every other window, never in the panel's list; its buffer's top byte is premultiplied alpha, so it is drawn over the wallpaper (the desktop's icons) |
+| `DRAG_START` | (step F12) text: while the left button is held in this window, drag these file paths (a line each): a label follows the pointer, and on release the window under it gets `EV_DROP` (x, y, flags 1 if it is the same window, the text after the event) |
 | `SET_PANEL` | (the panel, step F10) flags: its edge (`RX_WINDOW_EDGE_BOTTOM`, `TOP`, `LEFT`, `RIGHT`), x: its thickness (24-400), y: 1 auto-hide (it takes no room and shows while the pointer is at that edge or over it). Maximised and tiled windows, the desktop and notifications move to the new work area |
 | `ACTIVATE` | (the panel) a window's id: focus and raise it, bring it back if minimised, minimise it if it has the focus |
 | `NOTIFY` | text: a notification, top right, 5 s; also as a connection's first message, without a window (`notify`) |
@@ -86,6 +87,12 @@ be woken when, for example, a terminal's program prints.
 - Alt+Tab: the bottom-most other window comes to the top with the focus
   (a minimised one comes back); repeated, it goes through all of them.
 - Alt+F4: ask the focused window to close. F11: full screen and back.
+- **Screensaver** (step F15): after `blank=` idle minutes (in
+  `~/.config/rustica.conf`, else `/etc/rustica/appearance`; 15 by
+  default, 0 never) the screen goes black (`screensaver=blank`) or shows
+  the wallpaper dimmed (`dim`); any key or movement brings it back (and
+  does nothing else); `lock_on_blank=yes` locks the screen then. Only in a
+  session, only while the desktop is shown.
 - Keys go to the focused window only. Pointer events go to it while the
   pointer is over its content; while a button is held, to the window it
   went down in. The wheel scrolls the window under the pointer, focused

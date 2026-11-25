@@ -87,6 +87,9 @@ struct Files {
     scanning: bool,
     users: std::collections::HashMap<u32, String>,
     groups: std::collections::HashMap<u32, String>,
+    /// A button went down on a row (which, where): a drag once it moves
+    press: Option<(usize, (f32, f32))>,
+    dragging: bool,
 }
 
 fn trash_dir() -> PathBuf {
@@ -249,6 +252,8 @@ impl Files {
             scanning: false,
             users: sys::id_names("/etc/passwd"),
             groups: sys::id_names("/etc/group"),
+            press: None,
+            dragging: false,
         };
         f.load();
         f
@@ -300,6 +305,12 @@ impl Files {
 
     fn go(&mut self, p: PathBuf) {
         let p = if p.is_relative() { self.cwd.join(p) } else { p };
+        // The user's own places (the trash, Desktop, Documents, ...) are
+        // made when first opened, not an error
+        let h = sys::home();
+        if p == trash_dir().join("files") || ["Desktop", "Documents", "Downloads", "Pictures"].iter().any(|d| p == h.join(d)) {
+            let _ = std::fs::create_dir_all(&p);
+        }
         match std::fs::read_dir(&p) {
             Ok(_) => {
                 if p != self.cwd {
@@ -367,6 +378,39 @@ impl Files {
             say(&format!("{} {}", if cut { "cut" } else { "copy" }, p.display()));
             self.clip = Some((vec![p], cut));
         }
+    }
+
+    /// Paths dropped on this window: moved into `target` (the trash: put
+    /// in the trash), on another filesystem copied
+    fn drop_paths(&mut self, text: &str, target: &Path, same: bool, _in_trash: bool) {
+        let mut n = 0;
+        for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let p = PathBuf::from(line);
+            if p.parent() == Some(target) || p == target || target.starts_with(&p) {
+                continue; // where it is already, or into itself
+            }
+            if is_trash(target) {
+                self.trash(p);
+                n += 1;
+                continue;
+            }
+            let name = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let to = free_name(target, &name);
+            match move_path(&p, &to) {
+                Ok(()) => {
+                    say(&format!("dropped {} -> {}", p.display(), to.display()));
+                    n += 1;
+                }
+                Err(e) => {
+                    self.dialog = Some(Dialog::Info("Could not move".into(), format!("{name}: {e}")));
+                }
+            }
+        }
+        if n > 0 {
+            self.status = format!("Moved {n} item{} here", if n == 1 { "" } else { "s" });
+        }
+        let _ = same;
+        self.load();
     }
 
     fn paste(&mut self) {
@@ -548,8 +592,13 @@ impl Files {
     fn set_drives(&mut self, drives: Vec<Drive>) {
         self.drives = drives;
         self.scanned = Some(Instant::now());
+        let h = sys::home();
         let mut places = vec![
-            ("Home".to_string(), sys::home(), Icon::Folder),
+            ("Home".to_string(), h.clone(), Icon::Home),
+            ("Desktop".to_string(), h.join("Desktop"), Icon::Folder),
+            ("Documents".to_string(), h.join("Documents"), Icon::Folder),
+            ("Downloads".to_string(), h.join("Downloads"), Icon::Folder),
+            ("Pictures".to_string(), h.join("Pictures"), Icon::Folder),
             ("Computer".to_string(), PathBuf::from("/"), Icon::Drive),
             ("Trash".to_string(), trash_dir().join("files"), Icon::Trash),
         ];
@@ -785,6 +834,8 @@ impl Files {
             ui.set_focus("table");
         }
         let w = ui.available_width();
+        let mut table_hover: Option<usize> = None;
+        let mut table_over = false;
         let mut table_keys = Vec::new();
         let mut activated = None;
         ui.row(|ui| {
@@ -821,11 +872,51 @@ impl Files {
                 let r = ui.table("table", &cols, &self.rows, &mut self.selected, h.max(60.0));
                 table_keys = r.keys;
                 activated = r.activated;
+                table_hover = r.hover;
+                table_over = r.over;
             });
         });
         ui.focus_if_none("table");
         if let Some(i) = activated {
             self.open(i);
+        }
+        // Dragging files out (step F12): to another folder's window, the
+        // desktop, the trash
+        if ui.input.pressed {
+            self.press = if table_over { table_hover.map(|i| (i, ui.input.mouse)) } else { None };
+            self.dragging = false;
+        }
+        if ui.input.down && !self.dragging {
+            if let Some((i, (x0, y0))) = self.press {
+                let (x, y) = ui.input.mouse;
+                if (x - x0).abs() > 8.0 * ui.scale || (y - y0).abs() > 8.0 * ui.scale {
+                    if let Some(e) = self.entries.get(i) {
+                        say(&format!("drag {}", e.path.display()));
+                        ctl.requests.push(rustica_ui::Request::StartDrag(e.path.display().to_string()));
+                        self.dragging = true;
+                    }
+                }
+            }
+        }
+        if ui.input.released {
+            self.press = None;
+            self.dragging = false;
+        }
+        // Dropped here: into the folder under the pointer, else this one
+        let drops: Vec<(bool, String)> = ctl
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                rustica_ui::rustica_window::Event::Drop { same, text, .. } => Some((*same, text.clone())),
+                _ => None,
+            })
+            .collect();
+        for (same, text) in drops {
+            let target = match table_hover.and_then(|i| self.entries.get(i)) {
+                Some(e) if e.dir => e.path.clone(),
+                _ => self.cwd.clone(),
+            };
+            self.drop_paths(&text, &target, same, in_trash);
         }
         for k in table_keys {
             self.key(&k, in_trash);
@@ -962,6 +1053,9 @@ impl Files {
 
 fn main() {
     let start = std::env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| sys::home()));
+    if start == trash_dir().join("files") {
+        let _ = std::fs::create_dir_all(&start);
+    }
     let mut f = Files::new(start);
     say(&format!("started in {}", f.cwd.display()));
     let r = rustica_ui::run("Files", 860, 560, None, |ui, ctl| {

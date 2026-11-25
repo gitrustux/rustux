@@ -78,6 +78,8 @@ extern "C" {
     fn rx_window_set_role(w: *mut RawWindow, role: u32) -> i32;
     fn rx_window_activate(w: *mut RawWindow, id: i32) -> i32;
     fn rx_window_set_panel(w: *mut RawWindow, edge: u32, size: i32, autohide: i32) -> i32;
+    fn rx_window_drag_start(w: *mut RawWindow, text: *const u8) -> i32;
+    fn rx_window_drop_text(buf: *mut u8, size: usize) -> i32;
     fn rx_window_lock(w: *mut RawWindow) -> i32;
     fn rx_window_notify(w: *mut RawWindow, text: *const u8) -> i32;
     fn rx_window_wake(ch: u32) -> i32;
@@ -114,6 +116,9 @@ pub enum Event {
     /// To the panel: the desktop's menu was used (1 change the wallpaper,
     /// 2 the appearance settings)
     Desktop(u32),
+    /// A drag ended over this window (step F12): where, whether it came
+    /// from this window, its text (file paths, a line each)
+    Drop { x: i32, y: i32, same: bool, text: String },
 }
 
 /// Wakes a window's event loop from another thread: its next_event
@@ -245,6 +250,7 @@ impl Window {
         const WAKE: u32 = 109;
         const APPEARANCE: u32 = 110;
         const DESKTOP: u32 = 111;
+        const DROP: u32 = 112;
         Some(match ev.op {
             CONFIGURE => Event::Configure { width: ev.w, height: ev.h },
             KEY => {
@@ -272,6 +278,12 @@ impl Window {
                 Event::Appearance { theme: String::from_utf8_lossy(&ev.text[..len]).into_owned() }
             }
             DESKTOP => Event::Desktop(ev.flags),
+            DROP => {
+                let mut buf = vec![0u8; 4097];
+                let n = unsafe { rx_window_drop_text(buf.as_mut_ptr(), buf.len()) }.max(0) as usize;
+                buf.truncate(n.min(4096));
+                Event::Drop { x: ev.x, y: ev.y, same: ev.flags & 1 != 0, text: String::from_utf8_lossy(&buf).into_owned() }
+            }
             WINDOW_INFO => {
                 let len = ev.text.iter().position(|&b| b == 0).unwrap_or(ev.text.len());
                 Event::WindowInfo {
@@ -303,6 +315,13 @@ impl Window {
     /// The desktop session (step F6): become the panel
     pub fn set_role(&mut self, role: u32) {
         unsafe { rx_window_set_role(&mut *self.raw, role) };
+    }
+
+    /// Start dragging `text` (file paths, a line each) while the left
+    /// button is held; the window under the pointer gets [`Event::Drop`]
+    pub fn drag_start(&mut self, text: &str) {
+        let t = CString::new(text).unwrap_or_default();
+        unsafe { rx_window_drag_start(&mut *self.raw, t.as_ptr() as *const u8) };
     }
 
     /// (The panel) dock at an edge (EDGE_*), this thick, maybe hidden

@@ -205,6 +205,44 @@ fn to_trash(p: &Path) -> bool {
     true
 }
 
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    let md = std::fs::symlink_metadata(from)?;
+    if md.is_dir() {
+        std::fs::create_dir(to)?;
+        for e in std::fs::read_dir(from)? {
+            let e = e?;
+            copy_tree(&e.path(), &to.join(e.file_name()))?;
+        }
+        Ok(())
+    } else if md.file_type().is_symlink() {
+        std::os::unix::fs::symlink(std::fs::read_link(from)?, to)
+    } else {
+        std::fs::copy(from, to).map(|_| ())
+    }
+}
+
+/// Move into a folder (on another filesystem: copy, then remove); the new path
+fn move_into(p: &Path, dir: &Path) -> std::io::Result<PathBuf> {
+    let name = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut to = dir.join(&name);
+    let mut n = 2;
+    while std::fs::symlink_metadata(&to).is_ok() {
+        to = dir.join(format!("{name} ({n})"));
+        n += 1;
+    }
+    if std::fs::rename(p, &to).is_err() {
+        copy_tree(p, &to)?;
+        let md = std::fs::symlink_metadata(p)?;
+        if md.is_dir() {
+            std::fs::remove_dir_all(p)?;
+        } else {
+            std::fs::remove_file(p)?;
+        }
+    }
+    say(&format!("moved {} -> {}", p.display(), to.display()));
+    Ok(to)
+}
+
 fn empty_trash() {
     for sub in ["files", "info"] {
         if let Ok(rd) = std::fs::read_dir(trash_dir().join(sub)) {
@@ -231,6 +269,7 @@ const CELL_H: f32 = 92.0;
 const ICON: f32 = 44.0;
 
 fn main() {
+    let _ = std::fs::create_dir_all(desktop_dir());
     let mut list = items();
     let mut pos = load_positions();
     let mut sel: Option<usize> = None;
@@ -239,6 +278,8 @@ fn main() {
     let mut last_click: Option<(usize, Instant)> = None;
     // A drag: the icon, where the pointer went down, whether it moved
     let mut drag: Option<(usize, (f32, f32), bool)> = None;
+    // The icon handed to the compositor as a drag between windows
+    let mut dnd_from: Option<usize> = None;
     let mut scanned = Instant::now();
     let mut trash_n = trash_count();
     let r = rustica_ui::run("Desktop", 800, 600, Some((0, 0)), |ui: &mut Ui, ctl: &mut Control| {
@@ -291,41 +332,6 @@ fn main() {
             mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h
         });
 
-        // The menu takes the pointer while it is open
-        let mut menu_choice: Option<(Option<usize>, &'static str)> = None;
-        let mut menu_close = false;
-        if let Some(m) = &menu {
-            let th = ui.theme;
-            let rh = ui.row_h();
-            let mw = m.entries.iter().map(|e| ui.text_width(e)).fold(0.0, f32::max) + 40.0 * s;
-            let mh = rh * m.entries.len() as f32 + 8.0 * s;
-            let x = m.x.min(ui.canvas.width() - mw - 2.0);
-            let y = m.y.min(ui.canvas.height() - mh - 2.0);
-            let box_ = Rect::new(x, y, mw, mh);
-            ui.canvas.fill_rounded(box_, 6.0 * s, th.border);
-            ui.canvas.fill_rounded(Rect::new(x + 1.0, y + 1.0, mw - 2.0, mh - 2.0), 6.0 * s, th.surface);
-            let px = ui.font_px();
-            let lh = ui.line_h();
-            for (i, e) in m.entries.iter().enumerate() {
-                let r = Rect::new(x + 4.0 * s, y + 4.0 * s + i as f32 * rh, mw - 8.0 * s, rh);
-                let hot = mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h;
-                if hot {
-                    ui.canvas.fill_rounded(r, 4.0 * s, th.selection);
-                    if ui.input.released || ui.input.pressed {
-                        menu_choice = Some((m.item, e));
-                    }
-                }
-                ui.canvas.text(&mut ui.face, r.x + 12.0 * s, r.y + (rh - lh) / 2.0, e, px, th.text);
-            }
-            let inside = mx >= box_.x && mx < box_.x + box_.w && my >= box_.y && my < box_.y + box_.h;
-            if (ui.input.pressed || ui.input.right_pressed) && !inside {
-                menu_close = true;
-            }
-            if ui.input.keys.iter().any(|k| k.usage == keys::ESC) {
-                menu_close = true;
-            }
-        }
-
         // The icons
         let th = ui.theme;
         let px = ui.font_px();
@@ -373,10 +379,103 @@ fn main() {
             ui.canvas.text(&mut ui.face, pill.x + 6.0 * s, ty, &label, px, if sel == Some(i) { th.accent_text } else { th.text });
         }
 
+        // The menu takes the pointer while it is open
+        let mut menu_choice: Option<(Option<usize>, &'static str)> = None;
+        let mut menu_close = false;
+        if let Some(m) = &menu {
+            let th = ui.theme;
+            let rh = ui.row_h();
+            let mw = m.entries.iter().map(|e| ui.text_width(e)).fold(0.0, f32::max) + 40.0 * s;
+            let mh = rh * m.entries.len() as f32 + 8.0 * s;
+            let x = m.x.min(ui.canvas.width() - mw - 2.0);
+            let y = m.y.min(ui.canvas.height() - mh - 2.0);
+            let box_ = Rect::new(x, y, mw, mh);
+            ui.canvas.fill_rounded(box_, 6.0 * s, th.border);
+            ui.canvas.fill_rounded(Rect::new(x + 1.0, y + 1.0, mw - 2.0, mh - 2.0), 6.0 * s, th.surface);
+            let px = ui.font_px();
+            let lh = ui.line_h();
+            for (i, e) in m.entries.iter().enumerate() {
+                let r = Rect::new(x + 4.0 * s, y + 4.0 * s + i as f32 * rh, mw - 8.0 * s, rh);
+                let hot = mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h;
+                if hot {
+                    ui.canvas.fill_rounded(r, 4.0 * s, th.selection);
+                    if ui.input.released || ui.input.pressed {
+                        menu_choice = Some((m.item, e));
+                    }
+                }
+                ui.canvas.text(&mut ui.face, r.x + 12.0 * s, r.y + (rh - lh) / 2.0, e, px, th.text);
+            }
+            let inside = mx >= box_.x && mx < box_.x + box_.w && my >= box_.y && my < box_.y + box_.h;
+            if (ui.input.pressed || ui.input.right_pressed) && !inside {
+                menu_close = true;
+            }
+            if ui.input.keys.iter().any(|k| k.usage == keys::ESC) {
+                menu_close = true;
+            }
+        }
+
+        // Something dropped on the desktop (step F12): on the trash, on a
+        // folder, or anywhere else (into ~/Desktop, at that place)
+        let drops: Vec<(bool, String)> = ctl
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                rustica_ui::rustica_window::Event::Drop { same, text, .. } => Some((*same, text.clone())),
+                _ => None,
+            })
+            .collect();
+        for (same, text) in drops {
+            let from = if same { dnd_from.take() } else { None };
+            let paths: Vec<PathBuf> = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from).collect();
+            let cell = (((mx - 8.0 * s) / cw).floor().max(0.0) as i32, ((my - 8.0 * s) / ch).floor().clamp(0.0, rows as f32 - 1.0) as i32);
+            match under.filter(|&j| Some(j) != from).map(|j| list[j].clone()) {
+                Some(t) if t.kind == Kind::Trash => {
+                    for p in &paths {
+                        to_trash(p);
+                    }
+                }
+                Some(t) if matches!(t.kind, Kind::Folder | Kind::Home | Kind::Drive) => {
+                    for p in &paths {
+                        if !t.path.starts_with(p) {
+                            let _ = move_into(p, &t.path);
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(i) = from {
+                        // An icon moved on the desktop
+                        if !cells.iter().enumerate().any(|(j, &cc)| j != i && cc == cell) {
+                            pos.insert(list[i].key.clone(), cell);
+                            save_positions(&pos);
+                            say(&format!("moved {} to {} {}", list[i].key, cell.0, cell.1));
+                        }
+                    } else {
+                        for (k, p) in paths.iter().enumerate() {
+                            if p.parent() == Some(desktop_dir().as_path()) {
+                                continue;
+                            }
+                            if let Ok(to) = move_into(p, &desktop_dir()) {
+                                if k == 0 && !cells.contains(&cell) {
+                                    let key = to.file_name().unwrap().to_string_lossy().into_owned();
+                                    pos.insert(key, cell);
+                                    save_positions(&pos);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            list = items();
+            trash_n = trash_count();
+            sel = None;
+            dnd_from = None;
+        }
+
         // The pointer, when no menu is open
         if menu.is_none() && !menu_close {
             if ui.input.pressed {
                 sel = under;
+                dnd_from = None;
                 if let Some(i) = under {
                     drag = Some((i, (mx, my), false));
                     let now = Instant::now();
@@ -396,10 +495,20 @@ fn main() {
             if let Some((i, start, moved)) = drag.as_mut() {
                 if !*moved && ((mx - start.0).abs() > 6.0 * s || (my - start.1).abs() > 6.0 * s) {
                     *moved = true;
-                    let _ = i;
+                    // Files, folders and shortcuts go through the compositor,
+                    // so they can be dropped on other windows too
+                    if matches!(list[*i].kind, Kind::File | Kind::Folder | Kind::App) {
+                        ctl.requests.push(Request::StartDrag(list[*i].path.display().to_string()));
+                        dnd_from = Some(*i);
+                        say(&format!("drag {}", list[*i].path.display()));
+                    }
                 }
             }
             if ui.input.released {
+                if dnd_from.is_some() {
+                    // The drop comes as an event
+                    drag = None;
+                }
                 if let Some((i, _, true)) = drag {
                     // Dropped: on the trash, or on a cell of its own
                     let tgt = under.filter(|&j| j != i);

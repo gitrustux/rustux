@@ -108,6 +108,18 @@ static uint32_t rx_next, tx_next;
 static uint8_t tx_busy[NTX];
 static uint8_t mac[6];
 static int link_up;
+static int phy_addr = -1;        // the PHY that answered on MDIC
+
+// The I225's PHY power management (as Linux's and the BSDs' igc): the
+// firmware, or Windows going to sleep, can leave "go link disconnect" or
+// the speed limits of low power set, and then no link ever comes
+#define PHPM             0x0E14
+#define PHPM_GO_LINKD    0x0020
+#define PHPM_DIS_1000    0x0040
+#define PHPM_RST_COMPL   0x0100
+#define PHPM_ULP         0x0400
+#define PHPM_DIS_2500    0x0800
+#define CTRL_PHY_RST     (1u << 31)
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static rx_handle_t netd;
 static uint16_t device_id;
@@ -163,20 +175,57 @@ static int mdic(int phy, int reg, int op, uint16_t *val) {
     return -1;
 }
 
-// The PHY powered up and auto-negotiating (the firmware or the other
-// system may have left it powered down; QEMU's igb brings the link up on
-// the restart)
+// A PHY register of MMD `dev` (clause 45) through the clause 22 MMD
+// access registers 13 and 14 (op 1 write, 2 read)
+static int mmd(int phy, int dev, int reg, int op, uint16_t *val) {
+    uint16_t a = (uint16_t)dev, r = (uint16_t)reg, d = (uint16_t)(0x4000 | dev);
+    if (mdic(phy, 13, 1, &a) < 0 || mdic(phy, 14, 1, &r) < 0 || mdic(phy, 13, 1, &d) < 0) return -1;
+    return mdic(phy, 14, op, val);
+}
+
+// The PHY powered up and auto-negotiating everything it can (the
+// firmware or the other system may have left it powered down or
+// advertising less; QEMU's igb brings the link up on the restart)
 static void phy_up(void) {
     for (int phy = 1; phy >= 0; phy--) {
         uint16_t id = 0, bmcr = 0;
         if (mdic(phy, 2, 2, &id) < 0 || id == 0 || id == 0xFFFF) continue;
         if (mdic(phy, 0, 2, &bmcr) < 0) continue;
+        phy_addr = phy;
+        if (i225) {
+            // Advertise 10/100 half and full, 1000 full, 2500 full
+            uint16_t an = 0, gt = 0, mg = 0;
+            mdic(phy, 4, 2, &an);
+            an = (uint16_t)((an & ~0x01E0u) | 0x01E0u | 0x0001u);
+            mdic(phy, 4, 1, &an);
+            mdic(phy, 9, 2, &gt);
+            gt = (uint16_t)((gt & ~0x0300u) | 0x0200u);
+            mdic(phy, 9, 1, &gt);
+            if (mmd(phy, 7, 0x20, 2, &mg) == 0) {
+                mg |= 0x0080;
+                mmd(phy, 7, 0x20, 1, &mg);
+            }
+        }
         uint16_t nb = (uint16_t)((bmcr & ~(1u << 11)) | (1u << 12) | (1u << 9)); // not power down, auto-neg, restart
         mdic(phy, 0, 1, &nb);
         printf("igc %s: PHY %d (id %04x), control %04x -> %04x\n", where, phy, id, bmcr, nb);
         return;
     }
     printf("igc %s: no PHY answered on MDIC; leaving it as it is\n", where);
+}
+
+// What the card and its PHY say, for the log while there is no link
+static void link_report(void) {
+    uint16_t bmcr = 0, bmsr = 0, lpa = 0, gs = 0;
+    if (phy_addr >= 0) {
+        mdic(phy_addr, 0, 2, &bmcr);
+        mdic(phy_addr, 1, 2, &bmsr);
+        mdic(phy_addr, 1, 2, &bmsr); // latched: the second read is now
+        mdic(phy_addr, 5, 2, &lpa);
+        mdic(phy_addr, 10, 2, &gs);
+    }
+    printf("igc %s: no link yet: STATUS %08x CTRL %08x PHPM %08x; PHY %d BMCR %04x BMSR %04x partner %04x 1000T %04x\n", where,
+           rd(STATUS), rd(CTRL), i225 ? rd(PHPM) : 0, phy_addr, bmcr, bmsr, lpa, gs);
 }
 
 static void read_mac(void) {
@@ -218,6 +267,19 @@ static int reset(void) {
     wr(IMC, 0xFFFFFFFFu);
     rd(ICR);
     wr(CTRL_EXT, rd(CTRL_EXT) | CTRL_EXT_DRV_LOAD);
+    if (i225) {
+        // The PHY reset (Linux's igc_phy_hw_reset), then its power
+        // management back to full power and full speed
+        uint32_t ph0 = rd(PHPM);
+        wr(CTRL, rd(CTRL) | CTRL_PHY_RST);
+        sleep_us(100);
+        wr(CTRL, rd(CTRL) & ~CTRL_PHY_RST);
+        for (int k = 0; k < 1000 && !(rd(PHPM) & PHPM_RST_COMPL); k++) sleep_us(100);
+        sleep_us(100);
+        uint32_t ph = rd(PHPM);
+        wr(PHPM, ph & ~(uint32_t)(PHPM_GO_LINKD | PHPM_DIS_1000 | PHPM_DIS_2500 | PHPM_ULP));
+        printf("igc %s: PHY power management %08x -> %08x\n", where, ph0, rd(PHPM));
+    }
     // Link up, speed and duplex from auto-negotiation
     uint32_t c = rd(CTRL);
     c |= CTRL_SLU;
@@ -339,6 +401,18 @@ static void *irq_thread(void *arg) {
         if ((cause & INT_LSC) || now - last > 1000000000ull) {
             last = now;
             check_link();
+            // No link: say what the card sees, at 5, 10, 20 and 40 seconds,
+            // then every 2 minutes
+            static uint64_t started, next_report;
+            if (!started) {
+                started = now;
+                next_report = now + 5000000000ull;
+            }
+            if (link_up != 1 && now >= next_report) {
+                link_report();
+                uint64_t since = now - started;
+                next_report = now + (since < 40000000000ull ? since : 120000000000ull);
+            }
         }
     }
     return 0;

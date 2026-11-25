@@ -5,6 +5,9 @@
 #   1. the desktop's icons: Home and Trash; files put in ~/Desktop appear;
 #      one dragged onto the trash goes there (the trash shows full); a
 #      right click on the desktop opens its menu, whose New folder works;
+#   1b. a file dragged from Files onto the desktop, and back into Files;
+#      the power button opens the power menu; the Image Viewer started
+#      without a picture asks for one;
 #   2. twelve windows: the panel's end (Lock, Log out, the clock) stays
 #      where it was, the window list shortened with "+N";
 #   3. a window dragged to the left edge fills the left half; Super+Right
@@ -226,7 +229,29 @@ check(near(px(700, 310), 0x1C1B20, 12), 'a right click on the desktop: its menu 
 click(680, 318)
 time.sleep(3)
 
+# 1b. Drag and drop between windows (_stepUI2): a file from Files to the
+# desktop, and back; the power menu; the Image Viewer's Open
+console('mkdir -p /root/Documents; echo hello > /root/Documents/note.txt; files /root/Documents &', 6)
+time.sleep(3)
+drag(300, 187, 1000, 300, 14)
+time.sleep(4)
+drag(1014, 330, 500, 400, 14)
+time.sleep(4)
+key('alt-f4')
+time.sleep(2)
+click(1252, 782)
+time.sleep(4)
+key('esc')
+time.sleep(2)
+console('appctl run org.rustica.imageviewer &', 8)
+key('esc')
+time.sleep(3)
+key('alt-f4')
+time.sleep(2)
+
 # 2. Twelve windows: the end of the panel stays
+to(640, 300)
+time.sleep(1)
 before = region(screen(), 1100, 768, 1278, 796)
 console('for i in 1 2 3 4 5 6 7 8 9 10 11 12; do wintest "A long window title $i" -s 300x200 & done', 8)
 time.sleep(3)
@@ -283,7 +308,7 @@ check(wait_pixel(30, 18, ACCENT, 6), 'the pointer at the top edge: the panel sho
 key('ctrl-alt-f1')
 time.sleep(1)
 n = len(log())
-type_('echo console works; logs | grep -E "desk:|launcher:|compositor: (window .Snapme. (un)?tiled|panel:)|panel: (settings|start)" | tail -80\n')
+type_('echo console works; logs | grep -E "desk:|launcher:|files: dropped|compositor: (window .Snapme. (un)?tiled|panel:|drop on|window .Open a picture)|panel: (settings|start|power)|viewer:" | tail -90\n')
 wait(r'console works', 10, n)
 time.sleep(5)
 out = log()[n0:]
@@ -293,6 +318,10 @@ check('desk: menu: New folder' in out and 'desk: new folder /root/Desktop/New fo
 check('compositor: window "Snapme" tiled left' in out, 'dragged to the left edge: tiled left')
 check('compositor: window "Snapme" untiled' in out and 'compositor: window "Snapme" tiled right' in out, 'Super+Right: back to its size, then the right half')
 check(re.search(r'launcher: search "term": 1 found', out) is not None and 'launcher: started /bin/terminal' in out, 'the menu found Terminal and started it')
+check('desk: moved /root/Documents/note.txt -> /root/Desktop/note.txt' in out, 'note.txt dragged from Files onto the desktop')
+check('files: dropped /root/Desktop/note.txt -> /root/Documents/note.txt' in out, 'and from the desktop back into Files')
+check('panel: power menu' in out, 'the panel\'s power button opens the power menu')
+check(re.search(r'compositor: window "Open a picture', out) is not None, 'the Image Viewer started alone asks for a picture (the file chooser)')
 check('compositor: panel: left, 180, always shown' in out and 'compositor: panel: top, 36, auto-hide' in out, 'the compositor docked the panel left, then on top with auto-hide')
 sys.exit(1 if fails else 0)
 PY

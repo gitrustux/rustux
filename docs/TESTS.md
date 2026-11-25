@@ -494,7 +494,9 @@ cancelled question gives it nothing.
 `scripts/run-shell-ui-test.sh` (DESKTOP.md steps F10-F13): the desktop in
 QEMU with a USB tablet. The desktop's icons (Home; files put in
 `~/Desktop` appear; one dragged onto the trash goes there; a right click
-on the desktop opens its menu and New folder works); twelve windows
+on the desktop opens its menu and New folder works); a file dragged from
+Files onto the desktop and back into Files; the power button's menu; the
+Image Viewer started alone asks for a picture; twelve windows
 leave the panel's Lock and Log out where they were; a window dragged to
 the left edge is tiled left, Super+Right gives it its size back and then
 tiles it right; the menu finds Terminal for "term" and Enter starts it;

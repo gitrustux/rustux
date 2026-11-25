@@ -23,3 +23,7 @@ rustica-ui = { path = "../rustica-ui" }
 [profile.release]
 panic = "abort"
 opt-level = 3
+
+[[bin]]
+name = "powermenu"
+path = "src/bin/powermenu.rs"

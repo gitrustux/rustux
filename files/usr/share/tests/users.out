@@ -20,8 +20,8 @@ chown: changing ownership of '/tmp/t1': Operation not permitted
 -rw------- tst1 sudo
 removed
 -rw-------
-poweroff: must be root (try: sudo poweroff)
-reboot: must be root (try: sudo reboot)
+poweroff: only root or the desktop session's user may (try: sudo poweroff)
+reboot: only root or the desktop session's user may (try: sudo reboot)
 hostname: /etc/hostname: Permission denied
 timedatectl: /etc/timezone: Permission denied (try sudo)
 localectl: /etc/keymap: Permission denied (try sudo)

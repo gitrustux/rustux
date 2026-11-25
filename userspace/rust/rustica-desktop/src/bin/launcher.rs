@@ -223,8 +223,8 @@ fn find_files(q: &str) -> Vec<PathBuf> {
     out
 }
 
-const SETTINGS_PAGES: [&str; 13] =
-    ["Display", "Appearance", "Panel", "Desktop", "Keyboard", "Mouse", "Network", "Date & Time", "Users", "Disks", "Updates", "Apps", "About"];
+const SETTINGS_PAGES: [&str; 14] =
+    ["Display", "Appearance", "Panel", "Desktop", "Keyboard", "Mouse", "Power", "Network", "Date & Time", "Users", "Disks", "Updates", "Apps", "About"];
 
 /// Something a search found
 #[derive(Clone)]
