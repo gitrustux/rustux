@@ -97,6 +97,24 @@ fn layout() -> String {
     if l.is_empty() { "us".to_string() } else { l }
 }
 
+/// RX_WINDOW_DESKTOP_LAUNCHER: the compositor saw the Super key alone
+const LAUNCHER_KEY: u32 = 100;
+
+/// The Applications button and the Super key: open the launcher, or close
+/// it if it is open
+fn toggle_launcher(launcher: &mut Option<std::process::Child>) {
+    if let Some(mut c) = launcher.take() {
+        if matches!(c.try_wait(), Ok(None)) {
+            println!("panel: launcher closed");
+            let _ = c.kill();
+            let _ = c.wait();
+            return;
+        }
+    }
+    println!("panel: launcher");
+    *launcher = std::process::Command::new("/bin/launcher").spawn().ok();
+}
+
 fn main() {
     let user = std::env::var("USER").unwrap_or_default();
     if let Ok(list) = std::fs::read_to_string("/etc/autostart") {
@@ -121,6 +139,7 @@ fn main() {
     let mut seen_updated = done0.iter().map(|d| d.0).max().unwrap_or(0);
     let mut seen_waits: Vec<String> = waits0.iter().map(|w| format!("{} {}", w.0, w.1)).collect();
     println!("panel: session of {user}");
+    let mut launcher: Option<std::process::Child> = None;
     let r = rustica_ui::run("Panel", 800, 36, Some((0, 0)), |ui: &mut Ui, ctl: &mut Control| {
         if first {
             ui.padding = 3.0;
@@ -135,6 +154,9 @@ fn main() {
                 } else {
                     wins.push(Win { id, title, focused, minimized });
                 }
+            } else if let Event::Desktop(LAUNCHER_KEY) = e {
+                // The Super key alone
+                toggle_launcher(&mut launcher);
             } else if let Event::Desktop(_) = e {
                 // The desktop's menu (a right click on the wallpaper):
                 // Change wallpaper and Appearance settings both open
@@ -197,8 +219,7 @@ fn main() {
             + ui.u(32.0 * 3.0 + 8.0 * 6.0 + 16.0);
         ui.row(|ui| {
             if ui.primary_button("Applications") {
-                println!("panel: launcher");
-                let _ = std::process::Command::new("/bin/launcher").spawn();
+                toggle_launcher(&mut launcher);
             }
             // The app store (FoxDen step FD5)
             if ui.button("FoxDen") {

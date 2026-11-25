@@ -87,6 +87,7 @@ typedef struct {
 // To the panel: the desktop's menu was used (flags 1 change the wallpaper,
 // 2 the appearance settings)
 #define RX_WINDOW_EV_DESKTOP       111u
+#define RX_WINDOW_DESKTOP_LAUNCHER 100u // EV_DESKTOP flags: the Super key alone (open or close the launcher)
 
 // Pointer event flags
 #define RX_WINDOW_PTR_MOTION  0x01u

@@ -202,6 +202,10 @@ pub struct TextConsole {
     osc_len: usize,
     utf8_cp: u32,
     utf8_left: u8,
+    /// The strips right of the last column and below the last row (the
+    /// screen is rarely a whole number of cells: 1080 lines leave 8) need
+    /// painting: they would otherwise keep what the firmware left there
+    margins_dirty: bool,
 }
 
 impl TextConsole {
@@ -243,6 +247,7 @@ impl TextConsole {
             osc_len: 0,
             utf8_cp: 0,
             utf8_left: 0,
+            margins_dirty: true,
         }
     }
 
@@ -316,6 +321,7 @@ impl TextConsole {
     /// Clear the screen and home the cursor
     pub fn clear(&mut self) {
         self.erase(0, self.cols * self.rows);
+        self.margins_dirty = true;
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.wrap_pending = false;
@@ -344,6 +350,24 @@ impl TextConsole {
     fn mark_all(&mut self) {
         for d in self.dirty.iter_mut() {
             *d = true;
+        }
+        self.margins_dirty = true;
+    }
+
+    /// Paint the margins in the default background
+    fn paint_margins(&mut self) {
+        self.margins_dirty = false;
+        let (w, h) = (self.cols * SimpleVgaFont::width(), self.rows * SimpleVgaFont::height());
+        let bg = palette(DEF_BG);
+        let fb = &mut self.framebuffer;
+        let (fw, fh) = (fb.width, fb.height);
+        unsafe {
+            if fw > w {
+                fb.fill_rect(w, 0, fw - w, fh, bg);
+            }
+            if fh > h {
+                fb.fill_rect(0, h, fw, fh - h, bg);
+            }
         }
     }
 
@@ -867,6 +891,9 @@ impl TextConsole {
             return;
         }
         DRAWN.store(true, Ordering::Release);
+        if self.margins_dirty {
+            self.paint_margins();
+        }
         if let Some(r) = self.cursor_row_drawn.take() {
             if r < self.rows {
                 self.dirty[r] = true;

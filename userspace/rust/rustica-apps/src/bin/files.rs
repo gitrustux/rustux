@@ -684,7 +684,7 @@ impl Files {
             ui.input.keys = rest;
         }
         let menus: [(&str, &[&str]); 4] = [
-            ("File", &["Open", "Open in Terminal", "New folder", "Properties", "Close"]),
+            ("File", &["Open", "Open in Terminal", "New folder", "Properties", "Set as wallpaper", "Close"]),
             ("Edit", &["Copy", "Cut", "Paste", "Rename", "Move to the trash", "Delete"]),
             ("View", &["Show hidden files", "Reload"]),
             ("Go", &["Back", "Up", "Home", "Trash"]),
@@ -703,7 +703,16 @@ impl Files {
                     let p = self.sel().map(|e| e.path.clone()).unwrap_or(self.cwd.clone());
                     self.dialog = Some(Dialog::Properties(p));
                 }
-                (0, 4) => ctl.quit = true,
+                (0, 4) => {
+                    // Settings makes the picture the wallpaper (and says
+                    // so in a notification if it is not a picture)
+                    if let Some(e) = self.sel() {
+                        let p = e.path.clone();
+                        say(&format!("wallpaper {}", p.display()));
+                        let _ = std::process::Command::new("/bin/settings").arg("--wallpaper").arg(&p).spawn();
+                    }
+                }
+                (0, 5) => ctl.quit = true,
                 (1, 0) => self.copy(false),
                 (1, 1) => self.copy(true),
                 (1, 2) => self.paste(),

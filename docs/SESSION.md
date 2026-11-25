@@ -41,7 +41,9 @@ Ctrl+Alt+F1 throughout.
   docked at the bottom (the compositor's panel role: no frame, always on
   top, never focused; maximised windows stop above it). FoxDen (the app
   store, `FOXDEN.md` step FD5) beside Applications. Applications (the
-  launcher), a button per window (click: focus it, or minimise it when it
+  launcher: a second click, or the Super key pressed alone, which the
+  compositor passes on as `RX_WINDOW_EV_DESKTOP` with
+  `RX_WINDOW_DESKTOP_LAUNCHER`, opens it or closes it), a button per window (click: focus it, or minimise it when it
   has the focus; a minimised one in brackets), the keyboard layout
   (`/etc/keymap`), volume and network placeholders, the clock (redrawn
   every 5 seconds), Lock, Log out. It starts the commands in
@@ -68,9 +70,12 @@ colours, or a picture of the user's.
 
 - Where it is set: `theme=` and `wallpaper=` (`rustica`, `gradient`, or a
   QOI file of the user's) in `~/.config/rustica.conf`, else in
-  `/etc/rustica/appearance`. Settings > Appearance writes them (a picture
-  from `~/Pictures` or the home folder becomes
-  `~/.config/rustica/wallpaper-N.qoi`); so does `theme --desktop NAME`.
+  `/etc/rustica/appearance`. Settings > Appearance writes them: a picture
+  (PNG, JPEG or QOI) from any folder, by its path, the file chooser, or
+  the list of `~/Pictures` and the home folder, becomes
+  `~/.config/rustica/wallpaper-N.qoi`. Files > Set as wallpaper runs
+  `settings --wallpaper FILE`, which does the same without a window. `theme
+  --desktop NAME` sets the theme.
 - How it spreads: the compositor looks at the session user's file every
   second; on a change it makes the wallpaper again, redraws, and sends
   every window `RX_WINDOW_EV_APPEARANCE` with the theme's name, so

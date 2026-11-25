@@ -58,12 +58,13 @@ fn bar0(bus: u8, dev: u8, func: u8) -> Option<u64> {
 }
 
 /// Scan every bus/device/function for xHCI controllers (class 0C/03/30),
-/// print them, and return the preferred one with memory decoding and bus
-/// mastering enabled. The chipset controller (bus 0) is preferred: it owns
-/// the USB-A ports and the built-in devices; Thunderbolt and GPU USB-C
-/// controllers sit on other buses.
-pub fn find_xhci() -> Option<XhciFunction> {
-    let mut best: Option<XhciFunction> = None;
+/// print them, enable memory decoding and bus mastering on each, and
+/// return them all, the chipset's (bus 0) first. A laptop's chipset
+/// controller owns its USB-A ports and built-in devices; a desktop board
+/// (AMD: the CPU's and the chipset's controllers sit behind bridges) has
+/// its ports spread over several, so every one is used.
+pub fn find_xhci_all() -> alloc::vec::Vec<XhciFunction> {
+    let mut all = alloc::vec::Vec::new();
     for bus in 0..=255u8 {
         for dev in 0..32u8 {
             let id = read32(bus, dev, 0, 0);
@@ -86,11 +87,7 @@ pub fn find_xhci() -> Option<XhciFunction> {
                 };
                 let f = XhciFunction { bus, dev, func, vendor: id as u16, device: (id >> 16) as u16, mmio_phys: mmio };
                 log("[USB]   ");
-                log_hex(bus as u64, 2);
-                log(":");
-                log_hex(dev as u64, 2);
-                log(".");
-                log_hex(func as u64, 1);
+                log_bdf(&f);
                 log(" ");
                 log_hex(f.vendor as u64, 4);
                 log(":");
@@ -98,25 +95,26 @@ pub fn find_xhci() -> Option<XhciFunction> {
                 log(" xHCI at 0x");
                 log_hex(mmio, 16);
                 log("\n");
-                if best.map_or(true, |b| b.bus != 0 && bus == 0) {
-                    best = Some(f);
-                }
+                // Memory space + bus master; status bits written as 0
+                // (RW1C: no effect)
+                let cmd = read32(bus, dev, func, 0x04) & 0xFFFF;
+                write32(bus, dev, func, 0x04, cmd | 0x6);
+                all.push(f);
             }
         }
         if bus == 255 {
             break;
         }
     }
-    let f = best?;
-    // Memory space + bus master; status bits written as 0 (RW1C: no effect)
-    let cmd = read32(f.bus, f.dev, f.func, 0x04) & 0xFFFF;
-    write32(f.bus, f.dev, f.func, 0x04, cmd | 0x6);
-    log("[USB] Using ");
+    // Stable: bus 0 first, then in bus order
+    all.sort_by_key(|f| (f.bus != 0, f.bus, f.dev, f.func));
+    all
+}
+
+pub fn log_bdf(f: &XhciFunction) {
     log_hex(f.bus as u64, 2);
     log(":");
     log_hex(f.dev as u64, 2);
     log(".");
     log_hex(f.func as u64, 1);
-    log("\n");
-    Some(f)
 }

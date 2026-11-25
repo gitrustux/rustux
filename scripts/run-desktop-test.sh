@@ -4,8 +4,9 @@
 # target) and a USB tablet, and checks:
 #   1. the desktop starts at boot: root's session (/etc/autologin) with the
 #      panel at the bottom of the wallpaper;
-#   2. Applications opens the launcher; Enter starts the first application
-#      (its window appears, the panel lists it);
+#   2. Applications opens the launcher and closes it again; the Super key
+#      alone opens it too; Enter starts the first application (its window
+#      appears, the panel lists it);
 #   3. a notification from the console (notify), shown top right;
 #   4. Log out ends the session (its programs are killed) and the
 #      graphical login comes; a wrong password is refused; alice (made at
@@ -178,6 +179,11 @@ check(not near(px(640, 300), 0x101012, 2), 'the wallpaper (%06x)' % px(640, 300)
 # 2. The launcher
 click(64, 782)
 check(wait_pixel(150, 48, 0x1C1B20, 20), 'Applications opens the launcher (a focused window; %06x)' % screen()(150, 48))
+click(64, 782)
+time.sleep(3)
+check(not near(screen()(150, 48), 0x1C1B20, 2), 'Applications again closes the launcher (%06x)' % screen()(150, 48))
+key('meta_l')
+check(wait_pixel(150, 48, 0x1C1B20, 20), 'the Super key alone opens the launcher (%06x)' % screen()(150, 48))
 key('ret')
 time.sleep(4)
 px = screen()
@@ -236,7 +242,7 @@ time.sleep(4)
 key('ctrl-alt-f1')
 time.sleep(1)
 n = len(log())
-type_('echo console works; ps; logs | grep -E "desktop: |launcher: started|notification|lock screen|unlocked"\n')
+type_('echo console works; ps; logs | grep -E "desktop: |launcher: started|panel: launcher|super: |notification|lock screen|unlocked"\n')
 wait(r'console works', 10, n)
 time.sleep(5)
 out = log()[n:]
@@ -253,6 +259,7 @@ for _ in range(4):
 check('\nconsole works' in out, 'the console works')
 check(re.search(r'desktop: root logged in \(/etc/autologin\)', out) is not None, 'root\'s session from /etc/autologin')
 check(re.search(r'launcher: started /bin/wintest Animation -a', out) is not None, 'the launcher started "Animation"')
+check('panel: launcher closed' in out and 'super: launcher' in out, 'the log: the launcher closed, the Super key seen')
 check(re.search(r'compositor: notification "Hello from the console"', out) is not None, 'the notification was shown')
 check(re.search(r'desktop: root logged out', out) is not None, 'root logged out')
 check(re.search(r'desktop: a failed login for alice', out) is not None, 'a wrong password at the login is refused')

@@ -28,6 +28,8 @@
 # (redirects, -I, -f, -d, -o, -w) and HTTPS with a test CA the script
 # makes (refused without --cacert, accepted with it, -k). The DNS checks
 # are skipped if port 53 cannot be had on the host.
+# The igc driver (2026-11-25): a fourth card, QEMU's igb (eth3, 10.0.6.0/24):
+# its DHCP lease, ping and curl through it.
 # Real network cards and IPv6 (step D4): a third card, an Intel e1000e
 # (eth2), on a second user-mode network (10.0.5.0/24, IPv6 fd05::/64):
 # its DHCP lease, ping and curl through it; IPv6 on eth0 and eth2:
@@ -100,7 +102,8 @@ qemu = subprocess.Popen(['qemu-system-x86_64', '-machine', 'q35', '-m', '512M', 
     '-netdev', f'user,id=n0,hostfwd=tcp:127.0.0.1:{FWD_NC}-:8080,hostfwd=tcp:127.0.0.1:{FWD_RUST}-:8081,hostfwd=tcp:127.0.0.1:{FWD_SSH}-:22', '-device', 'virtio-net-pci,netdev=n0,mac=52:54:00:12:34:56',
     '-netdev', f'dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port={A},remote.type=inet,remote.host=127.0.0.1,remote.port={B}',
     '-device', 'virtio-net-pci,netdev=n1,disable-legacy=on,mac=52:54:00:ab:cd:ef',
-    '-netdev', 'user,id=n2,net=10.0.5.0/24,ipv6-prefix=fd05::,ipv6-prefixlen=64', '-device', 'e1000e,netdev=n2,mac=52:54:00:00:00:e1'],
+    '-netdev', 'user,id=n2,net=10.0.5.0/24,ipv6-prefix=fd05::,ipv6-prefixlen=64', '-device', 'e1000e,netdev=n2,mac=52:54:00:00:00:e1',
+    '-netdev', 'user,id=n3,net=10.0.6.0/24', '-device', 'igb,netdev=n3,mac=52:54:00:00:00:1c'],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 for _ in range(50):
     if os.path.exists(MON): break
@@ -474,6 +477,15 @@ try:
     check('2 received' in out, 'ping through the e1000e (10.0.5.2)', out)
     out = run(f'curl -s http://10.0.5.2:{HP}/')
     check('<h1>Rustica test page</h1>' in out, 'curl through the e1000e', out)
+    # The igc driver (2026-11-25), through QEMU's igb (the 82576 it shares
+    # the descriptors and rings with)
+    out = run('logs | grep -E "netd: eth3|igc"')
+    check(re.search(r'eth3: 52:54:00:00:00:1c \(igc [0-9a-f:.]+\), link up', out) and 'eth3: DHCP lease 10.0.6.15/24, router 10.0.6.2' in out,
+          'eth3 is the igb card, driven by igc, with its DHCP lease', out)
+    out = run('ping -c 3 10.0.6.2')
+    check('3 received' in out, 'ping through the igc driver (10.0.6.2)', out)
+    out = run(f'curl -s http://10.0.6.2:{HP}/')
+    check('<h1>Rustica test page</h1>' in out, 'curl through the igc driver', out)
     out = run('ip -6 addr show eth0; ip -6 route')
     check('inet6 fe80::5054:ff:fe12:3456/64 scope link' in out and 'inet6 fec0::5054:ff:fe12:3456/64 scope global dynamic' in out
           and 'default via fe80::2 dev eth0 proto ra' in out and 'fd05::/64 dev eth2' in out, 'IPv6: link-local and SLAAC addresses, the router (ip -6)', out)

@@ -75,6 +75,7 @@ usb=08:06:50    /bin/usb-storage
 1af4:1000   /bin/virtio-net
 1af4:1041   /bin/virtio-net
 8086:10d3   /bin/e1000e        (and the I217/I218/I219 IDs, step D4)
+8086:15f3   /bin/igc           (and the I225/I226/E3100 IDs and QEMU's igb)
 ```
 
 The first matching line for a device wins. Devices the kernel uses are

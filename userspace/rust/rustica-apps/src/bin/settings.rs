@@ -71,6 +71,15 @@ fn pictures() -> Vec<std::path::PathBuf> {
     out
 }
 
+/// ~/x is the home folder's x
+fn expand_home(p: &str) -> std::path::PathBuf {
+    match p.strip_prefix("~/") {
+        Some(rest) => sys::home().join(rest),
+        None if p == "~" => sys::home(),
+        None => p.into(),
+    }
+}
+
 /// A picture made into the wallpaper: at most 3840 pixels on its long side,
 /// as QOI (the compositor's format) in ~/.config/rustica/, a new name each
 /// time so that the compositor sees the change; the older ones go
@@ -319,6 +328,10 @@ struct Settings {
     wallpaper: String,
     pictures: Vec<std::path::PathBuf>,
     picture: Option<usize>,
+    /// The picture file field, and the file chooser while it is open
+    /// (with the file it writes the choice to)
+    picture_path: String,
+    chooser: Option<(std::process::Child, std::path::PathBuf)>,
     apps: Vec<SetApp>,
     scale: u32,
     keymaps: Vec<String>,
@@ -403,6 +416,8 @@ impl Settings {
             wallpaper: appearance_key("wallpaper"),
             pictures: Vec::new(),
             picture: None,
+            picture_path: String::new(),
+            chooser: None,
             apps: Vec::new(),
             scale: rustica_ui::app::scale_from_env() as u32,
             keymaps: Vec::new(),
@@ -685,22 +700,55 @@ impl Settings {
                 }
             }
         });
-        ui.dim_label("Or a picture of yours (PNG, JPEG or QOI, in Pictures or your home folder):");
-        if self.pictures.is_empty() {
-            ui.dim_label("No pictures found.");
-        } else {
+        ui.dim_label("Or a picture of yours (PNG, JPEG or QOI), from any folder:");
+        let mut use_path: Option<std::path::PathBuf> = None;
+        ui.row(|ui| {
+            let (_, enter) = ui.text_field("picture-path", &mut self.picture_path, 360.0);
+            if (ui.button("Use") || enter) && !self.picture_path.trim().is_empty() {
+                use_path = Some(expand_home(self.picture_path.trim()));
+            }
+            if self.chooser.is_none() && ui.button("Choose a file...") {
+                let out = std::env::temp_dir().join(format!("settings-chooser-{}", std::process::id()));
+                let _ = std::fs::remove_file(&out);
+                let pics = sys::home().join("Pictures");
+                let mut cmd = std::process::Command::new("/bin/chooser");
+                cmd.args(["open", "--app", "Settings", "--title", "Wallpaper", "--patterns", "*.png *.jpg *.jpeg *.qoi"]);
+                cmd.arg("--out").arg(&out).arg("--dir").arg(&pics);
+                match cmd.spawn() {
+                    Ok(c) => self.chooser = Some((c, out)),
+                    Err(e) => self.message = Some(("Cannot open the file chooser".into(), e.to_string())),
+                }
+            }
+        });
+        // The chooser's answer
+        if let Some((c, out)) = self.chooser.as_mut() {
+            if let Ok(Some(st)) = c.try_wait() {
+                if st.success() {
+                    if let Ok(p) = std::fs::read_to_string(&*out) {
+                        let p = p.trim().to_string();
+                        self.picture_path = p.clone();
+                        use_path = Some(p.into());
+                    }
+                }
+                let _ = std::fs::remove_file(&*out);
+                self.chooser = None;
+            }
+        }
+        if !self.pictures.is_empty() {
+            ui.dim_label("In Pictures and your home folder:");
             let names: Vec<String> = self.pictures.iter().map(|p| {
                 let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 if p.parent() == Some(sys::home().join("Pictures").as_path()) { format!("Pictures/{n}") } else { n }
             }).collect();
-            ui.list("pictures", &names, &mut self.picture, 120.0);
+            ui.list("pictures", &names, &mut self.picture, 100.0);
             if ui.button("Use this picture") {
-                if let Some(p) = self.picture.and_then(|i| self.pictures.get(i)).cloned() {
-                    match make_wallpaper(&p) {
-                        Ok(f) => wall = Some(f),
-                        Err(e) => self.message = Some(("Cannot use that picture".into(), e)),
-                    }
-                }
+                use_path = self.picture.and_then(|i| self.pictures.get(i)).cloned();
+            }
+        }
+        if let Some(p) = use_path {
+            match make_wallpaper(&p) {
+                Ok(f) => wall = Some(f),
+                Err(e) => self.message = Some(("Cannot use that picture".into(), e)),
             }
         }
         if let Some(w) = wall {
@@ -1223,6 +1271,10 @@ impl Settings {
     }
 
     fn frame(&mut self, ui: &mut Ui, ctl: &mut Control) {
+        if self.chooser.is_some() {
+            // Look for the file chooser's answer
+            ctl.wake_after = Some(Duration::from_millis(300));
+        }
         let w = ui.available_width();
         let names: Vec<String> = SECTIONS.iter().map(|s| s.to_string()).collect();
         let before = self.section;
@@ -1319,6 +1371,35 @@ impl Settings {
 }
 
 fn main() {
+    // settings --wallpaper FILE (Files > Set as wallpaper): no window
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--wallpaper") {
+        let Some(src) = args.get(2) else {
+            eprintln!("usage: settings --wallpaper FILE");
+            std::process::exit(2);
+        };
+        let notify = |text: &str| {
+            let _ = rustica_ui::rustica_window::notify(text);
+        };
+        match make_wallpaper(&expand_home(src)) {
+            Ok(f) => {
+                let p = sys::config_dir().join("rustica.conf");
+                let _ = std::fs::create_dir_all(sys::config_dir());
+                if let Err(e) = sys::write_kv(&p, "wallpaper", &f) {
+                    eprintln!("settings: {}: {e}", p.display());
+                    notify("Could not save the wallpaper");
+                    std::process::exit(1);
+                }
+                say(&format!("wallpaper {f}"));
+            }
+            Err(e) => {
+                eprintln!("settings: {e}");
+                notify(&format!("Not a picture the wallpaper can be: {e}"));
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let mut s = Settings::new();
     if let Some(a) = std::env::args().nth(1) {
         let a = a.to_lowercase();

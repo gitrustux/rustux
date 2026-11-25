@@ -4,7 +4,8 @@ Rustica's network: card drivers in userspace, one network service (`netd`)
 with the TCP/IP stack, `ip` and `ping` (`NETWORK.md` in the planning
 documents, step D1), POSIX sockets for programs, C and Rust (`nc`,
 `ss`, `std::net`; step D2), DHCP, DNS and `curl` over HTTPS (step D3),
-Intel's e1000e cards with IPv6 beside IPv4 (step D4), the SSH server
+Intel's e1000e cards with IPv6 beside IPv4 (step D4), Intel's
+I225/I226 2.5 GbE cards (igc, 2026-11-25), the SSH server
 and the firewall (step D5), and the desktop's network settings (step D6).
 
 ```
@@ -29,6 +30,8 @@ devmgr starts a network driver from `/etc/drivers` like any PCI driver
 1af4:1041   /bin/virtio-net     # modern-only (disable-legacy=on)
 8086:10d3   /bin/e1000e         # Intel 82574L (QEMU's -device e1000e)
 8086:0d4f   /bin/e1000e         # Intel I219-V, and the other I217/I218/I219s
+8086:15f3   /bin/igc            # Intel I225-V, the I226s, the Killer E3100 (3100)
+8086:10c9   /bin/igc            # Intel 82576 (QEMU's -device igb): igc's test card
 ```
 
 The driver connects to `/svc/netdev`, which netd publishes, and keeps
@@ -73,6 +76,20 @@ thread that drains the receive ring (polling without it); the link
 QEMU only:** on the I219 of a laptop the PHY may first need waking from
 its low-power state (ULP) and the LANPHYPC toggle that Linux's e1000e
 does; that is for the laptop session.
+
+### igc (2026-11-25)
+
+`/bin/igc BDF` (`c-progs/igc.c`): Intel's 2.5 GbE cards, the I225 and
+I226 (and the Killer E3100, `8086:3100`, an I225 on gaming laptops such
+as the test laptop), and the 82576 that QEMU emulates as `-device igb`,
+whose queue registers and advanced descriptors are the same. A device
+reset (`CTRL.DEV_RST` on the I225, `CTRL.RST` on the 82576), the PHY
+woken and auto-negotiation restarted over `MDIC`, the MAC address from
+`RAL0`/`RAH0`, one receive and one transmit queue of 256 advanced
+descriptors with 2 KiB buffers, broadcast and all multicast taken. MSI on
+a thread (polling every millisecond besides); the link and its speed (10,
+100, 1000 or 2500 Mbit/s) from `STATUS`. **Tested in QEMU (igb) only:**
+the laptop's E3100 is the first real one.
 
 ## netd
 
@@ -371,7 +388,8 @@ qemu-system-x86_64 ... -netdev user,id=n0 -device virtio-net-pci,netdev=n0
 QEMU's user-mode network has the gateway at 10.0.2.2 (it answers pings),
 DNS at 10.0.2.3 and gives 10.0.2.15 by DHCP; for IPv6 it advertises
 fec0::/64 from fe80::2 (fec0::2 answers pings). `-device e1000e` instead
-of virtio-net-pci gives the Intel card. Pings beyond
+of virtio-net-pci gives the Intel gigabit card, `-device igb` the 82576
+that igc drives. Pings beyond
 it reach the outside world only if the host lets QEMU use unprivileged
 ICMP sockets (Linux's `net.ipv4.ping_group_range`). The host is 10.0.2.2 from the guest: a server listening
 on the host's 127.0.0.1 is reached there (`nc 10.0.2.2 PORT`). The host
@@ -386,5 +404,7 @@ too, a `-netdev dgram` "wire" to a peer written in Python
 (`docs/TESTS.md`, network test).
 
 Proxmox and KVM use the same virtio-net device (or an "Intel E1000E"
-card); the laptop's Intel I219 has the e1000e driver, untested there
-yet.
+card). On the test laptop (2026-11-24) the wired card is a Killer E3100
+(`8086:3100`, igc) and the Wi-Fi an Intel AX201-class `8086:06f0`, which
+has no driver yet (Wi-Fi needs the card's firmware and WPA: a later
+step).

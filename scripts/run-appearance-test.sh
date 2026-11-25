@@ -5,7 +5,9 @@
 #   2. a right click on the wallpaper opens the desktop's menu; its first
 #      choice opens Settings > Appearance (through the panel);
 #   3. there, Dracula: the windows' title bars and the panel change at
-#      once; a picture of the user's becomes the wallpaper (as QOI);
+#      once; a picture of the user's, its path typed in the picture
+#      field, becomes the wallpaper (as QOI); `settings --wallpaper FILE`
+#      (Files > Set as wallpaper) does the same;
 #   4. `theme` at the console: the desktop back to Rustica, and the
 #      console's own colours to Rustica (OSC sequences), kept for root in
 #      /etc/console-theme;
@@ -209,14 +211,15 @@ time.sleep(3)
 check(wait_pixel(64, 782, 0xBD93F9, 10), 'Dracula: the panel changes at once')
 px = screen()
 check(any(near(px(x, y), 0x44475A, 2) for x in range(60, 700, 4) for y in range(30, 80, 2)), 'Dracula: the Settings window\'s title bar')
-key('tab'); key('tab'); key('tab'); key('down'); key('tab'); key('ret')
+key('tab'); key('tab'); key('tab')
+type_('/root/Pictures/shot.png\n')
 time.sleep(6)
 
 # 4. theme at the console
 key('ctrl-alt-f1')
 time.sleep(1)
 n = len(log())
-type_('theme --desktop rustica; theme --console rustica; cat /etc/console-theme; theme\n')
+type_('settings --wallpaper /root/Pictures/shot.png && echo set-from-files; theme --desktop rustica; theme --console rustica; cat /etc/console-theme; theme\n')
 time.sleep(3)
 px = screen()
 check(near(px(1270, 790), 0x101012, 4), 'theme --console rustica: the console\'s background (%06x)' % px(1270, 790))
@@ -245,7 +248,8 @@ out = log()[n0:]
 check(re.search(r'compositor: desktop menu: Change wallpaper', out) is not None, 'the menu\'s choice went to the panel')
 check(re.search(r'panel: desktop menu, Settings > Appearance', out) is not None and 'settings: started' in out, 'the panel opened Settings > Appearance')
 check(re.search(r'settings: theme dracula', out) is not None and re.search(r'compositor: appearance: theme dracula', out) is not None, 'Settings set Dracula; the compositor followed')
-check(re.search(r'settings: wallpaper /root/\.config/rustica/wallpaper-\d+\.qoi', out) is not None, 'the picture became ~/.config/rustica/wallpaper-*.qoi')
+check(len(re.findall(r'settings: wallpaper /root/\.config/rustica/wallpaper-\d+\.qoi', out)) >= 2, 'the picture became ~/.config/rustica/wallpaper-*.qoi, from the field and from settings --wallpaper')
+check('set-from-files' in out, 'settings --wallpaper succeeded')
 check(re.search(r'compositor: wallpaper /root/\.config/rustica/wallpaper-\d+\.qoi \(1280x800\)', out) is not None, 'the compositor shows it (1280x800)')
 check(re.search(r'theme: your desktop uses rustica', out) is not None and re.search(r'theme: the console uses rustica \(from now on\)', out) is not None, 'theme set both')
 check(re.search(r'\nrustica\r?\n', out) is not None, '/etc/console-theme says rustica')

@@ -13,7 +13,7 @@
 //! the CPU) and the controller's registers are mapped uncached through
 //! `kernel_map::map_mmio`.
 //!
-//! - [`init`] finds the chipset xHCI controller, starts it and enumerates
+//! - [`init`] finds every xHCI controller, starts each and enumerates
 //!   every port, hubs included.
 //! - [`poll`] (called by the keyboard driver whenever input is read) keeps
 //!   keyboard transfers running, decodes reports into the keyboard input
@@ -104,33 +104,46 @@ impl<T> UsbGlobal<T> {
     }
 }
 
-/// Find and start the USB controller and enumerate its devices.
+/// Find and start every xHCI controller and enumerate their devices.
 /// Returns the number of keyboards found. Safe to call once at boot after
 /// the PMM, heap and TSC calibration.
 pub fn init() -> usize {
     let _usb = USB_LOCK.lock();
     log("[USB] Scanning PCI for xHCI controllers...\n");
-    let found = match pci::find_xhci() {
-        Some(f) => f,
-        None => {
-            log("[USB] No xHCI controller\n");
-            return 0;
-        }
-    };
+    let found = pci::find_xhci_all();
+    if found.is_empty() {
+        log("[USB] No xHCI controller\n");
+        return 0;
+    }
     unsafe {
-        match xhci::Controller::new(found.mmio_phys) {
-            Ok(c) => xhci::set_controller(c),
-            Err(e) => {
-                log("[USB] Controller init failed: ");
-                log(error_name(e));
-                log("\n");
-                return 0;
+        for f in found.iter() {
+            log("[USB] Controller ");
+            pci::log_bdf(f);
+            log(":\n");
+            let c = match xhci::Controller::new(f.mmio_phys) {
+                Ok(c) => c,
+                Err(e) => {
+                    log("[USB] Controller init failed: ");
+                    log(error_name(e));
+                    log("\n");
+                    continue;
+                }
+            };
+            if xhci::add_controller(c).is_none() {
+                log("[USB] Too many controllers; the rest are not used\n");
+                break;
             }
+            device::enumerate_all();
         }
-        let n = device::enumerate_all();
+        let n = device::keyboard_count();
         log("[USB] ");
         log_dec(n as u64);
-        log(if n == 1 { " keyboard ready\n" } else { " keyboards ready\n" });
+        log(if n == 1 { " keyboard" } else { " keyboards" });
+        log(" and ");
+        log_dec(device::pointer_count() as u64);
+        log(" pointing devices ready on ");
+        log_dec(xhci::controller_count() as u64);
+        log(if xhci::controller_count() == 1 { " controller\n" } else { " controllers\n" });
         n
     }
 }
@@ -183,7 +196,12 @@ pub fn storage_control(id: u32, setup: [u8; 8], data: &mut [u8]) -> core::result
 /// True if a controller is running
 pub fn active() -> bool {
     let _usb = USB_LOCK.lock();
-    unsafe { xhci::controller().map_or(false, |c| !c.is_dead()) }
+    unsafe {
+        (0..xhci::controller_count()).any(|i| {
+            xhci::select(i);
+            xhci::controller().map_or(false, |c| !c.is_dead())
+        })
+    }
 }
 
 pub(crate) fn error_name(e: UsbError) -> &'static str {

@@ -541,6 +541,15 @@ fn handle_exception(vector: u64, code: Option<u64>, frame: &InterruptFrame) {
             debug_print(" (out of memory: no page for it)");
         }
     }
+    // Which program: its name and koid (what ps shows)
+    if user {
+        if let Some((_, t)) = rustux::process::run::current_thread() {
+            debug_print(" program=");
+            debug_print(&t.process.name);
+            debug_print(" koid=");
+            print_dec(t.process.koid);
+        }
+    }
     debug_print("\n");
 
     // Screen: one line, for kernel faults only. A crashed program is
@@ -1235,6 +1244,21 @@ fn debug_print(s: &str) {
 }
 
 #[inline(always)]
+fn print_dec(n: u64) {
+    let mut d = [0u8; 20];
+    let mut i = d.len();
+    let mut n = n;
+    loop {
+        i -= 1;
+        d[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    debug_print(core::str::from_utf8(&d[i..]).unwrap_or("?"));
+}
+
 fn print_hex(n: u64) {
     if !DEBUG_ENABLED.load(core::sync::atomic::Ordering::Relaxed) {
         return;

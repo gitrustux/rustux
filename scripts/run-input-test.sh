@@ -7,9 +7,12 @@
 #   3. fbtest's cursor follows the mouse and it reports a click;
 #   4. the input service killed: init starts it again and typing works;
 #   5. localectl set-keymap de: evtest sees z for the key labelled Y.
-# With a USB keyboard, mouse and tablet (qemu-xhci):
-#   6. the kernel finds all three; typing works; evtest sees relative
-#      motion from the mouse and absolute positions from the tablet.
+# With a USB keyboard, mouse and tablet on three xHCI controllers (one
+# empty on bus 0, the keyboard on one and the mouse and tablet on another
+# behind PCIe root ports, as on an AMD desktop board):
+#   6. the kernel starts all three controllers and finds all three
+#      devices; typing works; evtest sees relative motion from the mouse
+#      and absolute positions from the tablet.
 # Exit status 0 if all is well.
 #
 #   scripts/run-input-test.sh [KERNEL.efi]
@@ -167,6 +170,7 @@ if PART == 'ps2':
     check('key 0x1c down mods 0x00 text "z"' in log()[n:], 'the de layout: the key labelled Y gives z')
 else:
     l = log()
+    check('pointing devices ready on 3 controllers' in l, 'all three USB controllers used')
     check(re.search(r'keyboard [0-9A-F]{4}:[0-9A-F]{4} ready', l) is not None, 'USB keyboard found')
     check(re.search(r'mouse [0-9A-F]{4}:[0-9A-F]{4} ready', l) is not None, 'USB mouse found')
     check(re.search(r'tablet [0-9A-F]{4}:[0-9A-F]{4} ready', l) is not None, 'USB tablet found')
@@ -196,7 +200,10 @@ PY
 }
 echo "PS/2 keyboard and mouse:"
 boot ps2 || fail=1
-echo "USB keyboard, mouse and tablet:"
-boot usb -device qemu-xhci,id=x -device usb-kbd,bus=x.0 -device usb-mouse,bus=x.0 -device usb-tablet,bus=x.0 || fail=1
+echo "USB keyboard, mouse and tablet on three controllers:"
+boot usb -device qemu-xhci,id=x0 \
+    -device pcie-root-port,id=rp1,chassis=1 -device qemu-xhci,id=x,bus=rp1 -device usb-kbd,bus=x.0 \
+    -device pcie-root-port,id=rp2,chassis=2 -device nec-usb-xhci,id=y,bus=rp2 \
+    -device usb-mouse,bus=y.0 -device usb-tablet,bus=y.0 || fail=1
 if [ -n "${fail:-}" ]; then echo "run-input-test: some checks failed"; exit 1; fi
 echo "run-input-test: all checks passed"

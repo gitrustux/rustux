@@ -1514,11 +1514,28 @@ static void cycle_focus(void) {
     set_focus(k);
 }
 
+// The Super key pressed and released alone: the panel opens or closes
+// the launcher (RX_WINDOW_EV_DESKTOP, RX_WINDOW_DESKTOP_LAUNCHER)
+static int super_alone;
+
 static void key_event(const rx_input_event_t *e) {
     int pressed = e->flags & RX_INPUT_PRESSED;
     if (locked) {
+        super_alone = 0;
         lock_key(e);
         return;
+    }
+    if (e->code == 0xE3 || e->code == 0xE7) {
+        if (pressed && !(e->flags & RX_INPUT_REPEAT)) {
+            super_alone = 1;
+        } else if (!pressed && super_alone) {
+            super_alone = 0;
+            vlog("super: launcher\n");
+            for (int k = 0; k < MAX_WINDOWS; k++)
+                if (wins[k].used && wins[k].panel) send_simple(&wins[k], RX_WINDOW_EV_DESKTOP, RX_WINDOW_DESKTOP_LAUNCHER);
+        }
+    } else if (pressed) {
+        super_alone = 0; // Super+L and the like
     }
     // Super+L (or Ctrl+Alt+L): lock
     if (pressed && e->code == 0x0F && ((e->mods & (RX_INPUT_MOD_LGUI | RX_INPUT_MOD_RGUI)) ||

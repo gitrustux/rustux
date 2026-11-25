@@ -143,18 +143,57 @@ pub struct Controller {
     stashed: usize,
 }
 
-static CONTROLLER: super::UsbGlobal<Option<Controller>> = super::UsbGlobal::new(None);
+/// Controllers in use: a desktop board has several (the CPU's and the
+/// chipset's), with the keyboard on any of them
+pub const MAX_CONTROLLERS: usize = 6;
+const NO_CONTROLLER: Option<Controller> = None;
+static CONTROLLERS: super::UsbGlobal<[Option<Controller>; MAX_CONTROLLERS]> =
+    super::UsbGlobal::new([NO_CONTROLLER; MAX_CONTROLLERS]);
+/// The controller [`controller`] returns, and whose slots the device
+/// code's per-slot state belongs to
+static CURRENT: super::UsbGlobal<usize> = super::UsbGlobal::new(0);
 
+/// Add a started controller and select it; its index, or None if full
+///
 /// # Safety
 /// USB_LOCK must be held.
-pub unsafe fn set_controller(c: Controller) {
-    *CONTROLLER.get() = Some(c);
+pub unsafe fn add_controller(c: Controller) -> Option<usize> {
+    let all = CONTROLLERS.get();
+    let i = all.iter().position(|c| c.is_none())?;
+    all[i] = Some(c);
+    *CURRENT.get() = i;
+    Some(i)
+}
+
+/// Make controller `i` the current one
+///
+/// # Safety
+/// USB_LOCK must be held.
+pub unsafe fn select(i: usize) {
+    *CURRENT.get() = i.min(MAX_CONTROLLERS - 1);
 }
 
 /// # Safety
 /// USB_LOCK must be held.
+pub unsafe fn current() -> usize {
+    *CURRENT.get()
+}
+
+/// Indices of the controllers present
+///
+/// # Safety
+/// USB_LOCK must be held.
+pub unsafe fn controller_count() -> usize {
+    CONTROLLERS.get().iter().take_while(|c| c.is_some()).count()
+}
+
+/// The current controller
+///
+/// # Safety
+/// USB_LOCK must be held.
 pub unsafe fn controller() -> Option<&'static mut Controller> {
-    CONTROLLER.get().as_mut()
+    let i = *CURRENT.get();
+    CONTROLLERS.get()[i].as_mut()
 }
 
 fn alloc_table_page() -> Option<u64> {

@@ -285,8 +285,12 @@ takes the focus and sees keys with their text, mouse motion, a button and
 the wheel, and Esc gives the focus back; `fbtest`'s cursor follows the
 mouse and a click is reported where it is; killing `inputd` (init starts
 it again, typing works); `localectl set-keymap de` (the key labelled Y
-gives z). With a USB keyboard, mouse and tablet: the kernel finds all
-three, typing works, `evtest` sees relative motion and absolute positions.
+gives z). With a USB keyboard, mouse and tablet on three xHCI controllers
+(an empty one on bus 0; the keyboard on a `qemu-xhci` and the mouse and
+tablet on a `nec-usb-xhci`, each behind a PCIe root port, as on an AMD
+desktop board): the kernel starts all three controllers and finds all
+three devices, typing works, `evtest` sees relative motion and absolute
+positions.
 
 ## Window test (step F4)
 
@@ -316,7 +320,8 @@ through its dialog; `--scale 2` gives a window twice the size.
 `scripts/run-desktop-test.sh` (`SESSION.md`): one QEMU boot with `desktop`
 on the kernel command line and a USB tablet. The desktop starts at boot
 (root's session from `/etc/autologin`: the panel on the wallpaper);
-Applications opens the launcher, Enter starts an application; `notify` from
+Applications opens the launcher and, clicked again, closes it; the Super
+key alone opens it too; Enter starts an application; `notify` from
 the console shows top right; Log out ends the session and brings the
 graphical login, which refuses a wrong password and lets alice (made at the
 console) in; Lock shows the lock screen, refuses a wrong password, takes
@@ -393,7 +398,9 @@ test CA made by openssl: refused (60) without `--cacert`, the page with
 it, `-k`; a name that does not resolve is 6. Real cards and IPv6 (step
 D4): a third card, an e1000e on a second user-mode network
 (10.0.5.0/24, fd05::/64), is eth2 with its DHCP lease, and ping and curl
-go through it; IPv6 link-local and SLAAC addresses and the routers'
+go through it; a fourth, QEMU's `igb` (the 82576, igc's driver) on
+10.0.6.0/24, is eth3 with its lease, and ping and curl go through it;
+IPv6 link-local and SLAAC addresses and the routers'
 default routes (`ip -6`), `ping -6` to both routers and ::1, an address
 added by hand, `nc -6`; `nettest local` checks IPv6 TCP and UDP and a
 dual-stack `[::]` listener. SSH and the firewall (step D5): the image's
@@ -488,8 +495,10 @@ cancelled question gives it nothing.
 and the fox wallpaper by default; a right click on the wallpaper opens the
 desktop's menu, whose first choice opens Settings > Appearance through the
 panel; there Dracula changes the panel and the title bars at once, and a
-picture of the user's (a screenshot in `~/Pictures`) becomes the
-wallpaper as `~/.config/rustica/wallpaper-N.qoi`; `theme` at the console
+picture of the user's (a screenshot in `~/Pictures`), its path typed in
+the picture field, becomes the wallpaper as
+`~/.config/rustica/wallpaper-N.qoi`, and so does `settings --wallpaper
+FILE` (what Files > Set as wallpaper runs); `theme` at the console
 sets the desktop back to Rustica and the console's own colours
 (`/etc/console-theme`); Log out on the live system offers Continue as
 root, without a password. `SESSION.md` "Appearance".

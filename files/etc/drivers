@@ -28,6 +28,27 @@ usb=08:06:50    /bin/usb-storage
 1af4:1000   /bin/virtio-net
 1af4:1041   /bin/virtio-net
 #
+# igc (2026-11-25): Intel's 2.5 GbE I225 and I226 (the Killer E3100 is
+# 8086:3100) and the 82576 (QEMU's -device igb), queue 0, advanced
+# descriptors
+8086:10c9   /bin/igc
+8086:15f2   /bin/igc
+8086:15f3   /bin/igc
+8086:15f7   /bin/igc
+8086:15f8   /bin/igc
+8086:15fd   /bin/igc
+8086:0d9f   /bin/igc
+8086:3100   /bin/igc
+8086:3101   /bin/igc
+8086:3102   /bin/igc
+8086:5502   /bin/igc
+8086:5503   /bin/igc
+8086:125b   /bin/igc
+8086:125c   /bin/igc
+8086:125d   /bin/igc
+8086:125e   /bin/igc
+8086:125f   /bin/igc
+
 # e1000e (NETWORK.md step D4): Intel 82574L (QEMU's -device e1000e), and the
 # I217/I218/I219 of laptops (written from the same registers; not yet tested
 # on hardware)

@@ -8,7 +8,7 @@
 //! docs/FOXDEN.md "The file chooser"). appctl runs it, as the user, when
 //! a sandboxed app asks to open or save a file:
 //!
-//!   chooser open|save --app NAME --out FILE [--title T] [--patterns "*.txt *.md"] [--name N]
+//!   chooser open|save --app NAME --out FILE [--title T] [--patterns "*.txt *.md"] [--name N] [--dir D]
 //!
 //! The user goes through their folders (the places: Home, Documents,
 //! Pictures, ...), picks a file or types its name, and says Open (Save),
@@ -245,7 +245,11 @@ fn main() {
         title: val("--title"),
         patterns: val("--patterns").split_whitespace().map(str::to_string).collect(),
         all: false,
-        dir: if docs.is_dir() { docs } else { home },
+        dir: match PathBuf::from(val("--dir")) {
+            d if !d.as_os_str().is_empty() && d.is_dir() => d,
+            _ if docs.is_dir() => docs,
+            _ => home,
+        },
         entries: Vec::new(),
         selected: None,
         name: val("--name"),

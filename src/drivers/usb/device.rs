@@ -19,7 +19,7 @@ use super::ring::{dma_page, Ring};
 use super::xhci::{
     self, Controller, Setup, CC_SHORT_PACKET, CC_STALL, CC_SUCCESS, EVT_PORT_STATUS, EVT_TRANSFER, MAX_SLOTS,
     PORTSC_CCS, PORTSC_CSC, PORTSC_PED, PORTSC_SPEED_SHIFT, SPEED_FULL, SPEED_HIGH, SPEED_LOW,
-    SPEED_SUPER, TRB_NORMAL,
+    SPEED_SUPER, TRB_NORMAL, MAX_CONTROLLERS,
 };
 use super::{log, log_dec, log_hex, Result, UsbError};
 use crate::arch::amd64::tsc::delay_ms;
@@ -94,14 +94,27 @@ impl SlotMem {
 }
 
 const NO_SLOT: Option<SlotMem> = None;
-static SLOT_MEM: super::UsbGlobal<[Option<SlotMem>; MAX_SLOTS + 1]> = super::UsbGlobal::new([NO_SLOT; MAX_SLOTS + 1]);
+const NO_SLOTS: [Option<SlotMem>; MAX_SLOTS + 1] = [NO_SLOT; MAX_SLOTS + 1];
+/// Per controller, per slot
+static SLOT_MEM: super::UsbGlobal<[[Option<SlotMem>; MAX_SLOTS + 1]; MAX_CONTROLLERS]> =
+    super::UsbGlobal::new([NO_SLOTS; MAX_CONTROLLERS]);
 
 /// Root port of every slot that stays configured (hubs and keyboards);
 /// 0 = not kept. Used to release everything behind a disconnected port.
-static KEPT_ROOT_PORT: super::UsbGlobal<[u8; MAX_SLOTS + 1]> = super::UsbGlobal::new([0; MAX_SLOTS + 1]);
+static KEPT_ROOT_PORT: super::UsbGlobal<[[u8; MAX_SLOTS + 1]; MAX_CONTROLLERS]> =
+    super::UsbGlobal::new([[0; MAX_SLOTS + 1]; MAX_CONTROLLERS]);
+
+/// The current controller's slots (see [`xhci::select`])
+unsafe fn slots() -> &'static mut [Option<SlotMem>; MAX_SLOTS + 1] {
+    &mut SLOT_MEM.get()[xhci::current()]
+}
+
+unsafe fn kept() -> &'static mut [u8; MAX_SLOTS + 1] {
+    &mut KEPT_ROOT_PORT.get()[xhci::current()]
+}
 
 unsafe fn slot_mem(slot: u8) -> Result<&'static mut SlotMem> {
-    let entry = &mut SLOT_MEM.get()[slot as usize];
+    let entry = &mut slots()[slot as usize];
     match entry {
         Some(m) => {
             m.clear_input();
@@ -123,6 +136,8 @@ unsafe fn slot_mem(slot: u8) -> Result<&'static mut SlotMem> {
 /// A HID interface: a boot keyboard, or (DESKTOP.md step F3) a mouse or
 /// tablet with the layout of its reports
 struct Keyboard {
+    /// The controller it is on
+    ctrl: u8,
     pointer: Option<super::hidparse::Layout>,
     report_len: u16,
     slot: u8,
@@ -173,6 +188,7 @@ pub struct StorageInfo {
 
 struct Storage {
     info: StorageInfo,
+    ctrl: u8,
     slot: u8,
     dci_in: u8,
     dci_out: u8,
@@ -206,8 +222,11 @@ pub fn storage_exists(id: u32) -> bool {
     storage().iter().flatten().any(|s| s.info.id == id)
 }
 
+/// The storage device `id`, with its controller selected
 fn storage_by_id(id: u32) -> Option<&'static mut Storage> {
-    storage().iter_mut().flatten().find(|s| s.info.id == id)
+    let s = storage().iter_mut().flatten().find(|s| s.info.id == id)?;
+    unsafe { xhci::select(s.ctrl as usize) };
+    Some(s)
 }
 
 /// Errors of the storage calls, as the kernel's status codes
@@ -263,8 +282,8 @@ unsafe fn ep_ctx(slot: u8, dci: u8) -> (*const u32, usize) {
         Some(c) => c.ctx_size,
         None => return (ZERO.as_ptr(), 0),
     };
-    let port = KEPT_ROOT_PORT.get()[slot as usize] as usize;
-    match SLOT_MEM.get()[slot as usize].as_ref() {
+    let port = kept()[slot as usize] as usize;
+    match slots()[slot as usize].as_ref() {
         Some(m) => (m.dev.virt.add(dci as usize * cs) as *const u32, port),
         None => (ZERO.as_ptr(), port),
     }
@@ -278,7 +297,7 @@ unsafe fn ep_ctx(slot: u8, dci: u8) -> (*const u32, usize) {
 /// keyboard on it) is enumerated again too.
 pub unsafe fn storage_reset(id: u32) -> core::result::Result<(), StorageError> {
     let s = storage_by_id(id).ok_or(StorageError::Gone)?;
-    let port = KEPT_ROOT_PORT.get()[s.slot as usize] as usize;
+    let port = kept()[s.slot as usize] as usize;
     if port == 0 {
         return Err(StorageError::Invalid);
     }
@@ -298,7 +317,7 @@ unsafe fn ep_state(slot: u8, dci: u8) -> u32 {
         Some(c) => c.ctx_size,
         None => return 0,
     };
-    match SLOT_MEM.get()[slot as usize].as_ref() {
+    match slots()[slot as usize].as_ref() {
         Some(m) => core::ptr::read_volatile(m.dev.virt.add(dci as usize * cs) as *const u32) & 7,
         None => 0,
     }
@@ -316,7 +335,7 @@ pub unsafe fn storage_clear_halt(id: u32, input: bool) -> core::result::Result<(
     let slot = s.slot;
     let c = xhci::controller().ok_or(StorageError::Gone)?;
     let ep1 = if input { s.ep1_in } else { s.ep1_out };
-    let m = SLOT_MEM.get()[slot as usize].as_mut().ok_or(StorageError::Gone)?;
+    let m = slots()[slot as usize].as_mut().ok_or(StorageError::Gone)?;
     match ep_state(slot, dci) {
         2 | 4 => {
             // Halted: Reset Endpoint also resets the host's data toggle /
@@ -377,7 +396,7 @@ pub unsafe fn storage_control(id: u32, setup: [u8; 8], data: &mut [u8]) -> core:
         return Err(StorageError::Invalid);
     }
     let slot = s.slot;
-    let m = SLOT_MEM.get()[slot as usize].as_mut().ok_or(StorageError::Gone)?;
+    let m = slots()[slot as usize].as_mut().ok_or(StorageError::Gone)?;
     let n = ctrl(slot, m, Setup { request_type: rt, request: req, value, index, length }).map_err(storage_err)?;
     let n = core::cmp::min(n, length as usize);
     data[..n].copy_from_slice(m.buf(n));
@@ -519,7 +538,7 @@ unsafe fn setup_storage(slot: u8, m: &mut SlotMem, loc: &Location, config_value:
         interface: bot.interface,
         product,
     };
-    storage()[free] = Some(Storage { info, slot, dci_in, dci_out, ep1_in, ep1_out, ep_in: bot.ep_in, ep_out: bot.ep_out, ring_in, ring_out, buf });
+    storage()[free] = Some(Storage { info, ctrl: xhci::current() as u8, slot, dci_in, dci_out, ep1_in, ep1_out, ep_in: bot.ep_in, ep_out: bot.ep_out, ring_in, ring_out, buf });
     indent(loc.depth);
     log("mass storage ");
     log_hex(vid as u64, 4);
@@ -530,14 +549,21 @@ unsafe fn setup_storage(slot: u8, m: &mut SlotMem, loc: &Location, config_value:
 }
 
 /// Keep a transfer armed on every keyboard, decode finished reports and
-/// handle root port changes.
+/// handle root port changes, on every controller.
 pub unsafe fn poll() {
+    for i in 0..xhci::controller_count() {
+        xhci::select(i);
+        poll_controller(i as u8);
+    }
+}
+
+unsafe fn poll_controller(ctrl: u8) {
     let c = match xhci::controller() {
         Some(c) if !c.is_dead() => c,
         _ => return,
     };
     for kb in keyboards().iter_mut().flatten() {
-        if !kb.active && !kb.dead {
+        if kb.ctrl == ctrl && !kb.active && !kb.dead {
             // Normal TRB, IOC + ISP
             kb.ring.push(kb.report.phys, kb.report_len as u32, TRB_NORMAL << 10 | 1 << 5 | 1 << 2);
             c.ring_doorbell(kb.slot, kb.dci);
@@ -564,7 +590,7 @@ pub unsafe fn poll() {
                 let cc = (ev.status >> 24) as u8;
                 let residual = (ev.status & 0xFF_FFFF) as usize;
                 for kb in keyboards().iter_mut().flatten() {
-                    if kb.slot != slot || kb.dci != ep {
+                    if kb.ctrl != ctrl || kb.slot != slot || kb.dci != ep {
                         continue;
                     }
                     kb.active = false;
@@ -649,17 +675,18 @@ unsafe fn root_port_changed(port: usize) {
 /// Disable every kept slot behind root port `port`; returns how many
 unsafe fn release_root_port(port: u8) -> usize {
     let mut n = 0;
+    let ctrl = xhci::current() as u8;
     for slot in 1..=MAX_SLOTS {
-        if KEPT_ROOT_PORT.get()[slot] != port {
+        if kept()[slot] != port {
             continue;
         }
         for k in keyboards().iter_mut() {
-            if k.as_ref().map_or(false, |k| k.slot as usize == slot) {
+            if k.as_ref().map_or(false, |k| k.ctrl == ctrl && k.slot as usize == slot) {
                 *k = None;
             }
         }
         for s in storage().iter_mut() {
-            if s.as_ref().map_or(false, |s| s.slot as usize == slot) {
+            if s.as_ref().map_or(false, |s| s.ctrl == ctrl && s.slot as usize == slot) {
                 if let Some(old) = s.take() {
                     crate::mm::dma::dma_free(old.buf);
                 }
@@ -676,7 +703,7 @@ unsafe fn release_slot(slot: u8) {
         let _ = c.disable_slot(slot);
         c.set_dcbaa(slot, 0);
     }
-    KEPT_ROOT_PORT.get()[slot as usize] = 0;
+    kept()[slot as usize] = 0;
 }
 
 // ============================================================
@@ -802,7 +829,7 @@ unsafe fn attach(loc: Location) -> Result<Kind> {
             Ok(Kind::Other)
         }
         Ok(kind) => {
-            KEPT_ROOT_PORT.get()[slot as usize] = loc.root_port;
+            kept()[slot as usize] = loc.root_port;
             Ok(kind)
         }
         Err(e) => {
@@ -1057,7 +1084,7 @@ unsafe fn setup_device(slot: u8, loc: &Location) -> Result<Kind> {
         } else {
             REPORT_SIZE as u16
         };
-        keyboards()[free] = Some(Keyboard { pointer, report_len, slot, dci, vid, pid, ring, report, active: false, dead: false, prev: [0; 7] });
+        keyboards()[free] = Some(Keyboard { ctrl: xhci::current() as u8, pointer, report_len, slot, dci, vid, pid, ring, report, active: false, dead: false, prev: [0; 7] });
         indent(loc.depth);
         log(match pointer {
             None => "keyboard ",

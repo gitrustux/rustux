@@ -7,7 +7,7 @@ applies the keyboard layout and decides who gets each event.
 
 | Device | Driver | Records |
 |--------|--------|---------|
-| USB keyboards (boot protocol) | kernel xHCI (step 13) | keys |
+| USB keyboards (boot protocol) | kernel xHCI (step 13; every xHCI controller since 2026-11-25: a desktop board's ports are spread over the CPU's and the chipset's) | keys |
 | USB mice, tablets, touchpads that report as mice | kernel xHCI: the interface's HID report descriptor is read for buttons, X, Y and the wheel (relative or absolute); a boot mouse whose descriptor says nothing useful is read in the boot protocol | pointer |
 | A device with a keyboard and a mouse interface (wireless receivers) | both interfaces, configured together | keys and pointer |
 | PS/2 keyboard | `/bin/ps2kbd` (step 4) | keys |
