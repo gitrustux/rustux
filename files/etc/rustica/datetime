@@ -6,8 +6,8 @@
 #   date=iso | us | eu | dots | long | long-eu
 #        2026-11-26, 11/26/2026, 26/11/2026, 26.11.2026,
 #        Thursday, November 26, 2026, Thursday 26 November 2026
-#   panel_date=no | yes     (the date beside the panel's time)
+#   panel_date=no | yes     (the date under the panel's time)
 clock=24
 seconds=no
 date=iso
-panel_date=no
+panel_date=yes

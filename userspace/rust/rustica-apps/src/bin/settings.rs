@@ -1610,7 +1610,7 @@ impl Settings {
             });
         }
         let mut pd = f.panel_date;
-        if ui.checkbox(&mut pd, "Show the date on the panel") {
+        if ui.checkbox(&mut pd, "Show the date under the time on the panel") {
             set = Some(("panel_date", if pd { "yes" } else { "no" }.into()));
         }
         if let Some((k, v)) = set {

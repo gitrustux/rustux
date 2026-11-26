@@ -37,10 +37,49 @@ use rustica_ui::rustica_window::{Event, EDGE_BOTTOM, EDGE_LEFT, EDGE_RIGHT, EDGE
 use rustica_ui::{Control, Request, Ui};
 use std::time::{Duration, Instant, SystemTime};
 
-/// The clock in the user's formats (Settings > Date & Time)
-fn clock() -> String {
+/// The clock in the user's formats (Settings > Date & Time): the time,
+/// and the date under it (2026-11-26, as Windows' taskbar)
+fn clock() -> (String, Option<String>) {
     let f = rustica_ui::clock::Formats::current();
-    f.panel(&rustica_ui::clock::local(rustica_ui::clock::now()))
+    f.panel_lines(&rustica_ui::clock::local(rustica_ui::clock::now()))
+}
+
+/// The clock's two lines share the buttons' height: a smaller size than
+/// the panel's other text, so both fit
+fn clock_px(ui: &mut Ui) -> f32 {
+    let px = ui.font_px();
+    let ratio = ui.face.line(px).2 / px;
+    ((ui.row_h() + ui.u(6.0)) / 2.0 / ratio).min(px)
+}
+
+fn clock_width(ui: &mut Ui) -> f32 {
+    match clock() {
+        (t, None) => ui.text_width(&t),
+        (t, Some(d)) => {
+            let px = clock_px(ui);
+            ui.face.width(&t, px).max(ui.face.width(&d, px))
+        }
+    }
+}
+
+/// The time above the date, each line centred
+fn clock_applet(ui: &mut Ui, vertical: bool) {
+    let (t, d) = clock();
+    let Some(d) = d else {
+        status(ui, &t, vertical);
+        return;
+    };
+    let th = ui.theme;
+    let px = clock_px(ui);
+    let lh = ui.face.line(px).2;
+    let (tw, dw) = (ui.face.width(&t, px), ui.face.width(&d, px));
+    let w = tw.max(dw);
+    let bh = if vertical { (lh * 2.0).ceil() } else { ui.row_h() };
+    let r = ui.alloc(if vertical { 0.0 } else { w }, bh);
+    let top = r.y + (bh - lh * 2.0) / 2.0;
+    let cx = r.x + r.w / 2.0;
+    ui.canvas.text(&mut ui.face, cx - tw / 2.0, top, &t, px, th.text);
+    ui.canvas.text(&mut ui.face, cx - dw / 2.0, top + lh, &d, px, th.dim);
 }
 
 struct Win {
@@ -505,7 +544,7 @@ fn applet_size(ui: &mut Ui, name: &str, s: &State, vertical: bool) -> f32 {
         "keyboard" => ui.text_width(&layout()) + gap,
         "volume" => ui.text_width("Vol \u{2014}") + gap,
         "network" => bw(ui, s.net),
-        "clock" => ui.text_width(&clock()) + gap,
+        "clock" => clock_width(ui) + gap,
         "lock" => bw(ui, "Lock"),
         "logout" => bw(ui, "Log out"),
         "power" => ui.row_h() + gap,
@@ -560,7 +599,7 @@ fn applet(ui: &mut Ui, name: &str, s: &State, room: f32, more_next: &mut usize, 
                 actions.push(Action::Settings("network"));
             }
         }
-        "clock" => status(ui, &clock(), v),
+        "clock" => clock_applet(ui, v),
         "lock" => {
             if ui.button_ex("lock", "Lock", full, false, false).clicked {
                 actions.push(Action::Lock);

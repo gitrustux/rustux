@@ -16,11 +16,23 @@ the console (`svc isolate multi-user`).
 
 ## What it asks
 
+Each question is a screen of its own in the boot menu's style
+(2026-11-26): the red frame with the step's name, the question, then the
+choices numbered. A number picks one at once, or the arrows and Enter;
+choices that cannot be taken here are shown dimmed with the reason (no
+GPT, too little free space, no earlier Rustica, a disk too small). The
+time zones (a long list) are found by typing part of a name (Berlin) or
+their number. Only names and passwords are typed, and the two safety
+checks: `install` to go on after the summary, and the disk's name before
+an internal NVMe disk is written. Without a terminal (input from a pipe)
+the lists are printed numbered and a number is read.
+
 1. The edition (package step E3, `PACKAGES.md`): server, the text login,
    or desktop, the graphical login (the default when the live system
    runs the desktop; `--edition`). Then the language (English, for now)
-   and keyboard layout (used at once, so the passwords are typed in it).
-2. Host name, time zone (`?` lists them).
+   and keyboard layout (English (US), German, English (UK); used at
+   once, so the passwords are typed in it).
+2. Host name, time zone (a list to search).
 3. The first user: full name, user name, password; it is an
    administrator (group `sudo`). Root: locked (the default: use `sudo`),
    or a password.

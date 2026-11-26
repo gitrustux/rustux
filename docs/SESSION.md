@@ -230,10 +230,13 @@ Settings > Date & Time chooses how dates and times are shown: the
 without seconds; the date as **2026-11-26** (ISO), **11/26/2026** (US),
 **26/11/2026**, **26.11.2026**, **Thursday, November 26, 2026** or
 **Thursday 26 November 2026**; and whether the panel shows the date
-beside the time ("Thu 11/26 2:05 PM"). The choice is the user's
+under the time, as Windows' taskbar does (the default since 2026-11-26:
+"2:05 PM" over "11/26/2026", the long formats shortened to "Thu, Nov 26,
+2026"; without it one line, "Thu 14:05"). The choice is the user's
 (`~/.config/rustica.conf`: `clock=24|12`, `seconds=yes|no`,
 `date=iso|us|eu|dots|long|long-eu`, `panel_date=yes|no`), over the
-system's default in `/etc/rustica/datetime` (24-hour, ISO). The panel's
+system's default in `/etc/rustica/datetime` (24-hour, ISO, the date on
+the panel). The panel's
 clock (within a second), Settings and Files' times follow it
 (`rustica_ui::clock`). The console's `date` keeps its own format
 (`date +FORMAT`). Languages, and with them each language's own formats,

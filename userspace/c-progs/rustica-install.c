@@ -7,7 +7,8 @@
 // rustica-install: install Rustica Server on a disk (checklist step 20,
 // docs/INSTALL.md). Run from the live system ("Install Rustica Server" in
 // the boot menu starts it on the console; root may start it from a live
-// session too). It asks, shows every change, and writes only after the
+// session too). It asks (a screen a question, choices as numbered menus in
+// the boot menu's style), shows every change, and writes only after the
 // user types "install":
 //
 //   language and keyboard, the disk (size, model, partitions and the
@@ -52,8 +53,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -139,6 +143,9 @@ static void human(uint64_t n, char *buf, size_t cap) {
 
 // ---- asking ----
 
+static int cur_row;
+static int left_col(void);
+
 static void ask(const char *q, const char *def, char *out, size_t cap) {
     for (;;) {
         if (def && *def) printf("%s [%s]: ", q, def);
@@ -157,37 +164,348 @@ static void ask(const char *q, const char *def, char *out, size_t cap) {
     }
 }
 
-static int ask_yes(const char *q, int def) {
-    char a[16];
-    ask(q, def ? "Y/n" : "y/N", a, sizeof a);
-    if (!strcmp(a, "Y/n")) return 1;
-    if (!strcmp(a, "y/N")) return 0;
-    return a[0] == 'y' || a[0] == 'Y';
-}
-
 static void ask_password(const char *who, char *out, size_t cap) {
     for (;;) {
         char p1[128], p2[128];
         char q[96];
         snprintf(q, sizeof q, "Password for %s: ", who);
+        if (opt.interactive) printf("\033[%d;%dH\033[J", cur_row, left_col());
         char *a = getpass(q);
         snprintf(p1, sizeof p1, "%s", a ? a : "");
         snprintf(q, sizeof q, "The same again: ");
+        if (opt.interactive) printf("\033[%d;%dH", cur_row + 1, left_col());
         a = getpass(q);
         snprintf(p2, sizeof p2, "%s", a ? a : "");
         if (!p1[0]) {
-            printf("An empty password is not allowed.\n");
+            if (opt.interactive) printf("\033[%d;%dH\033[33m", cur_row + 2, left_col());
+            printf("An empty password is not allowed.\033[0m\n");
             continue;
         }
         if (strcmp(p1, p2)) {
-            printf("They differ; once more.\n");
+            if (opt.interactive) printf("\033[%d;%dH\033[33m", cur_row + 2, left_col());
+            printf("They differ; once more.\033[0m\n");
             continue;
         }
+        cur_row += 2;
         snprintf(out, cap, "%s", p1);
         memset(p1, 0, sizeof p1);
         memset(p2, 0, sizeof p2);
         return;
     }
+}
+
+// ---- screens and menus (2026-11-26) ----
+//
+// Each question is a screen of its own in the boot menu's style (rboot): a
+// red frame with the name, what is asked, then the choices, numbered: a
+// number picks one at once (lists up to 9), or the arrows and Enter. Long
+// lists (the time zones) filter as you type; Enter takes the one
+// highlighted. Text questions (names, passwords) and the two safety
+// confirmations stay typed. Without a terminal (input from a pipe) the
+// numbered list is printed and a number read.
+
+typedef struct {
+    char label[96];
+    char note[512];   // dim lines under the label ('\n' between them)
+    int off;          // shown, not choosable (note says why)
+} item_t;
+
+#define MAX_ITEMS 96
+
+static int term_cols = 80, term_rows = 25;
+static const char *screen_name = "";
+static int cur_row = 6;   // the next row to write on (the screen's question and text)
+
+static void term_size(void) {
+    struct winsize ws;
+    if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_col >= 40 && ws.ws_row >= 12) {
+        term_cols = ws.ws_col;
+        term_rows = ws.ws_row;
+    }
+}
+
+static int left_col(void) {
+    int w = term_cols < 78 ? term_cols - 2 : 76;
+    return (term_cols - w) / 2 + 1;
+}
+
+static int col_width(void) { return term_cols < 78 ? term_cols - 2 : 76; }
+
+// Clear the screen and draw the frame: rows 1-4; the question from row 6
+static void screen(const char *name) {
+    screen_name = name;
+    if (!opt.interactive) return;
+    term_size();
+    int L = left_col(), W = col_width();
+    printf("\033[0m\033[2J\033[H");
+    char line[512];
+    // ╭───╮ / │ R U S T I C A          Install · NAME │ / ╰───╯
+    printf("\033[1;%dH\033[31m╭", L);
+    for (int i = 0; i < W - 2; i++) printf("─");
+    printf("╮");
+    snprintf(line, sizeof line, "Install Rustica  ·  %s", name);
+    int ll = 0;
+    for (const char *c = line; *c; c++) if ((*c & 0xC0) != 0x80) ll++;
+    int gap = W - 4 - 13 - ll;
+    if (gap < 1) gap = 1;
+    printf("\033[2;%dH│ \033[1;97mR U S T I C A\033[0m%*s\033[37m%s\033[31m │", L, gap, "", line);
+    printf("\033[3;%dH╰", L);
+    for (int i = 0; i < W - 2; i++) printf("─");
+    printf("╯\033[0m\033[6;%dH", L);
+    cur_row = 6;
+    fflush(stdout);
+}
+
+// Text in the column from cur_row on, wrapped at spaces
+static void para(const char *text) {
+    if (!opt.interactive) {
+        printf("%s\n", text);
+        return;
+    }
+    int L = left_col(), W = col_width();
+    const char *s = text;
+    for (;;) {
+        int n = (int)strcspn(s, "\n");
+        const char *e = s + n;
+        while (e - s > W) {
+            int k = W;
+            while (k > 0 && s[k] != ' ') k--;
+            if (k == 0) k = W;
+            printf("\033[%d;%dH%.*s", cur_row++, L, k, s);
+            s += k;
+            while (*s == ' ') s++;
+        }
+        printf("\033[%d;%dH%.*s", cur_row++, L, (int)(e - s), s);
+        if (!*e) break;
+        s = e + 1;
+    }
+    printf("\033[%d;%dH", cur_row, L);
+    fflush(stdout);
+}
+
+static struct termios saved_tio;
+
+static int raw_on(void) {
+    struct termios t;
+    if (tcgetattr(0, &saved_tio) < 0) return -1;
+    t = saved_tio;
+    cfmakeraw(&t);
+    t.c_cc[VMIN] = 1;
+    t.c_cc[VTIME] = 0;
+    if (tcsetattr(0, TCSANOW, &t) < 0) return -1;
+    printf("\033[?25l");
+    fflush(stdout);
+    return 0;
+}
+
+static void raw_off(void) {
+    tcsetattr(0, TCSANOW, &saved_tio);
+    printf("\033[0m\033[?25h");
+    fflush(stdout);
+}
+
+enum { K_NONE, K_UP, K_DOWN, K_PGUP, K_PGDN, K_HOME, K_END, K_ENTER, K_BACK, K_ESC, K_CHAR };
+
+// One key: K_CHAR with *ch set for a printable character
+static int read_key(int *ch) {
+    unsigned char b[16];
+    ssize_t n = read(0, b, sizeof b);
+    if (n <= 0) die("no more input");
+    if (b[0] == 3) {
+        raw_off();
+        die("stopped (Ctrl+C)");
+    }
+    if (b[0] == '\r' || b[0] == '\n') return K_ENTER;
+    if (b[0] == 0x7f || b[0] == 8) return K_BACK;
+    if (b[0] == 0x1b) {
+        if (n == 1) return K_ESC;
+        if (n >= 3 && (b[1] == '[' || b[1] == 'O')) {
+            switch (b[2]) {
+            case 'A': return K_UP;
+            case 'B': return K_DOWN;
+            case 'H': return K_HOME;
+            case 'F': return K_END;
+            case '5': return K_PGUP;
+            case '6': return K_PGDN;
+            case '1': case '7': return K_HOME;
+            case '4': case '8': return K_END;
+            }
+        }
+        return K_NONE;
+    }
+    if (b[0] >= 0x20 && b[0] < 0x7f) {
+        *ch = b[0];
+        return K_CHAR;
+    }
+    return K_NONE;
+}
+
+static int lines_of(const char *s) {
+    if (!*s) return 0;
+    int n = 1;
+    for (; *s; s++) if (*s == '\n') n++;
+    return n;
+}
+
+static int icontains(const char *hay, const char *needle) {
+    size_t n = strlen(needle);
+    for (; *hay; hay++) if (!strncasecmp(hay, needle, n)) return 1;
+    return n == 0;
+}
+
+// Pick one of n items; def the one highlighted at first. The screen (its
+// frame and question) is drawn by the caller; the list starts on the row
+// after the cursor. Returns the item's index.
+static int menu(const char *prompt, item_t *it, int n, int def) {
+    if (def < 0 || def >= n || it[def].off)
+        for (def = 0; def < n && it[def].off; def++) {}
+    if (def >= n) die("%s: nothing can be chosen", prompt);
+    if (!opt.interactive || raw_on() < 0) {
+        // No terminal: numbered, a number read
+        for (int i = 0; i < n; i++) {
+            printf("  %d) %s%s\n", i + 1, it[i].label, it[i].off ? "  (not possible)" : "");
+            if (it[i].note[0]) printf("     %s\n", it[i].note);
+        }
+        for (;;) {
+            char a[16], d[8];
+            snprintf(d, sizeof d, "%d", def + 1);
+            ask(prompt, d, a, sizeof a);
+            int k = atoi(a) - 1;
+            if (k >= 0 && k < n && !it[k].off) return k;
+            for (int i = 0; i < n; i++) if (!it[i].off && !strcasecmp(a, it[i].label)) return i;
+        }
+    }
+    int L = left_col(), W = col_width();
+    int top = cur_row + 1;
+    int sel = def, first = 0;
+    char filter[48] = "";
+    int nfilter = 0;
+    int big = n > 9;
+    int vis[MAX_ITEMS], nv = 0;
+    for (;;) {
+        // The items that match the filter (a number typed is a number)
+        int digits = nfilter > 0;
+        for (int i = 0; i < nfilter; i++) if (filter[i] < '0' || filter[i] > '9') digits = 0;
+        nv = 0;
+        for (int i = 0; i < n; i++)
+            if (digits || icontains(it[i].label, filter)) vis[nv++] = i;
+        if (digits) {
+            int k = atoi(filter) - 1;
+            if (k >= 0 && k < n) sel = k;
+        }
+        int sp = -1;
+        for (int i = 0; i < nv; i++) if (vis[i] == sel) sp = i;
+        if (sp < 0 && nv) {
+            sp = 0;
+            while (sp < nv - 1 && it[vis[sp]].off) sp++;
+            sel = vis[sp];
+        }
+        // Rows: the list from top to the help lines (3 at the bottom)
+        int room = term_rows - top - 3;
+        if (room < 3) room = 3;
+        // Scroll so the selected one shows with its notes
+        if (sp >= 0) {
+            if (sp < first) first = sp;
+            for (;;) {
+                int used = 0;
+                for (int i = first; i <= sp; i++) used += 1 + lines_of(it[vis[i]].note);
+                if (used <= room || first >= sp) break;
+                first++;
+            }
+        }
+        if (first > 0 && first >= nv) first = nv ? nv - 1 : 0;
+        printf("\033[%d;1H\033[J", top);
+        int row = top, shown_last = first - 1;
+        for (int i = first; i < nv; i++) {
+            const item_t *t = &it[vis[i]];
+            int need = 1 + lines_of(t->note);
+            if (row + need > top + room) break;
+            char num[8];
+            snprintf(num, sizeof num, "%d", vis[i] + 1);
+            int on = vis[i] == sel;
+            printf("\033[%d;%dH", row, L);
+            if (on) printf("\033[97;41m");
+            else if (t->off) printf("\033[90m");
+            printf("  %3s  %-*.*s", num, W - 7, W - 7, t->label);
+            printf("\033[0m");
+            row++;
+            const char *s = t->note;
+            while (*s) {
+                const char *e = strchr(s, '\n');
+                int len = e ? (int)(e - s) : (int)strlen(s);
+                printf("\033[%d;%dH\033[90m       %.*s\033[0m", row, L, len > W - 7 ? W - 7 : len, s);
+                row++;
+                s += len + (e != 0);
+            }
+            shown_last = i;
+        }
+        if (first > 0) printf("\033[%d;%dH\033[90m%*s▲ more\033[0m", top - 1 > 5 ? top - 1 : top, L + W - 7, 0, "");
+        if (shown_last < nv - 1) printf("\033[%d;%dH\033[90m▼ more\033[0m", top + room, L + W - 7);
+        int h = term_rows - 1;
+        printf("\033[%d;%dH\033[37m%s: %s\033[0m", h - 1, L, prompt,
+               big ? "type to search or a number, ↑ ↓ and Enter" : "press a number, or use ↑ ↓ and Enter");
+        if (big) printf("\033[%d;%dH\033[33mSearch: %s\033[0m%s", h, L, filter, nv ? "" : "   (nothing matches)");
+        fflush(stdout);
+        int ch = 0, k = read_key(&ch);
+        if (k == K_UP && sp > 0) {
+            int j = sp - 1;
+            while (j > 0 && it[vis[j]].off) j--;
+            if (!it[vis[j]].off) sel = vis[j];
+        } else if (k == K_DOWN && sp >= 0 && sp < nv - 1) {
+            int j = sp + 1;
+            while (j < nv - 1 && it[vis[j]].off) j++;
+            if (!it[vis[j]].off) sel = vis[j];
+        } else if (k == K_PGUP && sp >= 0) {
+            int j = sp - room / 2 < 0 ? 0 : sp - room / 2;
+            while (j < nv - 1 && it[vis[j]].off) j++;
+            sel = vis[j];
+        } else if (k == K_PGDN && sp >= 0) {
+            int j = sp + room / 2 > nv - 1 ? nv - 1 : sp + room / 2;
+            while (j > 0 && it[vis[j]].off) j--;
+            sel = vis[j];
+        } else if (k == K_HOME && nv) {
+            int j = 0;
+            while (j < nv - 1 && it[vis[j]].off) j++;
+            sel = vis[j];
+        } else if (k == K_END && nv) {
+            int j = nv - 1;
+            while (j > 0 && it[vis[j]].off) j--;
+            sel = vis[j];
+        } else if (k == K_ENTER && sp >= 0 && !it[sel].off) {
+            break;
+        } else if (k == K_BACK && nfilter > 0) {
+            filter[--nfilter] = 0;
+        } else if (k == K_ESC) {
+            nfilter = 0;
+            filter[0] = 0;
+        } else if (k == K_CHAR) {
+            if (!big && ch >= '1' && ch <= '9') {
+                int j = ch - '1';
+                if (j < n && !it[j].off) {
+                    sel = j;
+                    break;
+                }
+            } else if (big && nfilter < (int)sizeof filter - 1) {
+                filter[nfilter++] = (char)ch;
+                filter[nfilter] = 0;
+                first = 0;
+            }
+        }
+    }
+    raw_off();
+    printf("\033[%d;1H\033[J", top - 1);
+    cur_row = top - 1;
+    printf("\033[%d;%dH", cur_row, L);
+    fflush(stdout);
+    logmsg("%s: %s", screen_name, it[sel].label);
+    return sel;
+}
+
+// A typed answer on the current screen
+static void ask_on_screen(const char *q, const char *def, char *out, size_t cap) {
+    if (opt.interactive) printf("\033[%d;%dH", cur_row, left_col());
+    ask(q, def, out, cap);
+    cur_row++;
 }
 
 // ---- running programs ----
@@ -413,28 +731,6 @@ static void scan_disks(void) {
     free(all);
 }
 
-static void show_disk(int k, const disk_t *d) {
-    char sz[16];
-    human(d->info.block_count * d->info.block_size, sz, sizeof sz);
-    printf("  %d) %-10s %7s  %s%s%s\n", k, d->info.name, sz, d->info.model[0] ? d->info.model : d->info.driver,
-           d->live ? "  (the installation medium: not offered)" : "",
-           (d->info.flags & RX_BLOCK_FLAG_READONLY) && !strcmp(d->info.driver, "nvme") ? "  (internal NVMe disk)" : "");
-    printf("      %s", d->gpt ? "GPT" : d->has_mbr ? "MBR (not supported for installing: GPT only)" : "no partition table");
-    if (d->systems[0]) printf("; holds %s", d->systems);
-    printf("\n");
-    for (int i = 0; i < d->nparts; i++) {
-        const part_t *p = &d->parts[i];
-        human(p->info.block_count * p->info.block_size, sz, sizeof sz);
-        const char *t = (p->info.flags & RX_BLOCK_FLAG_GPT) ? rx_gpt_type_name(p->info.type_guid) : "MBR partition";
-        printf("      %-12s %7s  %-20s %-6s %s%s%s\n", p->info.name, sz, t, p->has_fs ? p->fs.type : "", p->info.label,
-               p->systems[0] ? "  - " : "", p->systems);
-    }
-    if (d->free_last) {
-        human(free_bytes(d), sz, sizeof sz);
-        printf("      free space   %7s\n", sz);
-    }
-}
-
 static disk_t *find_disk(const char *name) {
     for (int i = 0; i < ndisks; i++) if (!strcmp(disks[i].info.name, name)) return &disks[i];
     return 0;
@@ -479,27 +775,45 @@ static void choose(void) {
     for (int i = 0; i < ndisks; i++) if (!disks[i].live) offered++;
     if (!offered) die("no disk to install on (the installation medium itself is not offered)");
     if (opt.interactive && !opt.disk[0]) {
-        printf("\nDisks:\n");
-        for (int i = 0; i < ndisks; i++) show_disk(i + 1, &disks[i]);
-        printf("\n");
-        for (;;) {
-            char a[32], def[8];
-            int first = 0;
-            for (int i = 0; i < ndisks; i++) if (!disks[i].live) { first = i + 1; break; }
-            snprintf(def, sizeof def, "%d", first);
-            ask("The disk to install on (its number)", def, a, sizeof a);
-            int k = atoi(a);
-            if (k >= 1 && k <= ndisks && !disks[k - 1].live) {
-                snprintf(opt.disk, sizeof opt.disk, "%s", disks[k - 1].info.name);
-                break;
+        screen("Disk");
+        para("The disk to install on. Nothing is written before the summary, and only when you confirm it.");
+        static item_t it[MAX_ITEMS];
+        int n = ndisks < MAX_ITEMS ? ndisks : MAX_ITEMS, def = -1;
+        for (int i = 0; i < n; i++) {
+            disk_t *d = &disks[i];
+            item_t *t = &it[i];
+            memset(t, 0, sizeof *t);
+            char sz[16];
+            human(d->info.block_count * d->info.block_size, sz, sizeof sz);
+            snprintf(t->label, sizeof t->label, "%-10s %7s  %s%s", d->info.name, sz, d->info.model[0] ? d->info.model : d->info.driver,
+                     (d->info.flags & RX_BLOCK_FLAG_READONLY) && !strcmp(d->info.driver, "nvme") ? "  (internal NVMe disk)" : "");
+            size_t k = 0;
+            if (d->live) {
+                k += (size_t)snprintf(t->note + k, sizeof t->note - k, "The installation medium: not offered");
+                t->off = 1;
+            } else if (d->info.block_count * d->info.block_size < ESP_SIZE + MIN_ROOT + 2 * MIB) {
+                k += (size_t)snprintf(t->note + k, sizeof t->note - k, "Too small: Rustica needs at least 1 GiB");
+                t->off = 1;
+            } else {
+                if (def < 0) def = i;
+                k += (size_t)snprintf(t->note + k, sizeof t->note - k, "%s%s%s", d->gpt ? "GPT" : d->has_mbr ? "MBR (GPT only can be installed on; erasing makes one)" : "No partition table",
+                                      d->systems[0] ? "; holds " : "", d->systems);
+                for (int q = 0; q < d->nparts && q < 6 && k < sizeof t->note - 80; q++) {
+                    const part_t *p = &d->parts[q];
+                    human(p->info.block_count * p->info.block_size, sz, sizeof sz);
+                    const char *ty = (p->info.flags & RX_BLOCK_FLAG_GPT) ? rx_gpt_type_name(p->info.type_guid) : "MBR partition";
+                    k += (size_t)snprintf(t->note + k, sizeof t->note - k, "\n  %-12s %7s  %-18s %-5s %s", p->info.name, sz, ty, p->has_fs ? p->fs.type : "", p->info.label);
+                }
+                if (d->nparts > 6 && k < sizeof t->note - 40) k += (size_t)snprintf(t->note + k, sizeof t->note - k, "\n  and %d more", d->nparts - 6);
+                if (d->free_last && k < sizeof t->note - 40) {
+                    human(free_bytes(d), sz, sizeof sz);
+                    k += (size_t)snprintf(t->note + k, sizeof t->note - k, "\n  free space   %7s", sz);
+                }
             }
-            disk_t *d = find_disk(a);
-            if (d && !d->live) {
-                snprintf(opt.disk, sizeof opt.disk, "%s", a);
-                break;
-            }
-            printf("Not one of the disks above.\n");
         }
+        if (def < 0) die("no disk to install on: the disks are too small (at least 1 GiB) or hold the installation medium");
+        int k = menu("The disk to install on", it, n, def);
+        snprintf(opt.disk, sizeof opt.disk, "%s", disks[k].info.name);
     }
     // auto: the one disk there is besides the installation medium
     if (!strcmp(opt.disk, "auto")) {
@@ -525,22 +839,30 @@ static void choose(void) {
     int can_alongside = d->gpt && free_bytes(d) >= (esp ? 0 : ESP_SIZE) + MIN_ROOT;
     int can_replace = d->gpt && esp && rroot;
     if (opt.interactive && !opt.mode[0]) {
-        char sz[16];
+        char sz[16], line[160];
         human(free_bytes(d), sz, sizeof sz);
-        printf("\nHow to install on %s:\n", d->info.name);
-        printf("  1) erase the whole disk: everything on %s is lost%s\n", d->info.name, d->systems[0] ? " (including the systems on it)" : "");
-        if (can_alongside) printf("  2) alongside: in the free space (%s); the other partitions stay as they are\n", sz);
-        else printf("  2) alongside: not possible (%s)\n", !d->gpt ? "no GPT" : "too little free space; shrink a partition in its own system first");
-        if (can_replace) printf("  3) replace the Rustica on %s (formatted; its EFI files replaced)\n", rroot->info.name);
-        printf("  4) manual: choose the EFI and root partitions\n");
-        for (;;) {
-            char a[8];
-            ask("Choice", can_replace ? "3" : can_alongside ? "2" : "1", a, sizeof a);
-            if (a[0] == '1') { strcpy(opt.mode, "erase"); break; }
-            if (a[0] == '2' && can_alongside) { strcpy(opt.mode, "alongside"); break; }
-            if (a[0] == '3' && can_replace) { strcpy(opt.mode, "replace"); break; }
-            if (a[0] == '4') { strcpy(opt.mode, "manual"); break; }
-        }
+        screen("How to install");
+        snprintf(line, sizeof line, "How to install on %s%s%s?", d->info.name, d->systems[0] ? ", which holds " : "", d->systems);
+        para(line);
+        item_t it[4];
+        memset(it, 0, sizeof it);
+        snprintf(it[0].label, sizeof it[0].label, "Erase the whole disk");
+        snprintf(it[0].note, sizeof it[0].note, "Everything on %s is lost%s", d->info.name, d->systems[0] ? ", the systems on it too" : "");
+        snprintf(it[1].label, sizeof it[1].label, "Alongside, in the free space");
+        if (can_alongside) snprintf(it[1].note, sizeof it[1].note, "In the %s free; the other partitions stay as they are", sz);
+        else snprintf(it[1].note, sizeof it[1].note, "Not possible: %s", !d->gpt ? "the disk has no GPT" : "too little free space (shrink a partition in its own system first)");
+        it[1].off = !can_alongside;
+        snprintf(it[2].label, sizeof it[2].label, "Replace the earlier Rustica");
+        if (can_replace) snprintf(it[2].note, sizeof it[2].note, "%s is formatted; its EFI files are replaced", rroot->info.name);
+        else snprintf(it[2].note, sizeof it[2].note, "Not possible: there is no Rustica on this disk");
+        it[2].off = !can_replace;
+        snprintf(it[3].label, sizeof it[3].label, "Manual");
+        if (d->gpt) snprintf(it[3].note, sizeof it[3].note, "Choose the EFI and the root partitions yourself");
+        else snprintf(it[3].note, sizeof it[3].note, "Not possible: the disk has no GPT (erasing it makes one)");
+        it[3].off = !d->gpt;
+        static const char *modes[4] = { "erase", "alongside", "replace", "manual" };
+        int k = menu("Choice", it, 4, can_replace ? 2 : can_alongside ? 1 : 0);
+        strcpy(opt.mode, modes[k]);
     }
     if (!strcmp(opt.mode, "erase")) {
         plan.new_table = 1;
@@ -560,14 +882,60 @@ static void choose(void) {
     } else if (!strcmp(opt.mode, "manual")) {
         if (!d->gpt) die("%s has no GPT: erase it, or make one with gpt create", d->info.name);
         if (opt.interactive && !opt.esp_arg[0]) {
-            printf("\n");
-            show_disk(1, d);
-            ask("The EFI partition: an existing one (its name) or new (512 MiB of the free space)", esp ? esp->info.name : "new", opt.esp_arg, sizeof opt.esp_arg);
+            screen("EFI partition");
+            para("The EFI system partition holds the boot manager. Use one that is there (its files stay), or make a new one.");
+            static item_t it[MAX_ITEMS];
+            static char names[MAX_ITEMS][32];
+            int n = 0, def = 0;
+            for (int i = 0; i < d->nparts && n < MAX_ITEMS - 1; i++) {
+                if (!is_esp(&d->parts[i])) continue;
+                char sz[16];
+                human(d->parts[i].info.block_count * d->parts[i].info.block_size, sz, sizeof sz);
+                memset(&it[n], 0, sizeof it[n]);
+                snprintf(it[n].label, sizeof it[n].label, "%-12s %7s  the EFI system partition there", d->parts[i].info.name, sz);
+                if (d->parts[i].systems[0]) snprintf(it[n].note, sizeof it[n].note, "Holds %s (kept)", d->parts[i].systems);
+                snprintf(names[n++], sizeof names[0], "%s", d->parts[i].info.name);
+            }
+            memset(&it[n], 0, sizeof it[n]);
+            snprintf(it[n].label, sizeof it[n].label, "New: 512 MiB of the free space");
+            it[n].off = free_bytes(d) < ESP_SIZE;
+            if (it[n].off) snprintf(it[n].note, sizeof it[n].note, "Not possible: too little free space");
+            strcpy(names[n++], "new");
+            int k = menu("The EFI partition", it, n, def);
+            snprintf(opt.esp_arg, sizeof opt.esp_arg, "%s", names[k]);
         }
         if (!strcmp(opt.esp_arg, "new") || !opt.esp_arg[0]) plan.esp = 0;
         else if (!(plan.esp = find_part(d, opt.esp_arg)) || !is_esp(plan.esp)) die("%s is not an EFI system partition on %s", opt.esp_arg, d->info.name);
-        if (opt.interactive && !opt.root_arg[0])
-            ask("The root partition: one to format (its name; what is on it is lost) or new (the free space)", "new", opt.root_arg, sizeof opt.root_arg);
+        if (opt.interactive && !opt.root_arg[0]) {
+            screen("Root partition");
+            para("The partition Rustica's files go on. A partition chosen here is formatted: what is on it is lost.");
+            static item_t it[MAX_ITEMS];
+            static char names[MAX_ITEMS][32];
+            int n = 0;
+            char sz[16];
+            human(free_bytes(d), sz, sizeof sz);
+            memset(&it[n], 0, sizeof it[n]);
+            snprintf(it[n].label, sizeof it[n].label, "New: the free space (%s)", sz);
+            it[n].off = free_bytes(d) < (plan.esp ? 0 : ESP_SIZE) + MIN_ROOT;
+            if (it[n].off) snprintf(it[n].note, sizeof it[n].note, "Not possible: too little free space");
+            strcpy(names[n++], "new");
+            for (int i = 0; i < d->nparts && n < MAX_ITEMS; i++) {
+                part_t *p = &d->parts[i];
+                if (is_esp(p) || p == plan.esp) continue;
+                human(p->info.block_count * p->info.block_size, sz, sizeof sz);
+                memset(&it[n], 0, sizeof it[n]);
+                snprintf(it[n].label, sizeof it[n].label, "%-12s %7s  %-5s %s", p->info.name, sz, p->has_fs ? p->fs.type : "", p->info.label);
+                if (p->info.block_count * p->info.block_size < MIN_ROOT) {
+                    it[n].off = 1;
+                    snprintf(it[n].note, sizeof it[n].note, "Too small (at least 512 MiB)");
+                } else {
+                    snprintf(it[n].note, sizeof it[n].note, "Formatted: %s", p->systems[0] ? p->systems : "what is on it is lost");
+                }
+                snprintf(names[n++], sizeof names[0], "%s", p->info.name);
+            }
+            int k = menu("The root partition", it, n, 0);
+            snprintf(opt.root_arg, sizeof opt.root_arg, "%s", names[k]);
+        }
         if (!strcmp(opt.root_arg, "new") || !opt.root_arg[0]) {
             if (free_bytes(d) < (plan.esp ? 0 : ESP_SIZE) + MIN_ROOT) die("not enough free space on %s", d->info.name);
             plan_new_parts(d->free_first, d->free_last, plan.esp == 0);
@@ -643,8 +1011,14 @@ static void choose_settings(void) {
         }
         const char *def = strstr(cmd, "desktop") ? "desktop" : "server";
         if (opt.interactive) {
-            printf("\nEditions: server (a text login; services) or desktop (the graphical login)\n");
-            ask("Edition", def, opt.edition, sizeof opt.edition);
+            screen("Edition");
+            para("Which edition of Rustica to install on the disk?");
+            item_t it[2] = {
+                { "Rustica Desktop", "The graphical login, the desktop, Files, Settings and the apps", 0 },
+                { "Rustica Server", "A text login and services, no desktop", 0 },
+            };
+            int k = menu("Edition", it, 2, strcmp(def, "desktop") ? 1 : 0);
+            strcpy(opt.edition, k ? "server" : "desktop");
         } else {
             snprintf(opt.edition, sizeof opt.edition, "%s", def);
         }
@@ -653,13 +1027,40 @@ static void choose_settings(void) {
     find_packages();
     if (!opt.keymap[0]) {
         if (opt.interactive) {
-            printf("\nKeyboard layouts: us");
+            screen("Keyboard");
+            para("The keyboard layout, used from now on (for the passwords too) and by the installed system.");
+            static const struct { const char *id, *name; } names[] = {
+                { "us", "English (US)" }, { "uk", "English (UK)" }, { "de", "German" }, { "fr", "French" },
+                { "es", "Spanish" }, { "it", "Italian" }, { "pt", "Portuguese" }, { "nl", "Dutch" },
+                { "se", "Swedish" }, { "no", "Norwegian" }, { "dk", "Danish" }, { "fi", "Finnish" },
+                { "pl", "Polish" }, { "ru", "Russian" }, { "jp", "Japanese" }, { "ch", "Swiss" },
+            };
+            static item_t it[32];
+            static char ids[32][32];
+            int n = 0, def = 0;
+            strcpy(ids[n++], "us");
             DIR *dd = opendir("/usr/share/keymaps");
             struct dirent *e;
-            while (dd && (e = readdir(dd))) if (e->d_name[0] != '.') printf(" %s", e->d_name);
+            while (dd && (e = readdir(dd)) && n < 32)
+                if (e->d_name[0] != '.' && strcmp(e->d_name, "us")) snprintf(ids[n++], sizeof ids[0], "%s", e->d_name);
             if (dd) closedir(dd);
-            printf("\n");
-            ask("Keyboard layout", "us", opt.keymap, sizeof opt.keymap);
+            // The live system's layout first highlighted
+            char cur[32] = "";
+            FILE *kf = fopen("/etc/keymap", "r");
+            if (kf) {
+                if (fgets(cur, sizeof cur, kf)) cur[strcspn(cur, " \r\n")] = 0;
+                fclose(kf);
+            }
+            for (int i = 0; i < n; i++) {
+                const char *nm = 0;
+                for (size_t j = 0; j < sizeof names / sizeof names[0]; j++) if (!strcmp(names[j].id, ids[i])) nm = names[j].name;
+                memset(&it[i], 0, sizeof it[i]);
+                if (nm) snprintf(it[i].label, sizeof it[i].label, "%s  (%s)", nm, ids[i]);
+                else snprintf(it[i].label, sizeof it[i].label, "%s", ids[i]);
+                if (!strcmp(ids[i], cur)) def = i;
+            }
+            int k = menu("Keyboard layout", it, n, def);
+            snprintf(opt.keymap, sizeof opt.keymap, "%s", ids[k]);
         } else {
             strcpy(opt.keymap, "us");
         }
@@ -672,28 +1073,50 @@ static void choose_settings(void) {
     // Use it now, for the passwords
     if (opt.interactive && !opt.dry_run) RUN("/bin/localectl", "set-keymap", opt.keymap);
     if (!opt.hostname[0]) {
-        if (opt.interactive) ask("Host name", "rustica", opt.hostname, sizeof opt.hostname);
-        else strcpy(opt.hostname, "rustica");
+        if (opt.interactive) {
+            screen("Host name");
+            para("The computer's name on the network: letters, digits and - only. Press Enter for rustica.");
+            cur_row++;
+            for (;;) {
+                ask_on_screen("Host name", "rustica", opt.hostname, sizeof opt.hostname);
+                const char *c = opt.hostname;
+                while (*c && ((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '-')) c++;
+                if (!*c) break;
+                para("\033[33mLetters, digits and - only; once more.\033[0m");
+            }
+        } else {
+            strcpy(opt.hostname, "rustica");
+        }
     }
     for (const char *c = opt.hostname; *c; c++)
         if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '-')) die("host name: letters, digits and - only");
     if (!opt.timezone[0]) {
         if (opt.interactive) {
-            for (;;) {
-                ask("Time zone (as Europe/Berlin; ? lists them)", "UTC", opt.timezone, sizeof opt.timezone);
-                if (strcmp(opt.timezone, "?")) break;
-                RUN("/bin/timedatectl", "list-timezones");
-                FILE *f = fopen("/usr/share/zoneinfo/zones", "r");
-                char line[128];
-                int col = 0;
-                while (f && fgets(line, sizeof line, f)) {
-                    if (line[0] == '#') continue;
-                    line[strcspn(line, " \n")] = 0;
-                    printf("%-24s%s", line, ++col % 3 ? "" : "\n");
-                }
-                if (f) fclose(f);
-                printf("\n");
+            screen("Time zone");
+            para("Where the computer is, for its clock. Type part of a name to find it (Berlin, Chicago, Tokyo).");
+            static item_t it[MAX_ITEMS];
+            int n = 0, def = 0;
+            char cur[64] = "UTC";
+            FILE *tf = fopen("/etc/timezone", "r");
+            if (tf) {
+                if (!fgets(cur, sizeof cur, tf)) strcpy(cur, "UTC");
+                cur[strcspn(cur, " \r\n")] = 0;
+                fclose(tf);
             }
+            FILE *f = fopen("/usr/share/zoneinfo/zones", "r");
+            char line[128];
+            while (f && fgets(line, sizeof line, f) && n < MAX_ITEMS) {
+                if (line[0] == '#' || line[0] == '\n') continue;
+                line[strcspn(line, " \n")] = 0;
+                memset(&it[n], 0, sizeof it[n]);
+                snprintf(it[n].label, sizeof it[n].label, "%s", line);
+                if (!strcmp(line, cur)) def = n;
+                n++;
+            }
+            if (f) fclose(f);
+            if (!n) die("no time zones (/usr/share/zoneinfo/zones)");
+            int k = menu("Time zone", it, n, def);
+            snprintf(opt.timezone, sizeof opt.timezone, "%s", it[k].label);
         } else {
             strcpy(opt.timezone, "UTC");
         }
@@ -709,9 +1132,18 @@ static void choose_settings(void) {
     }
     if (!opt.user[0]) {
         if (!opt.interactive) die("--user NAME is needed");
-        printf("\nThe first user (an administrator: group sudo)\n");
-        ask("Full name", "", opt.fullname, sizeof opt.fullname);
-        ask("User name", "", opt.user, sizeof opt.user);
+        screen("The first user");
+        para("The first user is an administrator (group sudo). The user name starts with a small letter; small letters, digits, - and _.");
+        cur_row++;
+        ask_on_screen("Full name", "", opt.fullname, sizeof opt.fullname);
+        for (;;) {
+            ask_on_screen("User name", "", opt.user, sizeof opt.user);
+            const char *c = opt.user;
+            int ok = *c >= 'a' && *c <= 'z';
+            for (; ok && *c; c++) ok = (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '-' || *c == '_';
+            if (ok && strcmp(opt.user, "root") && strcmp(opt.user, "nobody")) break;
+            para("\033[33mNot a user name that can be used; once more.\033[0m");
+        }
     }
     if (!(opt.user[0] >= 'a' && opt.user[0] <= 'z')) die("user name: starts with a small letter");
     for (const char *c = opt.user; *c; c++)
@@ -719,12 +1151,23 @@ static void choose_settings(void) {
     if (!strcmp(opt.user, "root") || !strcmp(opt.user, "nobody")) die("user name: %s is taken", opt.user);
     if (!opt.password[0]) {
         if (!opt.interactive) die("--password or --password-file is needed");
+        cur_row++;
         ask_password(opt.user, opt.password, sizeof opt.password);
     }
     if (opt.lock_root < 0) {
         if (opt.interactive) {
-            opt.lock_root = ask_yes("Lock root's password (administer with sudo)?", 1);
-            if (!opt.lock_root && !opt.root_password[0]) ask_password("root", opt.root_password, sizeof opt.root_password);
+            screen("Root");
+            para("root is the system's own administrator account.");
+            item_t it[2] = {
+                { "Lock root's password (recommended)", "", 0 },
+                { "Give root a password", "Log in as root on the console, or use su", 0 },
+            };
+            snprintf(it[0].note, sizeof it[0].note, "Administer with sudo as %s", opt.user);
+            opt.lock_root = menu("Lock root", it, 2, 0) == 0;
+            if (!opt.lock_root && !opt.root_password[0]) {
+                cur_row++;
+                ask_password("root", opt.root_password, sizeof opt.root_password);
+            }
         } else {
             opt.lock_root = !opt.root_password[0];
         }
@@ -1268,6 +1711,7 @@ int main(int argc, char **argv) {
     if (opt.interactive) printf("Language: English (the only one for now)\n");
     choose_settings();
     choose();
+    screen("Summary");
     summary();
     if (opt.dry_run) {
         say("Dry run: nothing was written.");
@@ -1300,10 +1744,19 @@ int main(int argc, char **argv) {
     install_esp();
     finish();     // the root and the EFI files are on the disk
     boot_entry(); // and only now does the firmware start them
-    say("Rustica %s is installed on %s.", strcmp(opt.edition, "desktop") ? "Server" : "(desktop)", plan.d->info.name);
-    printf("\nRemove the installation medium and restart.\n");
+    say("Rustica %s is installed on %s.", strcmp(opt.edition, "desktop") ? "Server" : "Desktop", plan.d->info.name);
     int reboot = opt.reboot;
-    if (reboot < 0) reboot = opt.interactive ? ask_yes("Restart now?", 1) : 0;
+    if (reboot < 0 && opt.interactive) {
+        screen("Finished");
+        char line[160];
+        snprintf(line, sizeof line, "Rustica %s is installed on %s. Remove the installation medium, then restart.", strcmp(opt.edition, "desktop") ? "Server" : "Desktop", plan.d->info.name);
+        para(line);
+        item_t it[2] = { { "Restart now", "", 0 }, { "Back to the live system", "Restart later", 0 } };
+        reboot = menu("Restart now?", it, 2, 0) == 0;
+    } else if (reboot < 0) {
+        reboot = 0;
+        printf("\nRemove the installation medium and restart.\n");
+    }
     fclose(logf);
     logf = 0;
     if (reboot) {

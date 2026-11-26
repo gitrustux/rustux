@@ -218,8 +218,9 @@ if wait_for "rboot: booting rustica in 2 s" 1 60; then
 fi
 wait_end 60
 log | sed -n '/====== The installation/,$p' | grep -av "^\s*$" | head -30
-expect "  1) nvme0n1"
-expect "(the installation medium: not offered)"
+expect_re "[0-9]  nvme0n1 +[0-9.]+[MG]"
+expect "The installation medium: not offered"
+expect "How to install on nvme0n1"
 expect "  - ERASE the disk: a new partition table; everything on it is lost"
 expect "  - create nvme0n1p1: EFI system partition, 512M, FAT32"
 expect "nvme0n1: writes allowed"
@@ -316,7 +317,7 @@ log | sed -n '/====== The installation/,/installed on/p' | head -20
 expect "  - keep nvme0n1p1 (EFI"
 expect "  - FORMAT nvme0n1p2"
 expect "Edition: desktop; the system image 0.1.1, installed as packages (rpg)"
-expect "Rustica (desktop) is installed on nvme0n1."
+expect "Rustica Desktop is installed on nvme0n1."
 expect "COUNT=1"
 start_qemu "$W/vars-a.fd" $NVME
 # The desktop edition: the graphical login by default; the text console

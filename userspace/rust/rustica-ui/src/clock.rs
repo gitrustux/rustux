@@ -14,7 +14,8 @@
 //! - `date=iso` 2026-11-26, `us` 11/26/2026, `eu` 26/11/2026,
 //!   `dots` 26.11.2026, `long` Thursday, November 26, 2026,
 //!   `long-eu` Thursday 26 November 2026
-//! - `panel_date=yes|no`: the panel shows the date beside the time
+//! - `panel_date=yes|no`: the panel shows the date under the time (yes by
+//!   default since 2026-11-26, as Windows does)
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -73,7 +74,7 @@ pub struct Formats {
 
 impl Default for Formats {
     fn default() -> Self {
-        Formats { h12: false, seconds: false, date: "iso".into(), panel_date: false }
+        Formats { h12: false, seconds: false, date: "iso".into(), panel_date: true }
     }
 }
 
@@ -168,7 +169,26 @@ impl Formats {
         format!("{} {}", d, f.time(&tm))
     }
 
-    /// The panel's clock: "Thu 14:05", or "Thu 11/26 2:05 PM" with the date
+    /// The panel's clock on two lines, as Windows' (2026-11-26): the time
+    /// above the date in the chosen format ("2:05 PM" / "11/26/2026"; the
+    /// long formats with the day and month shortened: "Thu, Nov 26, 2026").
+    /// Without the date: one line, "Thu 14:05".
+    pub fn panel_lines(&self, tm: &Tm) -> (String, Option<String>) {
+        if !self.panel_date {
+            return (self.panel(tm), None);
+        }
+        let day = &DAYS[tm.wday.rem_euclid(7) as usize][..3];
+        let mon = &MONTHS[tm.mon.rem_euclid(12) as usize][..3];
+        let y = tm.year + 1900;
+        let date = match self.date.as_str() {
+            "long" => format!("{day}, {mon} {}, {y}", tm.mday),
+            "long-eu" => format!("{day} {} {mon} {y}", tm.mday),
+            _ => self.date(tm),
+        };
+        (self.time(tm), Some(date))
+    }
+
+    /// The clock on one line: "Thu 14:05", or "Thu 11/26 2:05 PM" with the date
     pub fn panel(&self, tm: &Tm) -> String {
         let day = &DAYS[tm.wday.rem_euclid(7) as usize][..3];
         if self.panel_date {
@@ -205,7 +225,10 @@ mod tests {
     #[test]
     fn formats() {
         let mut f = Formats::default();
+        assert_eq!(f.panel_lines(&tm(14, 5)), ("14:05".into(), Some("2026-11-26".into())));
+        f.panel_date = false;
         assert_eq!(f.panel(&tm(14, 5)), "Thu 14:05");
+        assert_eq!(f.panel_lines(&tm(14, 5)), ("Thu 14:05".into(), None));
         f.h12 = true;
         assert_eq!(f.time(&tm(0, 5)), "12:05 AM");
         assert_eq!(f.time(&tm(12, 0)), "12:00 PM");
@@ -216,6 +239,11 @@ mod tests {
         f.date = "us".into();
         f.panel_date = true;
         assert_eq!(f.panel(&tm(14, 5)), "Thu 11/26 2:05 PM");
+        assert_eq!(f.panel_lines(&tm(14, 5)), ("2:05 PM".into(), Some("11/26/2026".into())));
+        f.date = "eu".into();
+        assert_eq!(f.panel_lines(&tm(14, 5)).1.unwrap(), "26/11/2026");
+        f.date = "long".into();
+        assert_eq!(f.panel_lines(&tm(14, 5)).1.unwrap(), "Thu, Nov 26, 2026");
         assert_eq!(date_as("long", &tm(0, 0)), "Thursday, November 26, 2026");
         assert_eq!(date_as("long-eu", &tm(0, 0)), "Thursday 26 November 2026");
         assert_eq!(date_as("dots", &tm(0, 0)), "26.11.2026");
