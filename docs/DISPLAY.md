@@ -165,3 +165,11 @@ fbtest's animation, 1.4 ms to draw and 1.2 ms to present a frame.
 - The kernel's direct map of the framebuffer stays write-back (the
   firmware's MTRRs decide its real memory type on hardware); the console
   and the display never draw at the same time.
+- A second monitor on real hardware (2026-11-26): the GOP service draws
+  on the one framebuffer the firmware set up. At boot the kernel logs
+  every graphics output the firmware offers (`dmesg | grep gop`: size,
+  framebuffer, modes, whether it is a real output or the console
+  splitter's copy, which one is used). If the firmware lit a second output
+  with a framebuffer of its own, the GOP service can show it as a second
+  head, as virtio-gpu's heads are; if not, the graphics card needs a
+  display driver of its own (mode setting).

@@ -105,7 +105,7 @@ int poll(struct pollfd *fds, nfds_t n, int timeout_ms) {
         fds[i].revents = 0;
         if (fds[i].fd < 0) continue;
         struct fd *f = fds[i].fd < MAX_FDS ? &__fds[fds[i].fd] : 0;
-        if (!f || f->kind == RX_FD_NONE) {
+        if (!f || f->kind == RX_FD_NONE || f->kind == RX_FD_RESERVED) {
             fds[i].revents = POLLNVAL;
             ready++;
             continue;
@@ -253,7 +253,10 @@ int fcntl(int fd, int cmd, ...) {
     case F_DUPFD_CLOEXEC: {
         int nfd = __fd_alloc((int)arg);
         if (nfd < 0) return -1;
-        if (dup2(fd, nfd) < 0) return -1;
+        if (dup2(fd, nfd) < 0) {
+            __fd_unreserve(nfd);
+            return -1;
+        }
         __fds[nfd].cloexec = cmd == F_DUPFD_CLOEXEC;
         return nfd;
     }

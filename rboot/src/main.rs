@@ -28,7 +28,7 @@
 //!   any rest), `timeout` (seconds; 0 boots at once unless a key is held),
 //!   `editor` (no: no `e`), `auto-entries`, `auto-firmware` (no: none).
 //!
-//! Keys: Up/Down (Home/End), Enter boots, `e` edits the command line once,
+//! Keys: a number (1-9) starts that entry, Up/Down (Home/End) and Enter, `e` edits the command line once,
 //! `d` makes the selection the default (the LoaderEntryDefault variable),
 //! any key stops the countdown. It speaks systemd-boot's loader variables
 //! (LoaderInfo, LoaderEntries, LoaderEntryDefault, LoaderEntryOneShot,
@@ -613,51 +613,135 @@ fn boot_entry(e: &Entry, options: &str) -> Result<(), String> {
 
 // ---- the menu ----
 
+/// The menu's column: centred, at most 76 wide
+fn layout(cols: usize) -> (usize, usize) {
+    let w = cols.saturating_sub(4).min(76).max(20);
+    ((cols.saturating_sub(w)) / 2, w)
+}
+
+fn pad(s: &str, w: usize) -> String {
+    let mut line: String = s.chars().take(w).collect();
+    while line.chars().count() < w {
+        line.push(' ');
+    }
+    line
+}
+
+// The first row of the list, below the header
+const LIST_TOP: usize = 7;
+// Rows of the whole block: header, list, a gap, help (2), countdown (2)
+static MENU_Y: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// The menu's first row: the block centred on the screen
+fn set_menu_y(n: usize, rows: usize) -> usize {
+    let list = n.min(rows.saturating_sub(LIST_TOP + 6).max(1));
+    let need = LIST_TOP + list + 6;
+    let y = rows.saturating_sub(need) / 2;
+    MENU_Y.store(y, core::sync::atomic::Ordering::Relaxed);
+    y
+}
+
 fn draw(entries: &[Entry], sel: usize, top: usize, rows: usize, cols: usize, status: &str) {
     color(Color::LightGray, Color::Black);
     system::with_stdout(|o| {
         let _ = o.clear();
         let _ = o.enable_cursor(false);
     });
-    at(2, 1);
+    let (x, w) = layout(cols);
+    let y = set_menu_y(entries.len(), rows);
+    // The header: a frame with the name, the release and the version
+    let inner = w.saturating_sub(2);
+    let centre = |t: &str| {
+        let n = t.chars().count().min(inner);
+        let l = (inner - n) / 2;
+        format!("{}{}", " ".repeat(l), pad(t, inner - l))
+    };
+    color(Color::Red, Color::Black);
+    at(x, y + 1);
+    put(&format!("\u{250C}{}\u{2510}", "\u{2500}".repeat(inner)));
+    at(x, y + 2);
+    put("\u{2502}");
     color(Color::White, Color::Black);
-    put("Rustica boot manager");
+    put(&centre("R U S T I C A"));
+    color(Color::Red, Color::Black);
+    put("\u{2502}");
+    at(x, y + 3);
+    put("\u{2502}");
     color(Color::DarkGray, Color::Black);
-    put(&format!("  ({})", VERSION));
-    let list_rows = rows.saturating_sub(7).max(1);
+    put(&centre(&format!("RedFox  \u{00B7}  {}", VERSION)));
+    color(Color::Red, Color::Black);
+    put("\u{2502}");
+    at(x, y + 4);
+    put(&format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(inner)));
+    color(Color::LightGray, Color::Black);
+    at(x + 1, y + 5);
+    put("Choose how to start:");
+    // The entries, numbered (1-9 start one at once)
+    let list_rows = rows.saturating_sub(LIST_TOP + 6).max(1);
     for (k, e) in entries.iter().enumerate().skip(top).take(list_rows) {
-        at(2, 3 + k - top);
-        let mut line = format!(" {}", e.title);
-        let w = cols.saturating_sub(6);
-        if line.chars().count() > w {
-            line = line.chars().take(w).collect();
-        }
-        while line.chars().count() < w {
-            line.push(' ');
-        }
+        at(x, y + LIST_TOP + k - top);
+        let num = if k < 9 { format!("{}", k + 1) } else { " ".to_string() };
+        let line = pad(&format!("  {}   {}", num, e.title), w);
         if k == sel {
-            color(Color::Black, Color::LightGray);
+            color(Color::White, Color::Red);
+        } else if e.bad {
+            color(Color::DarkGray, Color::Black);
         } else {
             color(Color::LightGray, Color::Black);
         }
         put(&line);
     }
-    color(Color::DarkGray, Color::Black);
-    at(2, rows.saturating_sub(3));
-    put("Up/Down: choose   Enter: boot   e: edit the command line   d: make it the default");
+    let shown = entries.len().min(list_rows);
+    let foot = y + LIST_TOP + shown + 1;
     color(Color::LightGray, Color::Black);
-    at(2, rows.saturating_sub(2));
-    put(status);
+    at(x + 1, foot);
+    put(&pad("Press a number, or use \u{2191} \u{2193} and Enter.", w.saturating_sub(1)));
+    color(Color::DarkGray, Color::Black);
+    at(x + 1, foot + 1);
+    put(&pad("e: edit the command line   d: make it the default", w.saturating_sub(1)));
+    STATUS_ROW.store((foot + 4).min(rows.saturating_sub(2)), core::sync::atomic::Ordering::Relaxed);
+    status_line(status, rows, cols);
 }
 
+// The countdown's two rows (and the status) below the help
+fn bottom_row(rows: usize) -> usize {
+    let _ = rows;
+    STATUS_ROW.load(core::sync::atomic::Ordering::Relaxed)
+}
+static STATUS_ROW: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(23);
+
 fn status_line(text: &str, rows: usize, cols: usize) {
+    let (x, w) = layout(cols);
     color(Color::LightGray, Color::Black);
-    at(0, rows.saturating_sub(2));
-    let mut s = format!("  {}", text);
-    while s.chars().count() < cols.saturating_sub(1) {
-        s.push(' ');
-    }
-    put(&s);
+    at(0, bottom_row(rows));
+    put(&pad("", cols.saturating_sub(1)));
+    at(x + 1, bottom_row(rows));
+    put(&pad(text, w.saturating_sub(1)));
+}
+
+/// The countdown: what starts by itself, and when, with a bar
+fn countdown_line(title: &str, left: u32, total: u32, rows: usize, cols: usize) {
+    let (x, w) = layout(cols);
+    let row = bottom_row(rows);
+    color(Color::LightGray, Color::Black);
+    at(0, row.saturating_sub(1));
+    put(&pad("", cols.saturating_sub(1)));
+    at(x + 1, row.saturating_sub(1));
+    color(Color::Yellow, Color::Black);
+    put(&pad(
+        &format!("No choice in {} second{}: {} starts by itself.", left, if left == 1 { "" } else { "s" }, title),
+        w.saturating_sub(1),
+    ));
+    let bar = w.saturating_sub(2);
+    let full = if total == 0 { 0 } else { (bar * left as usize) / total as usize };
+    at(0, row);
+    color(Color::LightGray, Color::Black);
+    put(&pad("", cols.saturating_sub(1)));
+    at(x + 1, row);
+    color(Color::Red, Color::Black);
+    put(&"\u{2588}".repeat(full));
+    color(Color::DarkGray, Color::Black);
+    put(&"\u{2591}".repeat(bar - full));
 }
 
 /// Edit the command line on the status line: Enter boots, Esc cancels
@@ -764,7 +848,7 @@ fn main() -> Status {
     }
     let (cols, rows) = screen_size();
     let mut top = 0;
-    let list_rows = rows.saturating_sub(7).max(1);
+    let list_rows = rows.saturating_sub(LIST_TOP + 6).max(1);
     let mut left: Option<u32> = if timeout == u32::MAX || timeout == 0 { None } else { Some(timeout * 10) };
     let mut status = String::new();
     let mut redraw = true;
@@ -781,7 +865,7 @@ fn main() -> Status {
         }
         if let Some(t) = left {
             if t % 10 == 0 {
-                status_line(&format!("Booting {} in {} s", entries[sel].title, t / 10), rows, cols);
+                countdown_line(&entries[sel].title, t / 10, timeout, rows, cols);
                 debugcon(&format!("rboot: booting {} in {} s\n", entries[sel].id, t / 10));
             }
         }
@@ -804,7 +888,7 @@ fn main() -> Status {
             }
         };
         if left.take().is_some() {
-            status_line("", rows, cols);
+            redraw = true; // the countdown's lines away
         }
         match key {
             Key::Special(ScanCode::UP) => {
@@ -840,6 +924,16 @@ fn main() -> Status {
                         if let Some(o) = edit(&e.options, rows, cols) {
                             status = boot_entry(&e, &o).err().unwrap_or_default();
                         }
+                        redraw = true;
+                    }
+                    // A number starts that entry at once
+                    '1'..='9' if ((ch as usize) - ('1' as usize)) < entries.len() => {
+                        sel = (ch as usize) - ('1' as usize);
+                        let e = entries[sel].clone();
+                        let o = e.options.clone();
+                        draw(&entries, sel, top.min(sel), rows, cols, "");
+                        status = boot_entry(&e, &o).err().unwrap_or_default();
+                        debugcon(&format!("rboot: {}\n", status));
                         redraw = true;
                     }
                     'd' => {

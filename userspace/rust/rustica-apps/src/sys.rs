@@ -205,10 +205,10 @@ pub fn now() -> i64 {
     unsafe { time(std::ptr::null_mut()) }
 }
 
-/// "2026-11-15 09:33"
+/// A file's time in the user's formats (Settings > Date & Time):
+/// "2026-11-15 09:33", "11/15/2026 9:33 AM", ...
 pub fn format_time(t: i64) -> String {
-    let tm = local(t);
-    format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.year + 1900, tm.mon + 1, tm.mday, tm.hour, tm.min)
+    rustica_ui::clock::Formats::current().stamp(t)
 }
 
 /// Names of users and groups by id (/etc/passwd, /etc/group)

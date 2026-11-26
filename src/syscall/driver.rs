@@ -61,6 +61,9 @@ fn interrupt_of(h: u32, right: u32) -> R<Arc<Interrupt>> {
 /// Option of debuglog_create: a read-only handle for the kernel log
 /// (needs no resource), as Zircon's ZX_LOG_FLAG_READABLE
 pub const LOG_FLAG_READABLE: usize = 0x4000_0000;
+/// Option of debuglog_create: what is written also goes into the kernel
+/// log (devmgr's handles for its drivers' output)
+pub const LOG_FLAG_RING: usize = 0x1;
 
 /// debuglog_create(resource, options, *out) — a debug log handle: for
 /// writing (needs the root resource) or, with LOG_FLAG_READABLE, for
@@ -69,7 +72,7 @@ pub fn sys_debuglog_create(args: SyscallArgs) -> SyscallRet {
     let (res, options, out) = (args.arg_u32(0), args.arg(1), args.arg(2));
     ret((|| {
         let rights = match options {
-            0 => {
+            0 | LOG_FLAG_RING => {
                 require_resource(res)?;
                 Rights::LOG
             }
@@ -77,7 +80,7 @@ pub fn sys_debuglog_create(args: SyscallArgs) -> SyscallRet {
             _ => return Err(RxStatus::ERR_INVALID_ARGS),
         };
         user::check(out, 4, true)?;
-        let v = install(KObject::DebugLog(crate::kobj::debuglog::DebugLog::new()), rights)?;
+        let v = install(KObject::DebugLog(crate::kobj::debuglog::DebugLog::with_ring(options == LOG_FLAG_RING)), rights)?;
         user::write_u32(out, v)?;
         Ok(0)
     })())

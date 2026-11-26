@@ -306,7 +306,7 @@ def settings(section, ks):
     time.sleep(2)
 
 settings('mouse', ['tab'] * 5 + ['ret'])                                    # 150%
-settings('time', ['tab', 'tab', 'tab', 'T:Berlin', 'tab', 'down', 'tab', 'ret'])
+settings('time', ['tab'] * 13 + ['T:Berlin', 'tab', 'down', 'tab', 'ret'])   # past the clock's formats (10)
 settings('display', ['tab', 'tab', 'ret'])                                  # Large
 settings('users', ['tab', 'tab', 'T:carol', 'tab', 'T:secret', 'tab', 'spc', 'tab', 'ret'])
 out = console('cat /etc/input.conf /etc/timezone /root/.config/rustica.conf; grep carol /etc/passwd /etc/group; echo root:rootpw | chpasswd', 4)

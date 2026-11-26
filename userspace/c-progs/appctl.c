@@ -392,6 +392,18 @@ static void portal_request(rx_handle_t ch, const char *home, const char *app_nam
         rx_channel_write(ch, 0, msg, (uint32_t)strlen(msg), 0, 0);
         return;
     }
+    // The chooser's answer, unless the app ends first (2026-11-26: the
+    // chooser and appctl stayed, 30 MB, after the app was closed)
+    rx_wait_item_t w[2] = { { proc, RX_PROCESS_TERMINATED, 0 }, { ch, RX_PEER_CLOSED, 0 } };
+    rx_object_wait_many(w, 2, RX_TIME_INFINITE);
+    if (!(w[0].pending & RX_PROCESS_TERMINATED) && (w[1].pending & RX_PEER_CLOSED)) {
+        printf("appctl: %s ended while its file chooser was open; closing it\n", ID);
+        fflush(stdout);
+        rx_task_kill(proc);
+        rx_wait_process(proc);
+        unlink(out);
+        return;
+    }
     int64_t code = rx_wait_process(proc);
     char path[600] = "";
     FILE *f = code == 0 ? fopen(out, "r") : 0;

@@ -411,7 +411,10 @@ OpenSSH's `ssh` through a forwarded port: a key login runs a command
 (output, exit status 3), `ssh -tt` gets the interactive shell (exit 5),
 a password login as a new user (`useradd`, `chpasswd`, `SSH_ASKPASS`),
 root's password refused, an unknown key refused, 1 MB up and down;
-sshd's log. (Skipped without `ssh` on the host.)
+sshd's log. (Skipped without `ssh` on the host.) Since 2026-11-26 it also checks that a driver's lines (igc's) are in
+`dmesg` and `logs -k`, and the interfaces are numbered among Ethernet
+controllers only. The rtl8125 driver has no QEMU test (no such emulated
+card).
 
 ## App packages test (FoxDen step FD1)
 
@@ -503,6 +506,15 @@ tiles it right; the menu finds Terminal for "term" and Enter starts it;
 the wheel scrolls Settings > Panel; `panel.conf` puts the panel on the
 left, then at the top with auto-hide, hidden until the pointer reaches
 the top edge.
+
+## Leak test (2026-11-26)
+
+`scripts/run-leak-test.sh`: the desktop in QEMU; from the console 40
+windows (`wintest`) opened and killed and 10 sandboxed apps (the Image
+Viewer) started by `appctl` and ended: fsd's connections (`df -i /`) the
+same afterwards (10 at most more) and no "Bad file descriptor" (the
+desktop PC's "appctl: Bad file descriptor" and freeze). About ten seconds
+a window under emulation, so it is a test of its own.
 
 ## Appearance test (2026-11-24; themes 2026-11-25)
 

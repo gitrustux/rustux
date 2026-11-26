@@ -486,6 +486,10 @@ try:
     check('3 received' in out, 'ping through the igc driver (10.0.6.2)', out)
     out = run(f'curl -s http://10.0.6.2:{HP}/')
     check('<h1>Rustica test page</h1>' in out, 'curl through the igc driver', out)
+    # Drivers' output in the kernel log and the system log (2026-11-26:
+    # devmgr gives each driver a log handle into the kernel log)
+    out = run('echo D=$(dmesg | grep -c "igc .*82576") L=$(logs -k | grep -c "igc .*82576")')
+    check(re.search(r'D=[1-9]\d* L=[1-9]', out), 'a driver\'s lines are in dmesg and logs -k', out)
     out = run('ip -6 addr show eth0; ip -6 route')
     check('inet6 fe80::5054:ff:fe12:3456/64 scope link' in out and 'inet6 fec0::5054:ff:fe12:3456/64 scope global dynamic' in out
           and 'default via fe80::2 dev eth0 proto ra' in out and 'fd05::/64 dev eth2' in out, 'IPv6: link-local and SLAAC addresses, the router (ip -6)', out)

@@ -20,6 +20,8 @@
 //! ```
 
 pub mod app;
+/// Dates and times in the user's formats (the panel, Settings, Files)
+pub mod clock;
 pub mod gfx;
 /// The network's state, for the panel and Settings (network step D6)
 pub mod net;

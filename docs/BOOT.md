@@ -88,9 +88,16 @@ OsIndications bit and restarts.
 
 ## The menu
 
-Up/Down, Home/End choose; Enter starts; `e` edits the command line of
-this start only (Enter starts, Esc cancels); `d` makes the selection the
-default (`LoaderEntryDefault`). Any key stops the countdown. If a program
+A framed header (Rustica, the release, rboot's version), then the entries
+numbered 1, 2, 3, ... (2026-11-26). A number key (1-9) starts that entry
+at once; Up/Down, Home/End choose and Enter starts; `e` edits the command
+line of this start only (Enter starts, Esc cancels); `d` makes the
+selection the default (`LoaderEntryDefault`). While the countdown runs
+the menu says what starts by itself and when ("No choice in 10 seconds:
+Try Rustica Desktop starts by itself.") with a bar running down; any key
+stops it. The live stick's menu: 1 Try Rustica Desktop (the default, after
+10 seconds), 2 Try Rustica Server, 3 its recovery entry, 4 Install Rustica
+Server. If a program
 returns or cannot be loaded, rboot says so and shows the menu again.
 
 The default is, in order: `LoaderEntryOneShot` (once, then removed),

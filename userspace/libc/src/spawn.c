@@ -235,7 +235,7 @@ static rx_status_t spawn_image(rx_handle_t job, const char *name, const void *el
     if (flags & RX_SPAWN_CLONE_STDIO) {
         for (int fd = 0; fd < 3; fd++) {
             struct fd *f = &__fds[fd];
-            if (f->kind == RX_FD_NONE || f->kind == RX_FD_LOG) continue;
+            if (f->kind == RX_FD_NONE || f->kind == RX_FD_RESERVED || f->kind == RX_FD_LOG) continue;
             rx_handle_t h = __fd_export(fd);
             if (h) { all[m] = h; all_info[m++] = RX_FD_INFO(fd, f->kind); }
         }

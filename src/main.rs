@@ -227,6 +227,7 @@ extern "C" fn kernel_main_on_new_stack() -> ! {
     }
     debug_print("      ✓ Display console initialized\n\n");
     boot_step("[boot] Kernel memory, GDT and IDT ready\n");
+    log_gops();
 
     // Install timer handler
     debug_print("[3/5] Installing timer handler...\n");
@@ -821,6 +822,7 @@ fn capture_framebuffer() {
     let Ok(handle) = boot::get_handle_for_protocol::<GraphicsOutput>() else {
         return;
     };
+    survey_gops(handle);
     let Ok(mut gop) = boot::open_protocol_exclusive::<GraphicsOutput>(handle) else {
         return;
     };
@@ -864,6 +866,108 @@ fn capture_framebuffer() {
         green: 0xFF00,
         blue,
     });
+}
+
+/// One graphics output the firmware offers
+#[derive(Clone, Copy)]
+struct GopSeen {
+    width: u32,
+    height: u32,
+    fb: u64,
+    size: u64,
+    modes: u32,
+    /// It has a device path (a real output, not the console splitter's)
+    physical: bool,
+    /// The one the kernel draws on
+    used: bool,
+}
+
+const GOP_NONE: GopSeen = GopSeen { width: 0, height: 0, fb: 0, size: 0, modes: 0, physical: false, used: false };
+
+/// Every graphics output the firmware offers, logged at boot (2026-11-26:
+/// the desktop PC shows only one of its two monitors). A second output
+/// with a framebuffer of its own could be a second head; one the firmware
+/// did not light needs a display driver for the card.
+static GOPS: rustux::sync::BootCell<([GopSeen; 8], usize)> = rustux::sync::BootCell::new(([GOP_NONE; 8], 0));
+
+fn survey_gops(used: uefi::Handle) {
+    use uefi::boot::{self, OpenProtocolAttributes, OpenProtocolParams, SearchType};
+    use uefi::proto::console::gop::GraphicsOutput;
+    use uefi::proto::device_path::DevicePath;
+    use uefi::Identify;
+    let Ok(handles) = boot::locate_handle_buffer(SearchType::ByProtocol(&GraphicsOutput::GUID)) else {
+        return;
+    };
+    // Boot, one CPU
+    let (list, n) = unsafe { GOPS.boot_mut() };
+    for &h in handles.iter() {
+        if *n >= list.len() {
+            break;
+        }
+        let params = OpenProtocolParams { handle: h, agent: boot::image_handle(), controller: None };
+        // Looked at, not taken: the console splitter holds them
+        let Ok(mut gop) = (unsafe { boot::open_protocol::<GraphicsOutput>(params, OpenProtocolAttributes::GetProtocol) }) else {
+            continue;
+        };
+        let mode = gop.current_mode_info();
+        let (w, hh) = mode.resolution();
+        let modes = gop.modes().count() as u32;
+        // A Blt-only output has no framebuffer (the uefi crate panics if
+        // asked for one): recorded with none
+        let (fb, size) = if mode.pixel_format() == uefi::proto::console::gop::PixelFormat::BltOnly {
+            (0, 0)
+        } else {
+            let mut fb = gop.frame_buffer();
+            (fb.as_mut_ptr() as u64, fb.size() as u64)
+        };
+        let params = OpenProtocolParams { handle: h, agent: boot::image_handle(), controller: None };
+        let physical = unsafe { boot::open_protocol::<DevicePath>(params, OpenProtocolAttributes::GetProtocol) }.is_ok();
+        list[*n] = GopSeen { width: w as u32, height: hh as u32, fb, size, modes, physical, used: h == used };
+        *n += 1;
+    }
+}
+
+/// A line of text in a buffer on the stack
+struct Line {
+    buf: [u8; 160],
+    len: usize,
+}
+
+impl core::fmt::Write for Line {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for &b in s.as_bytes() {
+            if self.len < self.buf.len() {
+                self.buf[self.len] = b;
+                self.len += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The graphics outputs the firmware offered, into the kernel log (dmesg)
+fn log_gops() {
+    use core::fmt::Write;
+    let (list, n) = GOPS.get();
+    let mut l = Line { buf: [0; 160], len: 0 };
+    let _ = write!(l, "[gop] {} graphics output{} from the firmware\n", n, if *n == 1 { "" } else { "s" });
+    debug_print(core::str::from_utf8(&l.buf[..l.len]).unwrap_or(""));
+    for (k, g) in list.iter().take(*n).enumerate() {
+        let mut l = Line { buf: [0; 160], len: 0 };
+        let _ = write!(
+            l,
+            "[gop] #{}: {}x{}, framebuffer {:#x} ({} KiB), {} modes{}{}\n",
+            k,
+            g.width,
+            g.height,
+            g.fb,
+            g.size / 1024,
+            g.modes,
+            if g.physical { ", an output" } else { ", the console's" },
+            if g.used { ", used" } else { "" }
+        );
+        debug_print(core::str::from_utf8(&l.buf[..l.len]).unwrap_or(""));
+    }
 }
 
 /// The kernel command line (step 15): the UEFI load options (a boot

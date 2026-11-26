@@ -96,7 +96,13 @@ extern char **environ;
 void __stdio_init(void);
 void __fs_init(void);
 // Lowest free fd at or above `from`, or -1 (EMFILE)
+// A free fd at `from` or above, claimed at once (its kind is
+// RX_FD_RESERVED until the caller fills it in), so two threads never get
+// the same one (2026-11-26); -1 and EMFILE if none. A caller that fails
+// before filling it in gives it back with __fd_unreserve.
+#define RX_FD_RESERVED 15
 int __fd_alloc(int from);
+void __fd_unreserve(int fd);
 struct fd *__fd_get(int fd);
 int __at_path(int dirfd, const char *path, char *out);  // dirfd + path, for the *at calls
 // A handle another process can use for `fd` (a new connection for a file,

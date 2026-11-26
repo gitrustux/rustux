@@ -461,6 +461,16 @@ static void unit_spawn(unit_t *u) {
         // A fresh session starts with no leftover interrupt
         rx_object_signal(con_client, RX_CONSOLE_SIGNAL_INTERRUPT, 0);
     } else {
+        // Standard input: /dev/null (2026-11-26). With none, a unit's (the
+        // desktop session's) first open file or pipe became its fd 0 and
+        // was handed to every program it started meanwhile as stdin
+        int nul = open("/dev/null", O_RDONLY);
+        if (nul >= 0) {
+            int kind = 0;
+            rx_handle_t h = rx_fd_export(nul, &kind);
+            if (h) hs[nh++] = (rx_spawn_handle_t){ RX_FD_INFO(0, kind), h };
+            close(nul);
+        }
         rx_handle_t a = 0, a2 = 0;
         if (!u->c.log_console && log_connect() && rx_socket_create(0, &a, &stream_end) == RX_OK &&
             rx_handle_duplicate(a, RX_RIGHT_SAME_RIGHTS, &a2) == RX_OK) {

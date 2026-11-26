@@ -1568,8 +1568,54 @@ impl Settings {
     fn time(&mut self, ui: &mut Ui, ctl: &mut Control) {
         ctl.wake_after = Some(Duration::from_secs(1));
         ui.heading("Date & Time");
-        let tm = sys::local(sys::now());
-        ui.label(&format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}   ({})", tm.year + 1900, tm.mon + 1, tm.mday, tm.hour, tm.min, tm.sec, self.zone_now));
+        use rustica_ui::clock::{self, Formats, DATE_FORMATS};
+        let f = Formats::current();
+        let tm = clock::local(clock::now());
+        let mut full = f.clone();
+        full.seconds = true;
+        ui.label(&format!("{}   {}   ({})", f.date(&tm), full.time(&tm), self.zone_now));
+        ui.space(4.0);
+        // How dates and times are shown (2026-11-26): ~/.config/rustica.conf,
+        // read by the panel's clock and Files
+        ui.label("Time format");
+        let mut set: Option<(&str, String)> = None;
+        ui.row(|ui| {
+            let mut t24 = f.clone();
+            t24.h12 = false;
+            let mut t12 = f.clone();
+            t12.h12 = true;
+            let a = format!("24-hour ({})", t24.time(&tm));
+            let b = format!("12-hour ({})", t12.time(&tm));
+            if if f.h12 { ui.button(&a) } else { ui.primary_button(&a) } {
+                set = Some(("clock", "24".into()));
+            }
+            if if f.h12 { ui.primary_button(&b) } else { ui.button(&b) } {
+                set = Some(("clock", "12".into()));
+            }
+        });
+        let mut secs = f.seconds;
+        if ui.checkbox(&mut secs, "Show seconds") {
+            set = Some(("seconds", if secs { "yes" } else { "no" }.into()));
+        }
+        ui.label("Date format");
+        for chunk in DATE_FORMATS.chunks(3) {
+            ui.row(|ui| {
+                for (name, _) in chunk {
+                    let label = clock::date_as(name, &tm);
+                    let pressed = if f.date == *name { ui.primary_button(&label) } else { ui.button(&label) };
+                    if pressed {
+                        set = Some(("date", name.to_string()));
+                    }
+                }
+            });
+        }
+        let mut pd = f.panel_date;
+        if ui.checkbox(&mut pd, "Show the date on the panel") {
+            set = Some(("panel_date", if pd { "yes" } else { "no" }.into()));
+        }
+        if let Some((k, v)) = set {
+            self.set_appearance(k, &v);
+        }
         ui.space(4.0);
         let (set, enter) = ui.row(|ui| {
             ui.label("Set to");

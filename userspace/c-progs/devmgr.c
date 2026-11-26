@@ -375,13 +375,34 @@ static void bdf_name(const rx_pci_info_t *i, char *buf, size_t n) {
 
 static void start_display(void);
 
+// A driver's standard input, output and error (2026-11-26): our stdin,
+// and for output a debug log handle that writes into the kernel log as
+// well as on the console, so drivers' messages are in dmesg and the
+// system log (logs -k) and not only on the text console. Added to hs;
+// returns the new count.
+static int driver_stdio(rx_spawn_handle_t *hs, int n) {
+    int kind = 0;
+    rx_handle_t in = rx_fd_export(0, &kind);
+    if (in) hs[n++] = (rx_spawn_handle_t){ RX_FD_INFO(0, kind), in };
+    for (int fd = 1; fd <= 2; fd++) {
+        rx_handle_t lg;
+        if (rx_debuglog_create(resource, RX_LOG_FLAG_RING, &lg) == RX_OK) {
+            hs[n++] = (rx_spawn_handle_t){ RX_FD_INFO(fd, RX_FD_LOG), lg };
+        } else {
+            rx_handle_t h = rx_fd_export(fd, &kind);
+            if (h) hs[n++] = (rx_spawn_handle_t){ RX_FD_INFO(fd, kind), h };
+        }
+    }
+    return n;
+}
+
 static void start_driver(struct pci *p) {
     rx_handle_t ours, theirs;
     if (rx_channel_create(0, &ours, &theirs) != RX_OK) return;
     char bdf[16];
     bdf_name(&p->info, bdf, sizeof bdf);
     char *argv[10] = { p->info.driver, bdf, 0 };
-    rx_spawn_handle_t hs[3] = { { RX_PA_USER0, theirs } };
+    rx_spawn_handle_t hs[6] = { { RX_PA_USER0, theirs } };
     int nh = 1;
     // A display driver (step F8) gets the UEFI framebuffer, if there is
     // one, as /bin/display would: the text console's
@@ -403,8 +424,9 @@ static void start_driver(struct pci *p) {
             hs[nh++] = (rx_spawn_handle_t){ RX_PA_USER2, claim };
         }
     }
+    nh = driver_stdio(hs, nh);
     rx_handle_t proc;
-    if (rx_spawn(p->prog, argv, 0, RX_SPAWN_CLONE_ALL, hs, (uint32_t)nh, &proc) != RX_OK) {
+    if (rx_spawn(p->prog, argv, 0, RX_SPAWN_CLONE_NS, hs, (uint32_t)nh, &proc) != RX_OK) {
         printf("devmgr: cannot start %s for %s\n", p->prog, bdf);
         rx_handle_close(ours);
         p->given_up = 1;
@@ -469,8 +491,9 @@ static void start_usb_driver(struct usbdev *u) {
     snprintf(ifc, sizeof ifc, "%u", u->info.interface);
     const char *base = strrchr(u->prog, '/');
     char *argv[] = { (char *)(base ? base + 1 : u->prog), where, ifc, 0 };
-    rx_spawn_handle_t hs[] = { { RX_PA_USER0, h } };
-    if (rx_spawn(u->prog, argv, 0, RX_SPAWN_CLONE_ALL, hs, 1, &u->proc) != RX_OK) {
+    rx_spawn_handle_t hs[4] = { { RX_PA_USER0, h } };
+    int nh = driver_stdio(hs, 1);
+    if (rx_spawn(u->prog, argv, 0, RX_SPAWN_CLONE_NS, hs, (uint32_t)nh, &u->proc) != RX_OK) {
         printf("devmgr: cannot start %s for USB device %04x:%04x\n", u->prog, u->info.vid, u->info.pid);
         u->given_up = 1;
         u->proc = 0;
@@ -942,8 +965,9 @@ static void start_display(void) {
     snprintf(b, sizeof b, "%x", info.blue);
     snprintf(off, sizeof off, "%u", (unsigned)(info.phys & 0xFFF));
     char *argv[] = { "display", w, h, st, r, g, b, off, 0 };
-    rx_spawn_handle_t hs[] = { { RX_PA_USER0, vmo }, { RX_PA_USER1, claim } };
-    if (rx_spawn("/bin/display", argv, 0, RX_SPAWN_CLONE_ALL, hs, 2, &disp.proc) != RX_OK) {
+    rx_spawn_handle_t hs[5] = { { RX_PA_USER0, vmo }, { RX_PA_USER1, claim } };
+    int nh = driver_stdio(hs, 2);
+    if (rx_spawn("/bin/display", argv, 0, RX_SPAWN_CLONE_NS, hs, (uint32_t)nh, &disp.proc) != RX_OK) {
         printf("devmgr: cannot start /bin/display\n");
         disp.proc = 0;
         disp.given_up = 1;

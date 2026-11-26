@@ -49,6 +49,11 @@ below). devmgr leaves display and USB controllers alone.
    the address of a buffer it just pinned); a warning is printed if not.
 6. It publishes `/svc/devmgr` and starts the drivers named in
    `/etc/drivers`. It prints nothing unless something goes wrong.
+   A driver's standard output and error (2026-11-26) are a debug log
+   handle made with `RX_LOG_FLAG_RING`: what it prints goes on the text
+   console as before and into the kernel log, so `dmesg` and the system
+   log (`logs -k`) have it (`logs | grep igc`); its standard input is
+   devmgr's.
 
 Who may use a disk (step 17): devmgr connects a client to a block device
 (`CONNECT_BLOCK`) only if the request's sender is root or in group `disk`

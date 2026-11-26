@@ -354,6 +354,9 @@ static inline rx_status_t rx_debuglog_write(rx_handle_t h, uint32_t options, con
 // handle reads the kernel log: debuglog_read returns the byte count, or
 // RX_ERR_SHOULD_WAIT when everything has been read
 #define RX_LOG_FLAG_READABLE 0x40000000u
+// With RX_LOG_FLAG_RING (root resource) what is written also goes into the
+// kernel log (dmesg, logs -k): devmgr's handles for its drivers' output
+#define RX_LOG_FLAG_RING 0x1u
 static inline rx_status_t rx_debuglog_read(rx_handle_t h, uint32_t options, void *buf, uint64_t len) {
     return RX_SYS(0x55, h, options, buf, len);
 }

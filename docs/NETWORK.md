@@ -100,6 +100,32 @@ PHY's registers at 5, 10, 20, 40 seconds, then every 2 minutes (`logs |
 grep igc`). **Tested in QEMU (igb) only:** the laptop's E3100 is the
 first real one.
 
+
+### rtl8125 (2026-11-26)
+
+`/bin/rtl8125 BDF` (`c-progs/rtl8125.c`): Realtek's 2.5 GbE RTL8125 (A, B,
+D; the Killer E3000 is `10ec:3000`) and 5 GbE RTL8126 (A), the wired card
+of many AM5 and Intel desktop boards (the desktop PC's is an RTL8126,
+`10ec:8126` rev 01). The registers in BAR 2 (BAR 0 is the same as I/O
+ports). Whatever the firmware's network boot left running is stopped
+(the receive gate closed, the FIFOs drained), then the chip's reset;
+the PLL powered up; the MAC address from `MAC0`, else the chip's EEPROM
+copy (`0x19E0`); interrupt moderation and RSS off; the MAC's OCP settings
+of Linux's `rtl_hw_start_8125_common` (the classic 16-byte descriptor
+format among them: `0xEB58` bit 0 cleared); the receive gate opened
+(`MISC.RXDV_GATED_EN`). One receive and one transmit ring of 256
+descriptors with 2 KiB buffers (the receive length counts the FCS, taken
+off), broadcast and all multicast taken; transmits started through
+`TxPoll` (0x90). The PHY through `GPHY_OCP` (the MII registers at
+`0xA400 + 2 * register`): powered up, 10/100/1000 and 2.5 G (and 5 G on
+the RTL8126, `0xA5D4`) advertised, auto-negotiation restarted. MSI on a
+thread (polling every millisecond besides); the link and its speed (up to
+5000 Mbit/s) from `PHYstatus` (0x6C). It prints the chip (its XID from
+`TxConfig`: RTL8125A 609, B 641, D 688/689, RTL8126A 649/64A). Linux also
+loads a PHY firmware patch (`rtl_nic/rtl8126a-*.fw`) when it has one and
+works without it; this driver loads none. **QEMU emulates no card of this
+family:** tested on the hardware only (`dmesg | grep rtl8125`).
+
 ## netd
 
 `/bin/netd` (`rust/netd`, Rust, on [smoltcp](https://github.com/smoltcp-rs/smoltcp)

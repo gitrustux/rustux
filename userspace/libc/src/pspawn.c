@@ -185,7 +185,15 @@ static int spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t 
     for (int i = 0; i < 3 && !err; i++) {
         if (src[i] < 0) continue;
         struct fd *f = src[i] < MAX_FDS ? &__fds[src[i]] : 0;
-        if (!f || f->kind == RX_FD_NONE) { err = EBADF; break; }
+        if (!f || f->kind == RX_FD_NONE || f->kind == RX_FD_RESERVED) {
+            // One of our own 0-2 that we do not have (a program started
+            // without stdin): the child goes without it too, as on Unix
+            // (2026-11-26: Rust's Command failed with EBADF in the desktop
+            // session); a file action naming a bad fd is still an error
+            if (src[i] == i) continue;
+            err = EBADF;
+            break;
+        }
         if (f->kind == RX_FD_LOG) continue;
         rx_handle_t h = __fd_export(src[i]);
         if (!h) { err = EBADF; break; }

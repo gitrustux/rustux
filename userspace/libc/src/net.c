@@ -502,13 +502,14 @@ static int new_fd(struct sock *s, rx_handle_t data, int flags) {
         sock_free(s);
         return -1;
     }
-    struct fd *f = &__fds[fd];
-    memset(f, 0, sizeof *f);
-    f->kind = RX_FD_SOCKET;
-    f->handle = data;
-    f->flags = O_RDWR | ((flags & SOCK_NONBLOCK) ? O_NONBLOCK_ : 0);
-    f->cloexec = (flags & SOCK_CLOEXEC) != 0;
-    f->sock = s;
+    // Filled in whole: the slot never reads as free meanwhile
+    struct fd n = { 0 };
+    n.kind = RX_FD_SOCKET;
+    n.handle = data;
+    n.flags = O_RDWR | ((flags & SOCK_NONBLOCK) ? O_NONBLOCK_ : 0);
+    n.cloexec = (flags & SOCK_CLOEXEC) != 0;
+    n.sock = s;
+    __fds[fd] = n;
     return fd;
 }
 
@@ -550,16 +551,24 @@ int socketpair(int domain, int type, int protocol, int sv[2]) {
     int a = __fd_alloc(0);
     if (a < 0) return -1;
     int b = __fd_alloc(a + 1);
-    if (b < 0) return -1;
+    if (b < 0) {
+        __fd_unreserve(a);
+        return -1;
+    }
     rx_handle_t x, y;
     rx_status_t st = rx_socket_create(0, &x, &y);
-    if (st != RX_OK) return __set_errno_status(st);
-    memset(&__fds[a], 0, sizeof __fds[a]);
-    memset(&__fds[b], 0, sizeof __fds[b]);
-    __fds[a].kind = __fds[b].kind = RX_FD_PIPE;
-    __fds[a].handle = x;
-    __fds[b].handle = y;
-    __fds[a].flags = __fds[b].flags = O_RDWR | ((type & SOCK_NONBLOCK) ? O_NONBLOCK_ : 0);
+    if (st != RX_OK) {
+        __fd_unreserve(a);
+        __fd_unreserve(b);
+        return __set_errno_status(st);
+    }
+    struct fd n = { 0 };
+    n.kind = RX_FD_PIPE;
+    n.flags = O_RDWR | ((type & SOCK_NONBLOCK) ? O_NONBLOCK_ : 0);
+    n.handle = x;
+    __fds[a] = n;
+    n.handle = y;
+    __fds[b] = n;
     sv[0] = a;
     sv[1] = b;
     return 0;

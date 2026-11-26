@@ -181,8 +181,6 @@ int open(const char *path, int flags, ...) {
         mode = va_arg(ap, unsigned int) & ~cur_umask;
         va_end(ap);
     }
-    int fd = __fd_alloc(0);
-    if (fd < 0) return -1;
     rx_handle_t c, s;
     if (rx_channel_create(0, &c, &s) != RX_OK) return fail(-ENOMEM);
     // Only these flags mean something to the filesystem service
@@ -198,7 +196,12 @@ int open(const char *path, int flags, ...) {
         rx_handle_close(c);
         return fail(-ENXIO);
     }
-    __fds[fd].kind = RX_FD_FILE;
+    // The fd taken only now that the file is open
+    int fd = __fd_alloc(0);
+    if (fd < 0) {
+        rx_handle_close(c);
+        return -1;
+    }
     __fds[fd].handle = c;
     __fds[fd].flags = flags & (O_ACCMODE | O_APPEND | O_NONBLOCK);
     __fds[fd].cloexec = (flags & O_CLOEXEC) != 0;
@@ -207,6 +210,7 @@ int open(const char *path, int flags, ...) {
         __fds[fd].path[0] = '/';
         strcpy(__fds[fd].path + 1, rel);
     }
+    __atomic_store_n(&__fds[fd].kind, RX_FD_FILE, __ATOMIC_RELEASE);
     return fd;
 }
 
@@ -228,11 +232,11 @@ int rx_fd_clone_handle(int fd, rx_handle_t *out) {
 int rx_fd_from_handle(rx_handle_t h, int flags) {
     int fd = __fd_alloc(0);
     if (fd < 0) return -EMFILE;
-    __fds[fd].kind = RX_FD_FILE;
     __fds[fd].handle = h;
     __fds[fd].flags = flags & (O_ACCMODE | O_APPEND | O_NONBLOCK);
     __fds[fd].cloexec = 0;
     __fds[fd].path = 0;   // no path: the file alone
+    __atomic_store_n(&__fds[fd].kind, RX_FD_FILE, __ATOMIC_RELEASE);
     return fd;
 }
 

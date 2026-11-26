@@ -67,12 +67,14 @@ int posix_openpt(int flags) {
     if (fd < 0) return -1;
     struct pty *p = calloc(1, sizeof *p);
     if (!p) {
+        __fd_unreserve(fd);
         errno = ENOMEM;
         return -1;
     }
     rx_handle_t master, slave;
     if (rx_channel_create(0, &master, &slave) != RX_OK) {
         free(p);
+        __fd_unreserve(fd);
         errno = ENOMEM;
         return -1;
     }
@@ -83,6 +85,7 @@ int posix_openpt(int flags) {
         rx_handle_close(master);
         rx_handle_close(slave);
         free(p);
+        __fd_unreserve(fd);
         errno = ENOMEM;
         return -1;
     }
@@ -91,10 +94,10 @@ int posix_openpt(int flags) {
     p->num = next_num++;
     rx_ldisc_init(&p->ld, own, pty_echo, p);
     rx_tty_set_size(master, 80, 24);
-    __fds[fd].kind = RX_FD_PTY;
     __fds[fd].handle = master;
     __fds[fd].flags = O_RDWR;
     __fds[fd].pty = p;
+    __atomic_store_n(&__fds[fd].kind, RX_FD_PTY, __ATOMIC_RELEASE);
     return fd;
 }
 
@@ -142,9 +145,9 @@ int __pty_open_slave(const char *path) {
             p->slave = h;
             return -1;
         }
-        __fds[fd].kind = RX_FD_CONSOLE;
         __fds[fd].handle = h;
         __fds[fd].flags = O_RDWR;
+        __atomic_store_n(&__fds[fd].kind, RX_FD_CONSOLE, __ATOMIC_RELEASE);
         return fd;
     }
     errno = ENOENT;

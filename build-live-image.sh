@@ -114,13 +114,14 @@ create_disk_image() {
         cp "$RBOOT_EFI" "$mount_dir/EFI/BOOT/BOOTX64.EFI"
         cp "$RBOOT_EFI" "$mount_dir/EFI/Rustica/rboot.efi"
         cp "$KERNEL_EFI" "$mount_dir/EFI/Rustica/rustux.efi"
-        # Two entries (step 20): try it (from memory; \EFI\BOOT\cmdline.txt
-        # if there is one) or install it; rboot adds the recovery entry
-        printf 'default rustica\ntimeout 10\n' > "$mount_dir/loader/loader.conf"
-        printf 'title Try Rustica Server\nefi /EFI/Rustica/rustux.efi\nsort-key 1\n' > "$mount_dir/loader/entries/rustica.conf"
-        printf 'title Install Rustica Server\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 2\n' > "$mount_dir/loader/entries/install.conf"
-        # The desktop from memory (DESKTOP.md step F6)
-        printf 'title Try Rustica (desktop)\nefi /EFI/Rustica/rustux.efi\noptions desktop\nsort-key 3\n' > "$mount_dir/loader/entries/desktop.conf"
+        # The menu (2026-11-26): 1 the desktop from memory (DESKTOP.md step
+        # F6), the default after 10 seconds; 2 the server from memory
+        # (\EFI\BOOT\cmdline.txt if there is one), with the recovery entry
+        # rboot adds after it; then installing (step 20)
+        printf 'default desktop\ntimeout 10\n' > "$mount_dir/loader/loader.conf"
+        printf 'title Try Rustica Desktop\nefi /EFI/Rustica/rustux.efi\noptions desktop\nsort-key 1\n' > "$mount_dir/loader/entries/desktop.conf"
+        printf 'title Try Rustica Server\nefi /EFI/Rustica/rustux.efi\nsort-key 2\n' > "$mount_dir/loader/entries/rustica.conf"
+        printf 'title Install Rustica Server\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 3\n' > "$mount_dir/loader/entries/install.conf"
         # The system's packages (package step E3): the installer installs
         # them with rpg, so the installed system knows its image
         if [ "${PACKAGES:-1}" = 1 ]; then

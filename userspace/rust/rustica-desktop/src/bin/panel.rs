@@ -37,34 +37,10 @@ use rustica_ui::rustica_window::{Event, EDGE_BOTTOM, EDGE_LEFT, EDGE_RIGHT, EDGE
 use rustica_ui::{Control, Request, Ui};
 use std::time::{Duration, Instant, SystemTime};
 
-#[repr(C)]
-#[derive(Default)]
-struct Tm {
-    sec: i32,
-    min: i32,
-    hour: i32,
-    mday: i32,
-    mon: i32,
-    year: i32,
-    wday: i32,
-    yday: i32,
-    isdst: i32,
-    _rest: [i64; 4],
-}
-
-extern "C" {
-    fn time(t: *mut i64) -> i64;
-    fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
-}
-
+/// The clock in the user's formats (Settings > Date & Time)
 fn clock() -> String {
-    let mut tm = Tm::default();
-    unsafe {
-        let t = time(std::ptr::null_mut());
-        localtime_r(&t, &mut tm);
-    }
-    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    format!("{} {:02}:{:02}", DAYS[(tm.wday.rem_euclid(7)) as usize], tm.hour, tm.min)
+    let f = rustica_ui::clock::Formats::current();
+    f.panel(&rustica_ui::clock::local(rustica_ui::clock::now()))
 }
 
 struct Win {
@@ -264,7 +240,8 @@ fn main() {
             ctl.requests.push(Request::SetPanel { edge: cfg.edge, size, autohide: cfg.autohide });
             first = false;
         }
-        ctl.wake_after = Some(Duration::from_secs(2));
+        // Every second when the clock shows seconds
+        ctl.wake_after = Some(Duration::from_secs(if rustica_ui::clock::Formats::current().seconds { 1 } else { 2 }));
         if let Some(d) = desk.as_mut() {
             if let Ok(Some(st)) = d.try_wait() {
                 desk = None;

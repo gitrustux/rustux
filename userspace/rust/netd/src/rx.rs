@@ -154,7 +154,7 @@ extern "C" {
 
 const PCI_INFO_SIZE: usize = 224; // sizeof(rx_pci_info_t), <rustux/device.h>
 
-/// The network controllers (PCI class 2) devmgr knows, as "BB:DD.F", in
+/// The Ethernet controllers (PCI class 2, subclass 0) devmgr knows, as "BB:DD.F", in
 /// bus order: what names the interfaces (eth0 is the first)
 pub fn network_pci_slots() -> Vec<String> {
     let mut dm: Handle = 0;
@@ -176,7 +176,10 @@ pub fn network_pci_slots() -> Vec<String> {
             break;
         }
         let d = &buf[o..o + PCI_INFO_SIZE];
-        if d[14] == 0x02 {
+        // Ethernet controllers only (class 2, subclass 0): the laptop's
+        // Wi-Fi chip (subclass 0x80, not driven yet) sits before its wired
+        // card and made that eth1 (2026-11-26)
+        if d[14] == 0x02 && d[15] == 0x00 {
             v.push((d[2], d[3], d[4]));
         }
     }

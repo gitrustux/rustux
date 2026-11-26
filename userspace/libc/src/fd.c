@@ -20,7 +20,7 @@
 struct fd __fds[MAX_FDS];
 
 struct fd *__fd_get(int fd) {
-    if (fd < 0 || fd >= MAX_FDS || __fds[fd].kind == RX_FD_NONE) {
+    if (fd < 0 || fd >= MAX_FDS || __fds[fd].kind == RX_FD_NONE || __fds[fd].kind == RX_FD_RESERVED) {
         errno = EBADF;
         return 0;
     }
@@ -29,10 +29,17 @@ struct fd *__fd_get(int fd) {
 
 int __fd_alloc(int from) {
     for (int i = from < 0 ? 0 : from; i < MAX_FDS; i++) {
-        if (__fds[i].kind == RX_FD_NONE) return i;
+        int none = RX_FD_NONE;
+        if (__atomic_compare_exchange_n(&__fds[i].kind, &none, RX_FD_RESERVED, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return i;
     }
     errno = EMFILE;
     return -1;
+}
+
+void __fd_unreserve(int fd) {
+    if (fd < 0 || fd >= MAX_FDS) return;
+    int r = RX_FD_RESERVED;
+    __atomic_compare_exchange_n(&__fds[fd].kind, &r, RX_FD_NONE, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
 }
 
 rx_handle_t __fd_export(int fd) {
@@ -73,9 +80,14 @@ int rx_fd_bind(int fd, int kind, rx_handle_t h) {
         errno = EINVAL;
         return -1;
     }
-    release(&__fds[fd]);
-    __fds[fd].kind = kind;
-    __fds[fd].handle = h;
+    // The new contents first, then the old released (the slot never
+    // looks free in between)
+    struct fd old = __fds[fd];
+    struct fd n = { 0 };
+    n.kind = kind;
+    n.handle = h;
+    __fds[fd] = n;
+    if (old.kind != RX_FD_NONE && old.kind != RX_FD_RESERVED) release(&old);
     return 0;
 }
 
@@ -237,14 +249,21 @@ int pipe(int fds[2]) {
     int a = __fd_alloc(0);
     if (a < 0) return -1;
     int b = __fd_alloc(a + 1);
-    if (b < 0) return -1;
+    if (b < 0) {
+        __fd_unreserve(a);
+        return -1;
+    }
     rx_handle_t r, w;
     rx_status_t s = rx_socket_create(0, &r, &w);
-    if (s != RX_OK) return __set_errno_status(s);
-    __fds[a].kind = RX_FD_PIPE;
+    if (s != RX_OK) {
+        __fd_unreserve(a);
+        __fd_unreserve(b);
+        return __set_errno_status(s);
+    }
     __fds[a].handle = r;
-    __fds[b].kind = RX_FD_PIPE;
+    __fds[a].kind = RX_FD_PIPE;
     __fds[b].handle = w;
+    __fds[b].kind = RX_FD_PIPE;
     fds[0] = a;
     fds[1] = b;
     return 0;
@@ -307,23 +326,30 @@ int dup2(int fd, int fd2) {
     if (pty) __pty_ref(f);
     struct sock *sock = f->sock;
     if (sock) __sock_ref(f);
-    release(&__fds[fd2]);
-    __fds[fd2].kind = kind;
-    __fds[fd2].handle = h;
-    __fds[fd2].flags = flags;
-    __fds[fd2].path = path;
-    __fds[fd2].pty = pty;
-    __fds[fd2].sock = sock;
+    // The new contents first, then the old released (the slot never
+    // looks free in between)
+    struct fd old = __fds[fd2];
+    struct fd n = { 0 };
+    n.kind = kind;
+    n.handle = h;
+    n.flags = flags;
+    n.path = path;
+    n.pty = pty;
+    n.sock = sock;
+    __fds[fd2] = n;
+    if (old.kind != RX_FD_NONE && old.kind != RX_FD_RESERVED) release(&old);
     return fd2;
 }
 
 int dup(int fd) {
     if (!__fd_get(fd)) return -1;
-    for (int i = 0; i < MAX_FDS; i++) {
-        if (__fds[i].kind == RX_FD_NONE) return dup2(fd, i);
+    int n = __fd_alloc(0);
+    if (n < 0) return -1;
+    if (dup2(fd, n) < 0) {
+        __fd_unreserve(n);
+        return -1;
     }
-    errno = EMFILE;
-    return -1;
+    return n;
 }
 
 int isatty(int fd) {

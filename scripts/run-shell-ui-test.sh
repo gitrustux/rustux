@@ -128,7 +128,8 @@ def wait(pat, t, start=0):
 
 NAMES = {' ': 'spc', '\n': 'ret', '-': 'minus', '/': 'slash', '.': 'dot', ';': 'semicolon', "'": 'apostrophe',
          '|': 'shift-backslash', '&': 'shift-7', '$': 'shift-4', '(': 'shift-9', ')': 'shift-0', ',': 'comma',
-         '"': 'shift-apostrophe', '@': 'shift-2', ':': 'shift-semicolon'}
+         '"': 'shift-apostrophe', '@': 'shift-2', ':': 'shift-semicolon',
+         '!': 'shift-1', '=': 'equal'}
 
 def type_(text):
     for ch in text:

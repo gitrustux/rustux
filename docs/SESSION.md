@@ -7,8 +7,8 @@ Ctrl+Alt+F1 throughout.
 ## Starting it
 
 - **At boot**: "Rustica (desktop)" in the boot menu (an installed system's
-  `rustica-desktop.conf`, `INSTALL.md`) or "Try Rustica (desktop)" on the
-  live stick (`BOOT.md`) put `desktop` on the kernel command line: init
+  `rustica-desktop.conf`, `INSTALL.md`) or "Try Rustica Desktop" (1, the
+  default) on the live stick (`BOOT.md`) put `desktop` on the kernel command line: init
   boots the **graphical** target (`SERVICES.md`), everything multi-user has
   plus `desktop.svc`.
 - **From the console**: `desktop` (root) asks the service manager to start
@@ -51,7 +51,8 @@ Ctrl+Alt+F1 throughout.
   buttons share the room left, their titles shortened, and past 90 pixels
   each a "+N" button stands for the rest, so the end of the panel never
   leaves the screen), Updates (when there are some), the keyboard layout
-  (`/etc/keymap`), volume (a placeholder), the network, the clock, Lock,
+  (`/etc/keymap`), volume (a placeholder), the network, the clock (in
+  the formats of Settings > Date & Time, below), Lock,
   Log out, and the power button at the far end (`powermenu`: Lock screen,
   Log out, Restart, Shut down, Power settings; Suspend and Hibernate wait
   for ACPI). Its settings are `~/.config/rustica/panel.conf` (else
@@ -221,3 +222,20 @@ user. Window clients may be any user's (the compositor does not check yet).
   blanking.
 - Session services under the service manager per user: the session is a
   job, not a set of units.
+
+## Date and time formats (2026-11-26)
+
+Settings > Date & Time chooses how dates and times are shown: the
+**24-hour** clock (14:05) or the **12-hour** one (2:05 PM), with or
+without seconds; the date as **2026-11-26** (ISO), **11/26/2026** (US),
+**26/11/2026**, **26.11.2026**, **Thursday, November 26, 2026** or
+**Thursday 26 November 2026**; and whether the panel shows the date
+beside the time ("Thu 11/26 2:05 PM"). The choice is the user's
+(`~/.config/rustica.conf`: `clock=24|12`, `seconds=yes|no`,
+`date=iso|us|eu|dots|long|long-eu`, `panel_date=yes|no`), over the
+system's default in `/etc/rustica/datetime` (24-hour, ISO). The panel's
+clock (within a second), Settings and Files' times follow it
+(`rustica_ui::clock`). The console's `date` keeps its own format
+(`date +FORMAT`). Languages, and with them each language's own formats,
+come later (CHECKLIST.md phase L).
+

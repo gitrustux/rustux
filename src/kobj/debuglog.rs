@@ -9,6 +9,9 @@
 //! resource, so only `init` (the console service) and processes it trusts
 //! can print directly; every other program prints through its stdout
 //! handle. A read-only debug log object reads the kernel log (`dmesg`).
+//! One made with `ring` (2026-11-26: devmgr's, one for each driver) also
+//! puts what is written into the kernel log, so drivers' messages reach
+//! `dmesg` and the system log (`logs -k`).
 
 use super::SignalState;
 use alloc::sync::Arc;
@@ -20,11 +23,17 @@ pub struct DebugLog {
     pub signals: SignalState,
     /// Position in the kernel log of the next read
     pos: core::sync::atomic::AtomicU64,
+    /// Writes go into the kernel log too
+    ring: bool,
 }
 
 impl DebugLog {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { signals: SignalState::new(0), pos: core::sync::atomic::AtomicU64::new(0) })
+        Self::with_ring(false)
+    }
+
+    pub fn with_ring(ring: bool) -> Arc<Self> {
+        Arc::new(Self { signals: SignalState::new(0), pos: core::sync::atomic::AtomicU64::new(0), ring })
     }
 
     /// Read kernel log bytes not read yet through this object
@@ -38,6 +47,11 @@ impl DebugLog {
 
     pub fn write(&self, bytes: &[u8]) {
         crate::drivers::display::write_bytes(bytes);
+        if self.ring {
+            // The ring and the debug port
+            crate::klog::write(bytes);
+            return;
+        }
         for &b in bytes {
             unsafe { crate::klog::port_put(b) };
         }

@@ -1,0 +1,13 @@
+# How the desktop shows dates and times (the panel's clock, Settings,
+# Files), for every user; a user's own choice (Settings > Date & Time) is
+# in ~/.config/rustica.conf with the same keys.
+#   clock=24 | 12           (12: with AM/PM)
+#   seconds=no | yes
+#   date=iso | us | eu | dots | long | long-eu
+#        2026-11-26, 11/26/2026, 26/11/2026, 26.11.2026,
+#        Thursday, November 26, 2026, Thursday 26 November 2026
+#   panel_date=no | yes     (the date beside the panel's time)
+clock=24
+seconds=no
+date=iso
+panel_date=no

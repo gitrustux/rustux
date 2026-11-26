@@ -48,6 +48,12 @@ usb=08:06:50    /bin/usb-storage
 8086:125d   /bin/igc
 8086:125e   /bin/igc
 8086:125f   /bin/igc
+#
+# rtl8125 (2026-11-26): Realtek's 2.5 GbE RTL8125 (the Killer E3000 is
+# 10ec:3000) and 5 GbE RTL8126 (the desktop PC's), queue 0
+10ec:8125   /bin/rtl8125
+10ec:8126   /bin/rtl8125
+10ec:3000   /bin/rtl8125
 
 # e1000e (NETWORK.md step D4): Intel 82574L (QEMU's -device e1000e), and the
 # I217/I218/I219 of laptops (written from the same registers; not yet tested
