@@ -238,6 +238,12 @@ impl Canvas {
         self.pixmap.fill_path(path, &p, FillRule::Winding, Transform::identity(), self.clip.as_ref().map(|(_, m)| m));
     }
 
+    /// A path filled even-odd (its inner shapes cut out)
+    pub fn fill_path_evenodd(&mut self, path: &tiny_skia::Path, c: Color) {
+        let p = paint(c);
+        self.pixmap.fill_path(path, &p, FillRule::EvenOdd, Transform::identity(), self.clip.as_ref().map(|(_, m)| m));
+    }
+
     /// Text with its top at y; returns the width drawn
     pub fn text(&mut self, face: &mut Face, x: f32, y: f32, text: &str, px: f32, c: Color) -> f32 {
         let (ascent, _, _) = face.line(px);

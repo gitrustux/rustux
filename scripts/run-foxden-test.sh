@@ -194,8 +194,8 @@ def wait_pixel(x, y, want, t, tol=8):
     return False
 
 # The desktop takes the keyboard when it comes up: wait for it (the
-# panel's Applications button)
-check(wait_pixel(64, 782, 0xFF5A1F, 90), 'the desktop starts at boot')
+# panel's fox button)
+check(wait_pixel(25, 787, 0xFF6500, 90), 'the desktop starts at boot')
 time.sleep(3)
 C, H = 'org.rustica.calculator', 'org.test.homeapp'
 NAMES['\\'] = 'backslash'
@@ -219,7 +219,7 @@ out = console('echo APPS: $(ls /apps); ls /root/.cache/foxden/%s; echo S1B' % C,
 check(C in (re.search(r'(?<!echo )APPS:([^\r\n]*)', out) or [None, ''])[1], 'it is in /apps')
 check('icon.png' in out and 'screenshot.png' in out, 'its icon and screenshot are cached in ~/.cache/foxden')
 n2 = len(log())
-qmp_click(64, 782)
+qmp_click(25, 782)
 time.sleep(4)
 key('esc'); time.sleep(1)
 out = console('logs | grep "launcher: " | tail -1', 4)

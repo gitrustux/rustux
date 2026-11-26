@@ -18,7 +18,7 @@ paper, building them only if ours falls short:
 | Licence | GPLv3, or Slint's royalty-free licence with conditions, or commercial | MIT | ours (MIT); dependencies BSD-3, MIT, Apache-2.0, Zlib; Inter under the OFL |
 | Porting work | a platform backend (window, events, software renderer's target) | a windowing backend (winit-like) and its async runtime | none: written for the compositor |
 | Footprint | a markup compiler at build time, a runtime | large (wgpu or tiny-skia, async executor, many crates) | `uidemo` is 1.1 MB static, 30 crates |
-| Look | polished, themable | good, themable | Rustica or Dracula, as we draw it |
+| Look | polished, themable | good, themable | five themes and the user's own, as we draw it |
 | Keyboard navigation | yes | partial | yes, from the start |
 | Maintenance | upstream, fast moving | upstream, breaking releases | ours to maintain |
 
@@ -53,10 +53,16 @@ iced is the fallback to build next (MIT, tiny-skia renderer).
   it when it came from the keyboard), Enter and Space press buttons,
   arrows, Home, End, Page Up and Down in lists, trees and tabs; F10 opens
   the menus; Esc closes menus and dialogs.
-- **Theme**: Rustica (the default) or Dracula: `Theme`, `RUSTICA`,
-  `DRACULA`, `current_theme()` (`RUSTICA_THEME`, else `theme=` in
-  `~/.config/rustica.conf`, else `/etc/rustica/appearance`); a running
-  window follows a change (`SESSION.md` "Appearance"). **Scaling**: integer, 1x and 2x (`RUSTICA_SCALE`,
+- **Theme** (2026-11-25): the semantic tokens of a theme file
+  (`SESSION.md` "Themes": Rustica, the default, Dracula, Forest, Arctic,
+  Sakura, and the user's own): `Theme` (`get`/`set` by token, `parse`,
+  `to_text`), `theme_named()` (the user's file, the system's, built in),
+  `list_themes()`, `current_theme()` (`RUSTICA_THEME` with
+  `RUSTICA_THEME_COLORS`, else `theme=` in `~/.config/rustica.conf`, else
+  `/etc/rustica/appearance`); a running window follows a change from the
+  colours the compositor sends (`theme_from_event`). Widgets use the
+  tokens only (hover: `surface_hover`, `accent_hover`); `card()` is a
+  clickable area to draw in (the theme previews); `Icon::Fox` the fox. **Scaling**: integer, 1x and 2x (`RUSTICA_SCALE`,
   or `uidemo --scale 2`; else `scale=` in `~/.config/rustica.conf`, which
   Settings writes: step F7).
 - **Password fields** (`password_field`): dots, nothing copied out (step

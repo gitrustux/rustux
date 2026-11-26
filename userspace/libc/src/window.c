@@ -31,7 +31,8 @@ static int send_req(rx_window_t *win, const rx_window_req_t *r, const void *payl
 
 // One message from the compositor: 1, 0 if none by the deadline, or -EPIPE;
 // extra (a reply's text) is copied to extra_buf
-// The last drop's text (one at a time per process)
+// The text that came with the last drop or appearance event (one at a
+// time per process)
 static char drop_buf[RX_WINDOW_MAX_CLIPBOARD + 1];
 static size_t drop_len;
 
@@ -67,7 +68,7 @@ static int read_one(rx_window_t *win, rx_window_event_t *ev, uint64_t deadline, 
         if (nh) rx_handle_close(h);
         if (nb < sizeof *ev) continue;
         memcpy(ev, buf, sizeof *ev);
-        if (ev->op == RX_WINDOW_EV_DROP) {
+        if (ev->op == RX_WINDOW_EV_DROP || ev->op == RX_WINDOW_EV_APPEARANCE) {
             size_t n = nb - sizeof *ev;
             if (n > RX_WINDOW_MAX_CLIPBOARD) n = RX_WINDOW_MAX_CLIPBOARD;
             memcpy(drop_buf, buf + sizeof *ev, n);

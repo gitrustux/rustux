@@ -156,7 +156,7 @@ def near(c, want, tol=40):
 def key(k):
     mon('sendkey ' + k)
 
-ACCENT, LOCKBOX, TOAST = 0xFF5A1F, 0x1C1B20, 0x1C1B20  # the Rustica theme
+ACCENT, LOCKBOX, TOAST = 0xFF6500, 0x202024, 0x202024  # the Rustica theme (ACCENT: the fox)
 
 def wait_pixel(x, y, want, t, tol=8):
     end = time.time() + t
@@ -172,22 +172,22 @@ if not wait(r'rustux.*:.*/root.* > ', 120):
     sys.exit(1)
 
 # 1. The desktop at boot
-check(wait_pixel(64, 782, ACCENT, 90), 'the desktop starts at boot: the panel (Applications)')
+check(wait_pixel(25, 787, ACCENT, 90), 'the desktop starts at boot: the panel (Applications)')
 px = screen()
-check(not near(px(640, 300), 0x101012, 2), 'the wallpaper (%06x)' % px(640, 300))
+check(not near(px(640, 300), 0x101010, 2), 'the wallpaper (%06x)' % px(640, 300))
 
 # 2. The launcher
-click(64, 782)
-check(wait_pixel(160, 90, 0x1C1B20, 20), 'Apps opens the menu (its Files favourite; %06x)' % screen()(160, 90))
-click(64, 782)
+click(25, 782)
+check(wait_pixel(160, 90, 0x202024, 20), 'Apps opens the menu (its Files favourite; %06x)' % screen()(160, 90))
+click(25, 782)
 time.sleep(3)
-check(not near(screen()(160, 90), 0x1C1B20, 2), 'Apps again closes the menu (%06x)' % screen()(160, 90))
+check(not near(screen()(160, 90), 0x202024, 2), 'Apps again closes the menu (%06x)' % screen()(160, 90))
 key('meta_l')
-check(wait_pixel(160, 90, 0x1C1B20, 20), 'the Super key alone opens the menu (%06x)' % screen()(160, 90))
+check(wait_pixel(160, 90, 0x202024, 20), 'the Super key alone opens the menu (%06x)' % screen()(160, 90))
 key('ret')
 time.sleep(4)
 px = screen()
-check(not near(px(160, 90), 0x1C1B20, 2) or not near(px(160, 140), 0x101012, 30), 'Enter starts an application and closes the launcher')
+check(not near(px(160, 90), 0x202024, 2) or not near(px(160, 140), 0x101010, 30), 'Enter starts an application and closes the launcher')
 
 # 3. A notification from the console
 key('ctrl-alt-f1')
@@ -202,7 +202,7 @@ check(near(px(SW - 16 - 320 + 200, 30), TOAST, 4), 'the notification, top right'
 
 # 4. Log out, the login, alice
 click(1187, 782)
-check(wait_pixel(SW // 2, 20, 0x101012, 15, 2), 'Log out: the graphical login, full screen')
+check(wait_pixel(SW // 2, 20, 0x101010, 15, 2), 'Log out: the graphical login, full screen')
 time.sleep(2)
 type_('alice')
 key('tab')
@@ -211,11 +211,11 @@ key('ret')
 time.sleep(3)
 type_('secret')
 key('ret')
-check(wait_pixel(64, 782, ACCENT, 30), 'alice logs in: her panel')
+check(wait_pixel(25, 787, ACCENT, 30), 'alice logs in: her panel')
 time.sleep(2)
 
 # 5. Lock
-click(64, 782)
+click(25, 782)
 time.sleep(3)
 key('ret')          # an application in her session, to be killed at logout
 time.sleep(3)
@@ -232,7 +232,7 @@ type_('secret')
 key('ret')
 time.sleep(2)
 px = screen()
-check(px(SW // 2, SH // 2 - 30) != LOCKBOX and near(px(64, 782), ACCENT, 8), 'her password unlocks')
+check(px(SW // 2, SH // 2 - 30) != LOCKBOX and near(px(25, 787), ACCENT, 8), 'her password unlocks')
 
 # Log out again: her programs go
 click(1187, 782)

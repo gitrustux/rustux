@@ -89,8 +89,10 @@ typedef struct {
 #define RX_WINDOW_EV_WINDOW_INFO   108u
 // Not from the compositor: rx_window_wake was called (from another thread)
 #define RX_WINDOW_EV_WAKE          109u
-// The theme or the wallpaper changed: text = the theme's name ("rustica",
-// "dracula"); clients redraw in it
+// The theme or the wallpaper changed (and once to every new window): text =
+// the theme's name ("rustica", "forest", a user's own); n bytes follow, its
+// colours as a theme file's text (key=#RRGGBB lines, SESSION.md "Themes"):
+// rx_window_drop_text gives them; clients redraw in it
 #define RX_WINDOW_EV_APPEARANCE    110u
 // To the panel: the desktop's menu was used (flags 1 change the wallpaper,
 // 2 the appearance settings)
@@ -158,8 +160,8 @@ int rx_window_set_role(rx_window_t *win, uint32_t role);
 int rx_window_activate(rx_window_t *win, int id);
 // Start dragging text (file paths, a line each) while the left button is held
 int rx_window_drag_start(rx_window_t *win, const char *text);
-// The text of the last RX_WINDOW_EV_DROP read (into buf, NUL-terminated);
-// returns its length
+// The text of the last RX_WINDOW_EV_DROP or RX_WINDOW_EV_APPEARANCE read
+// (into buf, NUL-terminated); returns its length
 int rx_window_drop_text(char *buf, size_t size);
 // (the panel) its edge (RX_WINDOW_EDGE_*), thickness and auto-hide
 int rx_window_set_panel(rx_window_t *win, uint32_t edge, int size, int autohide);

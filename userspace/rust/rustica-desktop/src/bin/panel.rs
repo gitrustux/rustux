@@ -8,7 +8,7 @@
 //! edge of the screen (bottom by default; top, left or right) and made of
 //! applets in three zones, start, centre and end, as Cinnamon's:
 //!
-//! - menu: Apps (the launcher; the Super key alone does the same)
+//! - menu: the fox button (the launcher; the Super key alone does the same)
 //! - launchers: one button per pinned app (FoxDen, Files, Terminal)
 //! - windows: a button per window (click: focus it, or minimise it if it
 //!   has the focus); they share what room is left, their titles shortened,
@@ -114,7 +114,7 @@ fn layout() -> String {
 /// RX_WINDOW_DESKTOP_LAUNCHER: the compositor saw the Super key alone
 const LAUNCHER_KEY: u32 = 100;
 
-/// The Apps button and the Super key: open the menu, or close it if it is
+/// The fox button and the Super key: open the menu, or close it if it is
 /// open
 fn toggle_launcher(launcher: &mut Option<std::process::Child>) {
     toggle(launcher, "/bin/launcher", &[], "launcher");
@@ -371,7 +371,7 @@ fn main() {
         let w = ui.canvas.width();
         let h = ui.canvas.height();
         let vertical = cfg.edge == EDGE_LEFT || cfg.edge == EDGE_RIGHT;
-        ui.canvas.fill_rect(rustica_ui::gfx::Rect::new(0.0, 0.0, w, h), th.surface);
+        ui.canvas.fill_rect(rustica_ui::gfx::Rect::new(0.0, 0.0, w, h), th.taskbar);
         // The line on the side that faces the desktop
         let line = match cfg.edge {
             EDGE_TOP => rustica_ui::gfx::Rect::new(0.0, h - 1.0, w, 1.0),
@@ -387,7 +387,8 @@ fn main() {
         }
 
         let mut actions: Vec<Action> = Vec::new();
-        let state = State { wins: &wins, launchers: &launchers, net: &net, ups, vertical };
+        let menu_open = launcher_proc.is_some();
+        let state = State { wins: &wins, launchers: &launchers, net: &net, ups, vertical, menu_open };
         let gap = ui.u(8.0);
         if vertical {
             // One applet under the other; the window list takes the height left
@@ -481,6 +482,8 @@ struct State<'a> {
     net: &'a str,
     ups: usize,
     vertical: bool,
+    /// The menu is open (its button shows it)
+    menu_open: bool,
 }
 
 enum Action {
@@ -513,7 +516,7 @@ fn applet_size(ui: &mut Ui, name: &str, s: &State, vertical: bool) -> f32 {
         };
     }
     match name {
-        "menu" => ui.text_width("Apps") * 1.1 + ui.u(32.0) + gap,
+        "menu" => ui.row_h() * 1.4 + gap,
         "launchers" => s.launchers.iter().map(|l| bw(ui, &l.name)).sum(),
         "updates" => {
             if s.ups > 0 {
@@ -551,7 +554,12 @@ fn applet(ui: &mut Ui, name: &str, s: &State, room: f32, more_next: &mut usize, 
     let full = if v { ui.available_width() } else { 0.0 };
     match name {
         "menu" => {
-            if ui.button_ex("menu", "Apps", full, true, false).clicked {
+            // The fox (2026-11-25; FoxDen holds the apps, this is the menu)
+            let side = ui.row_h();
+            let r = ui.button_ex("menu", "", if v { full } else { side * 1.4 }, false, s.menu_open);
+            let isz = side * 0.78;
+            ui.icon(rustica_ui::Icon::Fox, r.rect.x + (r.rect.w - isz) / 2.0, r.rect.y + (r.rect.h - isz) / 2.0, isz);
+            if r.clicked {
                 actions.push(Action::Menu);
             }
         }

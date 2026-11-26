@@ -758,8 +758,8 @@ fn main() {
                 app.focused = f;
                 app.dirty = true;
             }
-            Event::Appearance { theme } => {
-                *THEME.lock().unwrap() = Some(rustica_ui::theme_named(&theme));
+            Event::Appearance { theme, colors } => {
+                *THEME.lock().unwrap() = Some(rustica_ui::theme_from_event(&theme, &colors));
                 app.dirty = true;
             }
             Event::CloseRequest => {

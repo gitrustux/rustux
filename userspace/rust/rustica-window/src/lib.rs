@@ -112,7 +112,7 @@ pub enum Event {
     /// [`Waker::wake`] was called
     Wake,
     /// The theme or the wallpaper changed; the theme's name
-    Appearance { theme: String },
+    Appearance { theme: String, colors: String },
     /// To the panel: the desktop's menu was used (1 change the wallpaper,
     /// 2 the appearance settings)
     Desktop(u32),
@@ -275,7 +275,14 @@ impl Window {
             WAKE => Event::Wake,
             APPEARANCE => {
                 let len = ev.text.iter().position(|&b| b == 0).unwrap_or(ev.text.len());
-                Event::Appearance { theme: String::from_utf8_lossy(&ev.text[..len]).into_owned() }
+                // The theme's colours follow (a theme file's text)
+                let mut buf = vec![0u8; 4097];
+                let n = unsafe { rx_window_drop_text(buf.as_mut_ptr(), buf.len()) }.max(0) as usize;
+                buf.truncate(n.min(4096));
+                Event::Appearance {
+                    theme: String::from_utf8_lossy(&ev.text[..len]).into_owned(),
+                    colors: String::from_utf8_lossy(&buf).into_owned(),
+                }
             }
             DESKTOP => Event::Desktop(ev.flags),
             DROP => {

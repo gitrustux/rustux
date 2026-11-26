@@ -37,11 +37,14 @@
 //
 //   compositor [-v]     -v: print what happens (for the tests)
 //
-// Appearance (2026-11-24): the theme (Rustica, the default, or Dracula)
-// and the wallpaper come from /etc/rustica/appearance and then the
-// session user's ~/.config/rustica.conf (theme=, wallpaper=: rustica,
-// gradient, or a QOI file of theirs, which Settings makes), checked every
-// second; windows hear of a change (RX_WINDOW_EV_APPEARANCE). A right
+// Appearance (2026-11-24; five themes and the user's own 2026-11-25): the
+// theme and the wallpaper come from /etc/rustica/appearance and then the
+// session user's ~/.config/rustica.conf (theme=: a theme file's name, the
+// user's own ~/.config/rustica/themes/NAME.theme before the system's in
+// /usr/share/rustica/themes; wallpaper=: rustica, dracula, forest, arctic,
+// sakura, gradient, or a QOI file of theirs, which Settings makes),
+// checked every second; every window gets the theme's colours when it is
+// made and when they change (RX_WINDOW_EV_APPEARANCE). A right
 // click on the desktop opens a small menu whose choices the panel carries
 // out (RX_WINDOW_EV_DESKTOP).
 //
@@ -61,6 +64,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "themefile.h"
 #include "titlefont.h"
 #include "userdb.h"
 
@@ -72,19 +76,38 @@
 #define MIN_W 64
 #define MIN_H 32
 
-// The themes (the toolkit's, rustica-ui ui.rs, has the same colours)
+// The theme (2026-11-25): a theme file (themefile.h, the same files as the
+// toolkit's), and the colours of the title bars, menus and lock screen
+// worked out from its tokens
 typedef struct {
     const char *name;
     uint32_t desktop, title, title_off, text, text_off, border, border_off, close, button, surface, field, hover;
 } ctheme_t;
-static const ctheme_t themes[] = {
-    // Rustica: fiery orange, fox red, near-black, smoky charcoal, warm white, amber
-    { "rustica", 0x101012, 0x1C1B20, 0x151418, 0xF5F2EF, 0x8C857F, 0xFF5A1F, 0x2A2830, 0xC8101E, 0x3A3640, 0x1C1B20,
-      0x101012, 0x4A2414 },
-    { "dracula", 0x1E1F29, 0x44475A, 0x2E303E, 0xF8F8F2, 0x8A8FA8, 0xBD93F9, 0x44475A, 0xFF5555, 0x6272A4, 0x343746,
-      0x282A36, 0x5A4D80 },
-};
-static const ctheme_t *th = &themes[0];
+static theme_t cur_theme;
+static ctheme_t ctheme;
+static const ctheme_t *th = &ctheme;
+// What windows are sent with RX_WINDOW_EV_APPEARANCE
+static char theme_blob[2048];
+static int theme_blob_len;
+
+static uint32_t cmix(uint32_t a, uint32_t b, int k256) {
+    uint32_t r = 0;
+    for (int s = 0; s <= 16; s += 8) {
+        int x = (int)(a >> s & 255), y = (int)(b >> s & 255);
+        r |= (uint32_t)(x + (y - x) * k256 / 256) << s;
+    }
+    return r;
+}
+
+static void use_theme(const theme_t *t) {
+    cur_theme = *t;
+    const uint32_t *c = cur_theme.c;
+    ctheme = (ctheme_t){ cur_theme.name, c[TH_BG], c[TH_SURFACE], cmix(c[TH_SURFACE], c[TH_BG], 128), c[TH_TEXT],
+                         c[TH_MUTED], c[TH_PRIMARY], c[TH_RAISED], c[TH_DANGER], c[TH_BORDER], c[TH_SURFACE], c[TH_BG],
+                         c[TH_HOVER] };
+    theme_blob_len = theme_text(&cur_theme, theme_blob, sizeof theme_blob);
+}
+
 #define C_DESKTOP     (th->desktop)
 #define C_TITLE       (th->title)
 #define C_TITLE_OFF   (th->title_off)
@@ -561,11 +584,17 @@ static void make_wallpaper(void) {
     if (!wallpaper) return;
     if (strcmp(wall_choice, "gradient")) {
         int fd;
-        if (wall_choice[0] == '/')
+        if (wall_choice[0] == '/') {
             fd = open_users(wall_choice);
-        else
+        } else if (theme_name_ok(wall_choice) && strcmp(wall_choice, "rustica")) {
+            // The system's others (2026-11-25): dracula, forest, arctic, sakura
+            char p[96];
+            snprintf(p, sizeof p, "/usr/share/backgrounds/%s.qoi", wall_choice);
+            fd = open(p, O_RDONLY);
+        } else {
             fd = open(H > W ? "/usr/share/backgrounds/rustica-fox-portrait.qoi" : "/usr/share/backgrounds/rustica-fox.qoi",
                       O_RDONLY);
+        }
         if (fd >= 0) {
             uint32_t sw, sh, *src = qoi_load(fd, &sw, &sh);
             close(fd);
@@ -749,6 +778,20 @@ static void send_event(window_t *w, rx_window_event_t *ev) {
     rx_channel_write(w->ch, 0, ev, sizeof *ev, 0, 0);
 }
 
+// The theme's name and colours (the toolkit draws in them)
+static void send_appearance(window_t *w) {
+    static char out[sizeof(rx_window_event_t) + sizeof theme_blob];
+    rx_window_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.op = RX_WINDOW_EV_APPEARANCE;
+    snprintf(ev.text, sizeof ev.text, "%s", th->name);
+    ev.n = (uint32_t)theme_blob_len;
+    ev.time = rx_clock_get_monotonic();
+    memcpy(out, &ev, sizeof ev);
+    memcpy(out + sizeof ev, theme_blob, (size_t)theme_blob_len);
+    rx_channel_write(w->ch, 0, out, (uint32_t)(sizeof ev + (size_t)theme_blob_len), 0, 0);
+}
+
 static void send_simple(window_t *w, uint32_t op, uint32_t flags) {
     rx_window_event_t ev;
     memset(&ev, 0, sizeof ev);
@@ -840,24 +883,33 @@ static void load_appearance(int force) {
         read_appearance(fd, theme, sizeof theme, wall, sizeof wall);
         close(fd);
     }
-    const ctheme_t *nt = &themes[0];
-    for (size_t i = 0; i < sizeof themes / sizeof themes[0]; i++)
-        if (!strcmp(theme, themes[i].name)) nt = &themes[i];
-    int changed = nt != th || strcmp(wall, wall_choice) || force;
-    if (!changed) return;
-    th = nt;
-    snprintf(wall_choice, sizeof wall_choice, "%s", wall);
-    vlog("appearance: theme %s, wallpaper %s\n", th->name, wall_choice);
-    make_wallpaper();
-    add_damage(0, 0, (int)W, (int)H);
-    for (int k = 0; k < MAX_WINDOWS; k++) {
-        if (!wins[k].used) continue;
-        rx_window_event_t ev;
-        memset(&ev, 0, sizeof ev);
-        ev.op = RX_WINDOW_EV_APPEARANCE;
-        snprintf(ev.text, sizeof ev.text, "%s", th->name);
-        send_event(&wins[k], &ev);
+    // The theme: the user's own file of that name, the system's, else Rustica
+    theme_t nt = theme_builtin;
+    int found = 0;
+    if (theme_name_ok(theme) && conf_path[0]) {
+        char p[300];
+        snprintf(p, sizeof p, "%s", conf_path);
+        char *slash = strrchr(p, '/');
+        if (slash) {
+            snprintf(slash + 1, sizeof p - (size_t)(slash + 1 - p), "rustica/themes/%s.theme", theme);
+            found = theme_read_fd(&nt, theme, open_users(p)) == 0;
+        }
     }
+    if (!found) found = theme_load_system(&nt, theme) == 0;
+    if (!found) nt = theme_builtin;
+    char blob[sizeof theme_blob];
+    int bl = theme_text(&nt, blob, sizeof blob);
+    int changed = strcmp(nt.name, cur_theme.name) || bl != theme_blob_len || memcmp(blob, theme_blob, (size_t)bl) ||
+                  strcmp(wall, wall_choice) || force;
+    if (!changed) return;
+    int wall_changed = strcmp(wall, wall_choice) || force || !wallpaper;
+    use_theme(&nt);
+    snprintf(wall_choice, sizeof wall_choice, "%s", wall);
+    vlog("appearance: theme %s%s, wallpaper %s\n", th->name, found ? "" : " (built in)", wall_choice);
+    if (wall_changed || !strcmp(wall_choice, "gradient")) make_wallpaper();
+    add_damage(0, 0, (int)W, (int)H);
+    for (int k = 0; k < MAX_WINDOWS; k++)
+        if (wins[k].used) send_appearance(&wins[k]);
 }
 
 // Whose appearance: the session user's (or none)
@@ -1539,6 +1591,9 @@ static int pending_message(int i) {
         rx_handle_close(ch);
         return 0;
     }
+    // Its first event: the theme to draw in (a sandboxed app cannot read
+    // the user's own theme files)
+    send_appearance(&wins[k]);
     set_focus(k);
     return 1;
 }
@@ -2003,6 +2058,7 @@ static void connect_input(void) {
 // ---- main ----
 
 int main(int argc, char **argv) {
+    use_theme(&theme_builtin);
     last_input = rx_clock_get_monotonic();
     if (argc == 2 && !strcmp(argv[1], "-v")) verbose = 1;
     else if (argc != 1) {

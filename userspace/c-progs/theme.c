@@ -4,15 +4,17 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
-// theme: the colour theme, Rustica or Dracula (2026-11-24).
+// theme: the colour theme (2026-11-24; five themes and your own since
+// 2026-11-25: Rustica, Dracula, Forest, Arctic, Sakura).
 //
 //   theme                     what the console and your desktop use
-//   theme list                the themes
+//   theme list                the themes (the system's, then your own)
 //   theme NAME                both: the console now (and, as root, at
 //                             every start: /etc/console-theme) and your
 //                             desktop (~/.config/rustica.conf)
 //   theme --console NAME      the console only
-//   theme --desktop NAME      the desktop only (as Settings > Appearance)
+//   theme --desktop NAME      the desktop only (as Settings > Appearance;
+//                             your own themes too)
 //
 // The server's console starts in Dracula and the desktop in Rustica.
 
@@ -77,8 +79,31 @@ static int set_desktop(const char *name) {
     return 0;
 }
 
+// Your own themes (~/.config/rustica/themes/NAME.theme): with a name,
+// that one if you have it; else the k-th, or 0
+static const char *user_theme(const char *name, int k) {
+    static char found[16];
+    const char *home = getenv("HOME");
+    char dir[256];
+    snprintf(dir, sizeof dir, "%s/.config/rustica/themes", home ? home : "/root");
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    int i = 0;
+    const char *r = 0;
+    while (d && !r && (e = readdir(d))) {
+        size_t l = strlen(e->d_name);
+        if (l < 7 || l - 6 > 15 || strcmp(e->d_name + l - 6, ".theme")) continue;
+        memcpy(found, e->d_name, l - 6);
+        found[l - 6] = 0;
+        if (!theme_name_ok(found)) continue;
+        if (name ? !strcmp(name, found) : i++ == k) r = found;
+    }
+    if (d) closedir(d);
+    return r;
+}
+
 static int set_console(const char *name) {
-    const console_theme_t *t = console_theme_find(name);
+    const theme_t *t = console_theme_find(name);
     console_theme_apply(stdout, t);
     if (geteuid() == 0) {
         FILE *f = fopen("/etc/console-theme", "w");
@@ -98,7 +123,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--console")) desktop = 0, i++;
     else if (argc > 1 && !strcmp(argv[1], "--desktop")) console = 0, i++;
     if (argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
-        printf("usage: theme [list | [--console | --desktop] rustica|dracula]\n");
+        printf("usage: theme [list | [--console | --desktop] NAME]\n");
         return 0;
     }
     if (i >= argc) {
@@ -109,10 +134,13 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(argv[i], "list")) {
-        for (size_t k = 0; k < CONSOLE_THEMES; k++) printf("%s\n", console_themes[k].name);
+        char names[64][16];
+        int n = console_theme_names(names, 64);
+        for (int k = 0; k < n; k++) printf("%s\n", names[k]);
+        for (int k = 0; user_theme(0, k); k++) printf("%s (yours)\n", user_theme(0, k));
         return 0;
     }
-    if (i + 1 != argc || !console_theme_find(argv[i])) {
+    if (i + 1 != argc || !(console_theme_find(argv[i]) || (!console && user_theme(argv[i], 0)))) {
         fprintf(stderr, "theme: no theme %s (theme list)\n", argv[i]);
         return 2;
     }

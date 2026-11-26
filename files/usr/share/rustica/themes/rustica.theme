@@ -1,0 +1,37 @@
+# Rustica: the desktop's default: fiery orange, fox red, near-black. A Rustica colour theme: key=#RRGGBB lines
+# (docs/SESSION.md "Themes"); ~/.config/rustica/themes/NAME.theme for
+# a user's own
+name=Rustica
+bg=#101010
+surface=#202024
+surface-raised=#2B292B
+surface-hover=#383438
+border=#49302A
+text=#FFFFFF
+text-muted=#858585
+primary=#FF6500
+primary-hover=#FF812B
+accent=#D71920
+selection=#57230F
+success=#55C878
+warning=#FFB347
+danger=#FF3333
+info=#65BDEB
+taskbar=#151416
+# The terminal's 16 colours (normal, then bright)
+ansi0=#2B292B
+ansi1=#FF3333
+ansi2=#55C878
+ansi3=#FFB347
+ansi4=#65BDEB
+ansi5=#D96BA0
+ansi6=#5FC4C4
+ansi7=#E8E2DC
+ansi8=#858585
+ansi9=#FF5A5F
+ansi10=#8BE0A4
+ansi11=#FFD08A
+ansi12=#8FD3F5
+ansi13=#F08CC0
+ansi14=#8AE0E0
+ansi15=#FFFFFF

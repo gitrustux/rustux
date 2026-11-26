@@ -161,7 +161,7 @@ def near(c, want, tol=40):
 def key(k):
     mon('sendkey ' + k)
 
-ACCENT, LOCKBOX, TOAST = 0xFF5A1F, 0x1C1B20, 0x1C1B20  # the Rustica theme
+ACCENT, LOCKBOX, TOAST = 0xFF6500, 0x202024, 0x202024  # the Rustica theme (ACCENT: the fox)
 
 def wait_pixel(x, y, want, t, tol=8):
     end = time.time() + t
@@ -222,7 +222,7 @@ if not wait(r'rustux.*:.*/root.* > ', 120):
 
 if NAME == 'vga':
     check(wait(r'virtio-gpu: screen 1280x800 \(1 head\)', 30) is not None, 'virtio-gpu serves the screen (1280x800, 1 head)')
-    check(wait_pixel(64, 782, ACCENT, 90), 'the desktop on virtio-gpu (the panel)')
+    check(wait_pixel(25, 787, ACCENT, 90), 'the desktop on virtio-gpu (the panel)')
     # The pointer is the host's cursor: not in the screen's pixels
     to(640, 400)
     time.sleep(1.5)
@@ -240,7 +240,7 @@ if NAME == 'vga':
     check('console here' in log()[n:] and bg > 2000, 'Ctrl+Alt+F1: the text console on virtio-gpu (%d of 2560 samples its background)' % bg)
     check(any(not near(px(x, y), 0x282A36, 30) for y in range(0, 800, 2) for x in range(0, 300, 2)), 'the console shows text')
     key('ctrl-alt-f7')
-    check(wait_pixel(64, 782, ACCENT, 10), 'Ctrl+Alt+F7: the desktop again')
+    check(wait_pixel(25, 787, ACCENT, 10), 'Ctrl+Alt+F7: the desktop again')
     # The host window changes size
     n = len(log())
     rfb_size(W_DIR + '/vnc', 1600, 900)
@@ -248,11 +248,11 @@ if NAME == 'vga':
     time.sleep(3)
     px = screen()
     check(px.size == (1600, 900), 'the screen is 1600x900 (%dx%d)' % px.size)
-    check(near(px(64, 882), ACCENT, 8) and near(px(1595, 882), 0x1C1B20, 8), 'the desktop follows: the panel across 1600 pixels at the new bottom')
+    check(near(px(25, 887), ACCENT, 8) and near(px(1595, 882), 0x151416, 8), 'the desktop follows: the panel across 1600 pixels at the new bottom')
 
 elif NAME == 'heads':
     check(wait(r'virtio-gpu: screen 1280x800 \(1 head\)', 30) is not None, 'two heads, the second off at first')
-    check(wait_pixel(64, 782, ACCENT, 90), 'the desktop')
+    check(wait_pixel(25, 787, ACCENT, 90), 'the desktop')
     n = len(log())
     rfb_size(W_DIR + '/vnc1', 800, 600)
     check(wait(r'virtio-gpu: screen 2080x800 \(2 heads\)', 15, n) is not None, 'the second head comes on: one screen of 2080x800')
@@ -262,12 +262,13 @@ elif NAME == 'heads':
     p0 = lambda x, y: int.from_bytes(d0[3 * (y * w0 + x):3 * (y * w0 + x) + 3], 'big')
     p1 = lambda x, y: int.from_bytes(d1[3 * (y * w1 + x):3 * (y * w1 + x) + 3], 'big')
     check((w0, h0, w1, h1) == (1280, 800, 800, 600), 'head 0 is 1280x800, head 1 800x600 (%dx%d, %dx%d)' % (w0, h0, w1, h1))
-    check(near(p0(64, 782), ACCENT, 8) and near(p0(1275, 782), 0x1C1B20, 8), 'the panel on the first head, its width')
-    check(not near(p1(400, 300), 0, 8), 'the second head shows its part of the wallpaper (%06x)' % p1(400, 300))
+    check(near(p0(25, 787), ACCENT, 8) and near(p0(1275, 782), 0x151416, 8), 'the panel on the first head, its width')
+    lit = sum(1 for x in range(0, 800, 40) for y in range(0, 600, 40) if not near(p1(x, y), 0, 8))
+    check(lit >= 10, 'the second head shows its part of the wallpaper (%d points not black)' % lit)
 
 else:  # virtio-gpu-pci
     check(wait(r'virtio-gpu: screen 1280x800 \(1 head\)', 30) is not None, 'virtio-gpu-pci (no UEFI framebuffer): the driver serves the screen')
-    check(wait_pixel(64, 782, ACCENT, 90), 'the desktop on virtio-gpu-pci')
+    check(wait_pixel(25, 787, ACCENT, 90), 'the desktop on virtio-gpu-pci')
 
 # Which display service runs: virtio-gpu, not display
 key('ctrl-alt-f1')

@@ -1,0 +1,12 @@
+The Rustica fox (2026-11-25), from the project owner's concept:
+
+  fox.svg           the fox's head, filled, with its eyes cut out (the
+                    panel's menu button draws the same shape: rustica-ui
+                    ui.rs FOX_OUTLINE, FOX_EYES)
+  fox-outline.svg   the same as an outline
+  fox-256.png       fox.svg at 256 pixels
+
+Its colour is the brand's orange, #FF6500, in every theme.
+
+themes/           the colour themes (docs/SESSION.md "Themes")
+logo.png, photo.jpg   test pictures (uidemo, run-openwith-test.sh)

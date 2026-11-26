@@ -154,7 +154,7 @@ BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
 def wallpaper(x, y, W=1280, H=800):
     # compositor.c's make_gradient(), the same integer arithmetic: the
     # Rustica theme's gradient (the test sets wallpaper=gradient)
-    top, bot, acc = 0x101012, 0x1C1B20, 0xFF5A1F
+    top, bot, acc = 0x101010, 0x202024, 0xFF6500
     rad = H * 10 // 14
     r2 = rad * rad
     t = y * 256 // H
@@ -173,7 +173,7 @@ def wallpaper(x, y, W=1280, H=800):
     d = BAYER[y & 3][x & 3] * 16 + 8
     return ((r + d) >> 8) << 16 | ((gg + d) >> 8) << 8 | ((b + d) >> 8)
 
-TITLE, TITLE_OFF = 0x1C1B20, 0x151418  # the Rustica theme
+TITLE, TITLE_OFF = 0x202024, 0x18181A  # the Rustica theme
 
 def px_is(px, x, y, want, what):
     got = px(x, y)

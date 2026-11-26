@@ -53,6 +53,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "themefile.h"
 
 #define MAXV 48
 
@@ -288,8 +289,8 @@ static int add_file(const char *arg, char *abs, size_t cap) {
 
 // The theme (theme= of ~/.config/rustica.conf, else of
 // /etc/rustica/appearance): the app cannot read the user's file in its
-// sandbox, so it gets RUSTICA_THEME (later changes come from the
-// compositor)
+// sandbox, so it gets RUSTICA_THEME and the theme's colours,
+// RUSTICA_THEME_COLORS (later changes come from the compositor)
 static void user_theme(const char *home, char *out, size_t n) {
     const char *e = getenv("RUSTICA_THEME");
     out[0] = 0;
@@ -469,7 +470,7 @@ static int run(int argc, char **argv, const struct passwd *pw) {
 
     // The environment: a few of ours, and its own
     static char envs[24][700];
-    char *envp[25];
+    char *envp[32];
     int ne = 0;
 #define ENV(...) (snprintf(envs[ne], sizeof envs[ne], __VA_ARGS__), envp[ne] = envs[ne], ne++)
     ENV("HOME=%s", home);
@@ -486,7 +487,21 @@ static int run(int argc, char **argv, const struct passwd *pw) {
     if (sc >= 1 && sc <= 4) ENV("RUSTICA_SCALE=%d", (int)(sc + 0.5f));
     char theme[32];
     user_theme(home, theme, sizeof theme);
-    if (theme[0] && strspn(theme, "abcdefghijklmnopqrstuvwxyz") == strlen(theme)) ENV("RUSTICA_THEME=%s", theme);
+    if (theme[0] && theme_name_ok(theme)) {
+        ENV("RUSTICA_THEME=%s", theme);
+        // Its colours too: the user's own theme file is outside the sandbox
+        static char colors[2100];
+        theme_t t;
+        char p[600];
+        snprintf(p, sizeof p, "%s/.config/rustica/themes/%s.theme", home, theme);
+        if (theme_read_fd(&t, theme, open(p, O_RDONLY)) == 0 || theme_load_system(&t, theme) == 0) {
+            int k = snprintf(colors, sizeof colors, "RUSTICA_THEME_COLORS=");
+            theme_text(&t, colors + k, sizeof colors - (size_t)k);
+            for (char *c = colors; *c; c++)
+                if (*c == '\n') *c = ';';
+            envp[ne++] = colors;
+        }
+    }
     static const char *pass[] = { "RUSTICA_WINDOW_AT", "TZ", "LANG", "TERM", 0 };
     for (int k = 0; pass[k]; k++) {
         const char *v = getenv(pass[k]);

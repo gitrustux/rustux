@@ -27,4 +27,4 @@ pub mod ui;
 
 pub use app::{run, Control, Request};
 pub use rustica_window;
-pub use ui::{current_theme, theme_named, ButtonResponse, Column, Icon, Key, Row, TableResponse, Theme, TreeNode, Ui, DRACULA, RUSTICA, THEMES};
+pub use ui::{contrast, current_theme, list_themes, theme_from_event, theme_named, user_theme_dir, valid_theme_name, ButtonResponse, Column, Icon, Key, Row, TableResponse, Theme, TreeNode, Ui, DRACULA, RUSTICA, SYSTEM_THEMES, THEMES, TOKENS};

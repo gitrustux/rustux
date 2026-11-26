@@ -167,7 +167,7 @@ def near(c, want, tol=40):
 def key(k):
     mon('sendkey ' + k)
 
-ACCENT, LOCKBOX, TOAST = 0xFF5A1F, 0x1C1B20, 0x1C1B20  # the Rustica theme
+ACCENT, LOCKBOX, TOAST = 0xFF6500, 0x202024, 0x202024  # the Rustica theme (ACCENT: the fox)
 
 def wait_pixel(x, y, want, t, tol=8):
     end = time.time() + t
@@ -181,7 +181,7 @@ if not wait(r'rustux.*:.*/root.* > ', 120):
     print('no shell prompt')
     print(log()[-3000:])
     sys.exit(1)
-check(wait_pixel(64, 782, ACCENT, 90), 'the desktop starts at boot')
+check(wait_pixel(25, 787, ACCENT, 90), 'the desktop starts at boot')
 time.sleep(3)
 
 def console(cmd, t=3):
@@ -205,7 +205,7 @@ console('terminal &', 8)
 type_('echo term-$((40+2)) > /tmp/term.txt\n')
 time.sleep(2)
 px = screen()
-check(near(px(300, 300), 0x101012, 4), 'Terminal: a window with the terminal background')
+check(near(px(300, 300), 0x101010, 4), 'Terminal: a window with the terminal background')
 key('ctrl-shift-t')
 time.sleep(5)
 type_('echo tab2 > /tmp/tab2.txt; exit\n')
@@ -214,7 +214,7 @@ type_('top\n')
 time.sleep(5)
 px = screen()
 # top's header line is drawn in reverse video: light pixels in the second tab's first rows
-check(any(near(px(x, y), 0xF5F2EF, 30) for x in range(60, 600, 7) for y in range(150, 190, 3)), 'Terminal: top runs (its reverse-video header)')
+check(any(near(px(x, y), 0xFFFFFF, 30) for x in range(60, 600, 7) for y in range(150, 190, 3)), 'Terminal: top runs (its reverse-video header)')
 key('q')
 time.sleep(2)
 type_('exit\n')
@@ -258,7 +258,7 @@ time.sleep(2)
 keys('alt-ret')
 time.sleep(2)
 px = screen()
-check(near(px(470, 200), 0x1C1B20, 6), 'Files: the properties dialog')
+check(near(px(470, 200), 0x202024, 6), 'Files: the properties dialog')
 keys('ret')
 # A text file: Enter opens it in the Text Editor; type, save
 keys('home', 'ret')                 # docs
@@ -345,9 +345,9 @@ type_('carol')
 key('tab')
 type_('secret')
 key('ret')
-check(wait_pixel(64, 782, ACCENT, 30), 'carol logs in')
+check(wait_pixel(25, 787, ACCENT, 30), 'carol logs in')
 time.sleep(3)
-click(64, 782)                          # Apps: Settings is the 6th in the menu's All
+click(25, 782)                          # Apps: Settings is the 6th in the menu's All
 time.sleep(4)
 keys('down', 'down', 'down', 'down', 'down', 'ret')
 time.sleep(8)

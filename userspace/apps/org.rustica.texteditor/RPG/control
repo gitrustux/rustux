@@ -1,5 +1,5 @@
 Package: org.rustica.texteditor
-Version: 1.0.1
+Version: 1.0.2
 Architecture: x86_64
 Kind: app
 Maintainer: The Rustux Authors <gitrustux@rustux>

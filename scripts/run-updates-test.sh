@@ -197,8 +197,8 @@ def wait_pixel(x, y, want, t, tol=8):
     return False
 
 # The desktop takes the keyboard when it comes up: wait for it (the
-# panel's Applications button)
-check(wait_pixel(64, 782, 0xFF5A1F, 90), 'the desktop starts at boot')
+# panel's fox button)
+check(wait_pixel(25, 787, 0xFF6500, 90), 'the desktop starts at boot')
 time.sleep(3)
 
 # 1. The setup, and the installer service's own check

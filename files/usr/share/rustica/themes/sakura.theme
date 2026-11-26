@@ -1,0 +1,37 @@
+# Sakura: plum night and cherry blossom. A Rustica colour theme: key=#RRGGBB lines
+# (docs/SESSION.md "Themes"); ~/.config/rustica/themes/NAME.theme for
+# a user's own
+name=Sakura
+bg=#1D1520
+surface=#30202F
+surface-raised=#402B3E
+surface-hover=#52364F
+border=#68465F
+text=#FFF1F0
+text-muted=#BBA5B4
+primary=#D77BA6
+primary-hover=#EB96BD
+accent=#F0AFCB
+selection=#60334F
+success=#82C9A0
+warning=#E9C27B
+danger=#F07183
+info=#9CCCEB
+taskbar=#171019
+# The terminal's 16 colours (normal, then bright)
+ansi0=#402B3E
+ansi1=#F07183
+ansi2=#82C9A0
+ansi3=#E9C27B
+ansi4=#8FA8E8
+ansi5=#D77BA6
+ansi6=#8FD0D0
+ansi7=#E8D8D8
+ansi8=#7A5F74
+ansi9=#F693A1
+ansi10=#A2DDBA
+ansi11=#F2D49E
+ansi12=#B3C3F2
+ansi13=#EB96BD
+ansi14=#ADE0E0
+ansi15=#FFF1F0

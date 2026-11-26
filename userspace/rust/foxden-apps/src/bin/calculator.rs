@@ -247,13 +247,13 @@ impl Calc {
                 let op = ci == 3 || ri == 0;
                 let eq = *k == "=";
                 let bg = if eq {
-                    if hot { rustica_ui::ui::mix(th.accent, 0xFFFFFF, 0.22) } else { th.accent }
+                    if hot { th.accent_hover } else { th.accent }
                 } else if hot && down {
                     th.selection
                 } else if hot {
-                    th.surface_hi
+                    th.surface_hover
                 } else if op {
-                    rustica_ui::ui::mix(th.surface, th.surface_hi, 0.5)
+                    th.surface_hi
                 } else {
                     th.surface
                 };

@@ -210,8 +210,8 @@ def wait_pixel(x, y, want, t, tol=8):
     return False
 
 # The desktop takes the keyboard when it comes up: wait for it (the
-# panel's Applications button)
-check(wait_pixel(64, 782, 0xFF5A1F, 90), 'the desktop starts at boot')
+# panel's fox button)
+check(wait_pixel(25, 787, 0xFF6500, 90), 'the desktop starts at boot')
 time.sleep(3)
 P, F = 'org.rustica.sandtest.plain', 'org.rustica.sandtest.full'
 
@@ -234,10 +234,10 @@ check(m is not None and int(m.group(1)) < int(m.group(2)) and nf >= 10, 'outside
 del reached[:]
 
 # 2. Applications: Aardvark first, Abacus second
-qmp_click(64, 782)
+qmp_click(25, 782)
 time.sleep(4)
 key('ret'); time.sleep(4)
-qmp_click(64, 782)
+qmp_click(25, 782)
 time.sleep(4)
 key('down'); time.sleep(0.6)
 key('ret'); time.sleep(8)

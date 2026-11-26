@@ -20,46 +20,107 @@ use std::collections::{HashMap, HashSet};
 
 pub type Id = u64;
 
-/// A colour theme. Rustica (the desktop's default, 2026-11-24) and Dracula
-/// (the server's console and the earlier desktop); the compositor has the
-/// same colours (compositor.c), and the console the same ANSI ones
-/// (`theme`, the kernel console's default is Dracula).
+/// A colour theme (2026-11-25): the semantic tokens of a theme file,
+/// `/usr/share/rustica/themes/NAME.theme` (Rustica, Dracula, Forest,
+/// Arctic, Sakura) or a user's own `~/.config/rustica/themes/NAME.theme`,
+/// `key=#RRGGBB` lines. Every program draws from these; the compositor
+/// reads the same files (compositor.c, themefile.h) and sends a window the
+/// theme's colours when it changes (`RX_WINDOW_EV_APPEARANCE`), and the
+/// console takes the ANSI colours (`theme --console`).
+///
+/// Field names and their tokens: background `bg`, surface `surface`,
+/// surface_hi `surface-raised`, surface_hover `surface-hover`, border
+/// `border`, text `text`, dim `text-muted`, accent `primary`, accent_hover
+/// `primary-hover`, secondary `accent`, selection `selection`, good
+/// `success`, warning `warning`, danger `danger`, info `info`, taskbar
+/// `taskbar`, ansi `ansi0`-`ansi15`. accent_text (text on the primary
+/// colour) and highlight (the keyboard focus, primary-hover) are worked out.
 #[derive(Clone, Copy)]
 pub struct Theme {
+    /// Its id: the file's name without .theme
     pub name: &'static str,
+    /// What people see (name= in the file)
+    pub label: &'static str,
     pub background: Color,
     pub surface: Color,
     pub surface_hi: Color,
+    pub surface_hover: Color,
     pub text: Color,
     pub dim: Color,
     pub accent: Color,
+    pub accent_hover: Color,
     pub accent_text: Color,
     pub selection: Color,
     pub border: Color,
     pub danger: Color,
     pub good: Color,
+    pub warning: Color,
+    pub info: Color,
+    /// The panel
+    pub taskbar: Color,
     /// The keyboard focus and other highlights
     pub highlight: Color,
-    /// A second brand colour (Rustica's fox red)
+    /// The theme's second colour (its `accent` token: Rustica's fox red)
     pub secondary: Color,
     /// The 16 ANSI colours for terminals (normal, then bright)
     pub ansi: [Color; 16],
 }
 
+/// The tokens of a theme file, in their order
+pub const TOKENS: [&str; 16] = [
+    "bg", "surface", "surface-raised", "surface-hover", "border", "text", "text-muted", "primary", "primary-hover",
+    "accent", "selection", "success", "warning", "danger", "info", "taskbar",
+];
+
+/// Rustica, the default (also built in, should its file be missing)
+pub const RUSTICA: Theme = Theme {
+    name: "rustica",
+    label: "Rustica",
+    background: 0x101010,
+    surface: 0x202024,
+    surface_hi: 0x2B292B,
+    surface_hover: 0x383438,
+    text: 0xFFFFFF,
+    dim: 0x858585,
+    accent: 0xFF6500,
+    accent_hover: 0xFF812B,
+    accent_text: 0xFFFFFF,
+    selection: 0x57230F,
+    border: 0x49302A,
+    danger: 0xFF3333,
+    good: 0x55C878,
+    warning: 0xFFB347,
+    info: 0x65BDEB,
+    taskbar: 0x151416,
+    highlight: 0xFF812B,
+    secondary: 0xD71920,
+    ansi: [
+        0x2B292B, 0xFF3333, 0x55C878, 0xFFB347, 0x65BDEB, 0xD96BA0, 0x5FC4C4, 0xE8E2DC, //
+        0x858585, 0xFF5A5F, 0x8BE0A4, 0xFFD08A, 0x8FD3F5, 0xF08CC0, 0x8AE0E0, 0xFFFFFF,
+    ],
+};
+
+/// Dracula (built in too: the server console's default)
 pub const DRACULA: Theme = Theme {
     name: "dracula",
+    label: "Dracula",
     background: 0x282A36,
     surface: 0x343746,
     surface_hi: 0x44475A,
+    surface_hover: 0x50546A,
     text: 0xF8F8F2,
-    dim: 0x9EA3BD,
+    dim: 0xA6A9B8,
     accent: 0xBD93F9,
+    accent_hover: 0xD0ADFF,
     accent_text: 0x282A36,
-    selection: 0x5A4D80,
-    border: 0x55596E,
+    selection: 0x51416F,
+    border: 0x6272A4,
     danger: 0xFF5555,
     good: 0x50FA7B,
-    highlight: 0xBD93F9,
+    warning: 0xF1FA8C,
+    info: 0x8BE9FD,
+    taskbar: 0x21232E,
+    highlight: 0xD0ADFF,
     secondary: 0xFF79C6,
     ansi: [
         0x21222C, 0xFF5555, 0x50FA7B, 0xF1FA8C, 0xBD93F9, 0xFF79C6, 0x8BE9FD, 0xF8F8F2, //
@@ -67,28 +128,14 @@ pub const DRACULA: Theme = Theme {
     ],
 };
 
-/// Rustica: fiery orange #FF5A1F, fox red #C8101E, near-black #101012,
-/// smoky charcoal #1C1B20, warm white #F5F2EF, amber #FFB347
-pub const RUSTICA: Theme = Theme {
-    name: "rustica",
-    background: 0x101012,
-    surface: 0x1C1B20,
-    surface_hi: 0x2A2830,
-    text: 0xF5F2EF,
-    dim: 0xA8A19B,
-    accent: 0xFF5A1F,
-    accent_text: 0xFFFFFF,
-    selection: 0x4A2414,
-    border: 0x3A3640,
-    danger: 0xE5383B,
-    good: 0x7BD88F,
-    highlight: 0xFFB347,
-    secondary: 0xC8101E,
-    ansi: [
-        0x1C1B20, 0xE5383B, 0x9CCC65, 0xFFB347, 0x6CA6E0, 0xD96BA0, 0x5FC4C4, 0xE8E2DC, //
-        0x5A5560, 0xFF5A5F, 0xB5E07A, 0xFFD08A, 0x8FC1F0, 0xF08CC0, 0x8AE0E0, 0xFFFFFF,
-    ],
-};
+/// The built-in themes (their files are the ones used; these if missing)
+pub const THEMES: [Theme; 2] = [RUSTICA, DRACULA];
+
+/// The system's themes, in the order Settings shows them
+pub const SYSTEM_THEMES: [&str; 5] = ["rustica", "dracula", "forest", "arctic", "sakura"];
+
+/// Where the system's theme files are
+pub const THEME_DIR: &str = "/usr/share/rustica/themes";
 
 /// a and b mixed (k of b)
 pub fn mix(a: Color, b: Color, k: f32) -> Color {
@@ -99,19 +146,224 @@ pub fn mix(a: Color, b: Color, k: f32) -> Color {
     ch(16) | ch(8) | ch(0)
 }
 
-/// The themes there are, by name
-pub const THEMES: [Theme; 2] = [RUSTICA, DRACULA];
-
-/// The theme of that name (Rustica for an unknown one)
-pub fn theme_named(name: &str) -> Theme {
-    THEMES.iter().copied().find(|t| t.name == name.trim()).unwrap_or(RUSTICA)
+/// Relative luminance (WCAG)
+pub fn luminance(c: Color) -> f32 {
+    let f = |s: u32| {
+        let v = (c >> s & 255) as f32 / 255.0;
+        if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * f(16) + 0.7152 * f(8) + 0.0722 * f(0)
 }
 
-/// The theme to draw in: RUSTICA_THEME (appctl sets it for sandboxed
-/// apps), else theme= in ~/.config/rustica.conf, else in
-/// /etc/rustica/appearance, else Rustica
+/// The contrast ratio of two colours (1 to 21)
+pub fn contrast(a: Color, b: Color) -> f32 {
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// A name a theme may have: lower-case letters, digits and -
+pub fn valid_theme_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 15 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn leak(s: &str) -> &'static str {
+    // Theme names are few; each distinct one is kept once
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut v = NAMES.lock().unwrap();
+    if let Some(n) = v.iter().find(|n| **n == s) {
+        return n;
+    }
+    let n: &'static str = Box::leak(s.to_string().into_boxed_str());
+    v.push(n);
+    n
+}
+
+fn hex(v: &str) -> Option<Color> {
+    let v = v.trim().trim_start_matches('#');
+    if v.len() != 6 {
+        return None;
+    }
+    u32::from_str_radix(v, 16).ok()
+}
+
+impl Theme {
+    /// A token's colour
+    pub fn get(&self, token: &str) -> Option<Color> {
+        Some(match token {
+            "bg" => self.background,
+            "surface" => self.surface,
+            "surface-raised" => self.surface_hi,
+            "surface-hover" => self.surface_hover,
+            "border" => self.border,
+            "text" => self.text,
+            "text-muted" => self.dim,
+            "primary" => self.accent,
+            "primary-hover" => self.accent_hover,
+            "accent" => self.secondary,
+            "selection" => self.selection,
+            "success" => self.good,
+            "warning" => self.warning,
+            "danger" => self.danger,
+            "info" => self.info,
+            "taskbar" => self.taskbar,
+            _ => {
+                let i: usize = token.strip_prefix("ansi")?.parse().ok()?;
+                *self.ansi.get(i)?
+            }
+        })
+    }
+
+    /// Set a token's colour (unknown tokens are ignored); what follows from
+    /// it is worked out again
+    pub fn set(&mut self, token: &str, c: Color) {
+        match token {
+            "bg" => self.background = c,
+            "surface" => self.surface = c,
+            "surface-raised" => self.surface_hi = c,
+            "surface-hover" => self.surface_hover = c,
+            "border" => self.border = c,
+            "text" => self.text = c,
+            "text-muted" => self.dim = c,
+            "primary" => self.accent = c,
+            "primary-hover" => self.accent_hover = c,
+            "accent" => self.secondary = c,
+            "selection" => self.selection = c,
+            "success" => self.good = c,
+            "warning" => self.warning = c,
+            "danger" => self.danger = c,
+            "info" => self.info = c,
+            "taskbar" => self.taskbar = c,
+            _ => {
+                if let Some(i) = token.strip_prefix("ansi").and_then(|n| n.parse::<usize>().ok()) {
+                    if i < 16 {
+                        self.ansi[i] = c;
+                    }
+                }
+            }
+        }
+        self.derive();
+    }
+
+    /// What is worked out from the tokens: the text on the primary colour
+    /// (white where it reads well enough, else the background) and the
+    /// keyboard focus
+    fn derive(&mut self) {
+        self.accent_text = if contrast(0xFFFFFF, self.accent) >= 2.9 { 0xFFFFFF } else { self.background };
+        self.highlight = self.accent_hover;
+    }
+
+    /// A theme from a file's text (`key=#RRGGBB`, `name=`); tokens it does
+    /// not have come from Rustica
+    pub fn parse(name: &str, text: &str) -> Theme {
+        let mut t = RUSTICA;
+        t.name = leak(name);
+        t.label = t.name;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let k = k.trim();
+            if k == "name" {
+                let v = v.trim();
+                if !v.is_empty() {
+                    t.label = leak(&v.chars().take(32).collect::<String>());
+                }
+            } else if let Some(c) = hex(v) {
+                t.set(k, c);
+            }
+        }
+        t.derive();
+        t
+    }
+
+    /// The theme as a file's text
+    pub fn to_text(&self) -> String {
+        let mut s = format!("name={}\n", self.label);
+        for k in TOKENS {
+            s += &format!("{k}=#{:06X}\n", self.get(k).unwrap_or(0));
+        }
+        for (i, c) in self.ansi.iter().enumerate() {
+            s += &format!("ansi{i}=#{c:06X}\n");
+        }
+        s
+    }
+}
+
+/// The user's own themes' folder
+pub fn user_theme_dir() -> Option<std::path::PathBuf> {
+    std::env::var("HOME").ok().map(|h| std::path::Path::new(&h).join(".config/rustica/themes"))
+}
+
+/// The theme of that name: the user's own, then the system's, then a
+/// built-in one (Rustica for an unknown name)
+pub fn theme_named(name: &str) -> Theme {
+    let name = name.trim();
+    if valid_theme_name(name) {
+        let mut files = Vec::new();
+        if let Some(d) = user_theme_dir() {
+            files.push(d.join(format!("{name}.theme")));
+        }
+        files.push(std::path::Path::new(THEME_DIR).join(format!("{name}.theme")));
+        for f in files {
+            if let Ok(text) = std::fs::read_to_string(&f) {
+                return Theme::parse(name, &text);
+            }
+        }
+    }
+    THEMES.iter().copied().find(|t| t.name == name).unwrap_or(RUSTICA)
+}
+
+/// The theme an appearance event names: its colours as sent, else by name
+pub fn theme_from_event(name: &str, colors: &str) -> Theme {
+    if colors.contains('=') {
+        Theme::parse(name, colors)
+    } else {
+        theme_named(name)
+    }
+}
+
+/// The themes there are: (id, label, the user's own), the system's first
+pub fn list_themes() -> Vec<(String, String, bool)> {
+    let mut out = Vec::new();
+    for n in SYSTEM_THEMES {
+        let t = theme_named(n);
+        out.push((n.to_string(), t.label.to_string(), false));
+    }
+    if let Some(d) = user_theme_dir() {
+        let mut mine: Vec<String> = std::fs::read_dir(d)
+            .map(|r| {
+                r.flatten()
+                    .filter_map(|e| e.file_name().to_str()?.strip_suffix(".theme").map(str::to_string))
+                    .filter(|n| valid_theme_name(n))
+                    .collect()
+            })
+            .unwrap_or_default();
+        mine.sort();
+        for n in mine {
+            if let Some(i) = out.iter().position(|o| o.0 == n) {
+                // A user's file of a system theme's name: theirs is used
+                out[i].2 = true;
+                out[i].1 = theme_named(&n).label.to_string();
+            } else {
+                let t = theme_named(&n);
+                out.push((n, t.label.to_string(), true));
+            }
+        }
+    }
+    out
+}
+
+/// The theme to draw in: RUSTICA_THEME_COLORS (a theme file's text) with
+/// RUSTICA_THEME (its name; appctl sets them for sandboxed apps), else
+/// theme= in ~/.config/rustica.conf, else in /etc/rustica/appearance, else
+/// Rustica. Windows then hear of changes from the compositor.
 pub fn current_theme() -> Theme {
     if let Ok(t) = std::env::var("RUSTICA_THEME") {
+        if let Ok(c) = std::env::var("RUSTICA_THEME_COLORS") {
+            return Theme::parse(&t, &c.replace(';', "\n"));
+        }
         return theme_named(&t);
     }
     let key = |path: String| -> Option<String> {
@@ -164,6 +416,37 @@ pub enum Icon {
     Home,
     /// The power symbol (a ring open at the top, a bar through the gap)
     Power,
+    /// The Rustica fox (the menu button; /usr/share/rustica/fox.svg)
+    Fox,
+}
+
+/// The Rustica fox's outline and eyes, in a 261x254 box
+/// (/usr/share/rustica/fox.svg)
+pub const FOX_OUTLINE: [(f32, f32); 12] = [
+    (38.0, 0.0), (105.0, 51.0), (156.0, 51.0), (223.0, 0.0), (223.0, 98.0), (261.0, 134.0),
+    (181.0, 188.0), (140.0, 254.0), (121.0, 254.0), (80.0, 188.0), (0.0, 134.0), (38.0, 98.0),
+];
+pub const FOX_EYES: [[(f32, f32); 3]; 2] = [[(76.0, 124.0), (108.0, 129.0), (110.0, 156.0)], [(185.0, 124.0), (153.0, 129.0), (151.0, 156.0)]];
+/// Its colour in every theme (the brand's orange)
+pub const FOX_COLOR: Color = 0xFF6500;
+
+/// The fox filled into a square of side sz at x, y
+pub fn fox_path(x: f32, y: f32, sz: f32) -> Option<tiny_skia::Path> {
+    let k = sz / 261.0;
+    let oy = y + (sz - 254.0 * k) / 2.0;
+    let mut pb = tiny_skia::PathBuilder::new();
+    let mut poly = |pts: &[(f32, f32)]| {
+        pb.move_to(x + pts[0].0 * k, oy + pts[0].1 * k);
+        for p in &pts[1..] {
+            pb.line_to(x + p.0 * k, oy + p.1 * k);
+        }
+        pb.close();
+    };
+    poly(&FOX_OUTLINE);
+    for e in &FOX_EYES {
+        poly(e);
+    }
+    pb.finish()
 }
 
 /// A row of a table: its icon and its cells, one per column
@@ -664,7 +947,7 @@ impl Ui {
         let hot = self.hover(r);
         let pressed = self.active == Some(id) && self.input.down && hot;
         let th = self.theme;
-        let bg = if pressed { th.selection } else if hot { th.surface_hi } else { th.surface };
+        let bg = if pressed { th.selection } else if hot { th.surface_hover } else { th.surface };
         self.canvas.fill_rounded(r, self.u(6.0), bg);
         self.canvas.stroke_rounded(r, self.u(6.0), 1.0, if focused { th.accent } else { th.border });
         let tw = self.face.width(label, px);
@@ -715,11 +998,11 @@ impl Ui {
         let hot = self.hover(r);
         let th = self.theme;
         let (bg, fg) = if primary {
-            (if hot { mix(th.accent, 0xFFFFFF, 0.22) } else { th.accent }, th.accent_text)
+            (if hot { th.accent_hover } else { th.accent }, th.accent_text)
         } else if selected {
             (if hot { mix(th.selection, 0xFFFFFF, 0.08) } else { th.selection }, th.text)
         } else {
-            (if hot { th.surface_hi } else { th.surface }, th.text)
+            (if hot { th.surface_hover } else { th.surface }, th.text)
         };
         self.canvas.fill_rounded(r, self.u(6.0), bg);
         if !primary {
@@ -732,6 +1015,29 @@ impl Ui {
         let shown = self.elide(label, r.w - self.u(16.0), primary);
         let tw = if primary { self.bold.width(&shown, px) } else { self.face.width(&shown, px) };
         self.draw_text(primary, r.x + (r.w - tw) / 2.0, r.y + self.u(6.0), &shown, px, fg);
+        self.focus_ring(r, focused);
+        ButtonResponse { clicked, right_clicked: right, rect: r }
+    }
+
+    /// A card: a clickable area of w x h pixels that the caller draws into
+    /// (its rect is returned), with the hover and selected borders and the
+    /// keyboard focus of a button; its id is `name`
+    pub fn card(&mut self, name: &str, w: f32, h: f32, selected: bool) -> ButtonResponse {
+        let id = self.id(name);
+        let r = self.alloc(w, h);
+        let focused = self.focusable(id, r);
+        let mut clicked = self.input.released && self.active == Some(id) && self.hover(r);
+        for k in self.keys_for(id) {
+            if k.usage == keys::ENTER || k.usage == keys::SPACE || k.usage == keys::KP_ENTER {
+                clicked = true;
+            }
+        }
+        let right = self.input.right_pressed && self.hover(r);
+        let th = self.theme;
+        let hot = self.hover(r);
+        self.canvas.fill_rounded(r, self.u(8.0), if hot { th.surface_hover } else { th.surface });
+        let (bw, bc) = if selected { (2.0 * self.scale, th.accent) } else { (1.0, if hot { th.accent_hover } else { th.border }) };
+        self.canvas.stroke_rounded(r, self.u(8.0), bw, bc);
         self.focus_ring(r, focused);
         ButtonResponse { clicked, right_clicked: right, rect: r }
     }
@@ -751,7 +1057,7 @@ impl Ui {
             }
         }
         let th = self.theme;
-        let bg = if self.hover(r) { mix(th.accent, 0xFFFFFF, 0.22) } else { th.accent };
+        let bg = if self.hover(r) { th.accent_hover } else { th.accent };
         self.canvas.fill_rounded(r, self.u(6.0), bg);
         let tw = self.bold.width(label, px);
         self.draw_text(true, r.x + (r.w - tw) / 2.0, r.y + self.u(6.0), label, px, th.accent_text);
@@ -1198,7 +1504,7 @@ impl Ui {
             }
             let row = Rect::new(r.x + 2.0, y, inner.w - 4.0, rh);
             if Some(i) == *selected {
-                self.canvas.fill_rect(Rect::new(row.x, y.round(), row.w, rh), if focused { th.selection } else { th.surface_hi });
+                self.canvas.fill_rect(Rect::new(row.x, y.round(), row.w, rh), if focused { th.selection } else { th.surface_hover });
             }
             self.draw_text(false, r.x + self.u(10.0), y + self.u(4.0), &items[i], px, th.text);
         }
@@ -1221,8 +1527,8 @@ impl Ui {
         let s = sz / 16.0;
         let r = |dx: f32, dy: f32, w: f32, h: f32| Rect::new((x + dx * s).round(), (y + dy * s).round(), (w * s).round().max(1.0), (h * s).round().max(1.0));
         let th = self.theme;
-        // Folders in the theme's own colour (Rustica's amber, Dracula's purple)
-        let (folder, folder_hi) = if th.name == "dracula" { (0xBD93F9, 0xD6ACFF) } else { (0xF0962E, th.highlight) };
+        // Folders in the theme's own colour
+        let (folder, folder_hi) = (th.accent, th.accent_hover);
         match icon {
             Icon::None => {}
             Icon::Folder => {
@@ -1263,6 +1569,11 @@ impl Ui {
                 self.canvas.stroke_rounded(ring, 6.0 * s, 1.6 * s, c);
                 self.canvas.fill_rect(r(6.0, 1.0, 4.0, 5.0), th.surface);
                 self.canvas.fill_rect(r(7.25, 1.0, 1.5, 7.0), c);
+            }
+            Icon::Fox => {
+                if let Some(p) = fox_path(x, y, sz) {
+                    self.canvas.fill_path_evenodd(&p, FOX_COLOR);
+                }
             }
             Icon::Home => {
                 // A roof in steps, the house, its door
@@ -1398,7 +1709,7 @@ impl Ui {
                 break;
             }
             if Some(i) == *selected {
-                self.canvas.fill_rect(Rect::new(r.x + 2.0, y.round(), inner.w - 4.0, rh), if focused { th.selection } else { th.surface_hi });
+                self.canvas.fill_rect(Rect::new(r.x + 2.0, y.round(), inner.w - 4.0, rh), if focused { th.selection } else { th.surface_hover });
             }
             for (ci, (cell, &(x, w))) in rows[i].cells.iter().zip(xs.iter()).enumerate() {
                 let mut tx = x;
@@ -1535,7 +1846,7 @@ impl Ui {
                 continue;
             }
             if Some(i) == cur {
-                self.canvas.fill_rect(Rect::new(r.x + 2.0, y.round(), r.w - self.u(14.0), rh), if focused { th.selection } else { th.surface_hi });
+                self.canvas.fill_rect(Rect::new(r.x + 2.0, y.round(), r.w - self.u(14.0), rh), if focused { th.selection } else { th.surface_hover });
             }
             let x = r.x + self.u(8.0) + row.1 as f32 * indent;
             if row.3 {

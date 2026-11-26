@@ -176,7 +176,7 @@ check(wait(r'uidemo: submit name="Ada Lovelace" email="Ada Lovelace@x" subscribe
       'typed, copied and pasted, submitted with Enter')
 time.sleep(1)
 px = screen()
-check(near(px(150, 520), 0x070708, 6) and px(480, 300) == 0x1C1B20, 'a dialog over the dimmed window (%06x, %06x)' % (px(150, 520), px(480, 300)))
+check(near(px(150, 520), 0x070708, 6) and px(480, 300) == 0x202024, 'a dialog over the dimmed window (%06x, %06x)' % (px(150, 520), px(480, 300)))
 key('ret')
 check(wait(r'uidemo: dialog Submitted: OK', 10, n) is not None, 'Enter closes the dialog')
 click(238, 415)

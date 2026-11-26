@@ -1,0 +1,37 @@
+# Arctic: night blues, ice and aurora. A Rustica colour theme: key=#RRGGBB lines
+# (docs/SESSION.md "Themes"); ~/.config/rustica/themes/NAME.theme for
+# a user's own
+name=Arctic
+bg=#101923
+surface=#192A3A
+surface-raised=#23384A
+surface-hover=#304B60
+border=#38566D
+text=#F4F8FC
+text-muted=#A7B8C7
+primary=#69C9E8
+primary-hover=#8DDAF1
+accent=#A9DFF2
+selection=#254B65
+success=#79D6B1
+warning=#F0C978
+danger=#F07883
+info=#76B9F0
+taskbar=#0B141D
+# The terminal's 16 colours (normal, then bright)
+ansi0=#23384A
+ansi1=#F07883
+ansi2=#79D6B1
+ansi3=#F0C978
+ansi4=#76B9F0
+ansi5=#C49BEB
+ansi6=#69C9E8
+ansi7=#D5DEE8
+ansi8=#5A7590
+ansi9=#F79AA2
+ansi10=#9AE6C8
+ansi11=#F7DA9C
+ansi12=#9CCFF6
+ansi13=#D8BAF3
+ansi14=#8DDAF1
+ansi15=#F4F8FC

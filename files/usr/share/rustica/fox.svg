@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-8 -8 277 270" width="277" height="270">
+  <!-- The Rustica fox (2026-11-25), from the project owner's concept: one
+       polygon, the eyes cut out (even-odd) -->
+  <path fill="#FF6500" fill-rule="evenodd" d="
+    M38 0 L105 51 L156 51 L223 0 L223 98 L261 134 L181 188 L140 254 L121 254 L80 188 L0 134 L38 98 Z
+    M76 124 L108 129 L110 156 Z
+    M185 124 L153 129 L151 156 Z"/>
+</svg>

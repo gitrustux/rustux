@@ -54,7 +54,7 @@ const S_ABOUT: usize = 13;
 /// The panel's applets (DESKTOP.md step F10), with what Settings calls them
 const APPLETS: [(&str, &str); 11] = [
     ("power", "Power menu"),
-    ("menu", "Menu (Apps)"),
+    ("menu", "Menu (the fox)"),
     ("launchers", "Launchers"),
     ("windows", "Window list"),
     ("updates", "Updates"),
@@ -446,10 +446,91 @@ struct Pending {
     updates: bool,
 }
 
+/// The system's wallpapers (/usr/share/backgrounds), any with any theme
+const WALLPAPERS: [(&str, &str); 6] =
+    [("rustica", "Rustica fox"), ("dracula", "Dracula"), ("forest", "Forest"), ("arctic", "Arctic"), ("sakura", "Sakura"), ("gradient", "Gradient")];
+
+/// What each token of a theme is, for people
+const TOKEN_NAMES: [&str; 16] = [
+    "Background", "Surface", "Raised surface", "Surface under the pointer", "Border", "Text", "Muted text", "Primary",
+    "Primary under the pointer", "Accent", "Selection", "Success", "Warning", "Danger", "Information", "Panel",
+];
+
+/// A theme being made or changed (Settings > Appearance)
+struct ThemeEdit {
+    theme: rustica_ui::Theme,
+    /// Its id when an existing theme of the user's is changed
+    editing: Option<String>,
+    name: String,
+    hex: Vec<String>,
+    error: String,
+}
+
+impl ThemeEdit {
+    fn new(theme: rustica_ui::Theme, editing: Option<String>) -> ThemeEdit {
+        let hex = rustica_ui::TOKENS.iter().map(|k| format!("#{:06X}", theme.get(k).unwrap_or(0))).collect();
+        ThemeEdit { name: theme.label.to_string(), theme, editing, hex, error: String::new() }
+    }
+}
+
+/// A theme's id from its name: lower case, a-z 0-9 and -
+fn theme_id(name: &str) -> String {
+    let mut id = String::new();
+    for c in name.trim().chars() {
+        if c.is_ascii_alphanumeric() {
+            id.push(c.to_ascii_lowercase());
+        } else if !id.is_empty() && !id.ends_with('-') {
+            id.push('-');
+        }
+    }
+    id.trim_end_matches('-').chars().take(15).collect::<String>().trim_end_matches('-').to_string()
+}
+
+/// A small picture of a theme in r: its background and panel, a window
+/// with a title bar, text, a primary button, the accent and a selection;
+/// its name under it
+fn theme_preview(ui: &mut Ui, r: rustica_ui::gfx::Rect, t: &rustica_ui::Theme, label: &str) {
+    use rustica_ui::gfx::Rect;
+    let sc = ui.u(1.0);
+    let u = move |v: f32| v * sc;
+    let (p, lh) = (u(8.0), ui.line_h());
+    let a = Rect::new(r.x + p, r.y + p, r.w - 2.0 * p, r.h - 2.0 * p - lh - u(4.0));
+    let (k6, k4, k3, k2) = (u(6.0), u(4.0), u(3.0), u(2.0));
+    ui.canvas.fill_rounded(a, k4, t.background);
+    // The panel, with the fox
+    let ph = (a.h * 0.16).max(u(8.0));
+    ui.canvas.fill_rect(Rect::new(a.x, a.y + a.h - ph, a.w, ph), t.taskbar);
+    if let Some(f) = rustica_ui::ui::fox_path(a.x + k3, a.y + a.h - ph + ph * 0.15, ph * 0.7) {
+        ui.canvas.fill_path_evenodd(&f, rustica_ui::ui::FOX_COLOR);
+    }
+    // A window: title bar, text lines, a selected row, a primary button, the accent
+    let w = Rect::new(a.x + a.w * 0.12, a.y + a.h * 0.12, a.w * 0.76, a.h * 0.68 - ph * 0.5);
+    ui.canvas.fill_rounded(w, k3, t.surface);
+    ui.canvas.fill_rect(Rect::new(w.x, w.y, w.w, k6.max(w.h * 0.16)), t.surface_hi);
+    ui.canvas.fill_rect(Rect::new(w.x + w.w - k6 - k2, w.y + k2 * 0.5, k6 * 0.8, k6 * 0.8), t.danger);
+    let ty = w.y + k6.max(w.h * 0.16) + k4;
+    ui.canvas.fill_rect(Rect::new(w.x + k4, ty, w.w * 0.55, k2), t.text);
+    ui.canvas.fill_rect(Rect::new(w.x + k4, ty + k4, w.w * 0.4, k2), t.dim);
+    ui.canvas.fill_rect(Rect::new(w.x + k2, ty + 2.0 * k4, w.w - 2.0 * k2, k6), t.selection);
+    let by = w.y + w.h - k6 - k4;
+    ui.canvas.fill_rounded(Rect::new(w.x + w.w - w.w * 0.34 - k4, by, w.w * 0.34, k6 + k2), k2, t.accent);
+    ui.canvas.fill_rounded(Rect::new(w.x + k4, by + k2 * 0.5, k6, k6), k3, t.secondary);
+    ui.canvas.fill_rounded(Rect::new(w.x + k4 + k6 + k2, by + k2 * 0.5, k6, k6), k3, t.good);
+    ui.canvas.stroke_rounded(w, k3, 1.0, t.border);
+    let px = ui.font_px();
+    let shown = ui.elide(label, r.w - 2.0 * p, false);
+    let c = ui.theme.text;
+    ui.canvas.text(&mut ui.face, r.x + p, r.y + r.h - p - lh, &shown, px, c);
+}
+
 struct Settings {
     section: Option<usize>,
     theme: String,
     wallpaper: String,
+    /// Settings > Appearance: the themes there are (id, name, the user's
+    /// own), and the one being made or changed
+    themes: Vec<(String, String, bool)>,
+    theme_edit: Option<ThemeEdit>,
     pictures: Vec<std::path::PathBuf>,
     picture: Option<usize>,
     /// The picture file field, and the file chooser while it is open
@@ -545,6 +626,8 @@ impl Settings {
             section: Some(0),
             theme: appearance_key("theme"),
             wallpaper: appearance_key("wallpaper"),
+            themes: rustica_ui::list_themes(),
+            theme_edit: None,
             pictures: Vec::new(),
             picture: None,
             picture_path: String::new(),
@@ -806,30 +889,66 @@ impl Settings {
 
     fn appearance(&mut self, ui: &mut Ui) {
         ui.heading("Appearance");
-        ui.label("Theme");
-        let mut theme = None;
-        ui.row(|ui| {
-            for (name, label) in [("rustica", "Rustica"), ("dracula", "Dracula")] {
-                let pressed = if self.theme == name { ui.primary_button(label) } else { ui.button(label) };
-                if pressed {
-                    theme = Some(name);
+        if self.theme_edit.is_some() {
+            return self.theme_editor(ui);
+        }
+        ui.label("Themes");
+        let mut chosen = None;
+        let per_row = ((ui.available_width() + ui.u(8.0)) / ui.u(188.0)).floor().max(1.0) as usize;
+        for row in self.themes.chunks(per_row) {
+            ui.row(|ui| {
+                for (id, label, mine) in row {
+                    let t = rustica_ui::theme_named(id);
+                    let r = ui.card(&format!("theme-{id}"), ui.u(180.0), ui.u(112.0), *id == self.theme);
+                    theme_preview(ui, r.rect, &t, &if *mine { format!("{label} (yours)") } else { label.clone() });
+                    if r.clicked {
+                        chosen = Some(id.clone());
+                    }
                 }
-            }
-        });
-        if let Some(t) = theme {
+            });
+        }
+        if let Some(t) = chosen {
             if t != self.theme {
-                self.theme = t.into();
-                ui.theme = rustica_ui::theme_named(t);
-                self.set_appearance("theme", t);
-                self.status = format!("Theme {}", if t == "rustica" { "Rustica" } else { "Dracula" });
+                ui.theme = rustica_ui::theme_named(&t);
+                self.set_appearance("theme", &t);
+                self.status = format!("Theme {}", ui.theme.label);
+                self.theme = t;
             }
         }
-        ui.dim_label("Windows, the panel and the title bars change at once.");
+        ui.dim_label("Every window, the panel and the title bars change at once.");
+        let mine = self.themes.iter().any(|t| t.0 == self.theme && t.2);
+        let mut delete = false;
+        ui.row(|ui| {
+            if ui.button("Make your own from this one...") {
+                let mut t = rustica_ui::theme_named(&self.theme);
+                t.label = "";
+                self.theme_edit = Some(ThemeEdit::new(t, None));
+            }
+            if mine && ui.button("Change it...") {
+                let t = rustica_ui::theme_named(&self.theme);
+                self.theme_edit = Some(ThemeEdit::new(t, Some(self.theme.clone())));
+            }
+            if mine && ui.button("Delete it") {
+                delete = true;
+            }
+        });
+        if delete {
+            if let Some(d) = rustica_ui::user_theme_dir() {
+                let _ = std::fs::remove_file(d.join(format!("{}.theme", self.theme)));
+            }
+            say(&format!("deleted the theme {}", self.theme));
+            // Back to the system's theme of that name, if there is one, else Rustica
+            let back = if rustica_ui::SYSTEM_THEMES.contains(&self.theme.as_str()) { self.theme.clone() } else { "rustica".to_string() };
+            ui.theme = rustica_ui::theme_named(&back);
+            self.set_appearance("theme", &back);
+            self.theme = back;
+            self.themes = rustica_ui::list_themes();
+        }
         ui.space(8.0);
-        ui.label("Wallpaper");
+        ui.label("Wallpaper (any with any theme)");
         let mut wall = None;
         ui.row(|ui| {
-            for (name, label) in [("rustica", "Rustica fox"), ("gradient", "Gradient")] {
+            for (name, label) in WALLPAPERS {
                 let pressed = if self.wallpaper == name { ui.primary_button(label) } else { ui.button(label) };
                 if pressed {
                     wall = Some(name.to_string());
@@ -891,6 +1010,114 @@ impl Settings {
             self.wallpaper = w.clone();
             self.set_appearance("wallpaper", &w);
             self.status = "Wallpaper changed".into();
+        }
+    }
+
+    /// Making or changing a theme of the user's own: its name, each token
+    /// by hex code with a preview, then saved in
+    /// ~/.config/rustica/themes/ID.theme and used
+    fn theme_editor(&mut self, ui: &mut Ui) {
+        let Some(e) = self.theme_edit.as_mut() else { return };
+        ui.label(if e.editing.is_some() { "Change your theme" } else { "A theme of your own" });
+        let mut done = None;
+        ui.row(|ui| {
+            let px = ui.font_px();
+            let (nw, nh) = (ui.text_width("Name"), ui.row_h());
+            let lr = ui.alloc(nw, nh);
+            let (ty, tc) = (lr.y + (lr.h - ui.line_h()) / 2.0, ui.theme.text);
+            ui.canvas.text(&mut ui.face, lr.x, ty, "Name", px, tc);
+            ui.text_field("theme-name", &mut e.name, 260.0);
+            if ui.primary_button("Save and use it") {
+                done = Some(true);
+            }
+            if ui.button("Cancel") {
+                done = Some(false);
+            }
+        });
+        let r = ui.card("theme-edit-preview", ui.u(300.0), ui.u(170.0), true);
+        let label = if e.name.trim().is_empty() { "(a name)".to_string() } else { e.name.trim().to_string() };
+        theme_preview(ui, r.rect, &e.theme, &label);
+        ui.dim_label("Each colour as a hex code (#RRGGBB); the preview follows.");
+        let lw = ui.u(220.0);
+        for (i, k) in rustica_ui::TOKENS.iter().enumerate() {
+            ui.row(|ui| {
+                let sw = ui.alloc(ui.row_h(), ui.row_h());
+                let c = e.theme.get(k).unwrap_or(0);
+                ui.canvas.fill_rounded(sw, ui.u(4.0), c);
+                ui.canvas.stroke_rounded(sw, ui.u(4.0), 1.0, ui.theme.border);
+                let lr = ui.alloc(lw, ui.row_h());
+                let (px, tc) = (ui.font_px(), ui.theme.text);
+                let ty = lr.y + (lr.h - ui.line_h()) / 2.0;
+                ui.canvas.text(&mut ui.face, lr.x, ty, TOKEN_NAMES[i], px, tc);
+                let (changed, _) = ui.text_field(&format!("tok-{k}"), &mut e.hex[i], 110.0);
+                if changed {
+                    let v = e.hex[i].trim().trim_start_matches('#');
+                    if v.len() == 6 {
+                        if let Ok(c) = u32::from_str_radix(v, 16) {
+                            e.theme.set(k, c);
+                        }
+                    }
+                }
+                let v = e.hex[i].trim().trim_start_matches('#');
+                if v.len() != 6 || u32::from_str_radix(v, 16).is_err() {
+                    ui.dim_label("not a colour");
+                }
+            });
+        }
+        // Readability
+        let t = e.theme;
+        let body = rustica_ui::contrast(t.text, t.background);
+        let on_surface = rustica_ui::contrast(t.text, t.surface);
+        let on_primary = rustica_ui::contrast(t.accent_text, t.accent);
+        if body < 4.5 || on_surface < 4.5 {
+            ui.dim_label(&format!("The text may be hard to read (contrast {:.1}:1 on the background, {:.1}:1 on surfaces; 4.5 or more reads well)", body, on_surface));
+        }
+        if on_primary < 3.0 {
+            ui.dim_label(&format!("Labels on primary buttons may be hard to read (contrast {on_primary:.1}:1)"));
+        }
+        if !e.error.is_empty() {
+            let msg = e.error.clone();
+            ui.dim_label(&msg);
+        }
+        match done {
+            Some(false) => self.theme_edit = None,
+            Some(true) => {
+                let id = match &e.editing {
+                    Some(id) => id.clone(),
+                    None => theme_id(&e.name),
+                };
+                if e.name.trim().is_empty() || id.is_empty() {
+                    e.error = "Give it a name (letters or digits)".into();
+                    return;
+                }
+                if e.editing.is_none() && rustica_ui::SYSTEM_THEMES.contains(&id.as_str()) {
+                    e.error = format!("{} is one of the system's themes: give yours another name", e.name.trim());
+                    return;
+                }
+                if e.editing.is_none() && self.themes.iter().any(|t| t.0 == id) {
+                    e.error = format!("You have a theme called {} already: give this one another name, or change that one", e.name.trim());
+                    return;
+                }
+                let mut t = e.theme;
+                t.label = Box::leak(e.name.trim().to_string().into_boxed_str());
+                let Some(dir) = rustica_ui::user_theme_dir() else { return };
+                let file = dir.join(format!("{id}.theme"));
+                let text = format!("# A theme of {}'s, made in Settings > Appearance\n{}", std::env::var("USER").unwrap_or_default(), t.to_text());
+                match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, text)) {
+                    Ok(()) => {
+                        say(&format!("saved the theme {id}"));
+                        self.theme_edit = None;
+                        self.themes = rustica_ui::list_themes();
+                        ui.theme = rustica_ui::theme_named(&id);
+                        // Written again even if it is the same: the compositor sees the change
+                        self.set_appearance("theme", &id);
+                        self.status = format!("Theme {}", ui.theme.label);
+                        self.theme = id;
+                    }
+                    Err(err) => e.error = format!("Could not save {}: {err}", file.display()),
+                }
+            }
+            None => {}
         }
     }
 
@@ -1739,6 +1966,7 @@ impl Settings {
             }
             if self.section == Some(S_APPEARANCE) {
                 self.pictures = pictures();
+                self.themes = rustica_ui::list_themes();
             }
             if self.section == Some(S_APPS) {
                 self.apps = load_apps();
@@ -1845,6 +2073,7 @@ fn main() {
         }
         if s.section == Some(S_APPEARANCE) {
             s.pictures = pictures();
+            s.themes = rustica_ui::list_themes();
         }
     }
     say("started");

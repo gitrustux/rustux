@@ -504,19 +504,24 @@ the wheel scrolls Settings > Panel; `panel.conf` puts the panel on the
 left, then at the top with auto-hide, hidden until the pointer reaches
 the top edge.
 
-## Appearance test (2026-11-24)
+## Appearance test (2026-11-24; themes 2026-11-25)
 
-`scripts/run-appearance-test.sh`: the desktop in QEMU. The Rustica theme
-and the fox wallpaper by default; a right click on the wallpaper opens the
-desktop's menu, whose first choice opens Settings > Appearance through the
-panel; there Dracula changes the panel and the title bars at once, and a
-picture of the user's (a screenshot in `~/Pictures`), its path typed in
-the picture field, becomes the wallpaper as
+`scripts/run-appearance-test.sh`: the desktop in QEMU. The Rustica theme,
+the fox wallpaper and the panel's fox button by default; a right click on
+the wallpaper opens the desktop's menu, whose Change background... opens
+Settings > Appearance with a preview card for each of the five themes;
+there Dracula and then Forest change the panel and the title bars at once
+(the fox stays orange); a theme of our own ("Night Moss", its background
+typed as a hex code, the preview following) is saved in
+`~/.config/rustica/themes/night-moss.theme` and used; the Arctic wallpaper
+goes with it; a picture of the user's (a screenshot in `~/Pictures`), its
+path typed in the picture field, becomes the wallpaper as
 `~/.config/rustica/wallpaper-N.qoi`, and so does `settings --wallpaper
-FILE` (what Files > Set as wallpaper runs); `theme` at the console
-sets the desktop back to Rustica and the console's own colours
-(`/etc/console-theme`); Log out on the live system offers Continue as
-root, without a password. `SESSION.md` "Appearance".
+FILE` (what Files > Set as wallpaper runs); `theme list` shows the five
+and ours, `theme --desktop rustica` sets the desktop back and `theme
+--console sakura` the console's own colours (`/etc/console-theme`); Log
+out on the live system offers Continue as root, without a password.
+`SESSION.md` "Appearance".
 
 ## Port check (porting preparation)
 

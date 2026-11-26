@@ -206,8 +206,8 @@ pub fn run(title: &str, w: u32, h: u32, at: Option<(i32, i32)>, mut frame: impl 
                     dirty = true;
                 }
                 Event::Wake => dirty = true,
-                Event::Appearance { ref theme } => {
-                    ui.theme = crate::ui::theme_named(theme);
+                Event::Appearance { ref theme, ref colors } => {
+                    ui.theme = crate::ui::theme_from_event(theme, colors);
                     ctl.events.push(e);
                     dirty = true;
                 }

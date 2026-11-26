@@ -180,8 +180,8 @@ def wait_pixel(x, y, want, t, tol=8):
     return False
 
 # The desktop takes the keyboard when it comes up: wait for it (the
-# panel's Applications button)
-check(wait_pixel(64, 782, 0xFF5A1F, 90), 'the desktop starts at boot')
+# panel's fox button)
+check(wait_pixel(25, 787, 0xFF6500, 90), 'the desktop starts at boot')
 time.sleep(3)
 
 # 1. Installing it
@@ -193,7 +193,7 @@ check(re.search(r'org\.rustica\.example +1\.0 +Example: an example app \(a windo
 check('org.rustica.example: 2 files as installed' in out, 'rpg verify: its files as installed')
 
 # 2. Applications: Animation, Example, Files...: the second
-qmp_click(64, 782)
+qmp_click(25, 782)
 time.sleep(4)
 key('down'); time.sleep(0.6)
 key('ret'); time.sleep(5)
@@ -208,7 +208,7 @@ check('org.rustica.example: removed /root/.local/share/apps/org.rustica.example'
 check('org.rustica.example 1.0: removed' in out, 'rpg remove --purge removes it')
 check('org.rustica.example ' not in out.split('\nLEFT')[-1] and re.search(r'\nLEFT +2 +0\r?\n', out) is not None, 'nothing of it is left in /apps (the two apps that come with the system) or the home')
 n = len(log())
-qmp_click(64, 782)
+qmp_click(25, 782)
 time.sleep(4)
 key('esc'); time.sleep(1)
 out = console('logs | grep "launcher: "', 4)

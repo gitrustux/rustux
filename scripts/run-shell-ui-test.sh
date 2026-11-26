@@ -159,7 +159,7 @@ def near(c, want, tol=40):
 def key(k):
     mon('sendkey ' + k)
 
-ACCENT, LOCKBOX, TOAST = 0xFF5A1F, 0x1C1B20, 0x1C1B20  # the Rustica theme
+ACCENT, LOCKBOX, TOAST = 0xFF6500, 0x202024, 0x202024  # the Rustica theme (ACCENT: the fox)
 
 def wait_pixel(x, y, want, t, tol=8):
     end = time.time() + t
@@ -205,7 +205,7 @@ def console(cmd, wait_s=3):
 def region(px, x0, y0, x1, y1, step=2):
     return [px(x, y) for y in range(y0, y1, step) for x in range(x0, x1, step)]
 
-check(wait_pixel(30, 782, ACCENT, 90), 'the panel\'s Apps button in the accent colour')
+check(wait_pixel(25, 787, ACCENT, 90), 'the panel\'s fox button')
 time.sleep(4)
 n0 = len(log())
 
@@ -216,7 +216,7 @@ console('mkdir -p /root/Desktop/Projects; echo hi > /root/Desktop/notes.txt')
 time.sleep(3)
 px = screen()
 # The fourth cell (Home, Trash, Projects, notes.txt) holds a file icon
-check(any(near(px(x, y), 0xF5F2EF, 20) for x in range(40, 70, 2) for y in range(292, 330, 2)), 'notes.txt on the desktop (the fourth icon)')
+check(any(near(px(x, y), 0xFFFFFF, 20) for x in range(40, 70, 2) for y in range(292, 330, 2)), 'notes.txt on the desktop (the fourth icon)')
 drag(54, 320, 54, 140)
 time.sleep(3)
 to(640, 300)
@@ -225,7 +225,7 @@ rbutton(True)
 rbutton(False)
 time.sleep(1.5)
 px = screen()
-check(near(px(700, 310), 0x1C1B20, 12), 'a right click on the desktop: its menu (%06x)' % px(700, 310))
+check(near(px(700, 310), 0x202024, 12), 'a right click on the desktop: its menu (%06x)' % px(700, 310))
 click(680, 318)
 time.sleep(3)
 
@@ -271,7 +271,7 @@ key('meta_l-right')
 time.sleep(3)
 
 # 4. The menu
-click(30, 782)
+click(25, 782)
 time.sleep(4)
 type_('term')
 time.sleep(2)
@@ -295,15 +295,27 @@ check(diff > 200, 'the wheel scrolls Settings > Panel (%d points changed)' % dif
 
 # 6. The panel's edge and auto-hide
 console('mkdir -p /root/.config/rustica; printf "position=left\\nwidth=180\\n" > /root/.config/rustica/panel.conf', 4)
-check(wait_pixel(16, 18, ACCENT, 10), 'position=left: the panel on the left, Apps at the top')
+def fox_in(x0, y0, x1, y1, t):
+    # The fox (the menu button) somewhere in that corner within t seconds
+    end = time.time() + t
+    while True:
+        px = screen()
+        n = sum(1 for x in range(x0, x1, 2) for y in range(y0, y1, 2) if near(px(x, y), ACCENT, 12))
+        if n >= 20 or time.time() >= end:
+            return n
+        time.sleep(1)
+
+n = fox_in(0, 0, 180, 48, 10)
+check(n >= 20, 'position=left: the panel on the left, the fox at the top (%d points)' % n)
 console('printf "position=top\\nautohide=yes\\n" > /root/.config/rustica/panel.conf', 4)
 to(640, 400)
 time.sleep(2)
-px = screen()
-check(not near(px(30, 18), ACCENT, 30), 'position=top with auto-hide: hidden (%06x)' % px(30, 18))
+n = fox_in(10, 0, 34, 44, 0)
+check(n < 5, 'position=top with auto-hide: hidden (%d fox points)' % n)
 to(640, 0)
 time.sleep(2)
-check(wait_pixel(30, 18, ACCENT, 6), 'the pointer at the top edge: the panel shows')
+n = fox_in(10, 0, 34, 44, 6)
+check(n >= 20, 'the pointer at the top edge: the panel shows (%d fox points)' % n)
 
 key('ctrl-alt-f1')
 time.sleep(1)
