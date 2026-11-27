@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MAX_FDS 64
+#define MAX_FDS 1024  // as Linux's default (64 ran out in the browser on heavy sites, 2026-11-27)
 
 struct fd {
     int kind;             // RX_FD_*

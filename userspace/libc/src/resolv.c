@@ -23,7 +23,11 @@
 #include <unistd.h>
 #include <rustux/syscalls.h>
 
-static struct {
+// Each thread its own (2026-11-27): libcurl looks names up on threads of
+// its own, several at once (a page with many hosts), and res_init()
+// rewrites this at every query; shared, one thread's lookup saw another's
+// half-read configuration ("Couldn't resolve host name")
+static __thread struct {
     struct in_addr ns[3];
     int nns;
     char search[6][256];
@@ -33,7 +37,7 @@ static struct {
 
 static struct in_addr forced;
 static int have_forced;
-static char last_server[INET_ADDRSTRLEN];
+static __thread char last_server[INET_ADDRSTRLEN];
 
 void rx_res_server(const char *addr) {
     have_forced = addr && inet_aton(addr, &forced);
@@ -108,7 +112,7 @@ static int make_query(const char *name, int cls, int type, uint16_t id, unsigned
 }
 
 static uint16_t random_id(void) {
-    static uint64_t x;
+    static __thread uint64_t x;
     if (!x) x = rx_clock_get_monotonic() ^ (uint64_t)(uintptr_t)&x;
     x ^= x << 13;
     x ^= x >> 7;

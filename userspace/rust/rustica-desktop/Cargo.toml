@@ -27,3 +27,7 @@ opt-level = 3
 [[bin]]
 name = "powermenu"
 path = "src/bin/powermenu.rs"
+
+[[bin]]
+name = "popmenu"
+path = "src/bin/popmenu.rs"

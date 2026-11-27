@@ -189,6 +189,60 @@ time.sleep(4)
 px = screen()
 check(not near(px(160, 90), 0x202024, 2) or not near(px(160, 140), 0x101010, 30), 'Enter starts an application and closes the launcher')
 
+# 2b. The panel's icons and pinning (2026-11-27): Files and Terminal
+# pinned with their icons (FoxDen by its name); Settings started from the
+# console gets a window button with its gear; a right click on it pins it
+# (popmenu: Tab, Enter), a right click on the new launcher unpins it
+def rclick(x, y):
+    to(x, y)
+    qmp_events([{'type': 'btn', 'data': {'down': True, 'button': 'right'}}])
+    qmp_events([{'type': 'btn', 'data': {'down': False, 'button': 'right'}}])
+    time.sleep(0.5)
+
+def find_in_panel(colour, tol=6, x0=40, x1=900):
+    px = screen()
+    for x in range(x0, x1):
+        if near(px(x, 782), colour, tol):
+            return x
+    return None
+
+FILES_TILE, GEAR_TILE = 0x3478D9, 0x5A6270
+check(find_in_panel(FILES_TILE, 6, 40, 400) is not None, 'the panel: Files pinned with its icon')
+key('ctrl-alt-f1')
+time.sleep(1)
+n2 = len(log())
+type_('settings about &\n')
+time.sleep(2)
+key('ctrl-alt-f7')
+time.sleep(6)
+gx = find_in_panel(GEAR_TILE)
+check(gx is not None, "Settings' window button has its icon, the gear (x %s)" % gx)
+if gx is not None:
+    rclick(gx + 4, 782)
+    time.sleep(3)
+    key('tab')
+    key('ret')
+    time.sleep(3)
+    gx2 = find_in_panel(GEAR_TILE, 6, 40, 400)
+    check(gx2 is not None, 'a right click on its button, Pin to taskbar: Settings is a launcher (x %s)' % gx2)
+    if gx2 is not None:
+        rclick(gx2 + 4, 782)
+        time.sleep(3)
+        key('tab')
+        key('ret')
+        time.sleep(3)
+key('alt-f4')
+time.sleep(2)
+key('ctrl-alt-f1')
+time.sleep(1)
+n3 = len(log())
+type_('logs | grep -E "panel: (menu|pin|unpin)"; echo PIN-$((40-0))\n')
+wait(r'PIN-40', 15, n3)
+out = log()[n3:]
+check('panel: pin settings' in out and 'panel: unpin settings' in out, 'the log: pinned, then unpinned')
+key('ctrl-alt-f7')
+time.sleep(2)
+
 # 3. A notification from the console
 key('ctrl-alt-f1')
 time.sleep(1)

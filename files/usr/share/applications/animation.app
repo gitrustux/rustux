@@ -2,3 +2,4 @@ name=Animation
 exec=/bin/wintest Animation -a
 comment=A window drawing every frame
 categories=Development
+icon=/usr/share/icons/rustica/animation.png

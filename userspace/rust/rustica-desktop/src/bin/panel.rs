@@ -85,6 +85,8 @@ fn clock_applet(ui: &mut Ui, vertical: bool) {
 struct Win {
     id: i32,
     title: String,
+    /// The app it belongs to (SET_APP): an app's ID or a .app file's name
+    app: String,
     focused: bool,
     minimized: bool,
 }
@@ -211,20 +213,82 @@ fn config_mtime() -> Option<SystemTime> {
     config_paths().iter().find_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
 }
 
-/// A pinned app: its name and the command that starts it
+/// A pinned app: its key (a .app file's name or an app's ID), its name
+/// and the command that starts it
 struct Launcher {
+    key: String,
     name: String,
     exec: Vec<String>,
+}
+
+/// Where an app's icon is: an installed app's manifest (Icon:, in its
+/// folder), or a .app file's icon= (2026-11-27); FoxDen and programs
+/// without one show their name
+fn icon_path(key: &str) -> Option<String> {
+    if key.is_empty() || key.contains('/') {
+        return None;
+    }
+    if let Ok(t) = std::fs::read_to_string(format!("/apps/{key}/manifest")) {
+        let icon = t.lines().find_map(|l| l.strip_prefix("Icon:").map(|v| v.trim().to_string()))?;
+        if icon.is_empty() || icon.contains("..") {
+            return None;
+        }
+        return Some(format!("/apps/{key}/{icon}"));
+    }
+    let t = std::fs::read_to_string(format!("/usr/share/applications/{key}.app")).ok()?;
+    t.lines().find_map(|l| l.strip_prefix("icon=").map(|v| v.trim().to_string())).filter(|v| !v.is_empty())
+}
+
+/// Icons decoded once, then scaled to the panel's size (None: none)
+#[derive(Default)]
+struct Icons {
+    decoded: std::collections::HashMap<String, Option<rustica_ui::gfx::Pixmap>>,
+    scaled: std::collections::HashMap<(String, u32), Option<rustica_ui::gfx::Pixmap>>,
+}
+
+impl Icons {
+    fn get(&mut self, key: &str, size: u32) -> Option<rustica_ui::gfx::Pixmap> {
+        let k = (key.to_string(), size);
+        if let Some(p) = self.scaled.get(&k) {
+            return p.clone();
+        }
+        let img = self
+            .decoded
+            .entry(key.to_string())
+            .or_insert_with(|| icon_path(key).and_then(|p| std::fs::read(p).ok()).and_then(|d| rustica_ui::gfx::decode_image(&d).ok()))
+            .clone();
+        let p = img.and_then(|i| rustica_ui::gfx::scale_square(&i, size));
+        self.scaled.insert(k, p.clone());
+        p
+    }
+}
+
+/// The pinned apps into the user's panel settings (a right click's Pin
+/// to taskbar or Unpin from taskbar): the launchers= line replaced, the
+/// rest kept (the system's settings copied first if the user has none)
+fn save_launchers(list: &[String]) {
+    let paths = config_paths();
+    let user = &paths[0];
+    let old = std::fs::read_to_string(user).or_else(|_| std::fs::read_to_string(&paths[1])).unwrap_or_default();
+    let mut out: Vec<String> = old.lines().filter(|l| !l.trim_start().starts_with("launchers=")).map(str::to_string).collect();
+    out.push(format!("launchers={}", list.join(",")));
+    if let Some(dir) = user.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = user.with_extension("conf.new");
+    if std::fs::write(&tmp, out.join("\n") + "\n").is_ok() {
+        let _ = std::fs::rename(&tmp, user);
+    }
 }
 
 fn launcher(id: &str) -> Option<Launcher> {
     if let Ok(t) = std::fs::read_to_string(format!("/usr/share/applications/{id}.app")) {
         let get = |k: &str| t.lines().find_map(|l| l.strip_prefix(&format!("{k}=")).map(|v| v.trim().to_string()));
         let exec = get("exec")?;
-        return Some(Launcher { name: get("name").unwrap_or_else(|| id.into()), exec: exec.split_whitespace().map(str::to_string).collect() });
+        return Some(Launcher { key: id.into(), name: get("name").unwrap_or_else(|| id.into()), exec: exec.split_whitespace().map(str::to_string).collect() });
     }
     if std::path::Path::new(&format!("/apps/{id}/manifest")).exists() {
-        return Some(Launcher { name: app_name(id), exec: vec!["/bin/appctl".into(), "run".into(), id.into()] });
+        return Some(Launcher { key: id.into(), name: app_name(id), exec: vec!["/bin/appctl".into(), "run".into(), id.into()] });
     }
     None
 }
@@ -272,6 +336,10 @@ fn main() {
     println!("panel: session of {user}");
     let mut launcher_proc: Option<std::process::Child> = None;
     let mut power_proc: Option<std::process::Child> = None;
+    // A right click's menu on a button: the process, the app and whether
+    // it is pinned
+    let mut pin_proc: Option<(std::process::Child, String, bool)> = None;
+    let mut icons = Icons::default();
     // The desktop's icons (step F12): started with the session, again if
     // they end with an error (at most 5 times)
     let start_desk = || std::process::Command::new("/bin/desk").spawn().ok();
@@ -317,6 +385,28 @@ fn main() {
                 }
             }
         }
+        // The right click's menu ended: 1 its item (pin or unpin)
+        if let Some((c, key, pinned)) = pin_proc.as_mut() {
+            ctl.wake_after = Some(Duration::from_millis(300));
+            if let Ok(Some(st)) = c.try_wait() {
+                if st.code() == Some(1) {
+                    let mut list = cfg.launchers.clone();
+                    if *pinned {
+                        list.retain(|l| l != key);
+                        println!("panel: unpin {key}");
+                    } else if !list.contains(key) {
+                        list.push(key.clone());
+                        println!("panel: pin {key}");
+                    }
+                    save_launchers(&list);
+                    cfg.launchers = list;
+                    launchers = cfg.launchers.iter().filter_map(|l| launcher(l)).collect();
+                    // Read again at the next look, without reloading
+                    cfg_mtime = config_mtime();
+                }
+                pin_proc = None;
+            }
+        }
         // The settings changed (Settings > Panel)
         if cfg_at.elapsed() >= Duration::from_secs(1) {
             cfg_at = Instant::now();
@@ -334,11 +424,11 @@ fn main() {
             }
         }
         for e in ctl.events.drain(..) {
-            if let Event::WindowInfo { id, title, focused, minimized } = e {
+            if let Event::WindowInfo { id, title, app, focused, minimized } = e {
                 if id < 0 {
                     wins.clear();
                 } else {
-                    wins.push(Win { id, title, focused, minimized });
+                    wins.push(Win { id, title, app, focused, minimized });
                 }
             } else if let Event::Desktop(LAUNCHER_KEY) = e {
                 // The Super key alone
@@ -408,15 +498,20 @@ fn main() {
             _ => rustica_ui::gfx::Rect::new(0.0, 0.0, w, 1.0),
         };
         ui.canvas.fill_rect(line, th.border);
-        // A right click anywhere on the panel: its settings
-        if ui.input.right_pressed {
-            println!("panel: panel settings");
-            let _ = std::process::Command::new("/bin/settings").arg("panel").spawn();
-        }
-
         let mut actions: Vec<Action> = Vec::new();
         let menu_open = launcher_proc.is_some();
-        let state = State { wins: &wins, launchers: &launchers, link, sound: sound.as_ref(), ups, vertical, menu_open };
+        // The icons of the pinned apps and of the windows, at this size
+        let isz = ui.icon_size() as u32;
+        let mut shown_icons = std::collections::HashMap::new();
+        for k in launchers.iter().map(|l| l.key.as_str()).chain(wins.iter().map(|w| w.app.as_str())) {
+            if !shown_icons.contains_key(k) {
+                if let Some(p) = icons.get(k, isz) {
+                    shown_icons.insert(k.to_string(), p);
+                }
+            }
+        }
+        let right_pressed = ui.input.right_pressed;
+        let state = State { wins: &wins, launchers: &launchers, icons: &shown_icons, link, sound: sound.as_ref(), ups, vertical, menu_open };
         let gap = ui.u(8.0);
         if vertical {
             // One applet under the other; the window list takes the height left
@@ -466,8 +561,31 @@ fn main() {
                 }
             });
         }
+        // A right click anywhere else on the panel: its settings
+        if right_pressed && !actions.iter().any(|a| matches!(a, Action::PinMenu { .. })) {
+            println!("panel: panel settings");
+            let _ = std::process::Command::new("/bin/settings").arg("panel").spawn();
+        }
         for a in actions {
             match a {
+                Action::PinMenu { key, pinned, x, y } => {
+                    if let Some((mut c, _, _)) = pin_proc.take() {
+                        let _ = c.kill();
+                        let _ = c.wait();
+                    }
+                    // Beside the button, on the desktop's side of the panel
+                    let at = match cfg.edge {
+                        EDGE_TOP => (x as i32, cfg.size + 4),
+                        EDGE_LEFT => (cfg.width + 4, y as i32),
+                        EDGE_RIGHT => (-2, y as i32),
+                        _ => (x as i32, -2),
+                    };
+                    let item = if pinned { "Unpin from taskbar" } else { "Pin to taskbar" };
+                    println!("panel: menu {item} ({key})");
+                    if let Ok(c) = std::process::Command::new("/bin/popmenu").args([at.0.to_string(), at.1.to_string(), item.to_string()]).spawn() {
+                        pin_proc = Some((c, key, pinned));
+                    }
+                }
                 Action::Menu => toggle_launcher(&mut launcher_proc),
                 Action::Power => {
                     // Beside the panel's power button
@@ -515,6 +633,8 @@ fn main() {
 struct State<'a> {
     wins: &'a [Win],
     launchers: &'a [Launcher],
+    /// The apps' icons, by key, at the panel's size
+    icons: &'a std::collections::HashMap<String, rustica_ui::gfx::Pixmap>,
     /// The network icon's state
     link: rustica_ui::net::Link,
     /// The volume (None: no sound service)
@@ -535,6 +655,8 @@ enum Action {
     Volume(i32),
     Lock,
     Logout,
+    /// A right click on a button: its app, whether it is pinned, where
+    PinMenu { key: String, pinned: bool, x: f32, y: f32 },
 }
 
 /// The smallest a window's button gets before "+N" takes the rest
@@ -559,7 +681,11 @@ fn applet_size(ui: &mut Ui, name: &str, s: &State, vertical: bool) -> f32 {
     }
     match name {
         "menu" => ui.row_h() * 1.4 + gap,
-        "launchers" => s.launchers.iter().map(|l| bw(ui, &l.name)).sum(),
+        "launchers" => s
+            .launchers
+            .iter()
+            .map(|l| if s.icons.contains_key(&l.key) { ui.icon_button_width(true, "") } else { ui.icon_button_width(false, &l.name) } + gap)
+            .sum(),
         "updates" => {
             if s.ups > 0 {
                 bw(ui, &format!("Updates ({})", s.ups))
@@ -606,9 +732,34 @@ fn applet(ui: &mut Ui, name: &str, s: &State, room: f32, more_next: &mut usize, 
             }
         }
         "launchers" => {
+            // A pinned app's windows are on its button (as Windows'): a
+            // line under it while one is open, the accent's when focused
             for (i, l) in s.launchers.iter().enumerate() {
-                if ui.button_ex(&format!("launcher{i}"), &l.name, full, false, false).clicked {
-                    actions.push(Action::Start(l.exec.clone()));
+                let ws: Vec<&Win> = s.wins.iter().filter(|w| !w.app.is_empty() && w.app == l.key).collect();
+                let focused = ws.iter().any(|w| w.focused && !w.minimized);
+                let icon = s.icons.get(&l.key);
+                let label = if icon.is_some() && !v { "" } else { l.name.as_str() };
+                let r = ui.icon_button(&format!("launcher{i}"), icon, label, full, focused);
+                if !ws.is_empty() && !focused {
+                    let th = ui.theme;
+                    let line = rustica_ui::gfx::Rect::new(r.rect.x + r.rect.w * 0.3, r.rect.y + r.rect.h - ui.u(3.0), r.rect.w * 0.4, ui.u(2.0));
+                    ui.canvas.fill_rect(line, th.dim);
+                }
+                if r.clicked {
+                    if ws.is_empty() {
+                        actions.push(Action::Start(l.exec.clone()));
+                    } else {
+                        // One window: it (raised, or minimised if it has
+                        // the focus); several: the one after the focused
+                        let next = match ws.iter().position(|w| w.focused) {
+                            Some(k) if ws.len() > 1 => ws[(k + 1) % ws.len()],
+                            _ => ws[0],
+                        };
+                        actions.push(Action::Activate(next.id, next.title.clone()));
+                    }
+                }
+                if r.right_clicked {
+                    actions.push(Action::PinMenu { key: l.key.clone(), pinned: true, x: r.rect.x, y: r.rect.y });
                 }
             }
         }
@@ -696,35 +847,57 @@ fn applet(ui: &mut Ui, name: &str, s: &State, room: f32, more_next: &mut usize, 
 /// fit, the first ones that do are shown and "+N" activates the others in
 /// turn
 fn window_list(ui: &mut Ui, s: &State, room: f32, more_next: &mut usize, actions: &mut Vec<Action>) {
-    let n = s.wins.len();
+    // Windows of pinned apps are on their launchers' buttons
+    let wins: Vec<&Win> = s.wins.iter().filter(|w| w.app.is_empty() || !s.launchers.iter().any(|l| l.key == w.app)).collect();
+    let n = wins.len();
     if n == 0 {
         return;
     }
     let gap = ui.u(8.0);
     let v = s.vertical;
-    let (each, shown) = if v {
+    let label = |w: &Win| if w.minimized { format!("({})", w.title) } else { w.title.clone() };
+    // Each button as wide as its icon and title need (2026-11-27), up
+    // to WIN_MAX; when they do not all fit, the same width each, down to
+    // WIN_MIN, and "+N" for the rest
+    let mut widths: Vec<f32> = Vec::new();
+    let shown = if v {
         let bh = ui.row_h() + gap;
         let fits = ((room / bh).floor().max(0.0)) as usize;
         let shown = if fits >= n { n } else { fits.saturating_sub(1) };
-        (ui.available_width(), shown)
+        widths = vec![ui.available_width(); shown];
+        shown
     } else {
-        let fits = ((room / (ui.u(WIN_MIN) + gap)).floor().max(0.0)) as usize;
-        let shown = if fits >= n { n } else { fits.saturating_sub(1).max(1) };
-        let more_w = if shown < n { ui.text_width(&format!("+{}", n - shown)) + ui.u(32.0) + gap } else { 0.0 };
-        let each = ((room - more_w) / shown as f32 - gap).clamp(ui.u(40.0), ui.u(WIN_MAX));
-        (each, shown)
+        let natural: Vec<f32> = wins.iter().map(|w| ui.icon_button_width(s.icons.contains_key(&w.app), &label(w)).min(ui.u(WIN_MAX))).collect();
+        let total: f32 = natural.iter().map(|w| w + gap).sum();
+        if total <= room {
+            widths = natural;
+            n
+        } else {
+            let fits = ((room / (ui.u(WIN_MIN) + gap)).floor().max(0.0)) as usize;
+            let shown = if fits >= n { n } else { fits.saturating_sub(1).max(1) };
+            let more_w = if shown < n { ui.text_width(&format!("+{}", n - shown)) + ui.u(32.0) + gap } else { 0.0 };
+            let each = ((room - more_w) / shown as f32 - gap).clamp(ui.u(40.0), ui.u(WIN_MAX));
+            for k in 0..shown {
+                widths.push(each.min(natural[k]));
+            }
+            shown
+        }
     };
-    for win in &s.wins[..shown] {
-        let t = if win.minimized { format!("({})", win.title) } else { win.title.clone() };
-        if ui.button_ex(&format!("win{}", win.id), &t, each, false, win.focused).clicked {
+    for (k, win) in wins[..shown].iter().enumerate() {
+        let r = ui.icon_button(&format!("win{}", win.id), s.icons.get(&win.app), &label(win), widths[k], win.focused);
+        if r.clicked {
             actions.push(Action::Activate(win.id, win.title.clone()));
+        }
+        if r.right_clicked && launcher(&win.app).is_some() {
+            actions.push(Action::PinMenu { key: win.app.clone(), pinned: false, x: r.rect.x, y: r.rect.y });
         }
     }
     if shown < n {
-        let hidden = &s.wins[shown..];
+        let hidden = &wins[shown..];
         let label = format!("+{}", hidden.len());
-        if ui.button_ex("more", &label, if v { each } else { 0.0 }, false, false).clicked {
-            let w = &hidden[*more_next % hidden.len()];
+        let each = if v { ui.available_width() } else { 0.0 };
+        if ui.button_ex("more", &label, each, false, false).clicked {
+            let w = hidden[*more_next % hidden.len()];
             *more_next += 1;
             actions.push(Action::Activate(w.id, w.title.clone()));
         }

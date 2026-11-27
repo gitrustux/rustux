@@ -3,3 +3,4 @@ exec=/bin/files
 comment=Browse, copy and move files; USB sticks
 categories=Utility FileManager
 keywords=explorer folders browse
+icon=/usr/share/icons/rustica/files.png

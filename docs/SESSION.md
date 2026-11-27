@@ -46,11 +46,23 @@ Ctrl+Alt+F1 throughout.
   word "Apps", which FoxDen holds: a second click, or the Super key pressed alone,
   which the compositor passes on as `RX_WINDOW_EV_DESKTOP` with
   `RX_WINDOW_DESKTOP_LAUNCHER`, opens it or closes it), the launchers
-  (pinned apps: FoxDen, Files, Terminal), the window list (click: focus,
-  or minimise when it has the focus; a minimised one in brackets; the
-  buttons share the room left, their titles shortened, and past 90 pixels
-  each a "+N" button stands for the rest, so the end of the panel never
-  leaves the screen), Updates (when there are some), the keyboard layout
+  (pinned apps: FoxDen, Files, Terminal; since 2026-11-27 each its app's
+  icon, or its name when it has none, as FoxDen; a pinned app's windows
+  are on its button, as Windows': a line under it while one is open, the
+  accent's when focused; a click starts the app, or brings its window
+  up, or the next of several), the window list (each button the app's
+  icon and the window's title, only as wide as they need, up to 220
+  pixels; click: focus, or minimise when it has the focus; a minimised
+  one in brackets; when they do not fit they share the room left, their
+  titles shortened, and past 90 pixels each a "+N" button stands for the
+  rest, so the end of the panel never leaves the screen). A right click
+  on a window's button offers **Pin to taskbar**, on a launcher **Unpin
+  from taskbar** (`popmenu`; the choice goes into the user's
+  `panel.conf`); a right click elsewhere on the panel opens Settings >
+  Panel. The icons: an app's manifest (`Icon:`), or a `.app` file's
+  `icon=` (the system's programs: `/usr/share/icons/rustica/`, drawn by
+  `scripts/make-system-icons.py`); the window says its app (`SET_APP`,
+  `WINDOWS.md`), Updates (when there are some), the keyboard layout
   (`/etc/keymap`), the volume (a speaker with one to three waves, or a
   cross when muted, and the percentage; the wheel over it changes it by
   5, a click opens Settings > Sound; `SOUND.md`), the network (an icon,

@@ -1026,6 +1026,77 @@ impl Ui {
         ButtonResponse { clicked, right_clicked: right, rect: r }
     }
 
+    /// A button with a picture (an app's icon) left of its label, or alone
+    /// and centred when the label is empty (2026-11-27, the panel). `w` 0:
+    /// as wide as it needs ([`Ui::icon_button_width`])
+    pub fn icon_button(&mut self, name: &str, icon: Option<&tiny_skia::Pixmap>, label: &str, w: f32, selected: bool) -> ButtonResponse {
+        let id = self.id(name);
+        let px = self.font_px();
+        let bw = if w > 0.0 { w } else { self.icon_button_width(icon.is_some(), label) };
+        let h = self.row_h();
+        let r = self.alloc(bw, h);
+        let focused = self.focusable(id, r);
+        let mut clicked = self.input.released && self.active == Some(id) && self.hover(r);
+        for k in self.keys_for(id) {
+            if k.usage == keys::ENTER || k.usage == keys::SPACE || k.usage == keys::KP_ENTER {
+                clicked = true;
+            }
+        }
+        let right = self.input.right_pressed && self.hover(r);
+        let hot = self.hover(r);
+        let th = self.theme;
+        let bg = if selected {
+            if hot { mix(th.selection, 0xFFFFFF, 0.08) } else { th.selection }
+        } else if hot {
+            th.surface_hover
+        } else {
+            th.surface
+        };
+        self.canvas.fill_rounded(r, self.u(6.0), bg);
+        self.canvas.stroke_rounded(r, self.u(6.0), 1.0, if focused { th.accent } else { th.border });
+        if selected {
+            let line = Rect::new(r.x + self.u(6.0), r.y + r.h - self.u(3.0), r.w - self.u(12.0), self.u(2.0));
+            self.canvas.fill_rect(line, th.accent);
+        }
+        let isz = self.icon_size();
+        let pad = self.u(8.0);
+        let mut tx = r.x + pad;
+        if let Some(img) = icon {
+            let ix = if label.is_empty() { r.x + (r.w - isz) / 2.0 } else { r.x + pad };
+            self.canvas.image(img, ix, r.y + (r.h - isz) / 2.0);
+            tx = ix + isz + self.u(6.0);
+        }
+        if !label.is_empty() {
+            let room = r.x + r.w - pad - tx;
+            let shown = self.elide(label, room, false);
+            if icon.is_none() {
+                // Text alone: centred, as a plain button's
+                let tw = self.face.width(&shown, px);
+                tx = r.x + (r.w - tw) / 2.0;
+            }
+            self.draw_text(false, tx, r.y + self.u(6.0), &shown, px, th.text);
+        }
+        self.focus_ring(r, focused);
+        ButtonResponse { clicked, right_clicked: right, rect: r }
+    }
+
+    /// The side of an icon in [`Ui::icon_button`], in pixels
+    pub fn icon_size(&self) -> f32 {
+        (self.row_h() * 0.7).round()
+    }
+
+    /// How wide [`Ui::icon_button`] wants to be
+    pub fn icon_button_width(&mut self, icon: bool, label: &str) -> f32 {
+        let px = self.font_px();
+        let pad = self.u(8.0);
+        let isz = self.icon_size();
+        match (icon, label.is_empty()) {
+            (true, true) => self.row_h() * 1.25,
+            (true, false) => pad + isz + self.u(6.0) + self.face.width(label, px) + pad + self.u(4.0),
+            _ => self.face.width(label, px) + self.u(24.0),
+        }
+    }
+
     /// A card: a clickable area of w x h pixels that the caller draws into
     /// (its rect is returned), with the hover and selected borders and the
     /// keyboard focus of a button; its id is `name`

@@ -1016,6 +1016,12 @@ impl Netd {
             if ev.is_none() && l.dhcp_addr.is_some() {
                 log(&format!("{}: DHCP lease lost", l.name));
             }
+            // A renewal of the same address without DNS servers (some
+            // routers leave them out of the renewal's answer) keeps the
+            // ones the lease came with (2026-11-27: after a renewal every
+            // name lookup failed, "Couldn't resolve host name")
+            let old_dns = l.dns.clone();
+            let same_addr = matches!(&ev, Some((addr, ..)) if l.dhcp_addr == Some(*addr));
             // Out with the old lease
             if let Some(old) = l.dhcp_addr.take() {
                 l.iface.update_ip_addrs(|a| a.retain(|x| *x != IpCidr::Ipv4(old)));
@@ -1041,7 +1047,12 @@ impl Netd {
                             l.dhcp_router = true;
                         }
                     }
-                    l.dns = dns;
+                    l.dns = if dns.is_empty() && same_addr && !old_dns.is_empty() {
+                        log(&format!("{}: DHCP renewal without DNS servers: keeping {}", l.name, old_dns.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" ")));
+                        old_dns
+                    } else {
+                        dns
+                    };
                     l.lease = lease.map(|s| (now(), s));
                     log(&format!(
                         "{}: DHCP lease {}{}{}{}",
@@ -1098,7 +1109,14 @@ impl Netd {
             text.push_str(&format!("nameserver {s}\n"));
         }
         if std::fs::read_to_string(path).ok().as_deref() != Some(text.as_str()) {
-            let _ = std::fs::write(path, text);
+            // Written aside, then renamed over it: a lookup never reads a
+            // half-written or empty file
+            let tmp = "/etc/resolv.conf.netd";
+            if std::fs::write(tmp, &text).is_ok() && std::fs::rename(tmp, path).is_ok() {
+                log(&format!("DNS servers: {}", if servers.is_empty() { "none".to_string() } else { servers.iter().take(3).map(|s| s.to_string()).collect::<Vec<_>>().join(" ") }));
+            } else {
+                let _ = std::fs::write(path, text);
+            }
         }
     }
 

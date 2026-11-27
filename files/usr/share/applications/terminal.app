@@ -3,3 +3,4 @@ exec=/bin/terminal
 comment=The shell in a window, with tabs
 categories=System TerminalEmulator
 keywords=shell console command line
+icon=/usr/share/icons/rustica/terminal.png

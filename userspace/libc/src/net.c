@@ -20,6 +20,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <pthread.h>
 #include <rustux/netsock.h>
 #include <rustux/service.h>
 #include <stdio.h>
@@ -353,12 +354,23 @@ static uint64_t deadline_after(uint64_t ns) {
     return ns ? rx_clock_get_monotonic() + ns : RX_TIME_INFINITE;
 }
 
+static pthread_key_t fetch_key;
+static pthread_once_t fetch_once = PTHREAD_ONCE_INIT;
+static void fetch_key_init(void) { pthread_key_create(&fetch_key, free); }
+
 // One message from netd into the queue (errors are taken at once): 0, or
 // -EAGAIN if none came by the deadline, -ENETDOWN if netd has gone
 static int fetch(struct sock *s, uint64_t deadline) {
     for (;;) {
+        // A buffer per thread, freed when the thread ends (2026-11-27:
+        // libcurl looks every name up on a thread of its own, and each
+        // left its 64 KiB behind)
         static __thread char *buf;
-        if (!buf && !(buf = malloc(sizeof(rx_netsock_msg_t) + RX_NETSOCK_MAX_DGRAM + 64))) return -ENOMEM;
+        if (!buf) {
+            if (!(buf = malloc(sizeof(rx_netsock_msg_t) + RX_NETSOCK_MAX_DGRAM + 64))) return -ENOMEM;
+            pthread_once(&fetch_once, fetch_key_init);
+            pthread_setspecific(fetch_key, buf);
+        }
         uint32_t nb = 0, nh = 0;
         rx_handle_t hs[2] = { 0, 0 };
         __lock(&s->lock);

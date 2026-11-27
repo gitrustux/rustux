@@ -294,7 +294,8 @@ Other system calls in the library: `uname` (kernel version, host name from
   their output.
 - Every character on the screen is one column wide (no double-width
   characters); the line editor assumes the same.
-- Up to 64 file descriptors; arguments and environment together up to
+- Up to 1024 file descriptors (64 until 2026-11-27: a browser on a heavy
+  site ran out); arguments and environment together up to
   32 KiB; programs up to 64 MiB.
 - No symbolic links (`ln -s` fails) or hard links (`ln` fails), no file
   locking, no `fork`/`exec` (programs are

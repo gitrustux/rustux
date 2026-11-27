@@ -47,6 +47,8 @@ struct RawEvent {
     n: u32,
     text: [u8; 16],
     time: u64,
+    /// EV_WINDOW_INFO: the app, a 0 byte, the whole title
+    info: [u8; 112],
 }
 
 /// rx_window_t
@@ -73,6 +75,7 @@ extern "C" {
     fn rx_window_set_title(w: *mut RawWindow, title: *const u8) -> i32;
     fn rx_window_set_fullscreen(w: *mut RawWindow, on: i32) -> i32;
     fn rx_window_set_cursor(w: *mut RawWindow, shape: u32) -> i32;
+    fn rx_window_set_app(w: *mut RawWindow, app: *const u8) -> i32;
     fn rx_window_clipboard_set(w: *mut RawWindow, text: *const u8) -> i32;
     fn rx_window_clipboard_get(w: *mut RawWindow, buf: *mut u8, size: usize) -> i32;
     fn rx_window_destroy(w: *mut RawWindow);
@@ -109,7 +112,9 @@ pub enum Event {
     State { maximized: bool, fullscreen: bool, minimized: bool },
     Frame,
     /// To the panel (step F6): id -1 starts a new list; then one per window
-    WindowInfo { id: i32, title: String, focused: bool, minimized: bool },
+    /// `app`: the app it belongs to (an app's ID or a .app file's name;
+    /// empty if it did not say)
+    WindowInfo { id: i32, title: String, app: String, focused: bool, minimized: bool },
     /// [`Waker::wake`] was called
     Wake,
     /// The theme or the wallpaper changed; the theme's name
@@ -311,9 +316,16 @@ impl Window {
             }
             WINDOW_INFO => {
                 let len = ev.text.iter().position(|&b| b == 0).unwrap_or(ev.text.len());
+                // The app, then the whole title (a compositor before
+                // 2026-11-27 sent neither: the short title then)
+                let a = ev.info.iter().position(|&b| b == 0).unwrap_or(ev.info.len());
+                let rest = &ev.info[(a + 1).min(ev.info.len())..];
+                let t = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+                let full = String::from_utf8_lossy(&rest[..t]).into_owned();
                 Event::WindowInfo {
                     id: ev.x,
-                    title: String::from_utf8_lossy(&ev.text[..len]).into_owned(),
+                    title: if full.is_empty() { String::from_utf8_lossy(&ev.text[..len]).into_owned() } else { full },
+                    app: String::from_utf8_lossy(&ev.info[..a]).into_owned(),
                     focused: ev.flags & 1 != 0,
                     minimized: ev.flags & 2 != 0,
                 }
@@ -340,6 +352,14 @@ impl Window {
     /// The pointer's shape over the window's content
     pub fn set_cursor(&mut self, shape: Cursor) {
         unsafe { rx_window_set_cursor(&mut *self.raw, shape as u32) };
+    }
+
+    /// The app this window belongs to (an app's ID, or a .app file's
+    /// name): the panel shows its icon
+    pub fn set_app(&mut self, app: &str) {
+        let mut a = app.as_bytes().to_vec();
+        a.push(0);
+        unsafe { rx_window_set_app(&mut *self.raw, a.as_ptr()) };
     }
 
     /// The desktop session (step F6): become the panel

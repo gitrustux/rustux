@@ -124,6 +124,7 @@ typedef struct {
     rx_handle_t ch;
     char title[RX_WINDOW_MAX_TITLE + 1];
     uint32_t cursor;            // the pointer's shape over its content (RX_WINDOW_CURSOR_*)
+    char app[64];               // the app it belongs to (SET_APP), for the panel's icons
     int x, y;                   // content's top left on the screen
     uint32_t w, h;              // content size (the committed buffer's)
     uint32_t *pix;              // our copy of what was committed
@@ -1034,6 +1035,10 @@ static void notify_panels(void) {
             ev.x = order[i];
             ev.flags = (order[i] == focus ? 1u : 0u) | (w->minimized ? 2u : 0u);
             snprintf(ev.text, sizeof ev.text, "%s", w->title);
+            // The app, a 0 byte, the whole title (as much as fits)
+            size_t al = strlen(w->app);
+            memcpy(ev.info, w->app, al);
+            snprintf(ev.info + al + 1, sizeof ev.info - al - 1, "%s", w->title);
             send_event(&wins[p], &ev);
         }
     }
@@ -1674,6 +1679,21 @@ static int client_messages(int k) {
         case RX_WINDOW_SET_CURSOR:
             w->cursor = r.flags < RX_WINDOW_CURSOR_COUNT ? r.flags : RX_WINDOW_CURSOR_ARROW;
             break;
+        case RX_WINDOW_SET_APP: {
+            // Letters, digits, '.', '-', '_' only: a name the panel looks up
+            size_t al = plen < sizeof w->app - 1 ? plen : sizeof w->app - 1;
+            int ok = al > 0;
+            for (size_t i = 0; i < al; i++) {
+                char c = payload[i];
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_')) ok = 0;
+            }
+            if (ok) {
+                memcpy(w->app, payload, al);
+                w->app[al] = 0;
+                notify_panels();
+            }
+            break;
+        }
         case RX_WINDOW_SET_FULLSCREEN:
             if (!w->panel) set_fullscreen(k, r.flags != 0);
             break;

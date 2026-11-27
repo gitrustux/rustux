@@ -1,5 +1,5 @@
 Package: org.rustica.sysmon
-Version: 1.0.5
+Version: 1.0.6
 Architecture: x86_64
 Kind: app
 Maintainer: The Rustux Authors <gitrustux@rustux>

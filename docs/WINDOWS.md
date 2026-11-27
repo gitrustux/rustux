@@ -41,7 +41,7 @@ animation to what the screen takes.
 | `STATE` | maximised, full screen, minimised |
 | `CLOSE_REQUEST` | the close button or Alt+F4 |
 | `FRAME` | the last commit is on the screen |
-| `WINDOW_INFO` | (to the panel) x -1 starts a new list, then one per window: its id, title (15 characters), focused, minimised; sent on every change |
+| `WINDOW_INFO` | (to the panel) x -1 starts a new list, then one per window: its id, title (15 characters), focused, minimised; since 2026-11-27 the event's `info` holds its app (`SET_APP`), a 0 byte and its whole title; sent on every change |
 | `APPEARANCE` | (110) the theme or the wallpaper changed, and a new window's first event; text: the theme's name; `n` bytes follow, its colours as a theme file's text (`rx_window_drop_text`). `SESSION.md` "Themes" |
 | `DESKTOP` | (111, to the panel) the desktop's menu was used: flags 1 Change wallpaper, 2 Appearance settings |
 
@@ -51,6 +51,7 @@ animation to what the screen takes.
 | `COMMIT` | up to 64 damaged rectangles (none: all) |
 | `BUFFER` | a new buffer after `CONFIGURE` |
 | `SET_TITLE`, `SET_FULLSCREEN` | |
+| `SET_APP` | (2026-11-27) + text: the app the window belongs to, an app's ID or a `.app` file's name (letters, digits, `.`, `-`, `_`; 63 at most), for the panel's icons (`rx_window_set_app`, `Window::set_app`). The C library sends it as the window is made: `APP_ID` (which appctl gives every app), else the program's name |
 | `SET_CURSOR` | (2026-11-26) flags: the pointer's shape over the window's content, `RX_WINDOW_CURSOR_ARROW`, `HAND` (a link), `TEXT`, `WAIT`, `MOVE`, `RESIZE_H`, `RESIZE_V`, `RESIZE_NWSE`, `RESIZE_NESW` (`rx_window_set_cursor`, `Window::set_cursor`). The compositor draws the resize arrows on windows' edges and while resizing itself |
 | `CLIPBOARD_SET`, `CLIPBOARD_GET` | text, up to 4000 bytes; `GET` is answered with the text |
 | `SET_ROLE` | `PANEL` (step F6): no frame, docked at an edge, always on top, never focused (it gets the pointer while over it); maximised and tiled windows stay out of it. `DESKTOP` (step F12): no frame, the work area, always below every other window, never in the panel's list; its buffer's top byte is premultiplied alpha, so it is drawn over the wallpaper (the desktop's icons) |

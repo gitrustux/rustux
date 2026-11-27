@@ -65,6 +65,8 @@ typedef struct {
 #define RX_WINDOW_SET_PANEL      12u // (the panel) flags = edge (RX_WINDOW_EDGE_*), x = thickness, y = 1 auto-hide
 #define RX_WINDOW_DRAG_START     13u // + text: while the left button is held, drag this (file paths, a line each); the drop goes to the window under the pointer
 #define RX_WINDOW_SET_CURSOR     14u // flags = RX_WINDOW_CURSOR_*: the pointer's shape over the window's content
+#define RX_WINDOW_SET_APP        15u // + text: the app the window belongs to (an app's ID, or a .app file's
+                                     // name for the system's programs): the panel shows its icon (2026-11-27)
 #define RX_WINDOW_AT_END         (-2) // CREATE's x or y: against the work area's right or bottom edge
 #define RX_WINDOW_ROLE_PANEL     1u
 #define RX_WINDOW_ROLE_DESKTOP   2u  // the desktop's icons: the work area, below every window; the buffer's top byte is premultiplied alpha
@@ -99,7 +101,8 @@ typedef struct {
 #define RX_WINDOW_EV_FRAME         106u  // the last commit is on the screen
 #define RX_WINDOW_EV_STATE         107u  // flags: RX_WINDOW_STATE_*
 // To the panel: x -1 starts a new list, then one per window: x its id,
-// flags 1 focused, 2 minimised, text its title (cut to 15 characters)
+// flags 1 focused, 2 minimised, text its title (cut to 15 characters);
+// info: its app (SET_APP), a 0 byte, then its whole title (cut to fit)
 #define RX_WINDOW_EV_WINDOW_INFO   108u
 // Not from the compositor: rx_window_wake was called (from another thread)
 #define RX_WINDOW_EV_WAKE          109u
@@ -138,6 +141,7 @@ typedef struct {
     uint32_t n;         // CLIPBOARD_GET reply: bytes of text that follow
     char text[16];      // EV_KEY: what the layout makes of a press
     uint64_t time;
+    char info[112];     // EV_WINDOW_INFO: app, 0, title (2026-11-27)
 } rx_window_event_t;
 
 // ---- the client library (libc window.c) ----
@@ -167,6 +171,8 @@ int rx_window_set_title(rx_window_t *win, const char *title);
 int rx_window_set_fullscreen(rx_window_t *win, int on);
 // The pointer's shape over the window (RX_WINDOW_CURSOR_*)
 int rx_window_set_cursor(rx_window_t *win, uint32_t shape);
+// The app the window belongs to (its icon on the panel)
+int rx_window_set_app(rx_window_t *win, const char *app);
 int rx_window_clipboard_set(rx_window_t *win, const char *text);
 // The clipboard's text into buf (0-terminated): its length or a negative errno
 int rx_window_clipboard_get(rx_window_t *win, char *buf, size_t size);

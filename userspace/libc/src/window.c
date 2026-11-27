@@ -10,6 +10,7 @@
 #include <rustux/process.h>
 #include <rustux/service.h>
 #include <rustux/window.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define QSIZE ((int)(sizeof(((rx_window_t *)0)->queue) / sizeof(rx_window_event_t)))
@@ -147,6 +148,13 @@ int rx_window_create(rx_window_t *win, int x, int y, uint32_t w, uint32_t h, con
                 rx_window_destroy(win);
                 return ev.status;
             }
+            // Which app it belongs to, for the panel's icon (2026-11-27):
+            // the app's ID appctl gives, else the program's name (a .app
+            // file's for the system's programs); rx_window_set_app changes it
+            extern char *program_invocation_short_name;
+            const char *app = getenv("APP_ID");
+            if (!app || !*app) app = program_invocation_short_name;
+            if (app && *app) rx_window_set_app(win, app);
             return 0;
         }
         enqueue(win, &ev);
@@ -203,6 +211,13 @@ int rx_window_set_fullscreen(rx_window_t *win, int on) {
 int rx_window_set_cursor(rx_window_t *win, uint32_t shape) {
     rx_window_req_t req = { RX_WINDOW_SET_CURSOR, 0, 0, 0, 0, 0, shape };
     return send_req(win, &req, 0, 0, 0);
+}
+
+int rx_window_set_app(rx_window_t *win, const char *app) {
+    size_t n = strlen(app);
+    if (n == 0 || n > 63) return -EINVAL;
+    rx_window_req_t req = { RX_WINDOW_SET_APP, (uint32_t)n, 0, 0, 0, 0, 0 };
+    return send_req(win, &req, app, (uint32_t)n, 0);
 }
 
 int rx_window_clipboard_set(rx_window_t *win, const char *text) {

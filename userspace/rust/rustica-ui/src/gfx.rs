@@ -321,6 +321,17 @@ pub fn load_image(path: &str) -> Result<Pixmap, String> {
     decode_image(&data)
 }
 
+/// A picture scaled to `size` x `size` pixels, smoothly (icons)
+pub fn scale_square(img: &Pixmap, size: u32) -> Option<Pixmap> {
+    let size = size.max(1);
+    let mut out = Pixmap::new(size, size)?;
+    let sx = size as f32 / img.width() as f32;
+    let sy = size as f32 / img.height() as f32;
+    let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Bicubic, ..PixmapPaint::default() };
+    out.draw_pixmap(0, 0, img.as_ref(), &paint, Transform::from_scale(sx, sy), None);
+    Some(out)
+}
+
 pub fn decode_image(data: &[u8]) -> Result<Pixmap, String> {
     if data.starts_with(b"\x89PNG") {
         return Pixmap::decode_png(data).map_err(|e| e.to_string());

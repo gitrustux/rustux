@@ -186,7 +186,11 @@ dhcp`; netd logs each lease (`logs -u netd`).
 netd writes `/etc/resolv.conf` from the `dns` and `search` lines of
 `network.conf` and DHCP's servers, with a first line `# Written by
 netd`; a file without that line is the administrator's own and is left
-alone (`man resolv.conf`).
+alone (`man resolv.conf`). Since 2026-11-27 it is written aside and
+renamed over the old one (a lookup never reads it half-written), netd
+logs the servers each time ("DNS servers: ..."), and a renewal of the
+same address whose answer has no DNS servers keeps the lease's (some
+routers leave them out of the renewal; every lookup failed after it).
 
 ### DNS (step D3)
 
@@ -198,7 +202,10 @@ truncated; short names get the `search` domains (`ndots`). A and AAAA
 records (IPv4 addresses first); CNAMEs followed by the server. `res_query`,
 `res_search` and `dn_expand` are there for programs that read DNS
 messages themselves, such as `host`. Rust's `std::net` and everything on
-it resolve through `getaddrinfo`.
+it resolve through `getaddrinfo`. The resolver's state is per thread
+(2026-11-27): libcurl looks each name up on a thread of its own, several
+at once, and a shared copy was rewritten under another lookup; the
+sockets' per-thread receive buffer is freed when the thread ends.
 
 ### The control protocol: /svc/net
 

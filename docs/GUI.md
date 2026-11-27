@@ -92,6 +92,11 @@ iced is the fallback to build next (MIT, tiny-skia renderer).
   button too), `elide`, `row_h`, the icons `Home` and `TrashFull`,
   `Ui::transparent` (frames start transparent and the window gets the
   alpha: the desktop role), `Request::SetPanel`.
+- **2026-11-27** added `icon_button` (a picture, an app's icon, left of
+  its label or alone; `icon_size`, `icon_button_width`) and
+  `gfx::scale_square` (a picture scaled smoothly to a square); every
+  window says which app it belongs to (`APP_ID`, else the program's
+  name: `SET_APP`, `WINDOWS.md`), for the panel's icons.
 - **Running** (`app.rs`): `rustica_ui::run(title, w, h, position, frame)`
   opens the window, turns the compositor's events into input, calls the
   frame function, copies the canvas into the window's buffer and commits.

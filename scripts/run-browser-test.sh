@@ -62,6 +62,18 @@ cat > "$W/www/secure.html" <<'EOF'
 EOF
 head -c 2500000 /dev/urandom > "$W/www/big.zip"
 python3 -c "print('<html><head><style>body{overflow-y:scroll;background:#ab12cd;margin:0}</style></head><body>' + ''.join('<p>Line %d</p>' % i for i in range(200)) + '</body></html>')" > "$W/www/scroll.html"
+# A heavy page, as a news portal's: 160 pictures from 40 host names, over
+# connections kept open (HTTP/1.1), then another site (heavy.html's port
+# comes from the server below, so it is written there)
+python3 -c "
+import struct, zlib
+def png(c):
+    raw = b''.join(b'\x00' + bytes(c) * 16 for _ in range(16))
+    ch = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d))
+    return b'\x89PNG\r\n\x1a\n' + ch(b'IHDR', struct.pack('>IIBBBBB', 16, 16, 8, 2, 0, 0, 0)) + ch(b'IDAT', zlib.compress(raw)) + ch(b'IEND', b'')
+open('$W/www/img.png', 'wb').write(png((200, 120, 40)))
+"
+echo '<html><body style="background:#2468ac;margin:0"><h1>After</h1></body></html>' > "$W/www/after.html"
 SUM=$(sha256sum < "$W/www/big.zip" | cut -d' ' -f1)
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=Rustica browser test CA" \
     -keyout "$W/ca.key" -out "$W/www/ca.pem" 2>/dev/null
@@ -75,16 +87,52 @@ W = sys.argv[1]
 H = functools.partial(http.server.SimpleHTTPRequestHandler, directory=W + '/www')
 web = http.server.ThreadingHTTPServer(('127.0.0.1', 0), H)
 webs = http.server.ThreadingHTTPServer(('127.0.0.1', 0), H)
+class K(http.server.SimpleHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'   # connections kept open, as real sites do
+    def log_message(self, *a): pass
+webk = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(K, directory=W + '/www'))
+hk = webk.server_address[1]
+import os
+NH = int(os.environ.get('HEAVY_HOSTS', '40'))
+open(W + '/www/heavy.html', 'w').write('<html><body style="margin:0">' + ''.join(
+    '<img src="http://h%d.rx.test:%d/img.png?%d" width=16 height=16>' % (i % NH, hk, i) for i in range(max(160, NH))) + '</body></html>')
+threading.Thread(target=webk.serve_forever, daemon=True).start()
+# A DNS server for *.rx.test (the guest asks 10.0.2.2:53, QEMU passes it
+# here): A 10.0.2.2, no AAAA, anything else not found
+import socket as so, struct
+def dns():
+    d = so.socket(so.AF_INET, so.SOCK_DGRAM)
+    try:
+        d.bind(('127.0.0.1', 53))
+    except OSError as e:
+        sys.stderr.write('no DNS server: %s\n' % e)
+        return
+    while True:
+        q, a = d.recvfrom(512)
+        i, labels = 12, []
+        while q[i]:
+            labels.append(q[i + 1:i + 1 + q[i]].decode()); i += 1 + q[i]
+        qtype = struct.unpack('>H', q[i + 1:i + 3])[0]
+        qend = i + 5
+        name = '.'.join(labels).lower()
+        ok = name.endswith('.rx.test')
+        an = 1 if ok and qtype == 1 else 0
+        flags = 0x8180 if ok else 0x8183
+        r = q[:2] + struct.pack('>HHHHH', flags, 1, an, 0, 0) + q[12:qend]
+        if an:
+            r += b'\xc0\x0c' + struct.pack('>HHIH', 1, 1, 60, 4) + bytes([10, 0, 2, 2])
+        d.sendto(r, a)
+threading.Thread(target=dns, daemon=True).start()
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain(W + '/srv.pem', W + '/srv.key')
 webs.socket = ctx.wrap_socket(webs.socket, server_side=True)
-print(web.server_address[1], webs.server_address[1], flush=True)
+print(web.server_address[1], webs.server_address[1], hk, flush=True)
 threading.Thread(target=webs.serve_forever, daemon=True).start()
 web.serve_forever()
 PY
 SRV=$!
 for _ in $(seq 50); do [ -s "$W/ports" ] && break; sleep 0.1; done
-read -r HP HS < "$W/ports"
+read -r HP HS HK < "$W/ports"
 
 qemu-system-x86_64 -machine q35 -m 1536M -smp 2 -bios "$OVMF" -drive file="$W/boot.img",format=raw,if=none,id=u \
     -device qemu-xhci -device usb-storage,drive=u -device usb-tablet \
@@ -92,9 +140,9 @@ qemu-system-x86_64 -machine q35 -m 1536M -smp 2 -bios "$OVMF" -drive file="$W/bo
     -display none -debugcon file:"$W/console.log" -no-reboot -monitor unix:"$W/mon",server,nowait \
     -qmp unix:"$W/qmp",server,nowait >/dev/null 2>&1 &
 Q=$!
-python3 - "$W" "$HP" "$HS" "$SUM" <<'PY'
+python3 - "$W" "$HP" "$HS" "$SUM" "$HK" <<'PY'
 import json, math, re, socket, sys, time
-W_DIR, HP, HS, SUM = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+W_DIR, HP, HS, SUM, HK = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 LOG, MON = W_DIR + '/console.log', W_DIR + '/mon'
 fails = 0
 
@@ -324,6 +372,58 @@ for y in range(300, 600, 50):
 check(gaps and max(gaps) <= 22, 'a page whose body scrolls has one scrollbar, the window\'s (%s px from the page to the border)' % gaps)
 mon('sendkey alt-f4')
 time.sleep(2)
+
+# 7. A heavy page, as a news portal's (160 pictures from 40 host names,
+# each looked up by DNS, connections kept open), then another site in the
+# same window, then Back: they must still load (2026-11-27: after a heavy
+# site the browser could load nothing more)
+console('cp /etc/resolv.conf /tmp/resolv.keep; echo "nameserver 10.0.2.2" > /etc/resolv.conf')
+console('browser http://h0.rx.test:%s/heavy.html > /tmp/ns4.log 2>&1 &' % HK)
+desktop()
+orange = wait_colour(0xC87828, 30000, 120)
+check(orange >= 30000, 'a heavy page: 160 pictures from 40 host names, each looked up (%d pixels of them)' % orange)
+time.sleep(5)
+import os
+def snap(name):
+    if os.environ.get('SHOTS'):
+        mon('screendump %s/%s.ppm' % (os.environ['SHOTS'], name)); time.sleep(1)
+snap('heavy1')
+# The address bar: the first row with a long run of white (wherever the
+# window was placed)
+w, h, data = screen()
+bar = None
+for y in range(40, 500):
+    run = best = 0
+    for x in range(0, w, 2):
+        p = 3 * (y * w + x)
+        run = run + 2 if data[p] == 255 and data[p + 1] == 255 and data[p + 2] == 255 else 0
+        best = max(best, run)
+    if best > 500:
+        bar = y
+        break
+check(bar is not None, 'the browser window\'s address bar found (row %s)' % bar)
+if bar is not None:
+    left = next(x for x in range(w) if data[3 * ((bar + 8) * w + x)] == 255 and data[3 * ((bar + 8) * w + x) + 1] == 255)
+    click(left + 300, bar + 10)
+    mon('sendkey ctrl-u')
+    time.sleep(0.5)
+    type_('http://after.rx.test:%s/after.html\n' % HK)
+    blue = wait_colour(0x2468AC, 50000, 60)
+    snap('heavy2')
+    check(blue >= 50000, 'after it, another site (looked up too) loads in the same window (%d pixels of #2468ac)' % blue)
+    # Back: the toolbar's first button, left of the address bar
+    click(left - 120, bar + 12)
+    back = wait_colour(0xC87828, 30000, 60)
+    snap('heavy3')
+    check(back >= 30000, 'Back shows the heavy page again (%d pixels of its pictures)' % back)
+    n = console('ps | grep -E "PID|netsurf|netd"; free', 3)
+    print(log()[n:][-1500:])
+    if blue < 50000 or back < 30000:
+        n = console('tail -25 /tmp/ns4.log', 3)
+        print(log()[n:][-3000:])
+mon('sendkey alt-f4')
+time.sleep(2)
+console('cp /tmp/resolv.keep /etc/resolv.conf')
 
 n = console('cat /tmp/ns.log /tmp/ns2.log | head -20; echo END-$((40+2))', 3)
 wait(r'END-42', 30, n)

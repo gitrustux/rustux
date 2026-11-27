@@ -324,7 +324,10 @@ through its dialog; `--scale 2` gives a window twice the size.
 on the kernel command line and a USB tablet. The desktop starts at boot
 (root's session from `/etc/autologin`: the panel on the wallpaper);
 Applications opens the launcher and, clicked again, closes it; the Super
-key alone opens it too; Enter starts an application; `notify` from
+key alone opens it too; Enter starts an application; the panel shows
+Files' icon, a window of Settings started at the console gets a button
+with the gear, a right click on it pins Settings (`popmenu`) and a right
+click on the new launcher unpins it (the log says both); `notify` from
 the console shows top right; Log out ends the session and brings the
 graphical login, which refuses a wrong password and lets alice (made at the
 console) in; Lock shows the lock screen, refuses a wrong password, takes
@@ -818,7 +821,11 @@ pixels of its palm); a click on the link downloads a 2.5 MB file into
 into the address bar loads a page over HTTPS; a local file opens by its
 path (`appctl open`); a page with `overflow` on its body has one scrollbar
 (from the page's colour to the window's border no more than the window's
-scrollbar). About 7 minutes. The network test also checks
+scrollbar); a heavy page (160 pictures from 40 host names, each looked
+up through a DNS server the script runs on the host, `*.rx.test`, over
+connections kept open; `HEAVY_HOSTS=300` for more names), then another
+site typed into the same window, then Back (2026-11-27: after a heavy site
+the browser resolved nothing more on the hardware). About 8 minutes. The network test also checks
 libcurl with `curltest` (an unknown CA refused, HTTPS with `--cacert`,
 HTTP by name through its resolver thread).
 
