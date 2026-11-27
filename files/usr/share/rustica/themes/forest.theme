@@ -1,4 +1,4 @@
-# Forest: deep greens, moss and brass. A Rustica colour theme: key=#RRGGBB lines
+# Forest: deep greens, moss and brass. A Rustica color theme: key=#RRGGBB lines
 # (docs/SESSION.md "Themes"); ~/.config/rustica/themes/NAME.theme for
 # a user's own
 name=Forest
@@ -18,7 +18,7 @@ warning=#E6BD64
 danger=#E36B65
 info=#80C6C0
 taskbar=#0C1511
-# The terminal's 16 colours (normal, then bright)
+# The terminal's 16 colors (normal, then bright)
 ansi0=#24372C
 ansi1=#E36B65
 ansi2=#75C991

@@ -25,6 +25,7 @@ use rustica_apps::sys;
 use rustica_ui::net::Iface;
 use rustica_ui::{Column, Control, Icon, Row, Ui};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -34,22 +35,26 @@ fn say(s: &str) {
     let _ = std::io::stdout().flush();
 }
 
-const SECTIONS: [&str; 14] =
-    ["Display", "Appearance", "Panel", "Desktop", "Keyboard", "Mouse", "Power", "Network", "Date & Time", "Users", "Disks", "Updates", "Apps", "About"];
+const SECTIONS: [&str; 16] = [
+    "Display", "Appearance", "Panel", "Desktop", "Keyboard", "Mouse", "Sound", "Power", "Network", "Date & Time", "Users", "Disks", "Updates",
+    "Apps", "Default apps", "About",
+];
 const S_DISPLAY: usize = 0;
 const S_APPEARANCE: usize = 1;
 const S_PANEL: usize = 2;
 const S_DESKTOP: usize = 3;
 const S_KEYBOARD: usize = 4;
 const S_MOUSE: usize = 5;
-const S_POWER: usize = 6;
-const S_NETWORK: usize = 7;
-const S_TIME: usize = 8;
-const S_USERS: usize = 9;
-const S_DISKS: usize = 10;
-const S_UPDATES: usize = 11;
-const S_APPS: usize = 12;
-const S_ABOUT: usize = 13;
+const S_SOUND: usize = 6;
+const S_POWER: usize = 7;
+const S_NETWORK: usize = 8;
+const S_TIME: usize = 9;
+const S_USERS: usize = 10;
+const S_DISKS: usize = 11;
+const S_UPDATES: usize = 12;
+const S_APPS: usize = 13;
+const S_DEFAULTS: usize = 14;
+const S_ABOUT: usize = 15;
 
 /// The panel's applets (DESKTOP.md step F10), with what Settings calls them
 const APPLETS: [(&str, &str); 11] = [
@@ -119,7 +124,7 @@ impl PanelConf {
         let p = Self::path();
         std::fs::create_dir_all(p.parent().unwrap())?;
         let text = format!(
-            "# The panel (Settings > Panel; DESKTOP.md step F10)\nposition={}\nsize={}\nwidth={}\nautohide={}\nstart={}\ncentre={}\nend={}\nlaunchers={}\n",
+            "# The panel (Settings > Panel; DESKTOP.md step F10)\nposition={}\nsize={}\nwidth={}\nautohide={}\nstart={}\ncenter={}\nend={}\nlaunchers={}\n",
             self.position,
             self.size,
             self.width,
@@ -525,6 +530,9 @@ fn theme_preview(ui: &mut Ui, r: rustica_ui::gfx::Rect, t: &rustica_ui::Theme, l
 
 struct Settings {
     section: Option<usize>,
+    /// Settings > Sound: soundd's status, asked again every second
+    sound: Option<rustica_ui::sound::Status>,
+    sound_at: Option<Instant>,
     theme: String,
     wallpaper: String,
     /// Settings > Appearance: the themes there are (id, name, the user's
@@ -624,6 +632,8 @@ impl Settings {
     fn new() -> Settings {
         let mut s = Settings {
             section: Some(0),
+            sound: None,
+            sound_at: None,
             theme: appearance_key("theme"),
             wallpaper: appearance_key("wallpaper"),
             themes: rustica_ui::list_themes(),
@@ -1037,7 +1047,7 @@ impl Settings {
         let r = ui.card("theme-edit-preview", ui.u(300.0), ui.u(170.0), true);
         let label = if e.name.trim().is_empty() { "(a name)".to_string() } else { e.name.trim().to_string() };
         theme_preview(ui, r.rect, &e.theme, &label);
-        ui.dim_label("Each colour as a hex code (#RRGGBB); the preview follows.");
+        ui.dim_label("Each color as a hex code (#RRGGBB); the preview follows.");
         let lw = ui.u(220.0);
         for (i, k) in rustica_ui::TOKENS.iter().enumerate() {
             ui.row(|ui| {
@@ -1060,7 +1070,7 @@ impl Settings {
                 }
                 let v = e.hex[i].trim().trim_start_matches('#');
                 if v.len() != 6 || u32::from_str_radix(v, 16).is_err() {
-                    ui.dim_label("not a colour");
+                    ui.dim_label("not a color");
                 }
             });
         }
@@ -1157,7 +1167,7 @@ impl Settings {
         }
         ui.space(6.0);
         ui.label("Applets (choose one to move or remove it)");
-        let zone_names = ["Start", "Centre", "End"];
+        let zone_names = ["Start", "Center", "End"];
         for z in 0..3 {
             ui.row(|ui| {
                 ui.dim_label(zone_names[z]);
@@ -1175,7 +1185,7 @@ impl Settings {
         if let Some((z, i)) = self.panel_sel.filter(|&(z, i)| i < self.panel.zones[z].len()) {
             let mut act = None;
             ui.row(|ui| {
-                for (k, l) in [(0, "Earlier"), (1, "Later"), (2, "To start"), (3, "To centre"), (4, "To end"), (5, "Remove")] {
+                for (k, l) in [(0, "Earlier"), (1, "Later"), (2, "To start"), (3, "To center"), (4, "To end"), (5, "Remove")] {
                     if ui.button(l) {
                         act = Some(k);
                     }
@@ -1273,7 +1283,7 @@ impl Settings {
             match self.panel.save() {
                 Ok(()) => {
                     say(&format!(
-                        "panel {} {} {} start={} centre={} end={} launchers={}",
+                        "panel {} {} {} start={} center={} end={} launchers={}",
                         self.panel.position,
                         if side { self.panel.width } else { self.panel.size },
                         if self.panel.autohide { "autohide" } else { "shown" },
@@ -1870,6 +1880,104 @@ impl Settings {
 
     /// Settings > Apps (FoxDen step FD6): each installed app, what it
     /// takes up, what it may do (as FoxDen's Installed), Remove
+    /// Settings > Sound (docs/SOUND.md): the volume, muting, the sound
+    /// devices and their outputs, a test sound
+    fn sound_section(&mut self, ui: &mut Ui) {
+        ui.heading("Sound");
+        if self.sound_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(1)) {
+            self.sound = rustica_ui::sound::status();
+            self.sound_at = Some(Instant::now());
+        }
+        let Some(mut st) = self.sound.clone() else {
+            ui.dim_label("The sound service is not running (svc status sound).");
+            return;
+        };
+        ui.label("Volume");
+        let mut v = st.volume;
+        let mut changed = false;
+        ui.row(|ui| {
+            changed = ui.slider("volume", &mut v, 0, 100, 320.0);
+            ui.label(&format!("{v}%"));
+        });
+        if changed {
+            if let Some(n) = rustica_ui::sound::set_volume(v) {
+                say(&format!("volume {}", n.volume));
+                st = n;
+            }
+        }
+        let mut m = st.muted;
+        if ui.checkbox(&mut m, "Mute") {
+            if let Some(n) = rustica_ui::sound::set_muted(m) {
+                say(if n.muted { "muted" } else { "unmuted" });
+                st = n;
+            }
+        }
+        ui.dim_label("The volume keys and the wheel over the panel's speaker change it too.");
+        ui.separator();
+        ui.label("Output");
+        if st.devices.is_empty() {
+            ui.dim_label("No sound device was found. Rustica plays through Intel High Definition Audio (most PCs);");
+            ui.dim_label("HDMI and DisplayPort sound are not supported yet.");
+        }
+        for d in &st.devices {
+            ui.label(&format!("{}{}", d.name, if d.in_use && st.devices.len() > 1 { " (in use)" } else { "" }));
+            let outs: Vec<String> = d
+                .outputs
+                .iter()
+                .map(|o| {
+                    let (k, state) = o.split_once(' ').unwrap_or((o.as_str(), ""));
+                    let kind = match k {
+                        "speaker" => "Speakers",
+                        "headphones" => "Headphones",
+                        "line" => "Line out",
+                        other => other,
+                    };
+                    let state = match state {
+                        "on" => "playing",
+                        "off" => "off (headphones are in)",
+                        "unplugged" => "nothing plugged in",
+                        s => s,
+                    };
+                    format!("{kind}: {state}")
+                })
+                .collect();
+            if !outs.is_empty() {
+                ui.dim_label(&format!("    {}", outs.join(" \u{00B7} ")));
+            }
+        }
+        if !st.devices.is_empty() && ui.button("Play a test sound") {
+            say("test sound");
+            let _ = Command::new("/bin/soundctl").arg("test").spawn();
+        }
+        self.sound = Some(st);
+    }
+
+    /// Settings > Default apps: which browser "Web Browser", Files and
+    /// links open (/bin/browser reads it; docs/BROWSER.md)
+    fn defaults_section(&mut self, ui: &mut Ui) {
+        ui.heading("Default apps");
+        ui.label("Web browser");
+        ui.dim_label("\"Web Browser\" in the menu, web pages in Files and links from other apps open in it.");
+        let browsers = browsers();
+        let current = default_browser();
+        if browsers.is_empty() {
+            ui.dim_label("No web browser is installed. FoxDen has them.");
+            return;
+        }
+        for (id, name) in &browsers {
+            let mut on = *id == current;
+            ui.push_id(id);
+            if ui.checkbox(&mut on, name) && on && *id != current {
+                let p = sys::config_dir().join("rustica").join("defaults");
+                match sys::write_kv(&p, "browser", id) {
+                    Ok(()) => say(&format!("default browser {id}")),
+                    Err(e) => self.status = format!("Could not save it: {e}"),
+                }
+            }
+            ui.pop_id();
+        }
+    }
+
     fn apps_section(&mut self, ui: &mut Ui) {
         ui.heading("Apps");
         // Apps from outside FoxDen (FoxDen step FD7c): an administrator's
@@ -1988,12 +2096,14 @@ impl Settings {
                     S_POWER => self.power_section(ui),
                     S_KEYBOARD => self.keyboard(ui),
                     S_MOUSE => self.mouse(ui),
+                    S_SOUND => self.sound_section(ui),
                     S_NETWORK => self.network(ui, ctl),
                     S_TIME => self.time(ui, ctl),
                     S_USERS => self.users_section(ui),
                     S_DISKS => self.disks_section(ui),
                     S_UPDATES => self.updates_section(ui, ctl),
                     S_APPS => self.apps_section(ui),
+                    S_DEFAULTS => self.defaults_section(ui),
                     _ => self.about_section(ui),
                 })
             });
@@ -2074,6 +2184,59 @@ impl Settings {
             }
         }
     }
+}
+
+/// The web browsers there are: installed apps in the WebBrowser category
+/// (their ID) and the system's application files (NAME.app)
+fn browsers() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Ok(dir) = std::fs::read_dir("/apps") {
+        for e in dir.flatten() {
+            let id = e.file_name().to_string_lossy().into_owned();
+            let Ok(text) = std::fs::read_to_string(e.path().join("manifest")) else { continue };
+            let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).and_then(|r| r.strip_prefix(':')).map(|v| v.trim().to_string()));
+            if field("Categories").unwrap_or_default().split_whitespace().any(|c| c == "WebBrowser") {
+                out.push((id.clone(), field("Name").unwrap_or(id)));
+            }
+        }
+    }
+    if let Ok(dir) = std::fs::read_dir("/usr/share/applications") {
+        for e in dir.flatten() {
+            let f = e.file_name().to_string_lossy().into_owned();
+            if !f.ends_with(".app") || f == "browser.app" {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(e.path()) else { continue };
+            let kv = sys::parse_kv(&text);
+            if kv.get("categories").map(|c| c.split_whitespace().any(|c| c == "WebBrowser")).unwrap_or(false) {
+                out.push((f.clone(), kv.get("name").cloned().unwrap_or(f)));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+    out
+}
+
+/// The default browser, as /bin/browser finds it: the user's choice, the
+/// system's, NetSurf
+fn default_browser() -> String {
+    let installed = |id: &str| {
+        if id.ends_with(".app") {
+            id != "browser.app" && Path::new("/usr/share/applications").join(id).is_file()
+        } else {
+            !id.contains('/') && Path::new("/apps").join(id).join("manifest").is_file()
+        }
+    };
+    for f in [sys::config_dir().join("rustica").join("defaults"), PathBuf::from("/etc/rustica/defaults")] {
+        if let Ok(t) = std::fs::read_to_string(&f) {
+            if let Some(id) = sys::parse_kv(&t).get("browser") {
+                if installed(id) {
+                    return id.clone();
+                }
+            }
+        }
+    }
+    "org.rustica.browser".to_string()
 }
 
 fn main() {

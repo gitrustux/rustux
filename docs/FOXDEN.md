@@ -84,8 +84,9 @@ uses) starts the manifest's `Exec` with two limits:
 | read-only | `/apps/ID`, `/usr`, `/etc/passwd`, `group`, `timezone`, `localtime`, `os-release`, `hostname` |
 | read-write | `~/.local/share/apps/ID`, `~/.config/apps/ID`, `~/.cache/apps/ID` (made if new; it starts in the first, `TMPDIR` is in the last) |
 | open only | `/dev/null`, `/dev/zero`, `/svc/window` (its windows), `/svc/log` |
-| `network` | `/svc/netsock` (sockets; not `/svc/net`, the network's settings), `/etc/resolv.conf`, `/etc/hosts` |
-| `files:documents` ... | `~/Documents` read-write (`files:pictures` `~/Pictures`, `files:music`, `files:videos`, `files:downloads` likewise) |
+| `network` | `/svc/netsock` (sockets; not `/svc/net`, the network's settings), `/etc/resolv.conf`, `/etc/hosts`, `/etc/ssl/certs` (the certificates the system trusts, for HTTPS) |
+| `files:documents` ... | `~/Documents` read-write (`files:pictures` `~/Pictures`, `files:music`, `files:videos`, `files:downloads` likewise; made if the home has none yet) |
+| `audio` | `/svc/sound` (playing sound, `SOUND.md`) |
 | `files:home` | the whole home read-write |
 | `removable` | `/media` |
 
@@ -93,7 +94,7 @@ So an app finds no `/bin` (no shell to start), no other app, nothing of
 the home but its own folders, no service but the window, log and (with
 `network`) socket services: not `/svc/auth`, `/svc/packages`,
 `/svc/display` or `/svc/devmgr`. Links are followed inside the view, so a
-link it makes in its data folder leads nowhere else. `audio`, `camera` and
+link it makes in its data folder leads nowhere else. `camera` and
 `location` give nothing yet (no services for them). `system` is never
 given until apps from the system's own sources can be told apart (step
 FD3).
@@ -343,7 +344,12 @@ get.
 
 **The Text Editor and the Image Viewer are apps**: `org.rustica.texteditor`
 and `org.rustica.imageviewer` (`userspace/apps/`, programs in
-`userspace/rust/foxden-apps`), with no permissions. The editor saves a
+`userspace/rust/foxden-apps`), with no permissions. So is **the web
+browser** (2026-11-26): NetSurf, `org.rustica.browser` (its program from
+`userspace/ports/netsurf`, its resources in the app), with `network` and
+`files:downloads` (`BROWSER.md`); "Web Browser" in the menu and Files'
+web pages go through `/bin/browser` to the default browser (Settings >
+Default apps). The editor saves a
 file opened from Files in place; a new file's Save, Save as and Open
 (Ctrl+O) ask with the file chooser and write through the descriptor it
 gives (rewritten from the start, cut to the new length, on each save). Run

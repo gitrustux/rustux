@@ -3,13 +3,33 @@
 Rustica's web browser is **NetSurf** (https://www.netsurf-browser.org,
 GPL 2), ported 2026-11-26: a small browser written in C with its own HTML,
 CSS and layout engine (HTML 4 and much of HTML 5's markup, CSS 2.1 and
-parts of CSS 3). It is `/bin/netsurf`, "Web Browser" in the menu
-(Internet), and Files opens `.html` files with it.
+parts of CSS 3).
+
+It is an **app** like the Text Editor: `org.rustica.browser`
+(`userspace/apps/org.rustica.browser`, its program built from the port),
+one of the apps that come with the system (installed once as the system
+starts, updated from the apps repository, removable in Settings > Apps),
+running in its sandbox with the permissions `network` (and so the
+system's certificates, `/etc/ssl/certs`) and `files:downloads`. Its
+cookies and choices are in its own folders (`~/.local/share/apps/ID`,
+`~/.config/apps/ID`).
+
+**The default browser.** "Web Browser" in the menu (Internet) is
+`/bin/browser`, which starts the user's default browser: Settings >
+Default apps chooses among the installed apps in the `WebBrowser` category
+and the system's application files of that category; the choice is
+`browser=ID` in `~/.config/rustica/defaults` (else `/etc/rustica/defaults`:
+NetSurf). Files opens web pages (`.html`, `.htm`, `.xhtml`, `.shtml`) with
+it too, so another browser installed and chosen opens everything.
 
 ```
-netsurf [URL or /path/to/file.html]
-netsurf -v URL          # its log on stderr
+browser [URL or /path/to/file.html]     # the default browser
+browser --which                         # which one that is
+appctl run org.rustica.browser URL      # NetSurf itself
 ```
+
+A file given to `browser` goes into the app's sandbox with `appctl open`
+(that file alone); a URL with `appctl run`.
 
 ## How it is built
 
@@ -25,8 +45,8 @@ Everything it needs is ported in `userspace/ports/` (`README.md` there):
 libcurl over mbedTLS for HTTP and HTTPS, FreeType for text, libpng,
 libjpeg-turbo, NetSurf's own libraries (HTML parser, DOM, CSS, images).
 `ports/build-ports.sh` builds them and NetSurf (with NetSurf's own Makefile
-and `tools/rx-cc`); the program is committed in `userspace/bin/` like the
-other C programs.
+and `tools/rx-cc`); the program is committed in `userspace/apps/bin/` like
+the other apps' programs.
 
 Our changes to NetSurf are in `userspace/ports/netsurf/rustica.patch`
 (applied in `src/`):
@@ -39,6 +59,18 @@ Our changes to NetSurf are in `userspace/ports/netsurf/rustica.patch`
   won); the Rustica surface comes first in libnsfb;
 - a window of 1100x680 instead of the whole screen; a file's path as the
   argument becomes its `file:` URL;
+- the root element's overflow, and the body's when the root's is
+  visible, belong to the viewport (CSS 2.1 11.1.1): such a page scrolls
+  with the window's scrollbar, not one of its own inside it (pages that
+  set `overflow` on `body` had two; `box_overflow_x`/`_y` in
+  `html/box_inspect.c`);
+- the pointer's shape: the hand over links, the text cursor over text,
+  and the rest, drawn by the compositor (`framebuffer_set_cursor_shape`,
+  libnsfb's `nsfb_rustica_cursor_shape`: `RX_WINDOW_SET_CURSOR`,
+  `WINDOWS.md`);
+- an app's paths: its resources in `/apps/org.rustica.browser/share`,
+  the user's choices in the app's config folder, cookies in its data
+  folder;
 - no POSIX regex (only "save complete page" used it) and no `mmap` of
   files (Rustux's `mmap` does not map files): NetSurf's own fallbacks;
 - the build's configuration (`Makefile.config`): no JavaScript yet,
@@ -81,7 +113,9 @@ mixed with the clocks).
 ## Test
 
 `scripts/run-browser-test.sh`: QEMU with the desktop and web servers on
-the host (HTTP and HTTPS with a test CA): a page rendered (its colours),
+the host (HTTP and HTTPS with a test CA): the app installed at start and
+the default browser, a page rendered (its colours), the hand over a link,
 a link clicked downloads a file with the same bytes, a URL typed in the
-address bar loads over HTTPS, a local file by its path, an unknown CA
-refused. The network test also checks libcurl (`curltest`).
+address bar loads over HTTPS, a local file by its path, a page whose body
+scrolls with one scrollbar, an unknown CA refused. The network test also
+checks libcurl (`curltest`).

@@ -13,7 +13,8 @@ It needs what `userspace/build.sh` needs (gcc for x86-64, ar) and that
 script run first (`build/libc.a`); NetSurf also needs perl and the build
 machine's libpng (for its tools that run during the build). The output is
 `userspace/build/sysroot/` (`include/`, `lib/libNAME.a`, `lib/pkgconfig/`)
-and, for programs, `userspace/bin/`, which the kernel embeds.
+and, for programs, `userspace/bin/`, which the kernel embeds (NetSurf:
+`userspace/apps/bin/`, an app's program).
 
 Each port is a folder: `src/` holds the upstream sources it uses (trimmed:
 no tests, documents or other platforms), and `recipe.sh` says where they
@@ -31,7 +32,7 @@ unless the recipe says otherwise.
 | freetype | 2.13.3 | FTL | TrueType, CFF, hinting, the anti-aliasing renderer |
 | libwapcaplet, libparserutils, libhubbub, libcss, libdom, libnsutils, libnsbmp, libnsgif, libnspsl, libutf8proc | NetSurf's, November 2026 | MIT | source lists from their own builds; generated files included |
 | libnsfb | NetSurf's | MIT | plus `rustica.c`, a surface that is a window of the compositor |
-| netsurf | 3.12 (dev) | GPL 2 | its own Makefile with `tools/rx-cc`; our changes in `netsurf/rustica.patch` |
+| netsurf | 3.12 (dev) | GPL 2 | its own Makefile with `tools/rx-cc` (a fresh tree each build); our changes in `netsurf/rustica.patch`; the program and its resources go to the app `org.rustica.browser` (`userspace/apps/`) |
 
 Tools:
 

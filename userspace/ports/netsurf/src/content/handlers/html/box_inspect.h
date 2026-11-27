@@ -103,6 +103,14 @@ void box_dump(FILE *stream, struct box *box, unsigned int depth, bool style);
  */
 bool box_vscrollbar_present(const struct box *box);
 
+/**
+ * A box's overflow for layout and drawing: visible for the root element,
+ * and for the body when the root's is visible, as their overflow is the
+ * viewport's (CSS 2.1 11.1.1): the browser window scrolls, not the box.
+ */
+enum css_overflow_e box_overflow_x(const struct box *box);
+enum css_overflow_e box_overflow_y(const struct box *box);
+
 
 /**
  * Determine if a box has a horizontal scrollbar.

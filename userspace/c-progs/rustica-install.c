@@ -925,7 +925,7 @@ static void choose(void) {
         plan_new_parts(d->free_first, d->free_last, esp == 0);
     } else if (!strcmp(opt.mode, "replace")) {
         if (esp_small && rroot) die("%s: %s", d->info.name, esp_why);
-        if (!can_replace) die("%s has no earlier Rustica (an EFI partition and a partition labelled \"Rustica root\")", d->info.name);
+        if (!can_replace) die("%s has no earlier Rustica (an EFI partition and a partition labeled \"Rustica root\")", d->info.name);
         plan.esp = esp;
         plan.root = rroot;
     } else if (!strcmp(opt.mode, "manual")) {

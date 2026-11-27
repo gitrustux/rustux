@@ -129,12 +129,14 @@ server): in a user's session Files shows mount's error.
 | Display | the scale of windows: 100% or 200% (`RUSTICA_SCALE` still wins) | `~/.config/rustica.conf` (`scale=`), the user's |
 | Keyboard | the layout, for the console too | `/etc/keymap` (`localectl set-keymap`) |
 | Mouse | the pointer speed, 25-400% of the mouse's own movement (relative mice; a tablet is exact) | `/etc/input.conf` (`inputctl set-pointer-speed`) |
+| Sound | the volume (a slider), Mute, the sound devices and their outputs (speakers, headphones, line out: playing, off, nothing plugged in), Play a test sound (`SOUND.md`, 2026-11-26) | `/var/lib/sound/state` (soundd) |
 | Network | the cards (state, address, gateway, traffic, the DHCP lease); each one Automatic (DHCP), a fixed address and gateway, or off; DNS servers of your own (network step D6) | `/etc/network.conf` (`netcfg`, applied at once) |
 | Date & Time | the clock (local time) and the time zone (a list to filter) | the RTC (`timedatectl set-time`), `/etc/timezone` |
 | Users | the users (root and uid 1000 and up), add one (name, password, administrator), remove one with their home, make one an administrator or not | `/etc/passwd`, `group`, `shadow` (`useradd -m`, `chpasswd`, `usermod -G`, `userdel -r`) |
 | Disks | disks and partitions: size, filesystem, where mounted (read only) | `lsblk` |
 | Updates | the system's and the apps' updates found by the installer service, Install (package step E6) | `/var/lib/rpg/updates` (`updates`) |
 | Apps | each installed app: version, what it takes up, a checkbox per permission it asks for, Open, In FoxDen, Remove (FoxDen step FD6, `FOXDEN.md`) | `~/.config/apps/permissions`, the user's (`appctl`); `rpg remove` |
+| Default apps | the web browser: the installed apps and application files in the `WebBrowser` category; "Web Browser", Files' web pages and links open in it (`BROWSER.md`, 2026-11-26) | `~/.config/rustica/defaults` (`browser=`), the user's |
 | About | Rustica's version and codename (`/etc/os-release`: Rustica 0.1, RedFox), the kernel, the computer's name, processors, memory, graphics, how long it has run | |
 
 The user's own settings are written directly. The system's are root's: in
@@ -181,7 +183,7 @@ Applications in their sandbox:
   crashes ends its tabs' shells (they get end of input).
 - Drag and drop, several selected files, thumbnails, searching; mounting
   as a user (a polkit-like rule); trash on USB sticks.
-- Settings: the screen resolution (step F8), key repeat, sound, per-user
+- Settings: the screen resolution (step F8), key repeat, microphones, per-user
   keyboard layouts; in Network: IPv6 settings, the host name, the
   firewall (`fwctl`), Wi-Fi.
 - The System Monitor and the Calculator (the other applications "next in

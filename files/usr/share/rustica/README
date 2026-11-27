@@ -6,7 +6,7 @@ The Rustica fox (2026-11-25), from the project owner's concept:
   fox-outline.svg   the same as an outline
   fox-256.png       fox.svg at 256 pixels
 
-Its colour is the brand's orange, #FF6500, in every theme.
+Its color is the brand's orange, #FF6500, in every theme.
 
-themes/           the colour themes (docs/SESSION.md "Themes")
+themes/           the color themes (docs/SESSION.md "Themes")
 logo.png, photo.jpg   test pictures (uidemo, run-openwith-test.sh)

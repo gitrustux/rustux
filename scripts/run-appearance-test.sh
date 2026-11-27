@@ -37,7 +37,7 @@ for t in qemu-system-x86_64 mformat mmd mcopy python3; do
     command -v $t >/dev/null || { echo "$t is needed"; exit 2; }
 done
 W=$(mktemp -d)
-trap 'kill $Q 2>/dev/null; rm -rf "$W"' EXIT
+trap 'kill $Q 2>/dev/null; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"' EXIT
 dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
@@ -244,8 +244,11 @@ type_('Night Moss')
 click(555, 400)                          # Background (#101B17)
 key('ctrl-a')
 type_('#0A1410')
-time.sleep(1)
-px = screen()
+for _ in range(10):                      # (the keys typed may take a moment)
+    time.sleep(1)
+    px = screen()
+    if near(px(246, 192), 0x0A1410, 3):
+        break
 check(near(px(246, 192), 0x0A1410, 3), 'the editor\'s preview follows the hex code (%06x)' % px(246, 192))
 click(626, 156)                          # Save and use it
 time.sleep(4)
@@ -276,8 +279,10 @@ px = screen()
 reds = reds_of(px)
 check(reds < 50, 'the wallpaper is the picture now, not the fox (%d red points)' % reds)
 
-# 5. Log out on the live system
-click(1187, 782)
+# 5. Log out on the live system (the power button, its menu's Log out)
+click(1252, 782)
+time.sleep(3)
+click(1145, 525)
 check(wait_pixel(SW // 2, 20, 0x101010, 15, 2), 'Log out: the login')
 time.sleep(2)
 key('shift-tab')

@@ -1,0 +1,11 @@
+# The sound service (docs/SOUND.md): mixes programs' sound into the sound
+# card's (/svc/sound for programs, /svc/sounddev for the drivers); the
+# volume in /var/lib/sound/state. With the image (/usr/lib/svc), so that
+# installations made before it get it too.
+description=Sound (/svc/sound)
+exec=/bin/soundd
+after=logd
+ready=/svc/sound
+restart=always
+target=multi-user
+enabled=yes

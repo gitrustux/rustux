@@ -4,7 +4,7 @@ USAGE
     fbtest [-n FRAMES] [--pattern SECONDS] [--check]
 
     Takes the screen from the text console (the display service gives it
-    to root only) and draws colour bars with rectangles moving over them,
+    to root only) and draws color bars with rectangles moving over them,
     presenting only what changed, then reports the frame rate and the time
     a frame takes to draw and to present. Esc or q ends it early.
     Ctrl+Alt+F1 shows the text console meanwhile, Ctrl+Alt+F7 the

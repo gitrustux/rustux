@@ -8,7 +8,7 @@
 #   2. Applications (the launcher) lists it beside the system's and starts
 #      it (appctl run: in its sandbox, step FD2): its window comes;
 #   3. rpg remove --purge: its folder and the user's data for it are gone,
-#      rpg list --apps and the launcher have only the two apps that come with the system;
+#      rpg list --apps and the launcher have only the three apps that come with the system;
 #   4. the console works throughout.
 # Exit status 0 if all is well.
 #
@@ -198,7 +198,7 @@ time.sleep(4)
 key('down'); time.sleep(0.6)
 key('ret'); time.sleep(5)
 out = console('logs | grep -E "launcher: |wintest Example"; ps | grep example', 4)
-check('launcher: 9 applications, 3 apps' in out, 'the launcher lists the app beside the system\'s')
+check('launcher: 9 applications, 4 apps' in out, 'the launcher lists the app beside the system\'s')
 check('launcher: started /bin/appctl run org.rustica.example' in out, 'the launcher starts it (appctl run, in its sandbox)')
 check(re.search(r'wintest Example: (configure|focus|frame|size)', out) is not None or re.search(r'\bexample\b', out.split('ps | grep example')[-1]) is not None, 'its window comes (the program runs)')
 
@@ -206,13 +206,13 @@ check(re.search(r'wintest Example: (configure|focus|frame|size)', out) is not No
 out = console('rpg remove --purge org.rustica.example; echo LEFT $(ls /apps | wc -l) $(ls /root/.local/share/apps | wc -l); rpg list --apps; echo RM-DONE', 15, r'RM-DONE\r?\n')
 check('org.rustica.example: removed /root/.local/share/apps/org.rustica.example' in out, 'the user\'s data for it goes with --purge')
 check('org.rustica.example 1.0: removed' in out, 'rpg remove --purge removes it')
-check('org.rustica.example ' not in out.split('\nLEFT')[-1] and re.search(r'\nLEFT +2 +0\r?\n', out) is not None, 'nothing of it is left in /apps (the two apps that come with the system) or the home')
+check('org.rustica.example ' not in out.split('\nLEFT')[-1] and re.search(r'\nLEFT +3 +0\r?\n', out) is not None, 'nothing of it is left in /apps (the three apps that come with the system) or the home')
 n = len(log())
 qmp_click(25, 782)
 time.sleep(4)
 key('esc'); time.sleep(1)
 out = console('logs | grep "launcher: "', 4)
-check('launcher: 9 applications, 2 apps' in out, 'the launcher lists only the apps that come with the system')
+check('launcher: 9 applications, 3 apps' in out, 'the launcher lists only the apps that come with the system')
 
 # 4. The console
 out = console('echo console works', 2)

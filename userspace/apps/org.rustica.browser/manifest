@@ -1,0 +1,9 @@
+Id: org.rustica.browser
+Name: NetSurf
+Summary: browse the web
+Exec: bin/netsurf
+Icon: icon.png
+Categories: Network WebBrowser
+Permissions: network files:downloads
+Screenshots: screenshot.png
+Platform: 1

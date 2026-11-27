@@ -200,6 +200,11 @@ int rx_window_set_fullscreen(rx_window_t *win, int on) {
     return send_req(win, &req, 0, 0, 0);
 }
 
+int rx_window_set_cursor(rx_window_t *win, uint32_t shape) {
+    rx_window_req_t req = { RX_WINDOW_SET_CURSOR, 0, 0, 0, 0, 0, shape };
+    return send_req(win, &req, 0, 0, 0);
+}
+
 int rx_window_clipboard_set(rx_window_t *win, const char *text) {
     size_t n = strlen(text);
     if (n > RX_WINDOW_MAX_CLIPBOARD) return -E2BIG;

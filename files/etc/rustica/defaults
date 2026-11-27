@@ -1,0 +1,5 @@
+# The default applications (Settings > Default apps writes the user's own
+# in ~/.config/rustica/defaults, which comes first). browser: an app's ID
+# (/apps/ID) or an application file's name (NAME.app); /bin/browser
+# starts it.
+browser=org.rustica.browser

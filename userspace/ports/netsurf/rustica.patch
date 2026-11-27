@@ -1,7 +1,7 @@
 diff -ruN nsclean/Makefile.config rustica/Makefile.config
 --- upstream/Makefile.config	1969-12-31 18:00:00.000000000 -0600
-+++ rustica/Makefile.config	2026-11-26 16:10:57.796971145 -0600
-@@ -0,0 +1,30 @@
++++ rustica/Makefile.config	2026-11-26 21:58:32.163369718 -0600
+@@ -0,0 +1,32 @@
 +# NetSurf on Rustux (2026-11-26, phase W): the framebuffer frontend on
 +# libnsfb's Rustica surface (a compositor window), FreeType fonts (Noto),
 +# libcurl with mbedTLS; no JavaScript yet (duktape needs nsgenbind)
@@ -20,7 +20,9 @@ diff -ruN nsclean/Makefile.config rustica/Makefile.config
 +override NETSURF_USE_LIBICONV_PLUG := NO
 +override NETSURF_USE_HARU_PDF := NO
 +override NETSURF_USE_SANITIZERS := NO
-+override NETSURF_FB_RESPATH := $${HOME}/.netsurf/:/usr/share/netsurf
++# An app (org.rustica.browser): the user's choices in its config folder, its
++# resources in the app
++override NETSURF_FB_RESPATH := $${XDG_CONFIG_HOME}/:/apps/org.rustica.browser/share/netsurf
 +override NETSURF_FB_FONTPATH := /usr/share/fonts/noto
 +override NETSURF_FB_FONT_SANS_SERIF := NotoSans-Regular.ttf
 +override NETSURF_FB_FONT_SANS_SERIF_BOLD := NotoSans-Bold.ttf
@@ -32,6 +34,204 @@ diff -ruN nsclean/Makefile.config rustica/Makefile.config
 +override NETSURF_FB_FONT_MONOSPACE_BOLD := NotoSansMono-Bold.ttf
 +override NETSURF_FB_FONT_CURSIVE := NotoSerif-Italic.ttf
 +override NETSURF_FB_FONT_FANTASY := NotoSans-Bold.ttf
+diff -ruN nsclean/content/handlers/html/box.h rustica/content/handlers/html/box.h
+--- upstream/content/handlers/html/box.h	2026-11-26 16:11:59.233468094 -0600
++++ rustica/content/handlers/html/box.h	2026-11-26 21:51:41.338652711 -0600
+@@ -88,7 +88,8 @@
+ 	REPLACE_DIM = 1 << 9,	/* replaced element has given dimensions */
+ 	IFRAME      = 1 << 10,	/* box contains an iframe */
+ 	CONVERT_CHILDREN = 1 << 11,  /* wanted children converting */
+-	IS_REPLACED = 1 << 12	/* box is a replaced element */
++	IS_REPLACED = 1 << 12,	/* box is a replaced element */
++	VIEWPORT_OVERFLOW = 1 << 13	/* its overflow is the viewport's (root, body) */
+ } box_flags;
+ 
+ 
+diff -ruN nsclean/content/handlers/html/box_construct.c rustica/content/handlers/html/box_construct.c
+--- upstream/content/handlers/html/box_construct.c	2026-11-26 16:11:59.233481348 -0600
++++ rustica/content/handlers/html/box_construct.c	2026-11-26 21:51:41.342880416 -0600
+@@ -545,6 +545,21 @@
+ 	if (props.node_is_root)
+ 		ctx->root_box = box;
+ 
++	/* The root's overflow belongs to the viewport, and the body's when
++	 * the root's is visible (CSS 2.1 11.1.1): the window scrolls them,
++	 * not a scrollbar of their own inside it */
++	if (props.node_is_root) {
++		box->flags |= VIEWPORT_OVERFLOW;
++	} else if (ctx->root_box != NULL && ctx->root_box->style != NULL &&
++			props.containing_block == ctx->root_box &&
++			css_computed_overflow_x(ctx->root_box->style) == CSS_OVERFLOW_VISIBLE &&
++			css_computed_overflow_y(ctx->root_box->style) == CSS_OVERFLOW_VISIBLE) {
++		dom_html_element_type tag_type;
++		if (dom_html_element_get_tag_type(ctx->n, &tag_type) == DOM_NO_ERR &&
++				tag_type == DOM_HTML_ELEMENT_TYPE_BODY)
++			box->flags |= VIEWPORT_OVERFLOW;
++	}
++
+ 	/* Deal with colspan/rowspan */
+ 	err = dom_element_get_attribute(ctx->n, corestring_dom_colspan, &s);
+ 	if (err != DOM_NO_ERR)
+diff -ruN nsclean/content/handlers/html/box_inspect.c rustica/content/handlers/html/box_inspect.c
+--- upstream/content/handlers/html/box_inspect.c	2026-11-26 16:11:59.233508449 -0600
++++ rustica/content/handlers/html/box_inspect.c	2026-11-26 21:51:41.341721118 -0600
+@@ -167,7 +167,7 @@
+ 		*physically = true;
+ 		return true;
+ 	}
+-	if ((box->style && css_computed_overflow_x(box->style) ==
++	if ((box->style && box_overflow_x(box) ==
+ 	     CSS_OVERFLOW_VISIBLE) || !box->style) {
+ 		if (box->descendant_x0 <= x &&
+ 		    x < box->descendant_x1) {
+@@ -175,7 +175,7 @@
+ 			return true;
+ 		}
+ 	}
+-	if ((box->style && css_computed_overflow_y(box->style) ==
++	if ((box->style && box_overflow_y(box) ==
+ 	     CSS_OVERFLOW_VISIBLE) || !box->style) {
+ 		if (box->descendant_y0 <= y &&
+ 		    y < box->descendant_y1) {
+@@ -835,6 +835,20 @@
+ }
+ 
+ 
++enum css_overflow_e box_overflow_x(const struct box *box)
++{
++	if (box->flags & VIEWPORT_OVERFLOW)
++		return CSS_OVERFLOW_VISIBLE;
++	return box_overflow_x(box);
++}
++
++enum css_overflow_e box_overflow_y(const struct box *box)
++{
++	if (box->flags & VIEWPORT_OVERFLOW)
++		return CSS_OVERFLOW_VISIBLE;
++	return box_overflow_y(box);
++}
++
+ /* exported interface documented in html/box.h */
+ bool box_hscrollbar_present(const struct box * const box)
+ {
+diff -ruN nsclean/content/handlers/html/box_inspect.h rustica/content/handlers/html/box_inspect.h
+--- upstream/content/handlers/html/box_inspect.h	2026-11-26 16:11:59.233524773 -0600
++++ rustica/content/handlers/html/box_inspect.h	2026-11-26 21:51:41.338984552 -0600
+@@ -103,6 +103,14 @@
+  */
+ bool box_vscrollbar_present(const struct box *box);
+ 
++/**
++ * A box's overflow for layout and drawing: visible for the root element,
++ * and for the body when the root's is visible, as their overflow is the
++ * viewport's (CSS 2.1 11.1.1): the browser window scrolls, not the box.
++ */
++enum css_overflow_e box_overflow_x(const struct box *box);
++enum css_overflow_e box_overflow_y(const struct box *box);
++
+ 
+ /**
+  * Determine if a box has a horizontal scrollbar.
+diff -ruN nsclean/content/handlers/html/layout.c rustica/content/handlers/html/layout.c
+--- upstream/content/handlers/html/layout.c	2026-11-26 16:11:59.233901889 -0600
++++ rustica/content/handlers/html/layout.c	2026-11-26 21:51:41.341306303 -0600
+@@ -1177,7 +1177,7 @@
+ 					box->border[TOP].width ||
+ 					box->padding[TOP] ||
+ 					(box->style &&
+-					css_computed_overflow_y(box->style) !=
++					box_overflow_y(box) !=
+ 					CSS_OVERFLOW_VISIBLE) ||
+ 					(box->type == BOX_INLINE_CONTAINER &&
+ 					!box_is_first_child(box))) {
+@@ -1190,7 +1190,7 @@
+ 		/* Find next box */
+ 		if (box->type == BOX_BLOCK && !box->object && box->children &&
+ 				box->style &&
+-				css_computed_overflow_y(box->style) ==
++				box_overflow_y(box) ==
+ 				CSS_OVERFLOW_VISIBLE) {
+ 			/* Down into children. */
+ 			box = box->children;
+@@ -1532,8 +1532,8 @@
+ 	if (box->style == NULL)
+ 		return;
+ 
+-	overflow_x = css_computed_overflow_x(box->style);
+-	overflow_y = css_computed_overflow_y(box->style);
++	overflow_x = box_overflow_x(box);
++	overflow_y = box_overflow_y(box);
+ 
+ 	if (which == BOTTOM &&
+ 			(overflow_x == CSS_OVERFLOW_SCROLL ||
+@@ -1661,8 +1661,8 @@
+ 						c->style, 0, 0, 0, 0, 0, 0,
+ 						0, c->padding, c->border);
+ 
+-				overflow_x = css_computed_overflow_x(c->style);
+-				overflow_y = css_computed_overflow_y(c->style);
++				overflow_x = box_overflow_x(c);
++				overflow_y = box_overflow_y(c);
+ 
+ 				if (overflow_x == CSS_OVERFLOW_SCROLL ||
+ 						overflow_x ==
+@@ -3639,8 +3639,8 @@
+ 
+ 		/* Find box's overflow properties */
+ 		if (box->style) {
+-			overflow_x = css_computed_overflow_x(box->style);
+-			overflow_y = css_computed_overflow_y(box->style);
++			overflow_x = box_overflow_x(box);
++			overflow_y = box_overflow_y(box);
+ 		}
+ 
+ 		/* Blocks establishing a block formatting context get minimum
+@@ -5208,7 +5208,7 @@
+ 	/* To stop the top of text getting clipped when css line-height is
+ 	 * reduced, we increase the top of the descendant bbox. */
+ 	if (box->type == BOX_BLOCK && box->style != NULL &&
+-			css_computed_overflow_y(box->style) ==
++			box_overflow_y(box) ==
+ 					CSS_OVERFLOW_VISIBLE &&
+ 			box->object == NULL) {
+ 		css_fixed font_size = 0;
+@@ -5254,8 +5254,8 @@
+ 	enum css_overflow_e overflow_y = CSS_OVERFLOW_VISIBLE;
+ 
+ 	if (child->style != NULL) {
+-		overflow_x = css_computed_overflow_x(child->style);
+-		overflow_y = css_computed_overflow_y(child->style);
++		overflow_x = box_overflow_x(child);
++		overflow_y = box_overflow_y(child);
+ 	}
+ 
+ 	/* Get child's border edge */
+@@ -5365,9 +5365,9 @@
+ 
+ 		layout_calculate_descendant_bboxes(unit_len_ctx, child);
+ 
+-		if (box->style && css_computed_overflow_x(box->style) ==
++		if (box->style && box_overflow_x(box) ==
+ 				CSS_OVERFLOW_HIDDEN &&
+-				css_computed_overflow_y(box->style) ==
++				box_overflow_y(box) ==
+ 				CSS_OVERFLOW_HIDDEN)
+ 			continue;
+ 
+diff -ruN nsclean/content/handlers/html/redraw.c rustica/content/handlers/html/redraw.c
+--- upstream/content/handlers/html/redraw.c	2026-11-26 16:11:59.234071504 -0600
++++ rustica/content/handlers/html/redraw.c	2026-11-26 21:51:41.342198046 -0600
+@@ -1254,8 +1254,8 @@
+ 		return true;
+ 
+ 	if (box->style != NULL) {
+-		overflow_x = css_computed_overflow_x(box->style);
+-		overflow_y = css_computed_overflow_y(box->style);
++		overflow_x = box_overflow_x(box);
++		overflow_y = box_overflow_y(box);
+ 	}
+ 
+ 	/* avoid trivial FP maths */
 diff -ruN nsclean/frontends/framebuffer/Makefile rustica/frontends/framebuffer/Makefile
 --- upstream/frontends/framebuffer/Makefile	2026-11-26 16:11:59.245664319 -0600
 +++ rustica/frontends/framebuffer/Makefile	2026-11-26 16:10:57.797047501 -0600
@@ -262,9 +462,64 @@ diff -ruN nsclean/frontends/framebuffer/fbtk/event.c rustica/frontends/framebuff
  	if (mods & FBTK_MOD_LSHIFT || mods & FBTK_MOD_RSHIFT) {
  		if ((code >= 0) && (code < (int) NOF_ELEMENTS(sh_keymap)))
  			ucs4 = sh_keymap[code];
+diff -ruN nsclean/frontends/framebuffer/framebuffer.c rustica/frontends/framebuffer/framebuffer.c
+--- upstream/frontends/framebuffer/framebuffer.c	2026-11-26 16:11:59.246132732 -0600
++++ rustica/frontends/framebuffer/framebuffer.c	2026-11-26 21:55:27.703225581 -0600
+@@ -646,6 +646,35 @@
+     return nsfb_cursor_set(nsfb, (nsfb_colour_t *)bm->pixdata, bm->width, bm->height, bm->width, bm->hot_x, bm->hot_y);
+ }
+ 
++#ifdef __rustux__
++/* libnsfb's Rustica surface (ports/libnsfb/rustica.c): the compositor's
++ * pointer shapes (RX_WINDOW_CURSOR_*); false on another surface */
++bool nsfb_rustica_cursor_shape(nsfb_t *nsfb, unsigned shape);
++
++bool framebuffer_set_cursor_shape(gui_pointer_shape shape)
++{
++	unsigned s;
++
++	switch (shape) {
++	case GUI_POINTER_POINT: s = 1; break;	/* a link: the hand */
++	case GUI_POINTER_CARET: s = 2; break;	/* text */
++	case GUI_POINTER_WAIT:
++	case GUI_POINTER_PROGRESS: s = 3; break;
++	case GUI_POINTER_MOVE: s = 4; break;
++	case GUI_POINTER_LEFT:
++	case GUI_POINTER_RIGHT: s = 5; break;
++	case GUI_POINTER_UP:
++	case GUI_POINTER_DOWN: s = 6; break;
++	case GUI_POINTER_LU:
++	case GUI_POINTER_RD: s = 7; break;
++	case GUI_POINTER_LD:
++	case GUI_POINTER_RU: s = 8; break;
++	default: s = 0; break;
++	}
++	return nsfb_rustica_cursor_shape(nsfb, s);
++}
++#endif
++
+ nsfb_t *framebuffer_set_surface(nsfb_t *new_nsfb)
+ {
+ 	nsfb_t *old_nsfb;
+diff -ruN nsclean/frontends/framebuffer/framebuffer.h rustica/frontends/framebuffer/framebuffer.h
+--- upstream/frontends/framebuffer/framebuffer.h	2026-11-26 16:11:59.246146400 -0600
++++ rustica/frontends/framebuffer/framebuffer.h	2026-11-26 21:55:35.453293744 -0600
+@@ -30,6 +30,12 @@
+ bool framebuffer_resize(nsfb_t *nsfb, int width, int height, int bpp);
+ void framebuffer_finalise(void);
+ bool framebuffer_set_cursor(struct fbtk_bitmap *bm);
++#ifdef __rustux__
++#include "netsurf/mouse.h"
++/* The pointer's shape drawn by Rustica's compositor; false if the surface
++ * is not a Rustica window (then the bitmap cursor as before) */
++bool framebuffer_set_cursor_shape(gui_pointer_shape shape);
++#endif
+ 
+ /** Set framebuffer surface to render into
+  *
 diff -ruN nsclean/frontends/framebuffer/gui.c rustica/frontends/framebuffer/gui.c
 --- upstream/frontends/framebuffer/gui.c	2026-11-26 16:11:59.246156343 -0600
-+++ rustica/frontends/framebuffer/gui.c	2026-11-26 16:11:59.222770979 -0600
++++ rustica/frontends/framebuffer/gui.c	2026-11-26 21:58:32.163798704 -0600
 @@ -32,6 +32,7 @@
  #include "utils/utils.h"
  #include "utils/nsoption.h"
@@ -311,7 +566,35 @@ diff -ruN nsclean/frontends/framebuffer/gui.c rustica/frontends/framebuffer/gui.
  	}
  
  	if ((nsoption_charp(homepage_url) != NULL) && 
-@@ -2196,6 +2209,7 @@
+@@ -585,6 +598,15 @@
+ 	};
+ 
+ 	/* Set defaults for absent option strings */
++#ifdef __rustux__
++	/* An app: cookies in its data folder (the sandbox's) */
++	if (getenv("XDG_DATA_HOME") != NULL) {
++		char cookies[PATH_MAX];
++		snprintf(cookies, sizeof cookies, "%s/Cookies", getenv("XDG_DATA_HOME"));
++		nsoption_setnull_charp(cookie_file, strdup(cookies));
++		nsoption_setnull_charp(cookie_jar, strdup(cookies));
++	}
++#endif
+ 	nsoption_setnull_charp(cookie_file, strdup("~/.netsurf/Cookies"));
+ 	nsoption_setnull_charp(cookie_jar, strdup("~/.netsurf/Cookies"));
+ 
+@@ -1962,6 +1984,11 @@
+ static void
+ gui_window_set_pointer(struct gui_window *g, gui_pointer_shape shape)
+ {
++#ifdef __rustux__
++	/* The compositor draws the pointer: say which shape */
++	if (framebuffer_set_cursor_shape(shape))
++		return;
++#endif
+ 	switch (shape) {
+ 	case GUI_POINTER_POINT:
+ 		framebuffer_set_cursor(&hand_image);
+@@ -2196,6 +2223,7 @@
  		.utf8 = framebuffer_utf8_table,
  		.bitmap = framebuffer_bitmap_table,
  		.layout = framebuffer_layout_table,
@@ -319,7 +602,7 @@ diff -ruN nsclean/frontends/framebuffer/gui.c rustica/frontends/framebuffer/gui.
  	};
  
          ret = netsurf_register(&framebuffer_table);
-@@ -2259,6 +2273,12 @@
+@@ -2259,6 +2287,12 @@
  
  	NSLOG(netsurf, INFO, "calling browser_window_create");
  

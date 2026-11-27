@@ -64,6 +64,7 @@ typedef struct {
 #define RX_WINDOW_LOCK           11u // lock the screen (the session's user's password unlocks it)
 #define RX_WINDOW_SET_PANEL      12u // (the panel) flags = edge (RX_WINDOW_EDGE_*), x = thickness, y = 1 auto-hide
 #define RX_WINDOW_DRAG_START     13u // + text: while the left button is held, drag this (file paths, a line each); the drop goes to the window under the pointer
+#define RX_WINDOW_SET_CURSOR     14u // flags = RX_WINDOW_CURSOR_*: the pointer's shape over the window's content
 #define RX_WINDOW_AT_END         (-2) // CREATE's x or y: against the work area's right or bottom edge
 #define RX_WINDOW_ROLE_PANEL     1u
 #define RX_WINDOW_ROLE_DESKTOP   2u  // the desktop's icons: the work area, below every window; the buffer's top byte is premultiplied alpha
@@ -71,6 +72,19 @@ typedef struct {
 #define RX_WINDOW_EDGE_TOP       1u
 #define RX_WINDOW_EDGE_LEFT      2u
 #define RX_WINDOW_EDGE_RIGHT     3u
+
+// Pointer shapes (SET_CURSOR); the compositor draws the resize shapes on
+// windows' edges itself
+#define RX_WINDOW_CURSOR_ARROW       0u
+#define RX_WINDOW_CURSOR_HAND        1u  // a link
+#define RX_WINDOW_CURSOR_TEXT        2u  // text that can be typed or selected
+#define RX_WINDOW_CURSOR_WAIT        3u
+#define RX_WINDOW_CURSOR_MOVE        4u
+#define RX_WINDOW_CURSOR_RESIZE_H    5u
+#define RX_WINDOW_CURSOR_RESIZE_V    6u
+#define RX_WINDOW_CURSOR_RESIZE_NWSE 7u
+#define RX_WINDOW_CURSOR_RESIZE_NESW 8u
+#define RX_WINDOW_CURSOR_COUNT       9u
 
 #define RX_WINDOW_MAX_TITLE      64
 #define RX_WINDOW_MAX_RECTS      64
@@ -151,6 +165,8 @@ int rx_window_next_event(rx_window_t *win, rx_window_event_t *ev, uint64_t deadl
 int rx_window_resize(rx_window_t *win, uint32_t w, uint32_t h);
 int rx_window_set_title(rx_window_t *win, const char *title);
 int rx_window_set_fullscreen(rx_window_t *win, int on);
+// The pointer's shape over the window (RX_WINDOW_CURSOR_*)
+int rx_window_set_cursor(rx_window_t *win, uint32_t shape);
 int rx_window_clipboard_set(rx_window_t *win, const char *text);
 // The clipboard's text into buf (0-terminated): its length or a negative errno
 int rx_window_clipboard_get(rx_window_t *win, char *buf, size_t size);

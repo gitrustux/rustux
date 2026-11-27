@@ -5,7 +5,7 @@ USAGE
     terminal -e PROG ARGS    PROG instead
 
     The program runs on a pseudo-terminal: the console's escape sequences
-    (colours, the cursor, the alternate screen of top and editors) and a
+    (colors, the cursor, the alternate screen of top and editors) and a
     scrollback of 5000 lines. A tab closes when its program ends, the
     window with the last tab.
 

@@ -1,0 +1,35 @@
+soundctl - the volume, and sound from the console
+
+USAGE
+    soundctl [status]
+    soundctl volume [N | +N | -N]
+    soundctl mute | unmute | toggle
+    soundctl test
+    soundctl tone HZ SECONDS [RATE [CHANNELS]]
+    soundctl play FILE.wav        (also: play FILE.wav)
+
+    Talks to the sound service, soundd (svc status sound), which mixes
+    every program's sound into the sound card's. Anyone may use it.
+
+    status      the volume (0-100), whether it is muted, the sound devices
+                (the one in use marked) and their outputs: speaker,
+                headphones and line, each on, off (headphones are in: the
+                speakers are turned off) or unplugged
+    volume N    set the volume (0-100); +N and -N change it. The panel's
+                volume, Settings > Sound and the volume keys set the same
+    mute, unmute, toggle
+    test        a short chord: left, right, then both
+    tone        a sine tone: HZ for SECONDS, made at RATE (48000) in
+                CHANNELS (2), for checking the conversion of rates
+    play        a WAV file: 16-bit PCM, 1 or 2 channels, any rate from
+                8000 to 192000 Hz
+
+    The volume and muting are kept in /var/lib/sound/state.
+
+DEVICES
+    Intel High Definition Audio, the sound of nearly every PC (the hda
+    driver: speakers, headphones and line out; HDMI and DisplayPort sound
+    not yet). dmesg | grep hda shows what was found.
+
+SEE ALSO
+    docs/SOUND.md

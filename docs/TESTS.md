@@ -244,8 +244,11 @@ entry and the installer answered on the console onto an empty NVMe disk
 login prompt, the user's file kept across boots (`e2fsck -f` clean); a
 "replace" reinstall from the live session; a dry run and an "alongside"
 install next to a stand-in Windows (its partitions byte for byte
-unchanged, its loader started from rboot's menu); and a power cut during
-the installation, after which the computer still starts "Windows".
+unchanged, its loader started from rboot's menu); a power cut during
+the installation, after which the computer still starts "Windows"; and
+(2026-11-26) a disk whose EFI partition (40 MiB) is too small for the
+kernel: alongside refused, nothing written. Writing the 70 MB image to
+the FAT partition takes 8-12 minutes under QEMU (the test waits 20).
 
 Package step E3 (`PACKAGES.md`): the medium carries the system's
 packages 0.1.1 (made with the host's rpg, so the test needs cargo and
@@ -339,6 +342,8 @@ properties, opens a text file in the Text Editor (changed and saved), and
 ejects the stick; Settings as root sets the mouse speed, the time zone,
 the scale and a new administrator, carol, who logs in and changes the
 mouse speed with her password (`sudo -S`); last the keyboard layout.
+With `KEEP=1` it keeps its screenshots and the console's log (the folder
+it names at the end), as `run-appearance-test.sh` does.
 Network (step D6, a virtio-net card on QEMU's user-mode network):
 Settings > Network gives eth0 10.0.2.50/24 and DNS server 9.9.9.9
 (`/etc/network.conf`, `/etc/resolv.conf`, `ip addr`, the gateway pings),
@@ -592,6 +597,23 @@ Documents), saved again shorter (no old bytes left), and Ctrl+O opens
 `a.txt` through the chooser. An app removed is not installed again when
 the installer service restarts. `$SHOTS=DIR` keeps screendumps of both.
 
+**Known failure (2026-11-27, step S1; to be fixed):** section 4 fails in
+about two runs of three ("Save asks with the chooser ..." and the checks
+after it). The Text Editor started right after the Image Viewer closes
+never shows its window and spins at full CPU, apparently while it loads
+its font; an app started after any other window works. W1 (`8f9d31d`)
+passes every time, and W1 with only S1's `userspace/apps/bin/viewer`
+fails every time: the viewer's source did not change, only its build
+(rustica-ui gained code it does not use), so the new layout exposes a
+timing race rather than causing it. Ruled out: the editor (W1's hangs
+too), the compositor (W1's too), soundd, the browser app, the pointer
+and window position, the font files, system calls and page faults (the
+stuck editor makes few of either). Any instrumentation of the kernel's
+page freeing hides it, and it happens on one CPU too: most likely a race
+in the kernel or fsd while one process is torn down and the next starts.
+To reproduce: a worktree at `8f9d31d` with S1's `viewer` copied into
+`userspace/apps/bin`, the kernel built, this test run.
+
 ## FoxDen test (FoxDen step FD5)
 
 `scripts/run-foxden-test.sh` (QEMU, the live desktop; it needs openssl
@@ -786,11 +808,32 @@ m "screendump /tmp/screen.ppm"   # capture the framebuffer
 `scripts/run-browser-test.sh` (phase W, `docs/BROWSER.md`): QEMU with the
 desktop, user networking and web servers on the host (HTTP, and HTTPS with
 a certificate for 10.0.2.2 from a test CA the script makes). From the
-console: `curltest` refuses the unknown CA, the CA is added to
-`/etc/ssl/certs/ca-certificates.crt`; NetSurf shows a page over HTTP (its
-box and heading counted by colour, its text); a click on its link downloads
-a 2.5 MB file into `~/Downloads` (sha256 against the host's, no `.part`
-left); a URL typed into the address bar loads a page over HTTPS; a local
-file opens by its path. About 6 minutes. The network test also checks
+console: NetSurf is the app `org.rustica.browser`, installed as the
+system starts, and `browser --which` names it; `curltest` refuses the
+unknown CA, the CA is added to `/etc/ssl/certs/ca-certificates.crt` (the
+sandbox sees it); `browser URL` shows a page over HTTP (its box and heading
+counted by colour, its text); the pointer over its link is the hand (three
+pixels of its palm); a click on the link downloads a 2.5 MB file into
+`~/Downloads` (sha256 against the host's, no `.part` left); a URL typed
+into the address bar loads a page over HTTPS; a local file opens by its
+path (`appctl open`); a page with `overflow` on its body has one scrollbar
+(from the page's colour to the window's border no more than the window's
+scrollbar). About 7 minutes. The network test also checks
 libcurl with `curltest` (an unknown CA refused, HTTPS with `--cacert`,
 HTTP by name through its resolver thread).
+
+## Sound test (2026-11-26)
+
+`scripts/run-sound-test.sh` (phase S, `docs/SOUND.md`): QEMU's `intel-hda`
+with an `hda-output` codec whose sound QEMU writes to a WAV file (its
+`wav` audio backend), the console only. `dmesg | grep hda` shows the
+controller, the codec's line out and "ready", and that the codec answers
+through the command ring; `soundctl status` shows the device in use and
+the volume 70. Then tones with silence between: 1000 Hz for 2 s at volume
+100, again at 50, again muted (`soundctl status` says so), 440 Hz made at
+44100 Hz in one channel, and `play` of a 660 Hz WAV file at 22050 Hz; the
+volume set to 35 survives `svc restart sound`. After the power-off the
+script listens to the recording in windows of 50 ms (loudness and
+zero crossings): about 2 s of each 1000 Hz tone, the second a quarter as
+loud (0.2-0.3), nothing of the muted one, 440 Hz in both channels, 660 Hz
+for about 1.5 s. About 3 minutes.

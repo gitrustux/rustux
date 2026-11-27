@@ -1,0 +1,12 @@
+Package: org.rustica.browser
+Version: 3.12.0
+Architecture: x86_64
+Kind: app
+Maintainer: The Rustux Authors <gitrustux@rustux>
+Homepage: https://www.netsurf-browser.org
+License: GPL-2.0-only
+Description: NetSurf web browser
+ NetSurf (netsurf-browser.org), a small web browser with its own HTML and
+ CSS engine, on Rustica. Pages over HTTP and HTTPS; downloads go to your
+ Downloads folder. No JavaScript yet. Its source and Rustica's changes
+ are in the rustux repository (userspace/ports/netsurf).

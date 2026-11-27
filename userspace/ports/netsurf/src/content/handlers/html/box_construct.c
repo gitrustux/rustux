@@ -545,6 +545,21 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
 	if (props.node_is_root)
 		ctx->root_box = box;
 
+	/* The root's overflow belongs to the viewport, and the body's when
+	 * the root's is visible (CSS 2.1 11.1.1): the window scrolls them,
+	 * not a scrollbar of their own inside it */
+	if (props.node_is_root) {
+		box->flags |= VIEWPORT_OVERFLOW;
+	} else if (ctx->root_box != NULL && ctx->root_box->style != NULL &&
+			props.containing_block == ctx->root_box &&
+			css_computed_overflow_x(ctx->root_box->style) == CSS_OVERFLOW_VISIBLE &&
+			css_computed_overflow_y(ctx->root_box->style) == CSS_OVERFLOW_VISIBLE) {
+		dom_html_element_type tag_type;
+		if (dom_html_element_get_tag_type(ctx->n, &tag_type) == DOM_NO_ERR &&
+				tag_type == DOM_HTML_ELEMENT_TYPE_BODY)
+			box->flags |= VIEWPORT_OVERFLOW;
+	}
+
 	/* Deal with colspan/rowspan */
 	err = dom_element_get_attribute(ctx->n, corestring_dom_colspan, &s);
 	if (err != DOM_NO_ERR)

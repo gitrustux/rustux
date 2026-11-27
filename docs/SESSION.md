@@ -51,11 +51,17 @@ Ctrl+Alt+F1 throughout.
   buttons share the room left, their titles shortened, and past 90 pixels
   each a "+N" button stands for the rest, so the end of the panel never
   leaves the screen), Updates (when there are some), the keyboard layout
-  (`/etc/keymap`), volume (a placeholder), the network, the clock (in
-  the formats of Settings > Date & Time, below), Lock,
-  Log out, and the power button at the far end (`powermenu`: Lock screen,
-  Log out, Restart, Shut down, Power settings; Suspend and Hibernate wait
-  for ACPI). Its settings are `~/.config/rustica/panel.conf` (else
+  (`/etc/keymap`), the volume (a speaker with one to three waves, or a
+  cross when muted, and the percentage; the wheel over it changes it by
+  5, a click opens Settings > Sound; `SOUND.md`), the network (an icon,
+  since 2026-11-26: a wired network's three linked boxes, or Wi-Fi's dot
+  and three arcs lit by strength, dimmed when not connected; a click
+  opens Settings > Network), the clock (in the formats of Settings >
+  Date & Time, below), and the power button at the far end
+  (`powermenu`: Lock screen, Log out, Restart, Shut down, Power
+  settings; Suspend and Hibernate wait for ACPI). Lock and Log out are
+  applets of their own too, no longer on the panel by default
+  (2026-11-26: the power button has them). Its settings are `~/.config/rustica/panel.conf` (else
   `/etc/rustica/panel.conf`): `position=bottom|top|left|right`, `size=`
   (a bottom or top panel's height, 36), `width=` (a side panel's, 180),
   `autohide=yes|no`, `start=`, `centre=`, `end=` (applet names: `menu
@@ -200,7 +206,7 @@ asks.
 
 ## Locking
 
-Lock in the panel, Super+L or Ctrl+Alt+L: the compositor hides every window
+Lock screen in the power menu, Super+L or Ctrl+Alt+L: the compositor hides every window
 behind the lock screen and takes all keys; the session's user's password
 and Enter unlock it ("Wrong password" otherwise). A user without a
 password (the live image's root) cannot lock: a notification says so.
@@ -216,8 +222,8 @@ user. Window clients may be any user's (the compositor does not check yet).
 
 - Several sessions, switching users, logging in as root graphically from
   a system with a root password (it works; nothing stops it).
-- Volume and network in the panel (phases D and later), notifications
-  with actions, a notification history.
+- Notifications with actions, a notification history; a Wi-Fi driver
+  (the network icon's bars wait for one).
 - The lock screen with the toolkit's fonts; idle locking and screen
   blanking.
 - Session services under the service manager per user: the session is a

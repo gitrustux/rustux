@@ -87,7 +87,11 @@ fn installed_apps() -> Vec<App> {
 /// The application that opens files with this name, if any
 pub fn app_for(path: &Path) -> Option<App> {
     let ext = path.extension()?.to_str()?.to_lowercase();
-    applications().into_iter().find(|a| a.types.iter().any(|t| *t == ext))
+    let apps = applications();
+    let opens = |a: &&App| a.types.iter().any(|t| *t == ext);
+    // The system's entries first: "Web Browser" (/bin/browser) opens web
+    // pages with the default browser, whichever app that is
+    apps.iter().filter(opens).find(|a| a.app_id.is_none()).or_else(|| apps.iter().find(opens)).cloned()
 }
 
 /// Start an application's exec line with extra arguments

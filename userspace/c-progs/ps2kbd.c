@@ -49,6 +49,9 @@ static const uint8_t set1_to_hid[0x59] = {
 static uint8_t extended_to_hid(uint8_t code) {
     switch (code) {
     case 0x1C: return 0x58; // keypad Enter
+    case 0x20: return 0x7F; // Mute (the laptops' Fn keys, multimedia keyboards)
+    case 0x2E: return 0x81; // Volume Down
+    case 0x30: return 0x80; // Volume Up
     case 0x1D: return 0xE4; // right Ctrl
     case 0x35: return 0x54; // keypad /
     case 0x37: return 0x46; // Print Screen

@@ -283,6 +283,13 @@ exfat, ntfs, BitLocker, ext2/3/4, swap, iso9660) for `blkid` and
 Block devices are not files in `/dev` yet: `blk read` and `blk write`
 reach them from the shell.
 
+## Sound (phase S)
+
+`hda` (Intel High Definition Audio, every HD Audio controller and its
+codecs) gives its stream's ring buffer to the sound service, soundd,
+through `/svc/sounddev` (`<rustux/sound.h>`), as network drivers give
+their frames to netd: `SOUND.md`.
+
 ## Testing
 
 ```sh

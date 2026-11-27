@@ -72,6 +72,7 @@ extern "C" {
     fn rx_window_resize(w: *mut RawWindow, width: u32, height: u32) -> i32;
     fn rx_window_set_title(w: *mut RawWindow, title: *const u8) -> i32;
     fn rx_window_set_fullscreen(w: *mut RawWindow, on: i32) -> i32;
+    fn rx_window_set_cursor(w: *mut RawWindow, shape: u32) -> i32;
     fn rx_window_clipboard_set(w: *mut RawWindow, text: *const u8) -> i32;
     fn rx_window_clipboard_get(w: *mut RawWindow, buf: *mut u8, size: usize) -> i32;
     fn rx_window_destroy(w: *mut RawWindow);
@@ -134,6 +135,23 @@ impl Waker {
 
 /// The panel's role (set_role)
 pub const ROLE_PANEL: u32 = 1;
+
+/// The pointer's shape over a window ([`Window::set_cursor`])
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Cursor {
+    Arrow = 0,
+    /// A link
+    Hand = 1,
+    /// Text that can be typed or selected
+    Text = 2,
+    Wait = 3,
+    Move = 4,
+    ResizeH = 5,
+    ResizeV = 6,
+    ResizeNwse = 7,
+    ResizeNesw = 8,
+}
 pub const ROLE_DESKTOP: u32 = 2;
 pub const EDGE_BOTTOM: u32 = 0;
 pub const EDGE_TOP: u32 = 1;
@@ -317,6 +335,11 @@ impl Window {
 
     pub fn set_fullscreen(&mut self, on: bool) {
         unsafe { rx_window_set_fullscreen(&mut *self.raw, on as i32) };
+    }
+
+    /// The pointer's shape over the window's content
+    pub fn set_cursor(&mut self, shape: Cursor) {
+        unsafe { rx_window_set_cursor(&mut *self.raw, shape as u32) };
     }
 
     /// The desktop session (step F6): become the panel

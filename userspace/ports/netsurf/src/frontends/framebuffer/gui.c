@@ -598,6 +598,15 @@ static nserror set_defaults(struct nsoption_s *defaults)
 	};
 
 	/* Set defaults for absent option strings */
+#ifdef __rustux__
+	/* An app: cookies in its data folder (the sandbox's) */
+	if (getenv("XDG_DATA_HOME") != NULL) {
+		char cookies[PATH_MAX];
+		snprintf(cookies, sizeof cookies, "%s/Cookies", getenv("XDG_DATA_HOME"));
+		nsoption_setnull_charp(cookie_file, strdup(cookies));
+		nsoption_setnull_charp(cookie_jar, strdup(cookies));
+	}
+#endif
 	nsoption_setnull_charp(cookie_file, strdup("~/.netsurf/Cookies"));
 	nsoption_setnull_charp(cookie_jar, strdup("~/.netsurf/Cookies"));
 
@@ -1975,6 +1984,11 @@ gui_window_set_status(struct gui_window *g, const char *text)
 static void
 gui_window_set_pointer(struct gui_window *g, gui_pointer_shape shape)
 {
+#ifdef __rustux__
+	/* The compositor draws the pointer: say which shape */
+	if (framebuffer_set_cursor_shape(shape))
+		return;
+#endif
 	switch (shape) {
 	case GUI_POINTER_POINT:
 		framebuffer_set_cursor(&hand_image);

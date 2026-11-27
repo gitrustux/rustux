@@ -48,7 +48,7 @@ static void frame(void) {
     for (int i = 0; i < 24 && 3 + i * 3 < cols - 3; i++) printf("\033[48;5;%dm   ", 232 + i);
     printf("\033[0m");
     at(6, 3);
-    printf("\033[1mbold\033[0m \033[4munderline\033[0m \033[7mreverse\033[0m \033[38;2;255;128;0mtrue colour\033[0m "
+    printf("\033[1mbold\033[0m \033[4munderline\033[0m \033[7mreverse\033[0m \033[38;2;255;128;0mtrue color\033[0m "
            "UTF-8: äöü ß é ✓ • → ░▒▓█");
     fflush(stdout);
 }

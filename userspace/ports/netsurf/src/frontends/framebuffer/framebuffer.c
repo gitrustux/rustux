@@ -646,6 +646,35 @@ framebuffer_set_cursor(struct fbtk_bitmap *bm)
     return nsfb_cursor_set(nsfb, (nsfb_colour_t *)bm->pixdata, bm->width, bm->height, bm->width, bm->hot_x, bm->hot_y);
 }
 
+#ifdef __rustux__
+/* libnsfb's Rustica surface (ports/libnsfb/rustica.c): the compositor's
+ * pointer shapes (RX_WINDOW_CURSOR_*); false on another surface */
+bool nsfb_rustica_cursor_shape(nsfb_t *nsfb, unsigned shape);
+
+bool framebuffer_set_cursor_shape(gui_pointer_shape shape)
+{
+	unsigned s;
+
+	switch (shape) {
+	case GUI_POINTER_POINT: s = 1; break;	/* a link: the hand */
+	case GUI_POINTER_CARET: s = 2; break;	/* text */
+	case GUI_POINTER_WAIT:
+	case GUI_POINTER_PROGRESS: s = 3; break;
+	case GUI_POINTER_MOVE: s = 4; break;
+	case GUI_POINTER_LEFT:
+	case GUI_POINTER_RIGHT: s = 5; break;
+	case GUI_POINTER_UP:
+	case GUI_POINTER_DOWN: s = 6; break;
+	case GUI_POINTER_LU:
+	case GUI_POINTER_RD: s = 7; break;
+	case GUI_POINTER_LD:
+	case GUI_POINTER_RU: s = 8; break;
+	default: s = 0; break;
+	}
+	return nsfb_rustica_cursor_shape(nsfb, s);
+}
+#endif
+
 nsfb_t *framebuffer_set_surface(nsfb_t *new_nsfb)
 {
 	nsfb_t *old_nsfb;

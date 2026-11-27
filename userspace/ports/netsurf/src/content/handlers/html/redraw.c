@@ -1254,8 +1254,8 @@ bool html_redraw_box(const html_content *html, struct box *box,
 		return true;
 
 	if (box->style != NULL) {
-		overflow_x = css_computed_overflow_x(box->style);
-		overflow_y = css_computed_overflow_y(box->style);
+		overflow_x = box_overflow_x(box);
+		overflow_y = box_overflow_y(box);
 	}
 
 	/* avoid trivial FP maths */

@@ -897,7 +897,7 @@ impl FoxDen {
                     _ => a.version.clone(),
                 }),
                 ("Developer".into(), if a.outside().is_some() && !a.developer.is_empty() { format!("claims to be {}, not verified", a.developer) } else { a.developer.clone() }),
-                ("Licence".into(), a.license.clone()),
+                ("License".into(), a.license.clone()),
                 ("Download".into(), if a.size > 0 { size_text(a.size) } else { "-".into() }),
                 ("Installed size".into(), size_text(a.installed_size * 1024)),
                 ("Categories".into(), a.categories.join(", ")),

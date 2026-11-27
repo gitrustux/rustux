@@ -228,6 +228,8 @@ static void build_view(const char *home) {
         add(RX_FS_VIEW_OPEN, "/svc/netsock", "");
         add(RX_FS_VIEW_RO, "/etc/resolv.conf", "");
         add(RX_FS_VIEW_RO, "/etc/hosts", "");
+        // The certificates the system trusts (HTTPS, docs/BROWSER.md)
+        add(RX_FS_VIEW_RO, "/etc/ssl/certs", "");
     }
     static const char *dirs[][2] = { { "files:documents", "Documents" }, { "files:pictures", "Pictures" },
                                      { "files:music", "Music" }, { "files:videos", "Videos" },
@@ -239,11 +241,16 @@ static void build_view(const char *home) {
             if (!perm(dirs[k][0])) continue;
             char p[600];
             snprintf(p, sizeof p, "%s/%s", home, dirs[k][1]);
+            // The folder the user gave it, made if the home has none yet
+            // (as the desktop makes them at login)
+            if (access(p, F_OK) != 0) mkdir(p, 0755);
             add(RX_FS_VIEW_RW, "%s", p);
         }
     }
     if (perm("removable")) add(RX_FS_VIEW_RW, "/media", "");
-    // audio, camera, location: no services for them yet
+    // audio: playing sound (soundd; docs/SOUND.md)
+    if (perm("audio")) add(RX_FS_VIEW_OPEN, "/svc/sound", "");
+    // camera, location: no services for them yet
 }
 
 // FILE (from the current folder if relative) into the view, at its own

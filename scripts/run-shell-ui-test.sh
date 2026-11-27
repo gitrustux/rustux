@@ -8,7 +8,7 @@
 #   1b. a file dragged from Files onto the desktop, and back into Files;
 #      the power button opens the power menu; the Image Viewer started
 #      without a picture asks for one;
-#   2. twelve windows: the panel's end (Lock, Log out, the clock) stays
+#   2. twelve windows: the panel's end (the clock, the power button) stays
 #      where it was, the window list shortened with "+N";
 #   3. a window dragged to the left edge fills the left half; Super+Right
 #      gives it its size back, and again moves it to the right half;
@@ -258,7 +258,7 @@ console('for i in 1 2 3 4 5 6 7 8 9 10 11 12; do wintest "A long window title $i
 time.sleep(3)
 after = region(screen(), 1100, 768, 1278, 796)
 same = sum(1 for a, b in zip(before, after) if near(a, b, 20)) / len(before)
-check(same > 0.95, 'twelve windows: Lock and Log out stay in place (%.0f%% the same)' % (same * 100))
+check(same > 0.95, 'twelve windows: the clock and the power button stay in place (%.0f%% the same)' % (same * 100))
 console('for p in $(ps | grep wintest | cut -c1-6); do kill $p; done', 4)
 time.sleep(2)
 

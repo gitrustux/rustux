@@ -61,6 +61,7 @@
 #include <rustux/process.h>
 #include <rustux/service.h>
 #include <rustux/window.h>
+#include <rustux/sound.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -122,6 +123,7 @@ typedef struct {
     int used;
     rx_handle_t ch;
     char title[RX_WINDOW_MAX_TITLE + 1];
+    uint32_t cursor;            // the pointer's shape over its content (RX_WINDOW_CURSOR_*)
     int x, y;                   // content's top left on the screen
     uint32_t w, h;              // content size (the committed buffer's)
     uint32_t *pix;              // our copy of what was committed
@@ -256,12 +258,214 @@ static void damage_window(const window_t *w) {
 static int cx, cy;
 static uint32_t buttons;
 static int hwcursor;    // the display draws the pointer (virtio-gpu, step F8)
-static const char *arrow[] = {
-    "1", "11", "121", "1221", "12221", "122221", "1222221", "12222221", "122222221", "1222222221",
-    "12222211111", "1221221", "121 1221", "11  1221", "1    1221", "     1221", "      11",
+// The pointer's shapes (RX_WINDOW_CURSOR_*): '1' black, '2' white, ' '
+// clear; drawn with the hot spot at the pointer (made by a script from
+// masks: an outline around each shape)
+typedef struct {
+    const char **rows;
+    int w, h, hx, hy;
+} cursor_shape_t;
+static const char *cur_arrow[] = {
+    "1",
+    "11",
+    "121",
+    "1221",
+    "12221",
+    "122221",
+    "1222221",
+    "12222221",
+    "122222221",
+    "1222222221",
+    "12222211111",
+    "1221221",
+    "121 1221",
+    "11  1221",
+    "1    1221",
+    "     1221",
+    "      11",
+    0,
 };
-#define ARROW_W 11
-#define ARROW_H 17
+static const char *cur_hand[] = {
+    "     11",
+    "    1221",
+    "    1221",
+    "    1221",
+    "    1221",
+    "    122111",
+    "    1221221111",
+    "    12212212211",
+    " 11 122122122121",
+    "1221122222222221",
+    "1222122222222221",
+    " 122222222222221",
+    "  12222222222221",
+    "  1222222222221",
+    "   122222222221",
+    "   12222222221",
+    "    1222222221",
+    "    1222222221",
+    "    111111111",
+    0,
+};
+static const char *cur_text[] = {
+    "222222222",
+    "211111112",
+    "222212222",
+    "   212",
+    "   212",
+    "   212",
+    "   212",
+    "   212",
+    "   212",
+    "   212",
+    "   212",
+    "   212",
+    "   212",
+    "   212",
+    "   212",
+    "222212222",
+    "211111112",
+    "222222222",
+    0,
+};
+static const char *cur_wait[] = {
+    "11111111111",
+    "12222222221",
+    " 111111111",
+    " 122222221",
+    " 112222211",
+    "  1122211",
+    "   11211",
+    "    121",
+    "    121",
+    "   11211",
+    "  1122211",
+    " 112212211",
+    " 122222221",
+    " 111111111",
+    "12222222221",
+    "11111111111",
+    0,
+};
+static const char *cur_move[] = {
+    "         111",
+    "        11211",
+    "       1122211",
+    "      112222211",
+    "      122222221",
+    "      111121111",
+    "   111   121   111",
+    "  1121   121   1211",
+    " 11221   121   12211",
+    "112221111121111122211",
+    "122222222222222222221",
+    "112221111121111122211",
+    " 11221   121   12211",
+    "  1121   121   1211",
+    "   111   121   111",
+    "      111121111",
+    "      122222221",
+    "      112222211",
+    "       1122211",
+    "        11211",
+    "         111",
+    0,
+};
+static const char *cur_resize_h[] = {
+    "    111       111",
+    "   1121       1211",
+    "  11221       12211",
+    " 1122211111111122211",
+    "112222222222222222211",
+    "122222222222222222221",
+    "112222222222222222211",
+    " 1122211111111122211",
+    "  11221       12211",
+    "   1121       1211",
+    "    111       111",
+    0,
+};
+static const char *cur_resize_v[] = {
+    "    111",
+    "   11211",
+    "  1122211",
+    " 112222211",
+    "11222222211",
+    "12222222221",
+    "11112221111",
+    "   12221",
+    "   12221",
+    "   12221",
+    "   12221",
+    "   12221",
+    "   12221",
+    "   12221",
+    "11112221111",
+    "12222222221",
+    "11222222211",
+    " 112222211",
+    "  1122211",
+    "   11211",
+    "    111",
+    0,
+};
+static const char *cur_resize_nwse[] = {
+    "",
+    "   111",
+    "  11211111",
+    " 112222221",
+    " 122222211",
+    " 112222211",
+    "  122222211",
+    "  1222222211",
+    "  12112222211",
+    "  111112222211111",
+    "      11222221121",
+    "       1122222221",
+    "        112222221",
+    "         112222211",
+    "         112222221",
+    "         122222211",
+    "         11111211",
+    "             111",
+    "",
+    0,
+};
+static const char *cur_resize_nesw[] = {
+    "",
+    "             111",
+    "         11111211",
+    "         122222211",
+    "         112222221",
+    "         112222211",
+    "        112222221",
+    "       1122222221",
+    "      11222221121",
+    "  111112222211111",
+    "  12112222211",
+    "  1222222211",
+    "  122222211",
+    " 112222211",
+    " 122222211",
+    " 112222221",
+    "  11211111",
+    "   111",
+    "",
+    0,
+};
+static const cursor_shape_t shapes[RX_WINDOW_CURSOR_COUNT] = {
+    [RX_WINDOW_CURSOR_ARROW] = {cur_arrow, 11, 17, 0, 0},
+    [RX_WINDOW_CURSOR_HAND] = {cur_hand, 16, 19, 5, 0},
+    [RX_WINDOW_CURSOR_TEXT] = {cur_text, 9, 18, 4, 9},
+    [RX_WINDOW_CURSOR_WAIT] = {cur_wait, 11, 16, 5, 8},
+    [RX_WINDOW_CURSOR_MOVE] = {cur_move, 21, 21, 10, 10},
+    [RX_WINDOW_CURSOR_RESIZE_H] = {cur_resize_h, 21, 11, 10, 5},
+    [RX_WINDOW_CURSOR_RESIZE_V] = {cur_resize_v, 11, 21, 5, 10},
+    [RX_WINDOW_CURSOR_RESIZE_NWSE] = {cur_resize_nwse, 18, 19, 9, 9},
+    [RX_WINDOW_CURSOR_RESIZE_NESW] = {cur_resize_nesw, 18, 19, 9, 9},
+};
+static uint32_t cur_shape;  // the one shown
+static int upload_hwcursor(void);
 
 // ---- drawing ----
 
@@ -432,13 +636,19 @@ static void draw_window(const window_t *w, int focused, const rx_display_rect_t 
 
 static void draw_cursor(const rx_display_rect_t *r) {
     if (hwcursor) return;
-    for (int row = 0; row < ARROW_H; row++)
-        for (int k = 0; arrow[row][k]; k++) {
-            int x = cx + k, y = cy + row;
-            if (arrow[row][k] == ' ' || x < (int)r->x || x >= (int)(r->x + r->w) || y < (int)r->y || y >= (int)(r->y + r->h))
+    const cursor_shape_t *c = &shapes[cur_shape];
+    for (int row = 0; row < c->h; row++)
+        for (int k = 0; c->rows[row][k]; k++) {
+            int x = cx - c->hx + k, y = cy - c->hy + row;
+            if (c->rows[row][k] == ' ' || x < 0 || y < 0 || x < (int)r->x || x >= (int)(r->x + r->w) || y < (int)r->y || y >= (int)(r->y + r->h))
                 continue;
-            fbp[(uint64_t)y * W + x] = arrow[row][k] == '1' ? 0x000000 : 0xFFFFFF;
+            fbp[(uint64_t)y * W + x] = c->rows[row][k] == '1' ? 0x000000 : 0xFFFFFF;
         }
+}
+
+static void damage_cursor(void) {
+    const cursor_shape_t *c = &shapes[cur_shape];
+    add_damage(cx - c->hx, cy - c->hy, c->w, c->h);
 }
 
 // ---- appearance ----
@@ -1461,6 +1671,9 @@ static int client_messages(int k) {
             rx_channel_write(w->ch, 0, out, (uint32_t)(sizeof ev + clipboard_len), 0, 0);
             break;
         }
+        case RX_WINDOW_SET_CURSOR:
+            w->cursor = r.flags < RX_WINDOW_CURSOR_COUNT ? r.flags : RX_WINDOW_CURSOR_ARROW;
+            break;
         case RX_WINDOW_SET_FULLSCREEN:
             if (!w->panel) set_fullscreen(k, r.flags != 0);
             break;
@@ -1640,6 +1853,33 @@ static int hit(int px, int py, int *which, int *edges) {
     return HIT_NONE;
 }
 
+// The shape for a resize zone (edges: 1 right, 2 bottom)
+static uint32_t resize_shape(int edges) {
+    return edges == 1 ? RX_WINDOW_CURSOR_RESIZE_H : edges == 2 ? RX_WINDOW_CURSOR_RESIZE_V : RX_WINDOW_CURSOR_RESIZE_NWSE;
+}
+
+// The pointer's shape for where it is: the window's own over its content,
+// the resize arrows on an edge (and while resizing), else the arrow
+static void update_cursor_shape(void) {
+    uint32_t s = RX_WINDOW_CURSOR_ARROW;
+    if (locked || saver_on) {
+        s = RX_WINDOW_CURSOR_ARROW;
+    } else if (drag == DRAG_RESIZE) {
+        s = resize_shape(drag_edges);
+    } else if (drag == DRAG_NONE) {
+        int k = -1, e = 0;
+        int h = hit(cx, cy, &k, &e);
+        if (h == HIT_CONTENT && k >= 0) s = wins[k].cursor;
+        else if (h == HIT_RESIZE) s = resize_shape(e);
+    }
+    if (s >= RX_WINDOW_CURSOR_COUNT) s = RX_WINDOW_CURSOR_ARROW;
+    if (s == cur_shape) return;
+    damage_cursor();
+    cur_shape = s;
+    damage_cursor();
+    if (hwcursor) upload_hwcursor();
+}
+
 static void pointer_to(int k, uint32_t flags, int32_t wheel) {
     window_t *w = &wins[k];
     rx_window_event_t ev;
@@ -1665,21 +1905,27 @@ static void move_cursor(int nx, int ny) {
         rx_display_cursor_move(&d, cx, cy, 1);
         return;
     }
-    add_damage(cx, cy, ARROW_W, ARROW_H);
+    damage_cursor();
     cx = nx;
     cy = ny;
-    add_damage(cx, cy, ARROW_W, ARROW_H);
+    damage_cursor();
 }
 
-// The pointer as the display's hardware cursor, if it has one: the arrow
-// in a 64 x 64 image
+// The current shape as a 64 x 64 image for the display's hardware cursor
+static int upload_hwcursor(void) {
+    static uint32_t img[64 * 64];
+    const cursor_shape_t *c = &shapes[cur_shape];
+    memset(img, 0, sizeof img);
+    for (int row = 0; row < c->h && row < 64; row++)
+        for (int k = 0; c->rows[row][k] && k < 64; k++)
+            if (c->rows[row][k] != ' ') img[row * 64 + k] = c->rows[row][k] == '1' ? 0xFF000000u : 0xFFFFFFFFu;
+    return rx_display_cursor_set(&d, img, (uint32_t)c->hx, (uint32_t)c->hy);
+}
+
+// The pointer as the display's hardware cursor, if it has one
 static void setup_hwcursor(void) {
     if (!(d.caps & RX_DISPLAY_CAP_CURSOR)) return;
-    static uint32_t img[64 * 64];
-    for (int row = 0; row < ARROW_H; row++)
-        for (int k = 0; arrow[row][k]; k++)
-            if (arrow[row][k] != ' ') img[row * 64 + k] = arrow[row][k] == '1' ? 0xFF000000u : 0xFFFFFFFFu;
-    if (rx_display_cursor_set(&d, img, 0, 0) == 0) {
+    if (upload_hwcursor() == 0) {
         hwcursor = 1;
         rx_display_cursor_move(&d, cx, cy, 1);
         vlog("hardware cursor\n");
@@ -1949,6 +2195,30 @@ static void cycle_focus(void) {
     set_focus(k);
 }
 
+// The volume keys (HID 0x7F Mute, 0x80 Volume Up, 0x81 Volume Down; PS/2
+// keyboards' E0 20, E0 30, E0 2E): soundd's volume, and a notification
+// saying it (the last one replaced)
+static void volume_key(uint32_t code) {
+    char out[512];
+    const char *req = code == 0x7F ? "toggle" : code == 0x80 ? "volume +5" : "volume -5";
+    if (rx_sound_control(req, out, sizeof out) < 0) return;
+    int v = 0, m = 0;
+    char *p = strstr(out, "volume ");
+    if (p) v = atoi(p + 7);
+    m = strstr(out, "muted yes") != 0;
+    char t[64];
+    int n = m ? snprintf(t, sizeof t, "Volume: muted") : snprintf(t, sizeof t, "Volume %d%%", v);
+    // One volume notification at a time
+    for (int i = 0; i < ntoasts; i++)
+        if (!strncmp(toasts[i].text, "Volume", 6)) {
+            memmove(&toasts[i], &toasts[i + 1], sizeof toasts[0] * (size_t)(ntoasts - i - 1));
+            ntoasts--;
+            i--;
+        }
+    notify(t, (uint32_t)n);
+    add_damage((int)PW - TOAST_W - 16, 16, TOAST_W, MAX_TOASTS * (TOAST_H + 8));
+}
+
 // The Super key pressed and released alone: the panel opens or closes
 // the launcher (RX_WINDOW_EV_DESKTOP, RX_WINDOW_DESKTOP_LAUNCHER)
 static int super_alone;
@@ -1971,6 +2241,10 @@ static void key_event(const rx_input_event_t *e) {
         }
     } else if (pressed) {
         super_alone = 0; // Super+L and the like
+    }
+    if (pressed && (e->code == 0x7F || e->code == 0x80 || e->code == 0x81)) {
+        if (e->code != 0x7F || !(e->flags & RX_INPUT_REPEAT)) volume_key(e->code);
+        return;
     }
     // Super+L (or Ctrl+Alt+L): lock
     if (pressed && e->code == 0x0F && ((e->mods & (RX_INPUT_MOD_LGUI | RX_INPUT_MOD_RGUI)) ||
@@ -2188,6 +2462,7 @@ int main(int argc, char **argv) {
         for (int k = 0; k < MAX_WINDOWS; k++)
             if (wins[k].used && wins[k].close_deadline && now >= wins[k].close_deadline)
                 remove_window(k, "it did not close when asked");
+        update_cursor_shape();
         compose();
     }
 }

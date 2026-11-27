@@ -2,15 +2,20 @@
 # The web browser test (phase W, docs/BROWSER.md, docs/TESTS.md): NetSurf
 # on the Rustica desktop in QEMU, against web servers on the host (QEMU's
 # user networking reaches the host as 10.0.2.2). Checks:
+#   0. NetSurf is an app (org.rustica.browser), installed as the system
+#      starts, and the default browser (/bin/browser starts it);
 #   1. a page over HTTP: NetSurf's window, the page's colours and its text
-#      in the fonts (the heading and a box in colours of their own);
+#      in the fonts (the heading and a box in colours of their own); the
+#      pointer over a link is the hand;
 #   2. a click on a link to a file downloads it into ~/Downloads, the same
 #      bytes as on the host (sha256), and the status line says so;
 #   3. typing a URL into the address bar (the keyboard's text) loads a page
 #      over HTTPS, its certificate from a test CA the script makes (added to
 #      the system's bundle from the console);
 #   4. a local file opened by its path (as Files opens one);
-#   5. libcurl's own checks (curltest): an unknown CA refused.
+#   5. libcurl's own checks (curltest): an unknown CA refused;
+#   6. a page whose body scrolls (overflow on body) has one scrollbar, the
+#      window's, not a second inside it.
 # Exit status 0 if all is well.
 #
 #   scripts/run-browser-test.sh [KERNEL.efi]
@@ -33,7 +38,7 @@ trap 'kill $Q $SRV 2>/dev/null; rm -rf "$W"' EXIT
 Q=""
 SRV=""
 
-# The boot medium (the kernel holds the browser: about 72 MB)
+# The boot medium (the kernel holds the system: about 70 MB)
 dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
@@ -56,6 +61,7 @@ cat > "$W/www/secure.html" <<'EOF'
 <body style="background:#ab12cd"><h1 style="color:#fff">Over HTTPS</h1></body></html>
 EOF
 head -c 2500000 /dev/urandom > "$W/www/big.zip"
+python3 -c "print('<html><head><style>body{overflow-y:scroll;background:#ab12cd;margin:0}</style></head><body>' + ''.join('<p>Line %d</p>' % i for i in range(200)) + '</body></html>')" > "$W/www/scroll.html"
 SUM=$(sha256sum < "$W/www/big.zip" | cut -d' ' -f1)
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=Rustica browser test CA" \
     -keyout "$W/ca.key" -out "$W/www/ca.pem" 2>/dev/null
@@ -239,6 +245,13 @@ while time.time() < end and count(0xFF6500, (0, SH - 30, 50, SH)) < 40:
     time.sleep(2)
 time.sleep(10)
 
+# 0. The browser is an app, installed as the system starts
+n = console('for i in $(seq 120); do test -f /apps/org.rustica.browser/manifest && break; sleep 1; done; ls /apps; browser --which; echo APP-$((40+2))', 3)
+wait(r'APP-42', 150, n)
+out = log()[n:]
+check('org.rustica.browser' in out.split('browser --which')[-1] and re.search(r'org\.rustica\.browser\s', out) is not None,
+      'NetSurf is the app org.rustica.browser, installed at start, and the default browser')
+
 # 5 first (the console only): libcurl refuses an unknown CA; then the test
 # CA into the system's bundle
 n = console('curltest https://10.0.2.2:%s/secure.html' % HS, 6)
@@ -247,7 +260,7 @@ n = console('curltest -o /tmp/ca.pem http://10.0.2.2:%s/ca.pem && cat /tmp/ca.pe
 check(wait(r'CA-42', 30, n) is not None, 'the test CA added to /etc/ssl/certs/ca-certificates.crt')
 
 # 1. A page over HTTP
-console('netsurf http://10.0.2.2:%s/ > /tmp/ns.log 2>&1 &' % HP)
+console('browser http://10.0.2.2:%s/ > /tmp/ns.log 2>&1 &' % HP)
 desktop()
 green = wait_colour(0x12AB34, 9000, 90)
 check(green >= 9000, 'NetSurf shows the page over HTTP: its box (%d pixels of #12ab34)' % green)
@@ -259,6 +272,17 @@ check(count(0x000000, (40, 100, 700, 220)) >= 200, 'the text (black pixels under
 link = find(0x0000EE, (40, 200, 900, 600), 40) or find(0x0000FF, (40, 200, 900, 600), 40)
 check(link is not None, 'the link is drawn in its colour (%s)' % (link,))
 if link:
+    # The pointer over it: the hand (its hot spot at the finger's tip; a
+    # row of its palm: black, white, white at -5, -4, +3 of the pointer)
+    px, py = link[0] + 20, link[1] + 6
+    to(px, py)
+    time.sleep(2)
+    w, h, data = screen()
+    def pix(x, y):
+        p = 3 * (y * w + x)
+        return data[p] << 16 | data[p + 1] << 8 | data[p + 2]
+    a, b, c = pix(px - 5, py + 9), pix(px - 4, py + 9), pix(px + 3, py + 9)
+    check(a == 0x000000 and b == 0xFFFFFF and c == 0xFFFFFF, 'over the link the pointer is the hand (%06x %06x %06x)' % (a, b, c))
     click(link[0] + 20, link[1] + 6)
     time.sleep(15)
 n = console('sha256sum /root/Downloads/big.zip; ls /root/Downloads', 5)
@@ -277,10 +301,27 @@ mon('sendkey alt-f4')
 time.sleep(3)
 
 # 4. A local file by its path
-console('echo "<body style=background:#0a7f8c><h1>Local</h1>" > /root/t.html; netsurf /root/t.html > /tmp/ns2.log 2>&1 &')
+console('echo "<body style=background:#0a7f8c><h1>Local</h1>" > /root/t.html; browser /root/t.html > /tmp/ns2.log 2>&1 &')
 desktop()
 teal = wait_colour(0x0A7F8C, 50000, 90)
 check(teal >= 50000, 'a local file opened by its path (%d pixels of #0a7f8c)' % teal)
+mon('sendkey alt-f4')
+time.sleep(2)
+
+# 6. One scrollbar for a page whose body scrolls: from the page's colour
+# to the window's orange border, no more than the window's own scrollbar
+console('browser http://10.0.2.2:%s/scroll.html > /tmp/ns3.log 2>&1 &' % HP)
+desktop()
+wait_colour(0xAB12CD, 50000, 90)
+w, h, data = screen()
+gaps = []
+for y in range(300, 600, 50):
+    row = [(data[3 * (y * w + x)] << 16) | (data[3 * (y * w + x) + 1] << 8) | data[3 * (y * w + x) + 2] for x in range(w)]
+    last = max([x for x in range(w) if row[x] == 0xAB12CD] or [0])
+    border = next((x for x in range(last + 1, w) if abs((row[x] >> 16) - 0xFF) < 12 and abs(((row[x] >> 8) & 255) - 0x65) < 30 and (row[x] & 255) < 40), None)
+    if last and border:
+        gaps.append(border - last - 1)
+check(gaps and max(gaps) <= 22, 'a page whose body scrolls has one scrollbar, the window\'s (%s px from the page to the border)' % gaps)
 mon('sendkey alt-f4')
 time.sleep(2)
 

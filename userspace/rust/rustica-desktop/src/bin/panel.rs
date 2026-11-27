@@ -174,7 +174,9 @@ fn load_config() -> Config {
         zones: [
             vec!["menu".into(), "launchers".into(), "windows".into()],
             vec![],
-            vec!["updates".into(), "keyboard".into(), "volume".into(), "network".into(), "clock".into(), "lock".into(), "logout".into(), "power".into()],
+            // Lock and Log out are in the power menu (2026-11-26); they
+            // can still be added as applets of their own
+            vec!["updates".into(), "keyboard".into(), "volume".into(), "network".into(), "clock".into(), "power".into()],
         ],
         launchers: vec!["foxden".into(), "files".into(), "terminal".into()],
     };
@@ -252,6 +254,10 @@ fn main() {
     let mut launchers: Vec<Launcher> = cfg.launchers.iter().filter_map(|l| launcher(l)).collect();
     // The network's state, asked again every 3 seconds
     let mut net = String::new();
+    let mut link = rustica_ui::net::Link::Off;
+    // The sound service's volume, asked again every 2 seconds
+    let mut sound: Option<rustica_ui::sound::Status> = None;
+    let mut sound_at: Option<Instant> = None;
     let mut net_at: Option<Instant> = None;
     // The updates found, looked at again every 30 seconds
     let mut ups = 0usize;
@@ -346,12 +352,18 @@ fn main() {
             }
         }
         if net_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(3)) {
-            let s = format!("Net: {}", rustica_ui::net::summary(rustica_ui::net::interfaces().as_deref()));
+            let ifs = rustica_ui::net::interfaces();
+            let s = format!("Net: {}", rustica_ui::net::summary(ifs.as_deref()));
+            link = rustica_ui::net::link(ifs.as_deref());
             if s != net {
                 println!("panel: {s}");
                 net = s;
             }
             net_at = Some(Instant::now());
+        }
+        if sound_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(2)) {
+            sound = rustica_ui::sound::status();
+            sound_at = Some(Instant::now());
         }
         if ups_at.map_or(true, |t| t.elapsed() >= Duration::from_secs(30)) {
             let n = updates();
@@ -404,7 +416,7 @@ fn main() {
 
         let mut actions: Vec<Action> = Vec::new();
         let menu_open = launcher_proc.is_some();
-        let state = State { wins: &wins, launchers: &launchers, net: &net, ups, vertical, menu_open };
+        let state = State { wins: &wins, launchers: &launchers, link, sound: sound.as_ref(), ups, vertical, menu_open };
         let gap = ui.u(8.0);
         if vertical {
             // One applet under the other; the window list takes the height left
@@ -475,6 +487,14 @@ fn main() {
                     println!("panel: {page} settings");
                     let _ = std::process::Command::new("/bin/settings").arg(page).spawn();
                 }
+                Action::Volume(d) => {
+                    if let Some(st) = &sound {
+                        if let Some(n) = rustica_ui::sound::set_volume(st.volume + d) {
+                            println!("panel: volume {}", n.volume);
+                            sound = Some(n);
+                        }
+                    }
+                }
                 Action::Lock => {
                     println!("panel: lock");
                     ctl.requests.push(Request::Lock);
@@ -495,7 +515,10 @@ fn main() {
 struct State<'a> {
     wins: &'a [Win],
     launchers: &'a [Launcher],
-    net: &'a str,
+    /// The network icon's state
+    link: rustica_ui::net::Link,
+    /// The volume (None: no sound service)
+    sound: Option<&'a rustica_ui::sound::Status>,
     ups: usize,
     vertical: bool,
     /// The menu is open (its button shows it)
@@ -508,6 +531,8 @@ enum Action {
     Start(Vec<String>),
     Activate(i32, String),
     Settings(&'static str),
+    /// The volume up or down this much (the wheel over the speaker)
+    Volume(i32),
     Lock,
     Logout,
 }
@@ -526,7 +551,8 @@ fn applet_size(ui: &mut Ui, name: &str, s: &State, vertical: bool) -> f32 {
         return match name {
             "launchers" => s.launchers.len() as f32 * bh,
             "updates" if s.ups == 0 => 0.0,
-            "volume" | "keyboard" => ui.line_h() + gap,
+            "keyboard" => ui.line_h() + gap,
+            "volume" => bh,
             "clock" => ui.line_h() + gap,
             _ => bh,
         };
@@ -542,8 +568,8 @@ fn applet_size(ui: &mut Ui, name: &str, s: &State, vertical: bool) -> f32 {
             }
         }
         "keyboard" => ui.text_width(&layout()) + gap,
-        "volume" => ui.text_width("Vol \u{2014}") + gap,
-        "network" => bw(ui, s.net),
+        "volume" => ui.row_h() + ui.text_width("100%") + ui.u(6.0) + gap,
+        "network" => ui.row_h() + gap,
         "clock" => clock_width(ui) + gap,
         "lock" => bw(ui, "Lock"),
         "logout" => bw(ui, "Log out"),
@@ -593,9 +619,51 @@ fn applet(ui: &mut Ui, name: &str, s: &State, room: f32, more_next: &mut usize, 
             }
         }
         "keyboard" => status(ui, &layout(), v),
-        "volume" => status(ui, "Vol \u{2014}", v),
+        "volume" => {
+            // A speaker and the volume; a click opens Settings > Sound,
+            // the wheel over it changes the volume
+            let side = ui.row_h();
+            let text = match s.sound {
+                Some(st) if st.devices.is_empty() => "\u{2014}".to_string(),
+                Some(st) => format!("{}%", st.volume),
+                None => "\u{2014}".to_string(),
+            };
+            let tw = if v { 0.0 } else { ui.text_width("100%") + ui.u(6.0) };
+            let r = ui.button_ex("volume", "", if v { full } else { side + tw }, false, false);
+            let isz = side * 0.62;
+            let (waves, muted) = match s.sound {
+                Some(st) => (rustica_ui::sound::waves(st.volume), st.muted || st.devices.is_empty()),
+                None => (0, true),
+            };
+            let ix = if v { r.rect.x + (r.rect.w - isz) / 2.0 } else { r.rect.x + (side - isz) / 2.0 + ui.u(2.0) };
+            ui.icon(rustica_ui::Icon::Speaker(waves, muted), ix, r.rect.y + (r.rect.h - isz) / 2.0, isz);
+            if !v {
+                let px = ui.font_px();
+                let th = ui.theme;
+                let ty = r.rect.y + (r.rect.h - ui.line_h()) / 2.0;
+                ui.canvas.text(&mut ui.face, r.rect.x + side, ty, &text, px, th.text);
+            }
+            if r.clicked {
+                actions.push(Action::Settings("sound"));
+            }
+            if ui.hover(r.rect) && ui.input.wheel != 0.0 {
+                actions.push(Action::Volume(if ui.input.wheel > 0.0 { 5 } else { -5 }));
+                ui.input.wheel = 0.0;
+            }
+        }
         "network" => {
-            if ui.button_ex("network", s.net, full, false, false).clicked {
+            // An icon: the cable's boxes or the Wi-Fi bars (2026-11-26);
+            // the details are in Settings > Network, a click away
+            let side = ui.row_h();
+            let r = ui.button_ex("network", "", if v { full } else { side }, false, false);
+            let isz = side * 0.62;
+            let icon = match s.link {
+                rustica_ui::net::Link::Wireless(n) => rustica_ui::Icon::Wireless(n),
+                rustica_ui::net::Link::Wired(on) => rustica_ui::Icon::Wired(on),
+                rustica_ui::net::Link::Off => rustica_ui::Icon::Wired(false),
+            };
+            ui.icon(icon, r.rect.x + (r.rect.w - isz) / 2.0, r.rect.y + (r.rect.h - isz) / 2.0, isz);
+            if r.clicked {
                 actions.push(Action::Settings("network"));
             }
         }

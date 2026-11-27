@@ -51,6 +51,7 @@ animation to what the screen takes.
 | `COMMIT` | up to 64 damaged rectangles (none: all) |
 | `BUFFER` | a new buffer after `CONFIGURE` |
 | `SET_TITLE`, `SET_FULLSCREEN` | |
+| `SET_CURSOR` | (2026-11-26) flags: the pointer's shape over the window's content, `RX_WINDOW_CURSOR_ARROW`, `HAND` (a link), `TEXT`, `WAIT`, `MOVE`, `RESIZE_H`, `RESIZE_V`, `RESIZE_NWSE`, `RESIZE_NESW` (`rx_window_set_cursor`, `Window::set_cursor`). The compositor draws the resize arrows on windows' edges and while resizing itself |
 | `CLIPBOARD_SET`, `CLIPBOARD_GET` | text, up to 4000 bytes; `GET` is answered with the text |
 | `SET_ROLE` | `PANEL` (step F6): no frame, docked at an edge, always on top, never focused (it gets the pointer while over it); maximised and tiled windows stay out of it. `DESKTOP` (step F12): no frame, the work area, always below every other window, never in the panel's list; its buffer's top byte is premultiplied alpha, so it is drawn over the wallpaper (the desktop's icons) |
 | `DRAG_START` | (step F12) text: while the left button is held in this window, drag these file paths (a line each): a label follows the pointer, and on release the window under it gets `EV_DROP` (x, y, flags 1 if it is the same window, the text after the event) |
@@ -123,7 +124,12 @@ every window and take the keys until the session's user's password
 Software only, into the display's back buffer: for each damaged rectangle
 the wallpaper, the windows bottom to top (border, title bar with the
 8x16 console font, buttons, content) and the cursor; then one `PRESENT`
-of the damaged rectangles. Only what changed is drawn and copied. Titles
+of the damaged rectangles. The cursor is the shape for where the pointer
+is (the window's own over its content, the resize arrows on an edge),
+drawn with its hot spot at the pointer, or given to the display as its
+hardware cursor when it has one (virtio-gpu); the shapes are bitmaps in
+`compositor.c`, made from masks by an outline (black outline, white
+fill; the text cursor the other way round). Only what changed is drawn and copied. Titles
 are UTF-8: the font has ASCII, dashes, a times sign and quotes are drawn
 as their ASCII look-alikes, anything else as '?' (step F7).
 

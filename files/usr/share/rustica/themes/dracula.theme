@@ -1,4 +1,4 @@
-# Dracula: draculatheme.com; the server console's default. A Rustica colour theme: key=#RRGGBB lines
+# Dracula: draculatheme.com; the server console's default. A Rustica color theme: key=#RRGGBB lines
 # (docs/SESSION.md "Themes"); ~/.config/rustica/themes/NAME.theme for
 # a user's own
 name=Dracula
@@ -18,7 +18,7 @@ warning=#F1FA8C
 danger=#FF5555
 info=#8BE9FD
 taskbar=#21232E
-# The terminal's 16 colours (normal, then bright)
+# The terminal's 16 colors (normal, then bright)
 ansi0=#21222C
 ansi1=#FF5555
 ansi2=#50FA7B

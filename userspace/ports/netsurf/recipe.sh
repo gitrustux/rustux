@@ -7,18 +7,24 @@
 # are applied in src/ and listed in rustica.patch: download.c (downloads
 # to ~/Downloads), the layout's text for key presses, the Rustica surface
 # chosen first, a window that fits the desktop, no regex or mmap on
-# Rustux. Output: userspace/bin/netsurf and the resources in
-# files/usr/share/netsurf.
+# Rustux, the root's and body's overflow scrolled by the window, the
+# compositor's pointer shapes. NetSurf is an app (org.rustica.browser,
+# docs/BROWSER.md): output userspace/apps/bin/netsurf and its resources in
+# userspace/apps/org.rustica.browser/share/netsurf.
 B="$OBJ/tree"
+# A fresh tree each time: NetSurf's Makefile does not rebuild what
+# Makefile.config's paths are compiled into when only they change
+rm -rf "$B"
 mkdir -p "$B"
 cp -a src/. "$B/"
 ../tools/make-pc.sh >/dev/null
 PKG_CONFIG_LIBDIR="$SYSROOT/lib/pkgconfig" PKG_CONFIG_PATH= make -s -C "$B" -j"$JOBS" \
     CC="$(cd ../tools && pwd)/rx-cc" BUILD_CC=gcc HOST=rustux TARGET=framebuffer
-cp "$B/nsfb" "$U/bin/netsurf"
+A="$U/apps"
+cp "$B/nsfb" "$A/bin/netsurf"
 # without its debugging information (its Makefile builds with -g): half the size
-strip "$U/bin/netsurf"
-R="$U/../files/usr/share/netsurf"
+strip "$A/bin/netsurf"
+R="$A/org.rustica.browser/share/netsurf"
 mkdir -p "$R"
 for f in adblock.css default.css internal.css quirks.css favicon.png netsurf.png; do cp -L "$B/frontends/framebuffer/res/$f" "$R/"; done
 cp -L "$B/frontends/framebuffer/res/en/Messages" "$B/frontends/framebuffer/res/en/welcome.html" \

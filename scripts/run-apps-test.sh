@@ -35,7 +35,7 @@ for t in qemu-system-x86_64 mformat mmd mcopy python3; do
     command -v $t >/dev/null || { echo "$t is needed"; exit 2; }
 done
 W=$(mktemp -d)
-trap 'kill $Q 2>/dev/null; rm -rf "$W"' EXIT
+trap 'kill $Q 2>/dev/null; [ -n "${KEEP:-}" ] && echo "kept $W" || rm -rf "$W"' EXIT
 dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
@@ -339,7 +339,9 @@ for what in ['settings: network eth0 static 10.0.2.50/24 10.0.2.2', 'settings: d
     check(what in lg, what)
 
 # 4. Settings as carol: her password for the system's settings
-click(1187, 782)                        # Log out
+click(1252, 782)                        # the power button
+time.sleep(3)
+click(1020, 294)                        # its menu's Log out (root's scale is 2 now)
 time.sleep(5)
 type_('carol')
 key('tab')
@@ -347,9 +349,9 @@ type_('secret')
 key('ret')
 check(wait_pixel(25, 787, ACCENT, 30), 'carol logs in')
 time.sleep(3)
-click(25, 782)                          # Apps: Settings is the 6th in the menu's All
+click(25, 782)                          # Apps: Settings is the 7th in the menu's All
 time.sleep(4)
-keys('down', 'down', 'down', 'down', 'down', 'ret')
+keys('down', 'down', 'down', 'down', 'down', 'down', 'ret')   # (Animation, Files, FoxDen, Image Viewer, NetSurf, Rust window)
 time.sleep(8)
 keys('down', 'down', 'down', 'down', 'down')  # Mouse (after Display, Appearance, Panel, Desktop, Keyboard)
 keys(*(['tab'] * 6), 'ret')             # 200%: the password bar
@@ -362,7 +364,9 @@ out = console('cat /etc/input.conf', 3)
 check('pointer_speed=200' in out, 'Settings as carol: with her password (sudo -S), mouse speed 200%')
 
 # The keyboard layout last (the console types differently afterwards)
-click(1187, 782)                        # Log out carol
+click(1252, 782)                        # the power button
+time.sleep(3)
+click(1145, 525)                        # Log out carol
 time.sleep(5)
 type_('root')
 key('tab')

@@ -98,6 +98,41 @@ pub fn interfaces() -> Option<Vec<Iface>> {
     Some(v)
 }
 
+/// What the panel's network icon shows
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Link {
+    /// No network service, or no card
+    Off,
+    /// A cable: connected (an address) or not
+    Wired(bool),
+    /// Wi-Fi: the bars lit, 0 (not connected) to 4
+    Wireless(u8),
+}
+
+/// A wireless card: its name (wl..., as Linux names them)
+pub fn is_wireless(i: &Iface) -> bool {
+    i.name.starts_with("wl")
+}
+
+/// The panel's icon: the connection in use, else the first card's state;
+/// Wi-Fi before a cable that is not connected
+pub fn link(ifs: Option<&[Iface]>) -> Link {
+    let Some(ifs) = ifs else { return Link::Off };
+    let connected = |i: &&Iface| i.state == "up" && i.address().is_some();
+    if let Some(i) = ifs.iter().find(connected) {
+        // No signal strength is reported yet (no Wi-Fi driver): all bars
+        return if is_wireless(i) { Link::Wireless(4) } else { Link::Wired(true) };
+    }
+    if ifs.iter().any(is_wireless) {
+        return Link::Wireless(0);
+    }
+    if ifs.is_empty() {
+        Link::Off
+    } else {
+        Link::Wired(false)
+    }
+}
+
 /// The DNS servers in use (what /etc/resolv.conf says)
 pub fn dns_servers() -> Vec<String> {
     std::fs::read_to_string("/etc/resolv.conf")

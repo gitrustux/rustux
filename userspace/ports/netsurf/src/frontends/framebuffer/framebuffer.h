@@ -30,6 +30,12 @@ nsfb_t *framebuffer_initialise(const char *fename, int width, int height, int bp
 bool framebuffer_resize(nsfb_t *nsfb, int width, int height, int bpp);
 void framebuffer_finalise(void);
 bool framebuffer_set_cursor(struct fbtk_bitmap *bm);
+#ifdef __rustux__
+#include "netsurf/mouse.h"
+/* The pointer's shape drawn by Rustica's compositor; false if the surface
+ * is not a Rustica window (then the bitmap cursor as before) */
+bool framebuffer_set_cursor_shape(gui_pointer_shape shape);
+#endif
 
 /** Set framebuffer surface to render into
  *

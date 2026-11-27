@@ -418,6 +418,13 @@ pub enum Icon {
     Power,
     /// The Rustica fox (the menu button; /usr/share/rustica/fox.svg)
     Fox,
+    /// A wired network (three linked boxes): connected, or dimmed
+    Wired(bool),
+    /// Wi-Fi: a dot and three arcs, this many of the four lit (0: not
+    /// connected, all dimmed)
+    Wireless(u8),
+    /// A speaker with 0-3 waves for the volume; muted: a cross instead
+    Speaker(u8, bool),
 }
 
 /// The Rustica fox's outline and eyes, in a 261x254 box
@@ -790,7 +797,7 @@ impl Ui {
         self.modal || self.menu_was_open
     }
 
-    fn hover(&self, r: Rect) -> bool {
+    pub fn hover(&self, r: Rect) -> bool {
         !self.blocked() && r.contains(self.input.mouse.0, self.input.mouse.1)
     }
 
@@ -1106,6 +1113,48 @@ impl Ui {
         self.draw_text(false, b.right() + self.u(8.0), r.y + (h - self.line_h()) / 2.0, label, px, th.text);
         self.focus_ring(r, focused);
         toggled
+    }
+
+    /// A slider for a whole number from min to max, `w` wide (0: the
+    /// width left): dragged, clicked, the wheel over it, or Left/Right
+    /// (Home/End) when it has the focus. True if the value changed.
+    pub fn slider(&mut self, name: &str, value: &mut i32, min: i32, max: i32, w: f32) -> bool {
+        let id = self.id(name);
+        let h = self.line_h().max(self.u(20.0));
+        let r = self.alloc(if w <= 0.0 { 0.0 } else { self.u(w) }, h);
+        let focused = self.focusable(id, r);
+        let old = *value;
+        let knob = self.u(16.0);
+        let track = Rect::new(r.x + knob / 2.0, r.y + h / 2.0 - self.u(2.0), (r.w - knob).max(1.0), self.u(4.0));
+        let span = (max - min).max(1) as f32;
+        if self.input.down && self.active == Some(id) {
+            let t = ((self.input.mouse.0 - track.x) / track.w).clamp(0.0, 1.0);
+            *value = min + (t * span).round() as i32;
+        }
+        if self.hover(r) && self.input.wheel != 0.0 {
+            let step = ((span / 20.0).round() as i32).max(1);
+            *value += if self.input.wheel > 0.0 { step } else { -step };
+            self.input.wheel = 0.0;
+        }
+        for k in self.keys_for(id) {
+            match k.usage {
+                keys::LEFT => *value -= 1,
+                keys::RIGHT => *value += 1,
+                keys::HOME => *value = min,
+                keys::END => *value = max,
+                _ => {}
+            }
+        }
+        *value = (*value).clamp(min, max);
+        let th = self.theme;
+        let t = (*value - min) as f32 / span;
+        self.canvas.fill_rounded(track, self.u(2.0), th.border);
+        self.canvas.fill_rounded(Rect::new(track.x, track.y, track.w * t, track.h), self.u(2.0), th.accent);
+        let k = Rect::new(track.x + track.w * t - knob / 2.0, r.y + (h - knob) / 2.0, knob, knob);
+        self.canvas.fill_rounded(k, knob / 2.0, th.accent);
+        self.canvas.stroke_rounded(k, knob / 2.0, 1.0, th.surface);
+        self.focus_ring(r, focused);
+        *value != old
     }
 
     // ---- text editing ----
@@ -1569,6 +1618,107 @@ impl Ui {
                 self.canvas.stroke_rounded(ring, 6.0 * s, 1.6 * s, c);
                 self.canvas.fill_rect(r(6.0, 1.0, 4.0, 5.0), th.surface);
                 self.canvas.fill_rect(r(7.25, 1.0, 1.5, 7.0), c);
+            }
+            Icon::Wired(on) => {
+                let c = if on { th.text } else { th.dim };
+                let w = 1.4;
+                // The trunk, and a box on each of its three branches
+                self.canvas.fill_rect(r(7.3, 1.5, w, 13.0), c);
+                for (bx, by, sx, sy, sw) in [(10.0, 1.0, 8.7, 3.0, 1.3), (10.0, 9.5, 8.7, 11.5, 1.3), (1.0, 5.0, 5.8, 7.5, 1.5)] {
+                    self.canvas.stroke_rounded(r(bx, by, 5.0, 5.0), 0.5 * s, w * s, c);
+                    self.canvas.fill_rect(r(sx, sy - 0.7, sw, w), c);
+                }
+            }
+            Icon::Speaker(waves, muted) => {
+                let c = th.text;
+                // The speaker: a small box and its cone
+                let mut pb = tiny_skia::PathBuilder::new();
+                let p = |dx: f32, dy: f32| (x + dx * s, y + dy * s);
+                let pts = [p(1.5, 6.0), p(4.5, 6.0), p(8.5, 2.5), p(8.5, 13.5), p(4.5, 10.0), p(1.5, 10.0)];
+                pb.move_to(pts[0].0, pts[0].1);
+                for q in &pts[1..] {
+                    pb.line_to(q.0, q.1);
+                }
+                pb.close();
+                if let Some(path) = pb.finish() {
+                    self.canvas.fill_path(&path, c);
+                }
+                if muted {
+                    // A cross
+                    for (a, b) in [((10.5, 5.5), (15.0, 10.5)), ((10.5, 10.5), (15.0, 5.5))] {
+                        let mut pb = tiny_skia::PathBuilder::new();
+                        let w = 0.8;
+                        pb.move_to(x + (a.0 - w) * s, y + a.1 * s);
+                        pb.line_to(x + (a.0 + w) * s, y + a.1 * s);
+                        pb.line_to(x + (b.0 + w) * s, y + b.1 * s);
+                        pb.line_to(x + (b.0 - w) * s, y + b.1 * s);
+                        pb.close();
+                        if let Some(path) = pb.finish() {
+                            self.canvas.fill_path(&path, th.danger);
+                        }
+                    }
+                } else {
+                    // The waves: arcs around the cone's mouth
+                    let (cx, cy) = (x + 8.0 * s, y + 8.0 * s);
+                    let half = 45f32.to_radians();
+                    for (k, (r0, r1)) in [(2.4f32, 3.8f32), (4.6, 6.0), (6.8, 8.2)].iter().enumerate() {
+                        if k as u8 >= waves {
+                            break;
+                        }
+                        let mut pb = tiny_skia::PathBuilder::new();
+                        let n = 12;
+                        for i in 0..=n {
+                            let a = -half + 2.0 * half * i as f32 / n as f32;
+                            let (px, py) = (cx + r1 * s * a.cos(), cy + r1 * s * a.sin());
+                            if i == 0 {
+                                pb.move_to(px, py);
+                            } else {
+                                pb.line_to(px, py);
+                            }
+                        }
+                        for i in (0..=n).rev() {
+                            let a = -half + 2.0 * half * i as f32 / n as f32;
+                            pb.line_to(cx + r0 * s * a.cos(), cy + r0 * s * a.sin());
+                        }
+                        pb.close();
+                        if let Some(path) = pb.finish() {
+                            self.canvas.fill_path(&path, c);
+                        }
+                    }
+                }
+            }
+            Icon::Wireless(level) => {
+                let lit = th.text;
+                let off = th.dim;
+                // A dot at the bottom and three bands around it, 80 degrees wide
+                let (cx, cy) = (x + 8.0 * s, y + 14.2 * s);
+                let mut pb = tiny_skia::PathBuilder::new();
+                pb.push_circle(cx, cy, 1.9 * s);
+                if let Some(p) = pb.finish() {
+                    self.canvas.fill_path(&p, if level >= 1 { lit } else { off });
+                }
+                let half = 40f32.to_radians();
+                for (k, (r0, r1)) in [(4.0f32, 6.2f32), (7.6, 9.8), (11.2, 13.4)].iter().enumerate() {
+                    let mut pb = tiny_skia::PathBuilder::new();
+                    let n = 16;
+                    for i in 0..=n {
+                        let a = -half + 2.0 * half * i as f32 / n as f32;
+                        let (px, py) = (cx + r1 * s * a.sin(), cy - r1 * s * a.cos());
+                        if i == 0 {
+                            pb.move_to(px, py);
+                        } else {
+                            pb.line_to(px, py);
+                        }
+                    }
+                    for i in (0..=n).rev() {
+                        let a = -half + 2.0 * half * i as f32 / n as f32;
+                        pb.line_to(cx + r0 * s * a.sin(), cy - r0 * s * a.cos());
+                    }
+                    pb.close();
+                    if let Some(p) = pb.finish() {
+                        self.canvas.fill_path(&p, if level as usize >= k + 2 { lit } else { off });
+                    }
+                }
             }
             Icon::Fox => {
                 if let Some(p) = fox_path(x, y, sz) {

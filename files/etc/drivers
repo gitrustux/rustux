@@ -98,3 +98,16 @@ usb=08:06:50    /bin/usb-storage
 8086:0dc6   /bin/e1000e
 8086:0dc7   /bin/e1000e
 8086:0dc8   /bin/e1000e
+#
+# Intel High Definition Audio (phase S, docs/SOUND.md): every HD Audio
+# controller (Intel's, AMD's, the graphics cards' HDMI ones, QEMU's
+# intel-hda), and Intel's audio DSPs of 2018 on (Cannon Lake, Comet Lake,
+# Tiger Lake), which are HD Audio controllers too when no digital
+# microphone needs their DSP
+8086:9dc8   /bin/hda
+8086:02c8   /bin/hda
+8086:06c8   /bin/hda
+8086:a3f0   /bin/hda
+8086:a0c8   /bin/hda
+8086:43c8   /bin/hda
+class=04:03 /bin/hda

@@ -5,7 +5,7 @@ USAGE
     COMMAND | less
 
     -N  line numbers   -S  cut long lines   -i  case-blind searches
-    -F  just print it if it fits on the screen   -R  keep colours
+    -F  just print it if it fits on the screen   -R  keep colors
 
 KEYS
     Space, PgDn, f      next page          b, PgUp     previous page

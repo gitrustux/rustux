@@ -112,3 +112,5 @@ systemctl svc
 journalctl logs
 nslookup host
 ping6 ping
+# soundctl (phase S): play a WAV file
+play soundctl

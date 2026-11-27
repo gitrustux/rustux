@@ -3,7 +3,7 @@ wintest - a test window
 USAGE
     wintest NAME [-c RRGGBB] [-s WxH] [-p X,Y] [-a] [-n] [-k] [-t TEXT]
 
-    Opens a window filled with a colour, its name and size, and prints
+    Opens a window filled with a color, its name and size, and prints
     every event it gets. -s size, -p position, -a animate (paced by the
     compositor's frames), -n ignore close requests, -k key c copies TEXT
     (-t) to the clipboard and key v pastes. Typed text shows in the window.

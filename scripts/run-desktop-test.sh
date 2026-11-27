@@ -178,7 +178,7 @@ check(not near(px(640, 300), 0x101010, 2), 'the wallpaper (%06x)' % px(640, 300)
 
 # 2. The launcher
 click(25, 782)
-check(wait_pixel(160, 90, 0x202024, 20), 'Apps opens the menu (its Files favourite; %06x)' % screen()(160, 90))
+check(wait_pixel(160, 90, 0x202024, 20), 'Apps opens the menu (its Files favorite; %06x)' % screen()(160, 90))
 click(25, 782)
 time.sleep(3)
 check(not near(screen()(160, 90), 0x202024, 2), 'Apps again closes the menu (%06x)' % screen()(160, 90))
@@ -200,8 +200,10 @@ time.sleep(1)
 px = screen()
 check(near(px(SW - 16 - 320 + 200, 30), TOAST, 4), 'the notification, top right')
 
-# 4. Log out, the login, alice
-click(1187, 782)
+# 4. Log out (the power button, its menu's Log out), the login, alice
+click(1252, 782)
+time.sleep(3)
+click(1145, 525)
 check(wait_pixel(SW // 2, 20, 0x101010, 15, 2), 'Log out: the graphical login, full screen')
 time.sleep(2)
 type_('alice')
@@ -219,7 +221,9 @@ click(25, 782)
 time.sleep(3)
 key('ret')          # an application in her session, to be killed at logout
 time.sleep(3)
-click(1103, 782)
+click(1252, 782)    # the power button, its menu's Lock screen
+time.sleep(3)
+click(1145, 487)
 time.sleep(2)
 px = screen()
 check(px(SW // 2, SH // 2 - 30) == LOCKBOX, 'Lock: the lock screen')
@@ -235,7 +239,9 @@ px = screen()
 check(px(SW // 2, SH // 2 - 30) != LOCKBOX and near(px(25, 787), ACCENT, 8), 'her password unlocks')
 
 # Log out again: her programs go
-click(1187, 782)
+click(1252, 782)
+time.sleep(3)
+click(1145, 525)
 time.sleep(4)
 
 # 6. The console, and what happened

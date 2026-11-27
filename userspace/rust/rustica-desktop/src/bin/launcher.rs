@@ -387,7 +387,7 @@ fn main() {
             // The side bar
             let side = ui.u(150.0);
             ui.column(side, |ui| {
-                ui.dim_label("Favourites");
+                ui.dim_label("Favorites");
                 for id in favs.clone() {
                     if let Some(a) = list.iter().find(|a| a.id == id) {
                         if ui.button_ex(&format!("fav-{id}"), &a.name, side, false, false).clicked {
@@ -447,14 +447,14 @@ fn main() {
                             if ui.primary_button("Open") {
                                 go = act(&list, &Hit::App(*i));
                             }
-                            if ui.button(if fav { "Unfavourite" } else { "Favourite" }) {
+                            if ui.button(if fav { "Unfavorite" } else { "Favorite" }) {
                                 if fav {
                                     favs.retain(|f| f != &a.id);
                                 } else {
                                     favs.push(a.id.clone());
                                 }
                                 save_favourites(&favs);
-                                println!("launcher: favourites {}", favs.join(","));
+                                println!("launcher: favorites {}", favs.join(","));
                             }
                             if ui.button("Pin to panel") {
                                 pin_to_panel(&a.id);

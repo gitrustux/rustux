@@ -167,7 +167,7 @@ box_contains_point(const css_unit_ctx *unit_len_ctx,
 		*physically = true;
 		return true;
 	}
-	if ((box->style && css_computed_overflow_x(box->style) ==
+	if ((box->style && box_overflow_x(box) ==
 	     CSS_OVERFLOW_VISIBLE) || !box->style) {
 		if (box->descendant_x0 <= x &&
 		    x < box->descendant_x1) {
@@ -175,7 +175,7 @@ box_contains_point(const css_unit_ctx *unit_len_ctx,
 			return true;
 		}
 	}
-	if ((box->style && css_computed_overflow_y(box->style) ==
+	if ((box->style && box_overflow_y(box) ==
 	     CSS_OVERFLOW_VISIBLE) || !box->style) {
 		if (box->descendant_y0 <= y &&
 		    y < box->descendant_y1) {
@@ -834,6 +834,20 @@ bool box_vscrollbar_present(const struct box * const box)
 		box->border[BOTTOM].width < box->descendant_y1;
 }
 
+
+enum css_overflow_e box_overflow_x(const struct box *box)
+{
+	if (box->flags & VIEWPORT_OVERFLOW)
+		return CSS_OVERFLOW_VISIBLE;
+	return box_overflow_x(box);
+}
+
+enum css_overflow_e box_overflow_y(const struct box *box)
+{
+	if (box->flags & VIEWPORT_OVERFLOW)
+		return CSS_OVERFLOW_VISIBLE;
+	return box_overflow_y(box);
+}
 
 /* exported interface documented in html/box.h */
 bool box_hscrollbar_present(const struct box * const box)

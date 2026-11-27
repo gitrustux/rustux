@@ -1177,7 +1177,7 @@ layout_next_margin_block(const css_unit_ctx *unit_len_ctx,
 					box->border[TOP].width ||
 					box->padding[TOP] ||
 					(box->style &&
-					css_computed_overflow_y(box->style) !=
+					box_overflow_y(box) !=
 					CSS_OVERFLOW_VISIBLE) ||
 					(box->type == BOX_INLINE_CONTAINER &&
 					!box_is_first_child(box))) {
@@ -1190,7 +1190,7 @@ layout_next_margin_block(const css_unit_ctx *unit_len_ctx,
 		/* Find next box */
 		if (box->type == BOX_BLOCK && !box->object && box->children &&
 				box->style &&
-				css_computed_overflow_y(box->style) ==
+				box_overflow_y(box) ==
 				CSS_OVERFLOW_VISIBLE) {
 			/* Down into children. */
 			box = box->children;
@@ -1532,8 +1532,8 @@ static void layout_block_add_scrollbar(struct box *box, int which)
 	if (box->style == NULL)
 		return;
 
-	overflow_x = css_computed_overflow_x(box->style);
-	overflow_y = css_computed_overflow_y(box->style);
+	overflow_x = box_overflow_x(box);
+	overflow_y = box_overflow_y(box);
 
 	if (which == BOTTOM &&
 			(overflow_x == CSS_OVERFLOW_SCROLL ||
@@ -1661,8 +1661,8 @@ bool layout_table(
 						c->style, 0, 0, 0, 0, 0, 0,
 						0, c->padding, c->border);
 
-				overflow_x = css_computed_overflow_x(c->style);
-				overflow_y = css_computed_overflow_y(c->style);
+				overflow_x = box_overflow_x(c);
+				overflow_y = box_overflow_y(c);
 
 				if (overflow_x == CSS_OVERFLOW_SCROLL ||
 						overflow_x ==
@@ -3639,8 +3639,8 @@ bool layout_block_context(
 
 		/* Find box's overflow properties */
 		if (box->style) {
-			overflow_x = css_computed_overflow_x(box->style);
-			overflow_y = css_computed_overflow_y(box->style);
+			overflow_x = box_overflow_x(box);
+			overflow_y = box_overflow_y(box);
 		}
 
 		/* Blocks establishing a block formatting context get minimum
@@ -5208,7 +5208,7 @@ layout_get_box_bbox(
 	/* To stop the top of text getting clipped when css line-height is
 	 * reduced, we increase the top of the descendant bbox. */
 	if (box->type == BOX_BLOCK && box->style != NULL &&
-			css_computed_overflow_y(box->style) ==
+			box_overflow_y(box) ==
 					CSS_OVERFLOW_VISIBLE &&
 			box->object == NULL) {
 		css_fixed font_size = 0;
@@ -5254,8 +5254,8 @@ layout_update_descendant_bbox(
 	enum css_overflow_e overflow_y = CSS_OVERFLOW_VISIBLE;
 
 	if (child->style != NULL) {
-		overflow_x = css_computed_overflow_x(child->style);
-		overflow_y = css_computed_overflow_y(child->style);
+		overflow_x = box_overflow_x(child);
+		overflow_y = box_overflow_y(child);
 	}
 
 	/* Get child's border edge */
@@ -5365,9 +5365,9 @@ static void layout_calculate_descendant_bboxes(
 
 		layout_calculate_descendant_bboxes(unit_len_ctx, child);
 
-		if (box->style && css_computed_overflow_x(box->style) ==
+		if (box->style && box_overflow_x(box) ==
 				CSS_OVERFLOW_HIDDEN &&
-				css_computed_overflow_y(box->style) ==
+				box_overflow_y(box) ==
 				CSS_OVERFLOW_HIDDEN)
 			continue;
 

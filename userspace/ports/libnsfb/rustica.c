@@ -36,6 +36,7 @@ struct rustica {
     uint32_t buttons;
     nsfb_event_t queue[16];
     int qhead, qlen;
+    unsigned shape;     /* the pointer's shape last asked for */
 };
 
 static void push(struct rustica *r, enum nsfb_event_type_e type, int code) {
@@ -308,6 +309,23 @@ static int rustica_cursor(nsfb_t *nsfb, struct nsfb_cursor_s *cursor) {
     /* the compositor draws the pointer */
     (void)nsfb;
     (void)cursor;
+    return true;
+}
+
+/* The compositor's pointer shape over the window (RX_WINDOW_CURSOR_*),
+ * for programs that know they run on Rustica (NetSurf: the hand over
+ * links). False if this is not a Rustica surface. */
+bool nsfb_rustica_cursor_shape(nsfb_t *nsfb, unsigned shape);
+bool nsfb_rustica_cursor_shape(nsfb_t *nsfb, unsigned shape) {
+    /* libnsfb keeps a copy of the routines: the surface is ours if its
+     * input routine is */
+    if (nsfb == NULL || nsfb->surface_rtns == NULL || nsfb->surface_rtns->input != rustica_input || nsfb->surface_priv == NULL)
+        return false;
+    struct rustica *r = nsfb->surface_priv;
+    if (r->shape != shape) {
+        r->shape = shape;
+        rx_window_set_cursor(&r->win, shape);
+    }
     return true;
 }
 
