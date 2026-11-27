@@ -137,6 +137,10 @@ int fseek(FILE *f, long offset, int whence) {
     return 0;
 }
 
+// The off_t forms (off_t and long are both 64 bits here)
+off_t ftello(FILE *f) { return (off_t)ftell(f); }
+int fseeko(FILE *f, off_t offset, int whence) { return fseek(f, (long)offset, whence); }
+
 void rewind(FILE *f) {
     fseek(f, 0, SEEK_SET);
     f->err = 0;
@@ -150,6 +154,10 @@ int setvbuf(FILE *restrict f, char *restrict buf, int mode, size_t size) {
         f->size = size;
     }
     return 0;
+}
+
+void setbuf(FILE *restrict f, char *restrict buf) {
+    setvbuf(f, buf, buf ? _IOFBF : _IONBF, BUFSIZ);
 }
 
 size_t fwrite(const void *restrict p, size_t size, size_t n, FILE *restrict f) {

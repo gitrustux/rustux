@@ -303,3 +303,13 @@ Other system calls in the library: `uname` (kernel version, host name from
   thread stacks.
 - `stdout` to a file or pipe is fully buffered (flushed at exit or when the
   buffer fills), as on Unix.
+
+## Ported libraries (2026-11-26)
+
+Programs that need more than the C library (the web browser) link against
+libraries from elsewhere, built for Rustux in `userspace/ports/` (its
+`README.md`): zlib, mbedTLS, libcurl, libpng, libjpeg-turbo, FreeType and
+NetSurf's libraries, into `userspace/build/sysroot/`. The C library gained
+what they need: `setjmp`/`longjmp`, the `scanf` family, `iconv` (musl's),
+`<libgen.h>`, `scandir`, `strtof`, `<endian.h>`, the full `<inttypes.h>`,
+and others listed there. `libctest` checks them.

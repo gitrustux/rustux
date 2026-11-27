@@ -2,7 +2,7 @@
 # The installer test (step 20, docs/INSTALL.md; package step E3,
 # docs/PACKAGES.md). QEMU with OVMF's code and a variable store of its
 # own, a live medium as build-live-image.sh makes it (rboot; "Try Rustica
-# Server" and "Install Rustica Server"; the system's packages 0.1.1 in
+# Server" and "Install Rustica"; the system's packages 0.1.1 in
 # \rustica\packages, made with the host's rpg), and:
 #
 #   A. an empty 2 GiB NVMe disk (the laptop's kind: write-locked until the
@@ -32,6 +32,8 @@
 #   D. that disk as it was, with the power cut during the installation:
 #      the computer still starts Windows (the firmware's order changes
 #      last).
+#   E. a disk whose EFI partition (40 MiB, "Windows") cannot hold Rustica's
+#      kernel: the installer refuses alongside before it writes anything.
 #
 #   scripts/run-install-test.sh [KERNEL.efi]
 #
@@ -72,13 +74,13 @@ cp $RB/rboot.efi "$W/live/EFI/Rustica/rboot.efi"
 cp "$EFI" "$W/live/EFI/Rustica/rustux.efi"
 printf 'default rustica\ntimeout 2\n' > "$W/live/loader/loader.conf"
 printf 'title Try Rustica Server\nefi /EFI/Rustica/rustux.efi\nsort-key 1\n' > "$W/live/loader/entries/rustica.conf"
-printf 'title Install Rustica Server\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 2\n' > "$W/live/loader/entries/install.conf"
+printf 'title Install Rustica\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 2\n' > "$W/live/loader/entries/install.conf"
 # The system's packages (package step E3), as build-live-image.sh puts them
 HOSTT=$(rustc -vV | sed -n 's/^host: //p')
 (cd userspace/rust/rpg && cargo build -q --release --target "$HOSTT" --target-dir "$W/cargo") || { echo "rpg did not build for this computer"; exit 2; }
 export RPG="$W/cargo/$HOSTT/release/rpg"
 KERNEL="$EFI" RBOOT_EFI=$RB/rboot.efi scripts/make-system-packages.sh "$W/live/rustica/packages" 0.1.1 || { echo "make-system-packages.sh failed"; exit 2; }
-truncate -s 128M "$W/live.fat"; mkfs.fat -F 32 -n RUSTICA "$W/live.fat" >/dev/null; mcopy -i "$W/live.fat" -s "$W/live/EFI" "$W/live/loader" "$W/live/rustica" ::
+truncate -s 256M "$W/live.fat"; mkfs.fat -F 32 -n RUSTICA "$W/live.fat" >/dev/null; mcopy -i "$W/live.fat" -s "$W/live/EFI" "$W/live/loader" "$W/live/rustica" ::
 # Repositories with image 0.1.2 (repo) and 0.1.3 (repo2) on a disk of
 # their own, signed with a test key
 mkdir -p "$W/repo"
@@ -113,7 +115,7 @@ rpg boot status
 ls /boot/efi/loader/entries
 echo "options crash=boot" >> /boot/efi/loader/entries/rustica+3.conf
 UP
-truncate -s 128M "$W/repo.fat"; mkfs.fat -F 32 -n RPGREPO "$W/repo.fat" >/dev/null; mcopy -i "$W/repo.fat" -s "$W/repo/repo" "$W/repo/repo2" "$W/repo/test.pub.pem" "$W/repo/upgrade.sh" "$W/repo/upgrade2.sh" ::
+truncate -s 256M "$W/repo.fat"; mkfs.fat -F 32 -n RPGREPO "$W/repo.fat" >/dev/null; mcopy -i "$W/repo.fat" -s "$W/repo/repo" "$W/repo/repo2" "$W/repo/test.pub.pem" "$W/repo/upgrade.sh" "$W/repo/upgrade2.sh" ::
 python3 scripts/gpt-wrap.py --disk 9 "$W/live.img" esp:"$W/live.fat"
 truncate -s 2G "$W/nvme.img"
 # "Windows": its EFI partition (bootmgfw.efi and the fallback), a data partition, 1.6 GiB free
@@ -124,6 +126,9 @@ truncate -s 100M "$W/win.fat"; mkfs.fat -F 32 -n SYSTEM "$W/win.fat" >/dev/null;
 head -c 64M /dev/urandom > "$W/windata.bin"
 python3 scripts/gpt-wrap.py --disk 5 "$W/dual.img" esp:"$W/win.fat" msdata:"$W/windata.bin" free:1650
 cp "$W/dual.img" "$W/dual-cut.img"
+# "Windows" with a 40 MiB EFI partition (too small for Rustica's kernel)
+truncate -s 40M "$W/small.fat"; mkfs.fat -F 32 -n SYSTEM "$W/small.fat" >/dev/null 2>&1 || mkfs.fat -n SYSTEM "$W/small.fat" >/dev/null; mcopy -i "$W/small.fat" -s "$W/win/EFI" ::
+python3 scripts/gpt-wrap.py --disk 6 "$W/small.img" esp:"$W/small.fat" free:1200
 
 # The live medium first, whatever the firmware's boot order says (as choosing
 # the stick in the firmware's boot menu). OVMF then also drops the boot
@@ -352,8 +357,8 @@ start_qemu "$W/vars-c.fd" $LIVE $DUAL
 if wait_for "rboot: booting rustica in 2 s" 1 60 && wait_for "rustux:/root > " 1 120; then
     type_text $'rustica-install --disk auto --mode alongside --user bob --password pw3 --hostname dual --yes --no-reboot; poweroff\n'
 fi
-# (rpg writes the ~50 MB image to the FAT partition: 4-6 minutes under QEMU)
-wait_end 600
+# (rpg writes the ~72 MB image to the FAT partition: 8-12 minutes under QEMU)
+wait_end 1200
 expect "Rustica Server is installed on vd"
 expect "the hardware clock keeps local time"
 AFTER=$(win_sums "$W/dual.img")
@@ -391,6 +396,17 @@ wait_for "FAKEOS" 1 90
 wait_end 30
 expect "FAKEOS \\EFI\\BOOT\\BOOTX64.EFI"
 [ "$BEFORE" = "$(win_sums "$W/dual-cut.img")" ] || { echo "FAIL: Windows' data or boot files changed (power cut)"; fail=1; }
+
+echo "== E: an EFI partition too small for Rustica"
+SUM0=$(sha256sum < "$W/small.img")
+start_qemu "$W/vars-e.fd" $LIVE -drive file=$W/small.img,if=none,id=s,format=raw -device virtio-blk-pci,drive=s
+if wait_for "rboot: booting rustica in 2 s" 1 60 && wait_for "rustux:/root > " 1 120; then
+    type_text $'rustica-install --disk auto --mode alongside --user bob --password pw3 --yes --no-reboot; poweroff\n'
+fi
+wait_end 120
+log | grep -a "rustica-install:" | head -3
+expect "Rustica needs"
+[ "$SUM0" = "$(sha256sum < "$W/small.img")" ] && echo "nothing was written" || { echo "FAIL: the disk changed"; fail=1; }
 
 [ $fail = 0 ] && echo "run-install-test: all checks passed"
 exit $fail

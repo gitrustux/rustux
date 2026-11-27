@@ -43,7 +43,7 @@ printf 'Id: org.rustica.example\nName: Example\nSummary: an example app (a windo
 truncate -s 16M "$W/app.fat"; mkfs.fat -n APPDISK "$W/app.fat" >/dev/null
 mcopy -i "$W/app.fat" "$W/disk/example.rpg" ::
 
-dd if=/dev/zero of="$W/boot.img" bs=1M count=64 status=none
+dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
 mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI
@@ -198,7 +198,7 @@ time.sleep(4)
 key('down'); time.sleep(0.6)
 key('ret'); time.sleep(5)
 out = console('logs | grep -E "launcher: |wintest Example"; ps | grep example', 4)
-check('launcher: 8 applications, 3 apps' in out, 'the launcher lists the app beside the system\'s')
+check('launcher: 9 applications, 3 apps' in out, 'the launcher lists the app beside the system\'s')
 check('launcher: started /bin/appctl run org.rustica.example' in out, 'the launcher starts it (appctl run, in its sandbox)')
 check(re.search(r'wintest Example: (configure|focus|frame|size)', out) is not None or re.search(r'\bexample\b', out.split('ps | grep example')[-1]) is not None, 'its window comes (the program runs)')
 
@@ -212,7 +212,7 @@ qmp_click(25, 782)
 time.sleep(4)
 key('esc'); time.sleep(1)
 out = console('logs | grep "launcher: "', 4)
-check('launcher: 8 applications, 2 apps' in out, 'the launcher lists only the apps that come with the system')
+check('launcher: 9 applications, 2 apps' in out, 'the launcher lists only the apps that come with the system')
 
 # 4. The console
 out = console('echo console works', 2)

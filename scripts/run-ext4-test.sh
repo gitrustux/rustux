@@ -40,7 +40,7 @@ ROOT_UUID=11111111-2222-4333-8444-555555555555
 
 boot_image() { # with a command line, or none
     rm -f "$W/boot.img"
-    dd if=/dev/zero of="$W/boot.img" bs=1M count=64 status=none
+    dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
     mformat -i "$W/boot.img" -F ::
     mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
     mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI

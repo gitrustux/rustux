@@ -32,7 +32,7 @@ VERSION="${RUSTUX_VERSION:-0.1.0}"
 ARCH="${RUSTUX_ARCH:-amd64}"
 
 # Image configuration
-IMG_SIZE="128M"
+IMG_SIZE="256M"  # the kernel holds the desktop and the browser (about 72 MB), and the system packages hold it again
 IMG_NAME="rustica-live-${ARCH}-${VERSION}.img"
 
 # Colors
@@ -121,7 +121,7 @@ create_disk_image() {
         printf 'default desktop\ntimeout 10\n' > "$mount_dir/loader/loader.conf"
         printf 'title Try Rustica Desktop\nefi /EFI/Rustica/rustux.efi\noptions desktop\nsort-key 1\n' > "$mount_dir/loader/entries/desktop.conf"
         printf 'title Try Rustica Server\nefi /EFI/Rustica/rustux.efi\nsort-key 2\n' > "$mount_dir/loader/entries/rustica.conf"
-        printf 'title Install Rustica Server\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 3\n' > "$mount_dir/loader/entries/install.conf"
+        printf 'title Install Rustica\nefi /EFI/Rustica/rustux.efi\noptions installer\nsort-key 3\n' > "$mount_dir/loader/entries/install.conf"
         # The system's packages (package step E3): the installer installs
         # them with rpg, so the installed system knows its image
         if [ "${PACKAGES:-1}" = 1 ]; then

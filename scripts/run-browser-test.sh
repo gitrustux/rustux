@@ -1,0 +1,297 @@
+#!/bin/bash
+# The web browser test (phase W, docs/BROWSER.md, docs/TESTS.md): NetSurf
+# on the Rustica desktop in QEMU, against web servers on the host (QEMU's
+# user networking reaches the host as 10.0.2.2). Checks:
+#   1. a page over HTTP: NetSurf's window, the page's colours and its text
+#      in the fonts (the heading and a box in colours of their own);
+#   2. a click on a link to a file downloads it into ~/Downloads, the same
+#      bytes as on the host (sha256), and the status line says so;
+#   3. typing a URL into the address bar (the keyboard's text) loads a page
+#      over HTTPS, its certificate from a test CA the script makes (added to
+#      the system's bundle from the console);
+#   4. a local file opened by its path (as Files opens one);
+#   5. libcurl's own checks (curltest): an unknown CA refused.
+# Exit status 0 if all is well.
+#
+#   scripts/run-browser-test.sh [KERNEL.efi]
+#
+# Needs qemu-system-x86_64, OVMF, mtools, python3, openssl.
+set -u
+cd "$(dirname "$0")/.."
+EFI=${1:-target/x86_64-unknown-uefi/release/rustux.efi}
+[ -f "$EFI" ] || { echo "no $EFI (build it first)"; exit 2; }
+OVMF=""
+for p in /usr/share/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd /usr/share/edk2-ovmf/x64/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE.fd; do
+    [ -f "$p" ] && OVMF=$p && break
+done
+[ -n "$OVMF" ] || { echo "OVMF firmware not found"; exit 2; }
+for t in qemu-system-x86_64 mformat mmd mcopy python3 openssl; do
+    command -v $t >/dev/null || { echo "$t is needed"; exit 2; }
+done
+W=$(mktemp -d)
+trap 'kill $Q $SRV 2>/dev/null; rm -rf "$W"' EXIT
+Q=""
+SRV=""
+
+# The boot medium (the kernel holds the browser: about 72 MB)
+dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
+mformat -i "$W/boot.img" -F ::
+mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
+mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI
+echo desktop > "$W/cmdline.txt"
+mcopy -i "$W/boot.img" "$W/cmdline.txt" ::/EFI/BOOT/cmdline.txt
+
+# The web: a page, a file to download, the test CA; and over HTTPS a
+# second page, its certificate for 10.0.2.2 from that CA
+mkdir -p "$W/www"
+cat > "$W/www/index.html" <<'EOF'
+<!doctype html><html><head><title>Rustica browser test</title>
+<style>body{font-family:sans-serif;background:#fff;margin:20px} h1{color:#3456cd}
+.box{background:#12ab34;width:240px;height:80px}</style></head>
+<body><h1>Rustica browser test</h1><p>Plain, <b>bold</b>, <i>italic</i>, <code>mono</code>.</p>
+<div class="box"></div><p style="font-size:28px"><a href="big.zip">Download the file</a></p></body></html>
+EOF
+cat > "$W/www/secure.html" <<'EOF'
+<!doctype html><html><head><title>Secure</title></head>
+<body style="background:#ab12cd"><h1 style="color:#fff">Over HTTPS</h1></body></html>
+EOF
+head -c 2500000 /dev/urandom > "$W/www/big.zip"
+SUM=$(sha256sum < "$W/www/big.zip" | cut -d' ' -f1)
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=Rustica browser test CA" \
+    -keyout "$W/ca.key" -out "$W/www/ca.pem" 2>/dev/null
+openssl req -newkey rsa:2048 -nodes -subj "/CN=10.0.2.2" -keyout "$W/srv.key" -out "$W/srv.csr" 2>/dev/null
+printf 'subjectAltName=IP:10.0.2.2\nbasicConstraints=CA:FALSE\n' > "$W/ext.cnf"
+openssl x509 -req -in "$W/srv.csr" -CA "$W/www/ca.pem" -CAkey "$W/ca.key" -CAcreateserial -days 2 \
+    -extfile "$W/ext.cnf" -out "$W/srv.pem" 2>/dev/null
+python3 - "$W" > "$W/ports" 2>"$W/www.log" <<'PY' &
+import functools, http.server, ssl, sys, threading
+W = sys.argv[1]
+H = functools.partial(http.server.SimpleHTTPRequestHandler, directory=W + '/www')
+web = http.server.ThreadingHTTPServer(('127.0.0.1', 0), H)
+webs = http.server.ThreadingHTTPServer(('127.0.0.1', 0), H)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(W + '/srv.pem', W + '/srv.key')
+webs.socket = ctx.wrap_socket(webs.socket, server_side=True)
+print(web.server_address[1], webs.server_address[1], flush=True)
+threading.Thread(target=webs.serve_forever, daemon=True).start()
+web.serve_forever()
+PY
+SRV=$!
+for _ in $(seq 50); do [ -s "$W/ports" ] && break; sleep 0.1; done
+read -r HP HS < "$W/ports"
+
+qemu-system-x86_64 -machine q35 -m 1536M -smp 2 -bios "$OVMF" -drive file="$W/boot.img",format=raw,if=none,id=u \
+    -device qemu-xhci -device usb-storage,drive=u -device usb-tablet \
+    -nic user,model=virtio-net-pci \
+    -display none -debugcon file:"$W/console.log" -no-reboot -monitor unix:"$W/mon",server,nowait \
+    -qmp unix:"$W/qmp",server,nowait >/dev/null 2>&1 &
+Q=$!
+python3 - "$W" "$HP" "$HS" "$SUM" <<'PY'
+import json, math, re, socket, sys, time
+W_DIR, HP, HS, SUM = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+LOG, MON = W_DIR + '/console.log', W_DIR + '/mon'
+fails = 0
+
+def check(ok, what):
+    global fails
+    print(('  ok   ' if ok else '  FAIL ') + what, flush=True)
+    if not ok:
+        fails += 1
+
+def connect(path):
+    for _ in range(100):
+        try:
+            c = socket.socket(socket.AF_UNIX)
+            c.connect(path)
+            return c
+        except OSError:
+            time.sleep(0.1)
+    raise SystemExit('no QEMU socket ' + path)
+
+def mon(cmd):
+    c = connect(MON)
+    c.recv(4096)
+    c.sendall((cmd + '\n').encode())
+    time.sleep(0.2)
+    c.close()
+
+qmp = connect(W_DIR + '/qmp').makefile('rw')
+qmp.readline()
+qmp.write(json.dumps({'execute': 'qmp_capabilities'}) + '\n')
+qmp.flush()
+qmp.readline()
+
+def qmp_events(events):
+    qmp.write(json.dumps({'execute': 'input-send-event', 'arguments': {'events': events}}) + '\n')
+    qmp.flush()
+    qmp.readline()
+    time.sleep(0.15)
+
+SW, SH = 1280, 800
+
+def to(x, y):
+    qmp_events([{'type': 'abs', 'data': {'axis': 'x', 'value': math.ceil(x * 32767 / (SW - 1))}},
+                {'type': 'abs', 'data': {'axis': 'y', 'value': math.ceil(y * 32767 / (SH - 1))}}])
+
+def click(x, y):
+    to(x, y)
+    qmp_events([{'type': 'btn', 'data': {'down': True, 'button': 'left'}}])
+    qmp_events([{'type': 'btn', 'data': {'down': False, 'button': 'left'}}])
+    time.sleep(0.3)
+
+def log():
+    try:
+        return open(LOG, 'rb').read().decode('latin1')
+    except OSError:
+        return ''
+
+def wait(pat, t, start=0):
+    end = time.time() + t
+    while time.time() < end:
+        m = re.search(pat, log()[start:])
+        if m:
+            return m
+        time.sleep(0.3)
+    return None
+
+NAMES = {' ': 'spc', '\n': 'ret', '-': 'minus', '/': 'slash', '.': 'dot', ';': 'semicolon', ':': 'shift-semicolon',
+         '&': 'shift-7', '>': 'shift-dot', '<': 'shift-comma', '|': 'shift-backslash', '_': 'shift-minus', '=': 'equal',
+         '"': 'shift-apostrophe', "'": 'apostrophe', '#': 'shift-3', '$': 'shift-4', '(': 'shift-9', ')': 'shift-0',
+         ',': 'comma', '*': 'shift-8', '+': 'shift-equal'}
+
+def type_(text):
+    for ch in text:
+        mon('sendkey ' + ('shift-' + ch.lower() if ch.isupper() else ch if ch.isalnum() else NAMES[ch]))
+
+def console(cmd, settle=2):
+    """A command at the console (Ctrl+Alt+F1); back to the desktop after it
+    has echoed (the guest takes keys slower than QEMU sends them).
+    Returns where its output starts in the log."""
+    mon('sendkey ctrl-alt-f1')
+    time.sleep(1.5)
+    n = len(log())
+    type_(cmd + '\n')
+    wait(re.escape(cmd[-14:]), 120, n)
+    time.sleep(settle)
+    return n
+
+def desktop():
+    mon('sendkey ctrl-alt-f7')
+    time.sleep(1.5)
+
+shot = [0]
+def screen():
+    shot[0] += 1
+    f = '%s/s%d.ppm' % (W_DIR, shot[0])
+    mon('screendump ' + f)
+    for _ in range(50):
+        try:
+            d = open(f, 'rb').read()
+            if len(d) > SW * SH * 3:
+                break
+        except OSError:
+            pass
+        time.sleep(0.2)
+    head = d.split(b'\n', 3)
+    w, h = map(int, head[1].split())
+    return w, h, head[3]
+
+def count(colour, box=(0, 0, SW, SH), tol=6):
+    w, h, data = screen()
+    r0, g0, b0 = colour >> 16, (colour >> 8) & 255, colour & 255
+    n = 0
+    for y in range(box[1], box[3], 2):
+        row = data[3 * y * w:3 * (y + 1) * w]
+        for x in range(box[0], box[2], 2):
+            r, g, b = row[3 * x], row[3 * x + 1], row[3 * x + 2]
+            if abs(r - r0) <= tol and abs(g - g0) <= tol and abs(b - b0) <= tol:
+                n += 1
+    return n * 4
+
+def wait_colour(colour, least, t, box=(0, 0, SW, SH)):
+    end = time.time() + t
+    n = 0
+    while time.time() < end:
+        n = count(colour, box)
+        if n >= least:
+            return n
+        time.sleep(2)
+    return n
+
+def find(colour, box, tol=12):
+    """The first pixel of a colour in a box (reading order), or None"""
+    w, h, data = screen()
+    r0, g0, b0 = colour >> 16, (colour >> 8) & 255, colour & 255
+    for y in range(box[1], box[3]):
+        for x in range(box[0], box[2]):
+            p = 3 * (y * w + x)
+            if abs(data[p] - r0) <= tol and abs(data[p + 1] - g0) <= tol and abs(data[p + 2] - b0) <= tol:
+                return x, y
+    return None
+
+if not wait(r'rustux.*:.*/root.* > ', 150):
+    print('no shell prompt')
+    print(log()[-3000:])
+    sys.exit(1)
+# The desktop's panel (the fox button) before anything else
+end = time.time() + 120
+while time.time() < end and count(0xFF6500, (0, SH - 30, 50, SH)) < 40:
+    time.sleep(2)
+time.sleep(10)
+
+# 5 first (the console only): libcurl refuses an unknown CA; then the test
+# CA into the system's bundle
+n = console('curltest https://10.0.2.2:%s/secure.html' % HS, 6)
+check(wait(r'curltest: error 60', 30, n) is not None, 'libcurl refuses a certificate from an unknown CA')
+n = console('curltest -o /tmp/ca.pem http://10.0.2.2:%s/ca.pem && cat /tmp/ca.pem >> /etc/ssl/certs/ca-certificates.crt && echo CA-$((40+2))' % HP, 6)
+check(wait(r'CA-42', 30, n) is not None, 'the test CA added to /etc/ssl/certs/ca-certificates.crt')
+
+# 1. A page over HTTP
+console('netsurf http://10.0.2.2:%s/ > /tmp/ns.log 2>&1 &' % HP)
+desktop()
+green = wait_colour(0x12AB34, 9000, 90)
+check(green >= 9000, 'NetSurf shows the page over HTTP: its box (%d pixels of #12ab34)' % green)
+blue = count(0x3456CD)
+check(blue >= 300, 'the heading in its colour and font (%d pixels of #3456cd)' % blue)
+check(count(0x000000, (40, 100, 700, 220)) >= 200, 'the text (black pixels under the heading)')
+
+# 2. A click on the link downloads the file
+link = find(0x0000EE, (40, 200, 900, 600), 40) or find(0x0000FF, (40, 200, 900, 600), 40)
+check(link is not None, 'the link is drawn in its colour (%s)' % (link,))
+if link:
+    click(link[0] + 20, link[1] + 6)
+    time.sleep(15)
+n = console('sha256sum /root/Downloads/big.zip; ls /root/Downloads', 5)
+check(wait(SUM, 40, n) is not None, 'the link downloaded big.zip into ~/Downloads, the same bytes (sha256)')
+check(re.search(r'big\.zip\.part', log()[n:]) is None, 'no .part file left')
+desktop()
+
+# 3. A URL typed into the address bar, over HTTPS (the test CA)
+click(640, 78)
+mon('sendkey ctrl-u')
+time.sleep(0.5)
+type_('https://10.0.2.2:%s/secure.html\n' % HS)
+purple = wait_colour(0xAB12CD, 50000, 90)
+check(purple >= 50000, 'a URL typed into the address bar loads a page over HTTPS (%d pixels of #ab12cd)' % purple)
+mon('sendkey alt-f4')
+time.sleep(3)
+
+# 4. A local file by its path
+console('echo "<body style=background:#0a7f8c><h1>Local</h1>" > /root/t.html; netsurf /root/t.html > /tmp/ns2.log 2>&1 &')
+desktop()
+teal = wait_colour(0x0A7F8C, 50000, 90)
+check(teal >= 50000, 'a local file opened by its path (%d pixels of #0a7f8c)' % teal)
+mon('sendkey alt-f4')
+time.sleep(2)
+
+n = console('cat /tmp/ns.log /tmp/ns2.log | head -20; echo END-$((40+2))', 3)
+wait(r'END-42', 30, n)
+out = log()[n:]
+check(not re.search(r'FAULT|panic|Segmentation', out), 'nothing went wrong in NetSurf\'s output')
+if fails:
+    print(log()[-3000:])
+sys.exit(1 if fails else 0)
+PY
+r=$?
+[ $r = 0 ] && echo "run-browser-test: all checks passed" || echo "run-browser-test: some checks failed"
+exit $r

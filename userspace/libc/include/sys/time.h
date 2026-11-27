@@ -17,3 +17,6 @@ int utimes(const char *path, const struct timeval t[2]);
 int lutimes(const char *path, const struct timeval t[2]);
 
 #endif
+
+// fd_set and select, as POSIX has sys/time.h give them (2026-11-26)
+#include <sys/select.h>

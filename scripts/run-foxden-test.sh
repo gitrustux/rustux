@@ -57,7 +57,7 @@ openssl pkeyutl -sign -inkey "$W/apps.key" -rawin -in "$D/good/platform/1/Releas
 truncate -s 32M "$W/repo.fat"; mkfs.fat -n FOXREPO "$W/repo.fat" >/dev/null
 mcopy -s -i "$W/repo.fat" "$D"/* ::
 
-dd if=/dev/zero of="$W/boot.img" bs=1M count=64 status=none
+dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
 mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI
@@ -223,7 +223,7 @@ qmp_click(25, 782)
 time.sleep(4)
 key('esc'); time.sleep(1)
 out = console('logs | grep "launcher: " | tail -1', 4)
-check('launcher: 8 applications, 3 apps' in out, 'Applications lists it (and FoxDen)')
+check('launcher: 9 applications, 3 apps' in out, 'Applications lists it (and FoxDen)')
 n3 = len(log())
 key('ret')
 check(since(n3, r'foxden: open %s' % re.escape(C), 10) and since(n3, r'appctl: started %s \(sandboxed\)' % re.escape(C), 15), 'Open starts it, sandboxed')

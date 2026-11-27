@@ -35,5 +35,10 @@ void rewinddir(DIR *d);
 int closedir(DIR *d);
 int dirfd(DIR *d);
 DIR *fdopendir(int fd);
+// The entries of a directory that filter takes (all if NULL), sorted by
+// compar (unsorted if NULL), in an array of malloc'd entries; their number
+int scandir(const char *path, struct dirent ***list, int (*filter)(const struct dirent *),
+            int (*compar)(const struct dirent **, const struct dirent **));
+int alphasort(const struct dirent **a, const struct dirent **b);
 
 #endif

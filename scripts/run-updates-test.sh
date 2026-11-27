@@ -79,7 +79,7 @@ EOF
 truncate -s 16M "$W/repo.fat"; mkfs.fat -n RPGREPO "$W/repo.fat" >/dev/null
 mcopy -i "$W/repo.fat" -s "$W"/disk/* ::
 
-dd if=/dev/zero of="$W/boot.img" bs=1M count=64 status=none
+dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
 mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI

@@ -8,9 +8,14 @@
 // sorting, memory, environment, startup)
 
 #include <ctype.h>
+#include <endian.h>
 #include <errno.h>
+#include <iconv.h>
+#include <inttypes.h>
+#include <libgen.h>
 #include <limits.h>
 #include <rustux/process.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -170,12 +175,65 @@ static void environment(int argc, char **argv) {
     check("write to a closed fd fails", write(40, "x", 1) == -1 && errno == EBADF);
 }
 
+// Added 2026-11-26 for the browser's libraries (phase W): the scanf
+// family, setjmp, iconv, libgen, strtof, the byte order
+static jmp_buf jb;
+static int jumped;
+static void jump_back(int v) {
+    jumped++;
+    longjmp(jb, v);
+}
+
+static void for_ports(void) {
+    int a = 0, n = 0;
+    unsigned x = 0;
+    char w[16] = "", rest[16] = "";
+    double d = 0;
+    float f = 0;
+    check("sscanf %d %x %s", sscanf("  42 ff hello", "%d %x %15s", &a, &x, w) == 3 && a == 42 && x == 0xff && !strcmp(w, "hello"));
+    check("sscanf %lf %f", sscanf("2.5 -1e3", "%lf %f", &d, &f) == 2 && d == 2.5 && f == -1000.0f);
+    check("sscanf %[ %n %*d", sscanf("key=value;x 7 9", "%[^=]=%[^;]%n", w, rest, &n) == 2 && !strcmp(w, "key") && !strcmp(rest, "value") && n == 9);
+    check("sscanf width, suppress", sscanf("123456 7", "%3d%*d %d", &a, &n) == 2 && a == 123 && n == 7);
+    check("sscanf %i bases", sscanf("0x1f 010 -9", "%i %i %i", &a, &n, (int *)&x) == 3 && a == 31 && n == 8 && (int)x == -9);
+    check("sscanf at the end", sscanf("", "%d", &a) == EOF && sscanf("abc", "%d", &a) == 0);
+    uint32_t c32 = 0;
+    check("sscanf SCNx32", sscanf("ff8800", "%" SCNx32, &c32) == 1 && c32 == 0xff8800);
+
+    volatile int stage = 0;
+    int v = setjmp(jb);
+    if (v == 0) {
+        stage = 1;
+        jump_back(7);
+    }
+    check("setjmp/longjmp", v == 7 && stage == 1 && jumped == 1);
+    if (setjmp(jb) == 0) jump_back(0);
+    check("longjmp 0 gives 1", jumped == 2);
+
+    iconv_t cd = iconv_open("UTF-8", "ISO-8859-1");
+    char in[] = "caf\xe9", out[16] = "";
+    char *ip = in, *op = out;
+    size_t il = 4, ol = sizeof out - 1;
+    check("iconv latin1 to UTF-8", cd != (iconv_t)-1 && iconv(cd, &ip, &il, &op, &ol) == 0 && !strcmp(out, "caf\xc3\xa9"));
+    if (cd != (iconv_t)-1) iconv_close(cd);
+    cd = iconv_open("WINDOWS-1252", "UTF-8");
+    char in2[] = "\xe2\x82\xac" "5", out2[8] = "";
+    ip = in2, op = out2, il = 4, ol = sizeof out2 - 1;
+    check("iconv UTF-8 to windows-1252 (euro)", cd != (iconv_t)-1 && iconv(cd, &ip, &il, &op, &ol) == 0 && !strcmp(out2, "\x80" "5"));
+    if (cd != (iconv_t)-1) iconv_close(cd);
+
+    char p1[] = "/usr/lib/", p2[] = "/usr/lib/", p3[] = "file";
+    check("basename/dirname", !strcmp(basename(p1), "lib") && !strcmp(dirname(p2), "/usr") && !strcmp(dirname(p3), "."));
+    check("strtof", strtof("0.25x", NULL) == 0.25f);
+    check("byte order", htobe16(0x1234) == 0x3412 && be32toh(htobe32(0xdeadbeef)) == 0xdeadbeef);
+}
+
 int main(int argc, char **argv) {
     printf("libctest: the C library\n");
     formatting();
     strings_and_numbers();
     memory();
     environment(argc, argv);
+    for_ports();
     printf("libctest: %d passed, %d failed\n", passed, failed);
     return failed;
 }

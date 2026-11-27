@@ -1,0 +1,136 @@
+/* Made by ports/tools/gperf-lite.py from element-type.gperf: do not edit */
+#include <string.h>
+
+#include "treebuilder/element-type.h"
+#include <stddef.h>
+#include <string.h>
+#include <strings.h>
+static const struct element_type_map wordlist[] = {
+    { "a", A },
+    { "address", ADDRESS },
+    { "annotation-xml", ANNOTATION_XML },
+    { "applet", APPLET },
+    { "area", AREA },
+    { "article", ARTICLE },
+    { "aside", ASIDE },
+    { "b", B },
+    { "base", BASE },
+    { "basefont", BASEFONT },
+    { "bgsound", BGSOUND },
+    { "big", BIG },
+    { "blockquote", BLOCKQUOTE },
+    { "body", BODY },
+    { "br", BR },
+    { "button", BUTTON },
+    { "caption", CAPTION },
+    { "center", CENTER },
+    { "col", COL },
+    { "colgroup", COLGROUP },
+    { "command", COMMAND },
+    { "dd", DD },
+    { "desc", DESC },
+    { "details", DETAILS },
+    { "dialog", DIALOG },
+    { "dir", DIR },
+    { "div", DIV },
+    { "dl", DL },
+    { "dt", DT },
+    { "em", EM },
+    { "embed", EMBED },
+    { "fieldset", FIELDSET },
+    { "figcaption", FIGCAPTION },
+    { "figure", FIGURE },
+    { "font", FONT },
+    { "footer", FOOTER },
+    { "foreignobject", FOREIGNOBJECT },
+    { "form", FORM },
+    { "frame", FRAME },
+    { "frameset", FRAMESET },
+    { "h1", H1 },
+    { "h2", H2 },
+    { "h3", H3 },
+    { "h4", H4 },
+    { "h5", H5 },
+    { "h6", H6 },
+    { "head", HEAD },
+    { "hr", HR },
+    { "html", HTML },
+    { "i", I },
+    { "iframe", IFRAME },
+    { "image", IMAGE },
+    { "img", IMG },
+    { "input", INPUT },
+    { "isindex", ISINDEX },
+    { "li", LI },
+    { "link", LINK },
+    { "listing", LISTING },
+    { "malignmark", MALIGNMARK },
+    { "marquee", MARQUEE },
+    { "math", MATH },
+    { "menu", MENU },
+    { "meta", META },
+    { "mglyph", MGLYPH },
+    { "mi", MI },
+    { "mn", MN },
+    { "mo", MO },
+    { "ms", MS },
+    { "mtext", MTEXT },
+    { "nobr", NOBR },
+    { "noembed", NOEMBED },
+    { "noframes", NOFRAMES },
+    { "noscript", NOSCRIPT },
+    { "object", OBJECT },
+    { "ol", OL },
+    { "optgroup", OPTGROUP },
+    { "option", OPTION },
+    { "output", OUTPUT },
+    { "p", P },
+    { "param", PARAM },
+    { "plaintext", PLAINTEXT },
+    { "pre", PRE },
+    { "s", S },
+    { "script", SCRIPT },
+    { "select", SELECT },
+    { "small", SMALL },
+    { "spacer", SPACER },
+    { "strike", STRIKE },
+    { "strong", STRONG },
+    { "style", STYLE },
+    { "summary", SUMMARY },
+    { "svg", SVG },
+    { "table", TABLE },
+    { "tbody", TBODY },
+    { "td", TD },
+    { "textarea", TEXTAREA },
+    { "tfoot", TFOOT },
+    { "th", TH },
+    { "thead", THEAD },
+    { "title", TITLE },
+    { "tr", TR },
+    { "tt", TT },
+    { "u", U },
+    { "ul", UL },
+    { "wbr", WBR },
+    { "xmp", XMP },
+};
+
+static const struct element_type_map *hubbub_element_type_generated_lookup(const char *str, size_t len);
+static const struct element_type_map *hubbub_element_type_generated_lookup(const char *str, size_t len)
+{
+    size_t lo = 0, hi = sizeof(wordlist) / sizeof(wordlist[0]);
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        const char *k = wordlist[mid].name;
+        size_t kl = strlen(k);
+        int c = strncasecmp(str, k, len < kl ? len : kl);
+        if (c == 0)
+            c = len < kl ? -1 : len > kl ? 1 : 0;
+        if (c == 0)
+            return &wordlist[mid];
+        if (c < 0)
+            hi = mid;
+        else
+            lo = mid + 1;
+    }
+    return NULL;
+}

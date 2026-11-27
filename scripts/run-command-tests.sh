@@ -25,7 +25,7 @@ done
 W=$(mktemp -d)
 # KEEP_LOG=FILE keeps the console log
 trap 'kill $Q 2>/dev/null; [ -n "${KEEP_LOG:-}" ] && cp "$W/console.log" "$KEEP_LOG"; rm -rf "$W"' EXIT
-dd if=/dev/zero of="$W/boot.img" bs=1M count=64 status=none
+dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
 # The disk tests' disk (disks.sh), as virtio-blk and as NVMe; snapshot=on
 # keeps writes (and the firmware's NvVars file) out of the image
 python3 "$(dirname "$0")/make-test-disk.py" make "$W/disk.img" > /dev/null

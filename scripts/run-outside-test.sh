@@ -105,7 +105,7 @@ hcheck $? "it is in a test apps repository (signed with the apps key)"
 truncate -s 48M "$W/repo.fat"; mkfs.fat -n APPSREPO "$W/repo.fat" >/dev/null
 mcopy -s -i "$W/repo.fat" "$D"/* ::
 
-dd if=/dev/zero of="$W/boot.img" bs=1M count=64 status=none
+dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
 mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI

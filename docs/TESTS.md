@@ -780,3 +780,17 @@ m "screendump /tmp/screen.ppm"   # capture the framebuffer
 ## Kernel test mode
 
 `--features kernel_test` builds `src/test_entry.rs`, a minimal interrupt test (GDT, IDT, LAPIC timer) that prints `[TICK n]` every 10 ticks on the debug port and reports `TEST PASSED` once it has seen at least 10 ticks. The handlers it uses are in `src/arch/amd64/test.rs`.
+
+## Browser test (2026-11-26)
+
+`scripts/run-browser-test.sh` (phase W, `docs/BROWSER.md`): QEMU with the
+desktop, user networking and web servers on the host (HTTP, and HTTPS with
+a certificate for 10.0.2.2 from a test CA the script makes). From the
+console: `curltest` refuses the unknown CA, the CA is added to
+`/etc/ssl/certs/ca-certificates.crt`; NetSurf shows a page over HTTP (its
+box and heading counted by colour, its text); a click on its link downloads
+a 2.5 MB file into `~/Downloads` (sha256 against the host's, no `.part`
+left); a URL typed into the address bar loads a page over HTTPS; a local
+file opens by its path. About 6 minutes. The network test also checks
+libcurl with `curltest` (an unknown CA refused, HTTPS with `--cacert`,
+HTTP by name through its resolver thread).

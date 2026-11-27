@@ -19,6 +19,8 @@ int ispunct(int c);
 int isspace(int c);
 int isupper(int c);
 int isxdigit(int c);
+int isascii(int c);
+int toascii(int c);
 int tolower(int c);
 int toupper(int c);
 

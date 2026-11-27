@@ -1,0 +1,363 @@
+diff -ruN nsclean/Makefile.config rustica/Makefile.config
+--- upstream/Makefile.config	1969-12-31 18:00:00.000000000 -0600
++++ rustica/Makefile.config	2026-11-26 16:10:57.796971145 -0600
+@@ -0,0 +1,30 @@
++# NetSurf on Rustux (2026-11-26, phase W): the framebuffer frontend on
++# libnsfb's Rustica surface (a compositor window), FreeType fonts (Noto),
++# libcurl with mbedTLS; no JavaScript yet (duktape needs nsgenbind)
++override TARGET := framebuffer
++override NETSURF_FB_FRONTEND := rustica
++override NETSURF_FB_FONTLIB := freetype
++override NETSURF_USE_DUKTAPE := NO
++override NETSURF_USE_OPENSSL := NO
++override NETSURF_USE_JPEGXL := NO
++override NETSURF_USE_WEBP := NO
++override NETSURF_USE_VIDEO := NO
++override NETSURF_USE_NSSVG := NO
++override NETSURF_USE_RSVG := NO
++override NETSURF_USE_ROSPRITE := NO
++override NETSURF_USE_NSLOG := NO
++override NETSURF_USE_LIBICONV_PLUG := NO
++override NETSURF_USE_HARU_PDF := NO
++override NETSURF_USE_SANITIZERS := NO
++override NETSURF_FB_RESPATH := $${HOME}/.netsurf/:/usr/share/netsurf
++override NETSURF_FB_FONTPATH := /usr/share/fonts/noto
++override NETSURF_FB_FONT_SANS_SERIF := NotoSans-Regular.ttf
++override NETSURF_FB_FONT_SANS_SERIF_BOLD := NotoSans-Bold.ttf
++override NETSURF_FB_FONT_SANS_SERIF_ITALIC := NotoSans-Italic.ttf
++override NETSURF_FB_FONT_SANS_SERIF_ITALIC_BOLD := NotoSans-BoldItalic.ttf
++override NETSURF_FB_FONT_SERIF := NotoSerif-Regular.ttf
++override NETSURF_FB_FONT_SERIF_BOLD := NotoSerif-Bold.ttf
++override NETSURF_FB_FONT_MONOSPACE := NotoSansMono-Regular.ttf
++override NETSURF_FB_FONT_MONOSPACE_BOLD := NotoSansMono-Bold.ttf
++override NETSURF_FB_FONT_CURSIVE := NotoSerif-Italic.ttf
++override NETSURF_FB_FONT_FANTASY := NotoSans-Bold.ttf
+diff -ruN nsclean/frontends/framebuffer/Makefile rustica/frontends/framebuffer/Makefile
+--- upstream/frontends/framebuffer/Makefile	2026-11-26 16:11:59.245664319 -0600
++++ rustica/frontends/framebuffer/Makefile	2026-11-26 16:10:57.797047501 -0600
+@@ -172,7 +172,7 @@
+ # ----------------------------------------------------------------------------
+ 
+ # S_FRONTEND are sources purely for the framebuffer build
+-S_FRONTEND := gui.c framebuffer.c schedule.c bitmap.c fetch.c	\
++S_FRONTEND := gui.c framebuffer.c schedule.c bitmap.c fetch.c download.c	\
+ 	findfile.c corewindow.c local_history.c clipboard.c
+ 
+ # toolkit sources
+diff -ruN nsclean/frontends/framebuffer/download.c rustica/frontends/framebuffer/download.c
+--- upstream/frontends/framebuffer/download.c	1969-12-31 18:00:00.000000000 -0600
++++ rustica/frontends/framebuffer/download.c	2026-11-26 16:10:57.797165476 -0600
+@@ -0,0 +1,184 @@
++/*
++ * Downloads for the framebuffer frontend on Rustica (written for Rustica,
++ * 2026-11-26; GPL 2, as NetSurf). Upstream's framebuffer frontend has no
++ * download support; here a download goes to ~/Downloads (NAME, or
++ * "NAME (2)" if that is taken), written as NAME.part and renamed when it
++ * is complete. Its progress is the window's status line; a notification
++ * says when it finished or failed.
++ */
++
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#ifdef __rustux__
++#include <rustux/window.h>
++#endif
++
++#include "utils/nsurl.h"
++#include "netsurf/download.h"
++#include "desktop/download.h"
++
++#include <libnsfb.h>
++#include <libnsfb_event.h>
++
++#include "framebuffer/gui.h"
++#include "framebuffer/fbtk.h"
++#include "framebuffer/download.h"
++
++struct gui_download_window {
++	struct gui_window *parent;
++	FILE *f;
++	char path[1024];	/* the file when complete */
++	char part[1040];	/* while it is written */
++	const char *name;	/* within path */
++	unsigned long long total, done;
++	unsigned int shown;	/* the last percentage (or MiB) in the status */
++};
++
++static void say(struct gui_download_window *dw, const char *text)
++{
++	if (dw->parent != NULL && dw->parent->status != NULL)
++		fbtk_set_text(dw->parent->status, text);
++}
++
++static void notify(const char *text)
++{
++#ifdef __rustux__
++	rx_window_notify(0, text);
++#else
++	(void)text;
++#endif
++}
++
++static void human(unsigned long long n, char *out, size_t size)
++{
++	if (n >= 1024ull * 1024 * 1024)
++		snprintf(out, size, "%.1f GB", n / (1024.0 * 1024 * 1024));
++	else if (n >= 1024 * 1024)
++		snprintf(out, size, "%.1f MB", n / (1024.0 * 1024));
++	else if (n >= 1024)
++		snprintf(out, size, "%.0f KB", n / 1024.0);
++	else
++		snprintf(out, size, "%llu bytes", n);
++}
++
++static struct gui_download_window *
++fb_download_create(download_context *ctx, struct gui_window *parent)
++{
++	struct gui_download_window *dw = calloc(1, sizeof *dw);
++	const char *home = getenv("HOME");
++	const char *name = download_context_get_filename(ctx);
++	char dir[512], base[256], ext[64];
++	struct stat st;
++
++	if (dw == NULL)
++		return NULL;
++	dw->parent = parent;
++	dw->total = download_context_get_total_length(ctx);
++
++	/* ~/Downloads, made if missing */
++	snprintf(dir, sizeof dir, "%s/Downloads", home && *home ? home : "/tmp");
++	mkdir(dir, 0755);
++
++	/* the name without slashes; "download" if there is none */
++	if (name == NULL || *name == '\0')
++		name = "download";
++	snprintf(base, sizeof base, "%s", name);
++	for (char *c = base; *c; c++)
++		if (*c == '/')
++			*c = '_';
++
++	/* a free name: NAME, then NAME (2).EXT, NAME (3).EXT, ... */
++	ext[0] = '\0';
++	char *dot = strrchr(base, '.');
++	if (dot != NULL && dot != base) {
++		snprintf(ext, sizeof ext, "%s", dot);
++		*dot = '\0';
++	}
++	snprintf(dw->path, sizeof dw->path, "%s/%s%s", dir, base, ext);
++	for (int n = 2; stat(dw->path, &st) == 0 && n < 1000; n++)
++		snprintf(dw->path, sizeof dw->path, "%s/%s (%d)%s", dir, base, n, ext);
++	dw->name = dw->path + strlen(dir) + 1;
++	snprintf(dw->part, sizeof dw->part, "%s.part", dw->path);
++
++	dw->f = fopen(dw->part, "wb");
++	if (dw->f == NULL) {
++		char msg[1200];
++		snprintf(msg, sizeof msg, "Cannot save %s: %s", dw->path, strerror(errno));
++		say(dw, msg);
++		notify(msg);
++		free(dw);
++		return NULL;
++	}
++
++	char msg[1200], size[32] = "";
++	if (dw->total)
++		human(dw->total, size, sizeof size);
++	snprintf(msg, sizeof msg, "Downloading %s%s%s%s to Downloads", dw->name,
++		 dw->total ? " (" : "", size, dw->total ? ")" : "");
++	say(dw, msg);
++	return dw;
++}
++
++static nserror
++fb_download_data(struct gui_download_window *dw, const char *data, unsigned int size)
++{
++	if (fwrite(data, 1, size, dw->f) != size)
++		return NSERROR_SAVE_FAILED;
++	dw->done += size;
++
++	/* the status: each new percent, or each MB when the size is unknown */
++	unsigned int now = dw->total ? (unsigned int)(dw->done * 100 / dw->total)
++				     : (unsigned int)(dw->done >> 20);
++	if (now != dw->shown) {
++		char msg[1200], a[32], b[32];
++		dw->shown = now;
++		human(dw->done, a, sizeof a);
++		if (dw->total) {
++			human(dw->total, b, sizeof b);
++			snprintf(msg, sizeof msg, "Downloading %s: %u%% (%s of %s)", dw->name, now, a, b);
++		} else {
++			snprintf(msg, sizeof msg, "Downloading %s: %s", dw->name, a);
++		}
++		say(dw, msg);
++	}
++	return NSERROR_OK;
++}
++
++static void fb_download_error(struct gui_download_window *dw, const char *error_msg)
++{
++	char msg[1200];
++	fclose(dw->f);
++	unlink(dw->part);
++	snprintf(msg, sizeof msg, "Download of %s failed: %s", dw->name, error_msg ? error_msg : "error");
++	say(dw, msg);
++	notify(msg);
++	free(dw);
++}
++
++static void fb_download_done(struct gui_download_window *dw)
++{
++	char msg[1200], a[32];
++	int ok = fclose(dw->f) == 0 && rename(dw->part, dw->path) == 0;
++	human(dw->done, a, sizeof a);
++	if (ok)
++		snprintf(msg, sizeof msg, "Downloaded %s (%s) to Downloads", dw->name, a);
++	else
++		snprintf(msg, sizeof msg, "Could not save %s: %s", dw->path, strerror(errno));
++	say(dw, msg);
++	notify(msg);
++	free(dw);
++}
++
++static struct gui_download_table download_table = {
++	.create = fb_download_create,
++	.data = fb_download_data,
++	.error = fb_download_error,
++	.done = fb_download_done,
++};
++
++struct gui_download_table *framebuffer_download_table = &download_table;
+diff -ruN nsclean/frontends/framebuffer/download.h rustica/frontends/framebuffer/download.h
+--- upstream/frontends/framebuffer/download.h	1969-12-31 18:00:00.000000000 -0600
++++ rustica/frontends/framebuffer/download.h	2026-11-26 16:10:57.797274116 -0600
+@@ -0,0 +1,9 @@
++/*
++ * Downloads for the framebuffer frontend on Rustica (download.c)
++ */
++#ifndef NETSURF_FB_DOWNLOAD_H
++#define NETSURF_FB_DOWNLOAD_H
++
++extern struct gui_download_table *framebuffer_download_table;
++
++#endif
+diff -ruN nsclean/frontends/framebuffer/fbtk/event.c rustica/frontends/framebuffer/fbtk/event.c
+--- upstream/frontends/framebuffer/fbtk/event.c	2026-11-26 16:11:59.245843556 -0600
++++ rustica/frontends/framebuffer/fbtk/event.c	2026-11-26 16:10:57.797356560 -0600
+@@ -302,6 +302,13 @@
+ {
+ 	int ucs4 = -1;
+ 
++#ifdef __rustux__
++	/* Rustica: libnsfb's Rustica surface gives a key press that makes
++	 * text as 0x10000 + the character, made by the user's keyboard layout */
++	if (code >= 0x10000)
++		return code - 0x10000;
++#endif
++
+ 	if (mods & FBTK_MOD_LSHIFT || mods & FBTK_MOD_RSHIFT) {
+ 		if ((code >= 0) && (code < (int) NOF_ELEMENTS(sh_keymap)))
+ 			ucs4 = sh_keymap[code];
+diff -ruN nsclean/frontends/framebuffer/gui.c rustica/frontends/framebuffer/gui.c
+--- upstream/frontends/framebuffer/gui.c	2026-11-26 16:11:59.246156343 -0600
++++ rustica/frontends/framebuffer/gui.c	2026-11-26 16:11:59.222770979 -0600
+@@ -32,6 +32,7 @@
+ #include "utils/utils.h"
+ #include "utils/nsoption.h"
+ #include "utils/filepath.h"
++#include "utils/file.h"
+ #include "utils/log.h"
+ #include "utils/messages.h"
+ #include "netsurf/browser_window.h"
+@@ -53,6 +54,7 @@
+ #include "framebuffer/font.h"
+ #include "framebuffer/clipboard.h"
+ #include "framebuffer/fetch.h"
++#include "framebuffer/download.h"
+ #include "framebuffer/bitmap.h"
+ #include "framebuffer/local_history.h"
+ #include "framebuffer/corewindow.h"
+@@ -471,6 +473,9 @@
+ {
+ 	if (type < fetype) {
+ 		fename = name;
++		/* Rustica: keep the lowest type seen (upstream never updated
++		 * it, so the last surface registered was chosen) */
++		fetype = type;
+ 	}
+ }
+ 
+@@ -491,11 +496,19 @@
+ 
+ 	fewidth = nsoption_int(window_width);
+ 	if (fewidth <= 0) {
++#ifdef __rustux__
++		fewidth = 1100; /* Rustica: a window, not the whole screen */
++#else
+ 		fewidth = 800;
++#endif
+ 	}
+ 	feheight = nsoption_int(window_height);
+ 	if (feheight <= 0) {
++#ifdef __rustux__
++		feheight = 680;
++#else
+ 		feheight = 600;
++#endif
+ 	}
+ 
+ 	if ((nsoption_charp(homepage_url) != NULL) && 
+@@ -2196,6 +2209,7 @@
+ 		.utf8 = framebuffer_utf8_table,
+ 		.bitmap = framebuffer_bitmap_table,
+ 		.layout = framebuffer_layout_table,
++		.download = framebuffer_download_table, /* Rustica: download.c */
+ 	};
+ 
+         ret = netsurf_register(&framebuffer_table);
+@@ -2259,6 +2273,12 @@
+ 
+ 	NSLOG(netsurf, INFO, "calling browser_window_create");
+ 
++#ifdef __rustux__
++	/* Rustica: a file's path (Files opens web pages with it) */
++	if (feurl[0] == '/')
++		ret = netsurf_path_to_nsurl(feurl, &url);
++	else
++#endif
+ 	ret = nsurl_create(feurl, &url);
+ 	if (ret == NSERROR_OK) {
+ 		ret = browser_window_create(BW_CREATE_HISTORY,
+diff -ruN nsclean/utils/config.h rustica/utils/config.h
+--- upstream/utils/config.h	2026-11-26 16:11:59.297024920 -0600
++++ rustica/utils/config.h	2026-11-26 16:10:57.797895864 -0600
+@@ -145,7 +145,7 @@
+ #endif
+ 
+ #define HAVE_MMAP
+-#if (defined(_WIN32) || defined(__riscos__) || defined(__HAIKU__) || defined(__BEOS__) || defined(__amigaos4__) || defined(__AMIGA__) || defined(__MINT__))
++#if (defined(_WIN32) || defined(__riscos__) || defined(__HAIKU__) || defined(__BEOS__) || defined(__amigaos4__) || defined(__AMIGA__) || defined(__MINT__) || defined(__rustux__))
+ #undef HAVE_MMAP
+ #endif
+ 
+@@ -158,14 +158,14 @@
+ #define HAVE_DIRFD
+ #define HAVE_UNLINKAT
+ #define HAVE_FSTATAT
+-#if (defined(_WIN32) || defined(__riscos__) || defined(__HAIKU__) || defined(__BEOS__) || defined(__amigaos4__) || defined(__AMIGA__) || defined(__MINT__))
++#if (defined(_WIN32) || defined(__riscos__) || defined(__HAIKU__) || defined(__BEOS__) || defined(__amigaos4__) || defined(__AMIGA__) || defined(__MINT__) || defined(__rustux__))
+ #undef HAVE_DIRFD
+ #undef HAVE_UNLINKAT
+ #undef HAVE_FSTATAT
+ #endif
+ 
+ #define HAVE_REGEX
+-#if (defined(__serenity__))
++#if (defined(__serenity__) || defined(__rustux__))
+ #undef HAVE_REGEX
+ #endif
+ 

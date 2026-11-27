@@ -9,6 +9,10 @@
 
 #include <sys/types.h>
 
+// The POSIX edition the library follows (much of it: docs/USERSPACE.md);
+// ported libraries test for it (2026-11-26, phase W)
+#define _POSIX_VERSION 200809L
+
 #define STDIN_FILENO  0
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2

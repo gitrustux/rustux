@@ -30,6 +30,8 @@ int unlockpt(int fd);
 char *ptsname(int fd);
 int ptsname_r(int fd, char *buf, size_t size);
 double strtod(const char *restrict s, char **restrict end);
+float strtof(const char *restrict s, char **restrict end);
+long double strtold(const char *restrict s, char **restrict end);
 double atof(const char *s);
 
 void exit(int status) __attribute__((noreturn));

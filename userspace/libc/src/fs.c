@@ -770,3 +770,34 @@ int rx_statfs_fd(int fd, rx_fs_statfs_t *out) {
     if (!f || f->kind != RX_FD_FILE) return -EBADF;
     return __fs_call(f->handle, RX_FS_OP_STATFS, 0, 0, 0, 0, 0, out, sizeof *out, 0);
 }
+
+int scandir(const char *path, struct dirent ***list, int (*filter)(const struct dirent *),
+            int (*compar)(const struct dirent **, const struct dirent **)) {
+    DIR *d = opendir(path);
+    if (!d) return -1;
+    struct dirent **v = NULL, *e;
+    size_t n = 0, cap = 0;
+    while ((e = readdir(d))) {
+        if (filter && !filter(e)) continue;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 16;
+            struct dirent **nv = realloc(v, cap * sizeof *v);
+            if (!nv) goto fail;
+            v = nv;
+        }
+        if (!(v[n] = malloc(sizeof *e))) goto fail;
+        memcpy(v[n++], e, sizeof *e);
+    }
+    closedir(d);
+    if (compar && n > 1) qsort(v, n, sizeof *v, (int (*)(const void *, const void *))compar);
+    *list = v;
+    return (int)n;
+fail:
+    while (n) free(v[--n]);
+    free(v);
+    closedir(d);
+    errno = ENOMEM;
+    return -1;
+}
+
+int alphasort(const struct dirent **a, const struct dirent **b) { return strcmp((*a)->d_name, (*b)->d_name); }

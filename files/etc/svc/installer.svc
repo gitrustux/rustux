@@ -1,4 +1,4 @@
-# Install mode ("Install Rustica Server" in the boot menu: installer on the
+# Install mode ("Install Rustica" in the boot menu: installer on the
 # kernel command line): the installer on the screen, nothing else but the
 # log and the mounts (the stick's EFI partition, where the kernel is)
 description=The installer on the console (install mode)

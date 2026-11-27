@@ -5,7 +5,7 @@
 // https://opensource.org/licenses/MIT
 
 // rustica-install: install Rustica Server on a disk (checklist step 20,
-// docs/INSTALL.md). Run from the live system ("Install Rustica Server" in
+// docs/INSTALL.md). Run from the live system ("Install Rustica" in
 // the boot menu starts it on the console; root may start it from a live
 // session too). It asks (a screen a question, choices as numbered menus in
 // the boot menu's style), shows every change, and writes only after the
@@ -56,6 +56,7 @@
 #include <strings.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
@@ -544,6 +545,8 @@ typedef struct {
     rx_fsprobe_t fs;
     int has_fs;
     char systems[128];      // what is on it (an EFI partition's loaders, Rustica's root)
+    uint64_t room;          // an EFI partition: its free space plus the Rustica images on it (replaced)
+    int room_known;
 } part_t;
 
 typedef struct {
@@ -576,6 +579,32 @@ static int is_rustica_root(const part_t *p) {
 static int exists(const char *p) {
     struct stat st;
     return stat(p, &st) == 0;
+}
+
+static void sources(char *kernel, char *rboot, size_t cap);
+
+// What Rustica puts on an EFI partition: the kernel (it carries the system),
+// rboot twice (\EFI\Rustica and perhaps the fallback), the entries
+static uint64_t esp_need(void) {
+    static uint64_t need;
+    if (need) return need;
+    char kernel[128] = "", rboot[128] = "";
+    struct stat st;
+    sources(kernel, rboot, sizeof kernel);
+    need = 1 * MIB;
+    if (kernel[0] && stat(kernel, &st) == 0) need += (uint64_t)st.st_size;
+    if (rboot[0] && stat(rboot, &st) == 0) need += 2 * (uint64_t)st.st_size;
+    return need;
+}
+
+// An EFI partition there too small for Rustica: why, for a note or an error
+static int esp_too_small(const part_t *p, char *why, size_t cap) {
+    if (!p || !p->room_known || p->room >= esp_need()) return 0;
+    char have[16], need[16];
+    human(p->room, have, sizeof have);
+    human(esp_need(), need, sizeof need);
+    snprintf(why, cap, "its EFI partition %s has %s free; Rustica needs %s there (free space on it, or erase the disk)", p->info.name, have, need);
+    return 1;
 }
 
 // The loaders on an EFI partition (mounted read-only for a moment)
@@ -612,6 +641,22 @@ static void esp_systems(part_t *p) {
     }
     if (d) closedir(d);
 #undef ADD
+    // Its room for Rustica: the free space, and the images of a Rustica
+    // there (an installation replaces them)
+    struct statfs sf;
+    if (statfs("/run/install/look", &sf) == 0) {
+        p->room = (uint64_t)sf.f_bavail * sf.f_bsize;
+        p->room_known = 1;
+        d = opendir("/run/install/look/EFI/Rustica");
+        while (d && (e = readdir(d))) {
+            if (strncmp(e->d_name, "rustux", 6)) continue;
+            char path[300];
+            struct stat st;
+            snprintf(path, sizeof path, "/run/install/look/EFI/Rustica/%s", e->d_name);
+            if (stat(path, &st) == 0) p->room += (uint64_t)st.st_size;
+        }
+        if (d) closedir(d);
+    }
     RUN("/bin/umount", "/run/install/look");
 }
 
@@ -836,8 +881,10 @@ static void choose(void) {
         if (is_esp(&d->parts[i]) && !esp) esp = &d->parts[i];
         if (is_rustica_root(&d->parts[i]) && !rroot) rroot = &d->parts[i];
     }
-    int can_alongside = d->gpt && free_bytes(d) >= (esp ? 0 : ESP_SIZE) + MIN_ROOT;
-    int can_replace = d->gpt && esp && rroot;
+    char esp_why[200] = "";
+    int esp_small = esp_too_small(esp, esp_why, sizeof esp_why);
+    int can_alongside = d->gpt && free_bytes(d) >= (esp ? 0 : ESP_SIZE) + MIN_ROOT && !esp_small;
+    int can_replace = d->gpt && esp && rroot && !esp_small;
     if (opt.interactive && !opt.mode[0]) {
         char sz[16], line[160];
         human(free_bytes(d), sz, sizeof sz);
@@ -850,11 +897,11 @@ static void choose(void) {
         snprintf(it[0].note, sizeof it[0].note, "Everything on %s is lost%s", d->info.name, d->systems[0] ? ", the systems on it too" : "");
         snprintf(it[1].label, sizeof it[1].label, "Alongside, in the free space");
         if (can_alongside) snprintf(it[1].note, sizeof it[1].note, "In the %s free; the other partitions stay as they are", sz);
-        else snprintf(it[1].note, sizeof it[1].note, "Not possible: %s", !d->gpt ? "the disk has no GPT" : "too little free space (shrink a partition in its own system first)");
+        else snprintf(it[1].note, sizeof it[1].note, "Not possible: %s", !d->gpt ? "the disk has no GPT" : esp_small ? esp_why : "too little free space (shrink a partition in its own system first)");
         it[1].off = !can_alongside;
         snprintf(it[2].label, sizeof it[2].label, "Replace the earlier Rustica");
         if (can_replace) snprintf(it[2].note, sizeof it[2].note, "%s is formatted; its EFI files are replaced", rroot->info.name);
-        else snprintf(it[2].note, sizeof it[2].note, "Not possible: there is no Rustica on this disk");
+        else snprintf(it[2].note, sizeof it[2].note, "Not possible: %s", esp_small && rroot ? esp_why : "there is no Rustica on this disk");
         it[2].off = !can_replace;
         snprintf(it[3].label, sizeof it[3].label, "Manual");
         if (d->gpt) snprintf(it[3].note, sizeof it[3].note, "Choose the EFI and the root partitions yourself");
@@ -872,10 +919,12 @@ static void choose(void) {
         plan_new_parts(per_mib, last, 1);
         plan.windows = 0;
     } else if (!strcmp(opt.mode, "alongside")) {
+        if (esp_small) die("%s: %s", d->info.name, esp_why);
         if (!can_alongside) die("%s: not enough free space (or no GPT) to install alongside", d->info.name);
         plan.esp = esp;
         plan_new_parts(d->free_first, d->free_last, esp == 0);
     } else if (!strcmp(opt.mode, "replace")) {
+        if (esp_small && rroot) die("%s: %s", d->info.name, esp_why);
         if (!can_replace) die("%s has no earlier Rustica (an EFI partition and a partition labelled \"Rustica root\")", d->info.name);
         plan.esp = esp;
         plan.root = rroot;
@@ -893,7 +942,11 @@ static void choose(void) {
                 human(d->parts[i].info.block_count * d->parts[i].info.block_size, sz, sizeof sz);
                 memset(&it[n], 0, sizeof it[n]);
                 snprintf(it[n].label, sizeof it[n].label, "%-12s %7s  the EFI system partition there", d->parts[i].info.name, sz);
-                if (d->parts[i].systems[0]) snprintf(it[n].note, sizeof it[n].note, "Holds %s (kept)", d->parts[i].systems);
+                char why[200];
+                if (esp_too_small(&d->parts[i], why, sizeof why)) {
+                    it[n].off = 1;
+                    snprintf(it[n].note, sizeof it[n].note, "Too small: %s", why + strlen("its EFI partition "));
+                } else if (d->parts[i].systems[0]) snprintf(it[n].note, sizeof it[n].note, "Holds %s (kept)", d->parts[i].systems);
                 snprintf(names[n++], sizeof names[0], "%s", d->parts[i].info.name);
             }
             memset(&it[n], 0, sizeof it[n]);
@@ -906,6 +959,7 @@ static void choose(void) {
         }
         if (!strcmp(opt.esp_arg, "new") || !opt.esp_arg[0]) plan.esp = 0;
         else if (!(plan.esp = find_part(d, opt.esp_arg)) || !is_esp(plan.esp)) die("%s is not an EFI system partition on %s", opt.esp_arg, d->info.name);
+        { char why[200]; if (esp_too_small(plan.esp, why, sizeof why)) die("%s", why + strlen("its ")); }
         if (opt.interactive && !opt.root_arg[0]) {
             screen("Root partition");
             para("The partition Rustica's files go on. A partition chosen here is formatted: what is on it is lost.");
@@ -1663,7 +1717,7 @@ static int usage(int code) {
             "                       --user NAME (--password PASS | --password-file FILE) [--fullname TEXT]\n"
             "                       [--lock-root | --root-password PASS] [--hostname NAME] [--timezone ZONE] [--keymap NAME]\n"
             "                       [--yes] [--dry-run] [--reboot | --no-reboot]\n"
-            "Install Rustica Server on a disk (man rustica-install). The log: " LOG_FILE ".\n");
+            "Install Rustica on a disk (man rustica-install). The log: " LOG_FILE ".\n");
     return code;
 }
 
@@ -1706,7 +1760,7 @@ int main(int argc, char **argv) {
     mkdir("/var/log", 0755);
     logf = fopen(LOG_FILE, "a");
     chmod(LOG_FILE, 0600);
-    printf("\n  Rustica Server installer%s\n\n", opt.dry_run ? " (dry run: nothing is written)" : "");
+    printf("\n  Rustica installer%s\n\n", opt.dry_run ? " (dry run: nothing is written)" : "");
     logmsg("rustica-install started%s", opt.dry_run ? " (dry run)" : "");
     if (opt.interactive) printf("Language: English (the only one for now)\n");
     choose_settings();

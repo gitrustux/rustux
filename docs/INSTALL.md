@@ -5,7 +5,7 @@ The live image is the install image. Its boot menu (rboot, BOOT.md) has
 - **Try Rustica Server**: the live system, from memory: the disks are not
   touched unless you mount them yourself (the kernel reads
   `\EFI\BOOT\cmdline.txt` if there is one, as before);
-- **Install Rustica Server**: the kernel command line says `installer`,
+- **Install Rustica**: the kernel command line says `installer`,
   so init boots the **install target**: the log, the mounts and the
   installer on the console (`installer.svc`), nothing else;
 - the recovery entry for the first, and "Firmware setup".
@@ -47,6 +47,12 @@ the lists are printed numbered and a number is read.
    - **alongside**: in the disk's largest free space (at least 512 MiB,
      plus 512 MiB if there is no EFI partition to reuse). The installer
      does not shrink partitions: shrink Windows' in Windows first;
+     an EFI partition it reuses must have room for Rustica's kernel (it
+     carries the whole system: about 70 MiB in November 2026; Windows'
+     own EFI partition is often only 100 MB, about 30 MB of it used).
+     When it has not, alongside, replace and that partition in manual
+     are not offered (the menu says why), and with `--mode` the
+     installer stops before it writes anything;
    - **replace** an earlier Rustica (its EFI partition is reused, its root
      partition, labelled "Rustica root", formatted);
    - **manual**: the EFI partition (an existing one, or new in the free
@@ -159,6 +165,8 @@ use them in tests only.
   Windows' data partition and boot files are byte for byte the same;
 - the same disk with the **power cut** during the installation: the
   computer still starts "Windows".
+- a disk whose EFI partition (40 MiB) is too small for the kernel:
+  alongside is refused and nothing is written.
 
 ## Not done (yet)
 

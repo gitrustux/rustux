@@ -212,3 +212,7 @@ double atof(const char *s) { return strtod(s, 0); }
 
 intmax_t strtoimax(const char *restrict s, char **restrict end, int base) { return strtoll(s, end, base); }
 uintmax_t strtoumax(const char *restrict s, char **restrict end, int base) { return strtoull(s, end, base); }
+
+// The float and long double forms (long double holds what strtod reads)
+float strtof(const char *restrict s, char **restrict end) { return (float)strtod(s, end); }
+long double strtold(const char *restrict s, char **restrict end) { return (long double)strtod(s, end); }

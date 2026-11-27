@@ -22,3 +22,6 @@ int isgraph(int c) { return c > 32 && c < 127; }
 int ispunct(int c) { return isgraph(c) && !isalnum(c); }
 int tolower(int c) { return isupper(c) ? c + 32 : c; }
 int toupper(int c) { return islower(c) ? c - 32 : c; }
+
+int isascii(int c) { return (unsigned)c < 128; }
+int toascii(int c) { return c & 0x7f; }

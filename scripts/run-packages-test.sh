@@ -118,7 +118,7 @@ openssl x509 -req -in "$W/srv.csr" -CA "$W/ca.pem" -CAkey "$W/ca.key" -CAcreates
 mcopy -i "$W/p.img" "$W/ca.pem" "$W/test.pub.pem" ::/
 truncate -s 256M "$W/root.img"
 mkfs.ext4 -q -L rootfs -U $ROOT_UUID "$W/root.img"
-dd if=/dev/zero of="$W/boot.img" bs=1M count=64 status=none
+dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
 mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI

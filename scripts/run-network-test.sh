@@ -67,7 +67,7 @@ done
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
-dd if=/dev/zero of="$W/boot.img" bs=1M count=64 status=none
+dd if=/dev/zero of="$W/boot.img" bs=1M count=128 status=none
 mformat -i "$W/boot.img" -F ::
 mmd -i "$W/boot.img" ::/EFI ::/EFI/BOOT
 mcopy -i "$W/boot.img" "$EFI" ::/EFI/BOOT/BOOTX64.EFI
@@ -453,6 +453,13 @@ try:
     check('SSL certificate problem' in out and re.search(r'=DONE\d+= 60', out), 'curl https:// refuses an unknown CA (60)', out)
     out = run(f'curl -sS --cacert /tmp/ca.pem https://www.test.rustica:{HS}/')
     check('<h1>Rustica test page</h1>' in out and re.search(r'=DONE\d+= 0', out), 'curl https:// with --cacert (TLS, the name checked)', out)
+    # libcurl over mbedTLS, the browser's network library (phase W)
+    out = run(f'curltest https://www.test.rustica:{HS}/')
+    check('curltest: error 60' in out, 'libcurl refuses an unknown CA', out)
+    out = run(f'curltest --cacert /tmp/ca.pem https://www.test.rustica:{HS}/')
+    check('<h1>Rustica test page</h1>' in out and 'status 200' in out and 'mbedTLS/' in out, 'libcurl https:// with mbedTLS', out)
+    out = run(f'curltest http://www.test.rustica:{HP}/')
+    check('<h1>Rustica test page</h1>' in out and 'status 200' in out, 'libcurl http:// by name (its resolver thread)', out)
     out = run(f'curl -sk https://10.0.2.2:{HS}/')
     check('<h1>Rustica test page</h1>' in out, 'curl -k', out)
     out = run(f'curl -s -o /tmp/r.txt -w "%{{http_code}}\\n" http://10.0.2.2:{HP}/redirect; curl -sL http://10.0.2.2:{HP}/redirect')

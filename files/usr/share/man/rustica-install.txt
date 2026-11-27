@@ -10,7 +10,7 @@ USAGE
                     [--timezone ZONE] [--keymap NAME] [--yes] [--dry-run]
                     [--reboot | --no-reboot]
 
-    "Install Rustica Server" in the boot menu starts it; root can start it
+    "Install Rustica" in the boot menu starts it; root can start it
     from the live system too. It asks for the edition (server: the text
 login; desktop: the graphical login), the keyboard layout, host name,
     time zone, the first user (an administrator: sudo) and root (locked
@@ -21,6 +21,9 @@ login; desktop: the graphical login), the keyboard layout, host name,
                   their partitions in their own system first)
       replace     an earlier Rustica on the disk
       manual      choose the EFI and root partitions
+
+    An EFI partition that is kept must have room for Rustica's kernel
+    (about 70 MiB); a smaller one is not offered.
 
     Then it shows every change and writes nothing until you type
     install. The computer's internal NVMe disk is only written after you
